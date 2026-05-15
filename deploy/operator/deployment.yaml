@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: distllm-operator
+  namespace: default
+  labels:
+    app: distllm-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: distllm-operator
+  template:
+    metadata:
+      labels:
+        app: distllm-operator
+    spec:
+      serviceAccountName: distllm-operator
+      containers:
+        - name: operator
+          image: distllm/operator:latest
+          command: ["kopf"]
+          args: ["run", "/app/src/distllm/operator/main.py", "--all-at-once"]
+          volumeMounts:
+            - name: src
+              mountPath: /app/src
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+      volumes:
+        - name: src
+          hostPath:
+            path: /opt/distllm/src

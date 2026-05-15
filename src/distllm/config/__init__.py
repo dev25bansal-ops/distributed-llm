@@ -1,0 +1,81 @@
+"""Unified config system for distributed LLM.
+
+New code should import from distllm.config.settings for pydantic-based classes.
+Legacy names are re-exported for backward compatibility.
+"""
+
+from distllm.config.settings import (
+    DistLLMSettings,
+    ModelSettings,
+    CoordinatorSettings,
+    NodeSettings,
+    GenerationSettings,
+    NetworkSettings,
+    TLSSettings,
+    BatchingSettings,
+    PrefixCacheSettings,
+    ChunkedPrefillSettings,
+    MonitoringSettings,
+    QuantizationSettings,
+    SpeculativeSettings,
+    TensorParallelSettings,
+    LoRASettings,
+    MoESettings,
+    NodeRole,
+)
+from distllm.config.loader import (
+    DistLLMConfig,
+    ModelConfig,
+    CoordinatorConfig,
+    NodeConfig,
+    GenerationConfig,
+    NetworkConfig,
+    TLSConfig,
+    BatchingConfig,
+    PrefixCacheConfig,
+    ChunkedPrefillConfig,
+    MonitoringConfig,
+    load_config,
+    load_config_file,
+    dict_to_config,
+    apply_env_overrides,
+    apply_cli_overrides,
+)
+
+__all__ = [
+    # New pydantic-settings names
+    "DistLLMSettings",
+    "ModelSettings",
+    "CoordinatorSettings",
+    "NodeSettings",
+    "GenerationSettings",
+    "NetworkSettings",
+    "TLSSettings",
+    "BatchingSettings",
+    "PrefixCacheSettings",
+    "ChunkedPrefillSettings",
+    "MonitoringSettings",
+    "QuantizationSettings",
+    "SpeculativeSettings",
+    "TensorParallelSettings",
+    "LoRASettings",
+    "MoESettings",
+    "NodeRole",
+    # Legacy aliases
+    "DistLLMConfig",
+    "ModelConfig",
+    "CoordinatorConfig",
+    "NodeConfig",
+    "GenerationConfig",
+    "NetworkConfig",
+    "TLSConfig",
+    "BatchingConfig",
+    "PrefixCacheConfig",
+    "ChunkedPrefillConfig",
+    "MonitoringConfig",
+    "load_config",
+    "load_config_file",
+    "dict_to_config",
+    "apply_env_overrides",
+    "apply_cli_overrides",
+]

@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - run: ruff check src/
+      - run: black --check src/
+
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - run: mypy src/
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [lint, type-check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev,testing]"
+      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=75 -m "not e2e and not slow"
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  build-docker:
+    runs-on: ubuntu-latest
+    needs: [lint, type-check, test]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t distributed-llm .
+
+  benchmark:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - run: python benchmarks/run.py --model roneneldan/TinyStories-1M

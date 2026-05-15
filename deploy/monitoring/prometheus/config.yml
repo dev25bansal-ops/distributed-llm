@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "distllm-coordinator"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["coordinator:8000"]
+
+  - job_name: "distllm-router"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["router:8001"]
+
+  - job_name: "distllm-nodes"
+    static_configs:
+      - targets: ["node_0:50051", "node_1:50051"]
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

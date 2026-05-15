@@ -1,0 +1,75 @@
+name: Memory Profile
+
+on:
+  pull_request:
+    paths:
+      - 'src/distllm/**/*.py'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+
+jobs:
+  memory-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,testing]"
+
+      - name: Run memory profiling tests
+        run: |
+          pytest tests/profiling/ -v --memory-profile -p no:asyncio
+
+      - name: Profile core operations
+        run: |
+          python -c "
+          import tracemalloc
+          from distllm.profiling.ci_profiler import MemoryProfiler
+          from distllm.core.batch_scheduler import BatchScheduler, Sequence
+          from distllm.communication.serializers import tensor_to_proto, proto_to_tensor
+          import torch
+
+          profiler = MemoryProfiler(track_gpu=False)
+
+          reports = profiler.profile_batch({
+              'batch_scheduling': lambda: (
+                  (s := BatchScheduler(max_batch_size=32, max_tokens_per_batch=4096),
+                   [s.add(Sequence(request_id=f'r-{i}', prompt_tokens=[1]*10)) for i in range(50)],
+                   s.schedule())),
+              'serialization': lambda: (
+                  tensor_to_proto(torch.randn(1, 128, 768))),
+              'deserialization': lambda: (
+                  proto_to_tensor(tensor_to_proto(torch.randn(1, 128, 768)))),
+          })
+
+          MemoryProfiler.save_reports(reports, 'memory-profile-report.json')
+
+          # Check for leaks and budget violations
+          for r in reports:
+              if r.leak_detected:
+                  print(f'LEAK: {r.operation} slope={r.leak_slope_mb_per_iter:.2f}MB/iter R²={r.leak_r_squared:.3f}')
+              if r.budget_exceeded:
+                  print(f'BUDGET EXCEEDED: {r.operation} peak={r.actual_peak_mb:.1f}MB budget={r.budget_mb:.1f}MB')
+
+          # Fail if any leaks or budget violations
+          if any(r.leak_detected for r in reports) or any(r.budget_exceeded for r in reports):
+              exit(1)
+          print('All memory checks passed.')
+          "
+
+      - name: Upload memory profile report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-profile-report
+          path: memory-profile-report.json
+          retention-days: 30

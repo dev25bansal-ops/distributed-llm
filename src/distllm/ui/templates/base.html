@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}DistLLM{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="/" class="brand">DistLLM</a>
+            <ul class="nav-links">
+                <li><a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Chat</a></li>
+                <li><a href="/dashboard" class="{% if request.url.path == '/dashboard' %}active{% endif %}">Dashboard</a></li>
+                <li><a href="/models" class="{% if request.url.path == '/models' %}active{% endif %}">Models</a></li>
+                <li><a href="/docs" target="_blank">API Docs</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: "distllm"
+    orgId: 1
+    folder: "DistLLM"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

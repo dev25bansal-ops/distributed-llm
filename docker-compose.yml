@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  coordinator:
+    build: .
+    ports:
+      - "50050:50050"
+    command: >
+      distllm
+        --model roneneldan/TinyStories-1M
+        --port 50050
+        --nodes node_0:50051:0:3 node_1:50052:4:7
+        --total-layers 8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  node_0:
+    build: .
+    ports:
+      - "50051:50051"
+    command: >
+      distllm-node
+        --node-id node_0
+        --model roneneldan/TinyStories-1M
+        --start-layer 0
+        --end-layer 3
+        --total-layers 8
+        --port 50051
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  node_1:
+    build: .
+    ports:
+      - "50052:50052"
+    command: >
+      distllm-node
+        --node-id node_1
+        --model roneneldan/TinyStories-1M
+        --start-layer 4
+        --end-layer 7
+        --total-layers 8
+        --port 50052
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

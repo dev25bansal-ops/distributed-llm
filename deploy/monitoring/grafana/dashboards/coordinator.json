@@ -1,0 +1,81 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Tokens/sec",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "distllm_tokens_per_second", "legendFormat": "tokens/s"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}}
+    },
+    {
+      "title": "Total Requests",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "distllm_requests_total", "legendFormat": "requests"}]
+    },
+    {
+      "title": "Total Tokens Generated",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "distllm_tokens_generated_total", "legendFormat": "tokens"}]
+    },
+    {
+      "title": "Errors",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "distllm_errors_total", "legendFormat": "errors"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "red"}}}
+    },
+    {
+      "title": "Token Generation Latency",
+      "type": "histogram",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(distllm_token_generation_latency_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(distllm_token_generation_latency_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, rate(distllm_token_generation_latency_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "title": "Request Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, rate(distllm_request_latency_seconds_bucket[5m]))", "legendFormat": "p95"}
+      ]
+    },
+    {
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 12},
+      "targets": [{"expr": "distllm_coordinator_queue_depth", "legendFormat": "queue"}]
+    },
+    {
+      "title": "Circuit Breaker State",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 12},
+      "targets": [{"expr": "distllm_circuit_breaker_state", "legendFormat": "{{target_node}}"}],
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"text": "Closed"}, "1": {"text": "Open"}}, "type": "value"}]}}
+    },
+    {
+      "title": "Active Requests",
+      "type": "gauge",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 12},
+      "targets": [{"expr": "distllm_coordinator_active_requests", "legendFormat": "active"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["distllm"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Distributed LLM - Coordinator",
+  "uid": "distllm-coordinator",
+  "version": 1
+}

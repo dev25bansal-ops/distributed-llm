@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DistLLM Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DistLLM Dashboard</h1>
+            <div class="status-badge" id="ws-status">Connecting...</div>
+        </header>
+
+        <div class="grid">
+            <!-- System Overview -->
+            <div class="card">
+                <h2>System Overview</h2>
+                <div class="stat-row">
+                    <span class="stat-label">Model</span>
+                    <span class="stat-value" id="model-name">--</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Nodes</span>
+                    <span class="stat-value" id="node-count">--</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Connections</span>
+                    <span class="stat-value" id="ws-connections">--</span>
+                </div>
+            </div>
+
+            <!-- Node Health -->
+            <div class="card">
+                <h2>Node Health</h2>
+                <div id="node-list">
+                    <p class="placeholder">No nodes connected</p>
+                </div>
+            </div>
+
+            <!-- Scheduler Stats -->
+            <div class="card">
+                <h2>Scheduler</h2>
+                <div id="scheduler-stats">
+                    <p class="placeholder">Waiting for data...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Raw Data -->
+        <div class="card raw-data">
+            <h2>Latest Metrics (JSON)</h2>
+            <pre id="raw-metrics">Waiting for WebSocket connection...</pre>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

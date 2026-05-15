@@ -1,0 +1,146 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distributed-llm"
+version = "0.4.0"
+description = "Run large language models across multiple GPU-equipped machines using pipeline parallelism"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Distributed LLM Contributors"},
+]
+keywords = [
+    "llm",
+    "distributed",
+    "inference",
+    "pipeline-parallelism",
+    "gpu",
+    "grpc",
+    "transformers",
+    "pytorch",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "accelerate>=0.25.0",
+    "safetensors>=0.4.0",
+    "pyyaml>=6.0",
+    "loguru>=0.7.0",
+    "numpy>=1.26.0",
+    "huggingface-hub>=0.20.0",
+    "sentencepiece>=0.1.99",
+    "protobuf>=4.25.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
+    "opentelemetry-api>=1.21.0",
+    "opentelemetry-sdk>=1.21.0",
+    "opentelemetry-exporter-prometheus>=0.42b0",
+    "opentelemetry-instrumentation-grpc>=0.42b0",
+    "psutil>=5.9.0",
+    "nvidia-ml-py>=12.0",
+    "prometheus-client>=0.20",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "black>=24.0",
+    "ruff>=0.1.0",
+    "mypy>=1.8",
+    "opentelemetry-test-utils>=0.42b0",
+]
+infra = [
+    "kopf>=1.37",
+    "kubernetes>=29.0",
+]
+sdk = [
+    "httpx>=0.27.0",
+]
+cli = [
+    "typer[all]>=0.9.0",
+    "rich>=13.7.0",
+]
+ui = [
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.6",
+]
+examples = [
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.1.0",
+    "llama-index-llms-openai>=0.1.0",
+    "llama-index-core>=0.10.0",
+    "crewai>=0.30.0",
+]
+tls = [
+    "cryptography>=41.0",
+]
+quant = [
+    "bitsandbytes>=0.41.0",
+]
+lora = [
+    "peft>=0.7.0",
+]
+testing = [
+    "hypothesis>=6.90",
+    "locust>=2.20",
+    "pytest-benchmark>=4.0",
+    "bandit[toml]>=1.7",
+    "safety>=3.0",
+    "detect-secrets>=1.5",
+]
+
+[project.scripts]
+distllm = "distllm.cli.main:main"
+distllm-node = "distllm.core.node:main"
+distllm-coordinator = "distllm.core.coordinator:main"
+distllm-api = "distllm.api.server:main"
+distllm-client = "distllm.cli.client:main"
+distllm-ui = "distllm.ui.app:main"
+distllm-tp = "distllm.core.tp_launcher:main"
+distllm-dashboard = "distllm.dashboard.app:main"
+
+[project.urls]
+Homepage = "https://github.com/distributed-llm/distributed-llm"
+Documentation = "https://github.com/distributed-llm/distributed-llm#readme"
+Repository = "https://github.com/distributed-llm/distributed-llm"
+Issues = "https://github.com/distributed-llm/distributed-llm/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true

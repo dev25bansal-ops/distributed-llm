@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}DistLLM - Models{% endblock %}
+
+{% block content %}
+<h1>Model Browser</h1>
+
+<div class="card">
+    <h2>Available Models</h2>
+    <div id="models-list" class="models-list">
+        <p>Loading models...</p>
+    </div>
+</div>
+
+<script>
+async function loadModels() {
+    try {
+        const response = await fetch('{{ api_url }}/v1/models');
+        const data = await response.json();
+
+        const modelsDiv = document.getElementById('models-list');
+        if (data.data && data.data.length > 0) {
+            let html = '<table class="model-table">';
+            html += '<tr><th>Model ID</th><th>Owned By</th><th>Created</th></tr>';
+            data.data.forEach(model => {
+                const date = new Date(model.created * 1000).toLocaleString();
+                html += `<tr>
+                    <td><strong>${model.id}</strong></td>
+                    <td>${model.owned_by}</td>
+                    <td>${date}</td>
+                </tr>`;
+            });
+            html += '</table>';
+            modelsDiv.innerHTML = html;
+        } else {
+            modelsDiv.innerHTML = '<p>No models available</p>';
+        }
+    } catch (error) {
+        document.getElementById('models-list').innerHTML =
+            `<p class="error">Error loading models: ${error.message}</p>`;
+    }
+}
+
+loadModels();
+</script>
+{% endblock %}

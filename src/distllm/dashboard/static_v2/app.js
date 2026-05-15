@@ -1,0 +1,92 @@
+/* DistLLM Dashboard v2 - Frontend JavaScript */
+
+(function () {
+    'use strict';
+
+    const wsStatus = document.getElementById('ws-status');
+    const modelName = document.getElementById('model-name');
+    const nodeCount = document.getElementById('node-count');
+    const wsConnections = document.getElementById('ws-connections');
+    const nodeList = document.getElementById('node-list');
+    const schedulerStats = document.getElementById('scheduler-stats');
+    const rawMetrics = document.getElementById('raw-metrics');
+
+    let ws = null;
+    let reconnectTimer = null;
+
+    function connect() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+        wsStatus.textContent = 'Connecting...';
+        wsStatus.className = 'status-badge connecting';
+
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            wsStatus.textContent = 'Connected';
+            wsStatus.className = 'status-badge connected';
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                updateDashboard(data);
+            } catch (e) {
+                console.error('Failed to parse WebSocket message:', e);
+            }
+        };
+
+        ws.onclose = () => {
+            wsStatus.textContent = 'Disconnected';
+            wsStatus.className = 'status-badge disconnected';
+            // Reconnect after 5 seconds
+            reconnectTimer = setTimeout(connect, 5000);
+        };
+
+        ws.onerror = () => {
+            ws.close();
+        };
+    }
+
+    function updateDashboard(data) {
+        if (data.type !== 'metrics' || !data.data) return;
+
+        const d = data.data;
+
+        // System overview
+        if (d.model) modelName.textContent = d.model;
+        if (d.nodes !== undefined) nodeCount.textContent = typeof d.nodes === 'object' ? Object.keys(d.nodes).length : d.nodes;
+
+        // Connections
+        wsConnections.textContent = 'active';
+
+        // Node health
+        if (d.nodes && typeof d.nodes === 'object') {
+            const html = Object.entries(d.nodes).map(([id, info]) => {
+                const status = info.healthy ? 'healthy' : 'unhealthy';
+                return `<div class="node-item">
+                    <span class="node-id">${id}</span>
+                    <span class="node-status ${status}">${status}</span>
+                </div>`;
+            }).join('');
+            nodeList.innerHTML = html || '<p class="placeholder">No nodes connected</p>';
+        }
+
+        // Scheduler stats
+        if (d.scheduler) {
+            const s = d.scheduler;
+            schedulerStats.innerHTML = `
+                <div class="stat-row"><span class="stat-label">Active</span><span class="stat-value">${s.active || 0}</span></div>
+                <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-value">${s.pending || 0}</span></div>
+                <div class="stat-row"><span class="stat-label">Completed</span><span class="stat-value">${s.completed || 0}</span></div>
+            `;
+        }
+
+        // Raw metrics
+        rawMetrics.textContent = JSON.stringify(d, null, 2);
+    }
+
+    // Start connection when page loads
+    connect();
+})();

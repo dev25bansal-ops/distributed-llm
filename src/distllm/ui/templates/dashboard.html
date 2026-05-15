@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}DistLLM - Dashboard{% endblock %}
+
+{% block content %}
+<h1>Cluster Dashboard</h1>
+
+<div id="health-status" class="dashboard-grid">
+    <div class="card">
+        <h2>System Status</h2>
+        <div id="status-content" class="status-content">
+            <p>Loading...</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Node Health</h2>
+        <div id="nodes-content" class="nodes-list">
+            <p>Loading...</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Metrics</h2>
+        <div id="metrics-content" class="metrics-list">
+            <p>Loading...</p>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadDashboard() {
+    try {
+        // Load health status
+        const healthRes = await fetch('{{ api_url }}/health');
+        const health = await healthRes.json();
+
+        document.getElementById('status-content').innerHTML = `
+            <div class="status-item">
+                <span class="label">Status:</span>
+                <span class="value status-${health.status}">${health.status}</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Model:</span>
+                <span class="value">${health.model || 'N/A'}</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Nodes:</span>
+                <span class="value">${health.nodes || 0}</span>
+            </div>
+        `;
+
+        // Load node health
+        const nodesDiv = document.getElementById('nodes-content');
+        if (health.node_health && Object.keys(health.node_health).length > 0) {
+            let html = '<table class="node-table">';
+            html += '<tr><th>Node</th><th>Status</th><th>Memory</th></tr>';
+            for (const [nodeId, info] of Object.entries(health.node_health)) {
+                const status = info.healthy ? 'Healthy' : 'Unhealthy';
+                const statusClass = info.healthy ? 'healthy' : 'unhealthy';
+                let memory = 'N/A';
+                if (info.memory_total > 0) {
+                    const pct = (info.memory_used / info.memory_total * 100).toFixed(1);
+                    memory = `${pct}%`;
+                }
+                html += `<tr><td>${nodeId}</td><td class="${statusClass}">${status}</td><td>${memory}</td></tr>`;
+            }
+            html += '</table>';
+            nodesDiv.innerHTML = html;
+        } else {
+            nodesDiv.innerHTML = '<p>No nodes registered or running in local mode</p>';
+        }
+
+        // Load metrics
+        const metricsRes = await fetch('{{ api_url }}/metrics');
+        const metricsText = await metricsRes.text();
+        const metricsDiv = document.getElementById('metrics-content');
+
+        const metrics = metricsText.split('\n').filter(line => line && !line.startsWith('#'));
+        if (metrics.length > 0) {
+            let html = '<table class="metrics-table">';
+            html += '<tr><th>Metric</th><th>Value</th></tr>';
+            metrics.slice(0, 15).forEach(line => {
+                const [name, value] = line.split(' ');
+                html += `<tr><td>${name}</td><td>${value}</td></tr>`;
+            });
+            html += '</table>';
+            metricsDiv.innerHTML = html;
+        } else {
+            metricsDiv.innerHTML = '<p>No metrics available</p>';
+        }
+
+    } catch (error) {
+        document.getElementById('status-content').innerHTML =
+            `<p class="error">Error loading dashboard: ${error.message}</p>`;
+    }
+}
+
+// Load on page load and refresh every 10 seconds
+loadDashboard();
+setInterval(loadDashboard, 10000);
+</script>
+{% endblock %}

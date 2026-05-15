@@ -1,0 +1,55 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+
+jobs:
+  bandit:
+    name: Bandit Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install bandit
+      - run: bandit -r src/ -f json -o bandit-report.json || true
+      - run: bandit -r src/ -lll
+        continue-on-error: true
+
+  dependency-audit:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install pip-audit
+      - run: pip-audit -r <(pip freeze) --format json -o audit-report.json || true
+      - run: pip-audit -r <(pip freeze)
+        continue-on-error: true
+
+  secrets-detection:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect hardcoded secrets
+        run: |
+          # Check for common secret patterns
+          grep -rniE '(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*["\x27][a-zA-Z0-9]{16,}' src/ --include="*.py" > secrets-scan.txt || true
+          if [ -s secrets-scan.txt ]; then
+            echo "Potential secrets found:"
+            cat secrets-scan.txt
+            exit 1
+          fi
+          echo "No secrets detected"

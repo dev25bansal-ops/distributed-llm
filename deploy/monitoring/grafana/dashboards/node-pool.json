@@ -1,0 +1,43 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {
+      "title": "Node Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "distllm_node_health", "legendFormat": "{{node_id}} ({{layer_range}})"}],
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"text": "Unhealthy", "color": "red"}, "1": {"text": "Healthy", "color": "green"}}, "type": "value"}]}}
+    },
+    {
+      "title": "GPU Utilization",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [{"expr": "distllm_node_gpu_utilization_percent", "legendFormat": "{{node_id}}"}]
+    },
+    {
+      "title": "GPU Memory",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [{"expr": "distllm_node_gpu_memory_bytes / 1024 / 1024 / 1024", "legendFormat": "{{node_id}} GB"}]
+    },
+    {
+      "title": "Node Latency p50",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 12},
+      "targets": [{"expr": "distllm_node_latency_p50_ms", "legendFormat": "{{node_id}}"}]
+    },
+    {
+      "title": "Node Latency p99",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 12},
+      "targets": [{"expr": "distllm_node_latency_p99_ms", "legendFormat": "{{node_id}}"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["distllm"],
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Distributed LLM - Node Pool",
+  "uid": "distllm-node-pool",
+  "version": 1
+}

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DistLLM Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 20px 0; border-bottom: 1px solid #334155; }
+        h1 { font-size: 24px; color: #38bdf8; }
+        .status { display: flex; align-items: center; gap: 8px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; }
+        .dot.error { background: #ef4444; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; }
+        .card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+        .card h2 { font-size: 14px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+        .metric { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; }
+        .metric:last-child { border-bottom: none; }
+        .metric-label { color: #94a3b8; }
+        .metric-value { font-weight: 600; color: #f8fafc; }
+        .node-card { background: #1e293b; border-radius: 8px; padding: 16px; border: 1px solid #334155; }
+        .node-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .node-name { font-weight: 600; }
+        .badge { padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .badge.healthy { background: #166534; color: #bbf7d0; }
+        .badge.unhealthy { background: #991b1b; color: #fecaca; }
+        .chart-container { height: 200px; margin-top: 12px; }
+        canvas { width: 100% !important; height: 100% !important; }
+        .refresh { background: #38bdf8; color: #0f172a; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+        .refresh:hover { background: #7dd3fc; }
+        #last-update { color: #64748b; font-size: 12px; }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { text-align: left; padding: 10px; border-bottom: 1px solid #334155; }
+        .table th { color: #94a3b8; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+        .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #334155; border-top-color: #38bdf8; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>DistLLM Dashboard</h1>
+                <p id="last-update">Loading...</p>
+            </div>
+            <div class="status">
+                <div class="dot" id="status-dot"></div>
+                <span id="status-text">Connecting...</span>
+                <button class="refresh" onclick="refresh()">Refresh</button>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>System Overview</h2>
+                <div class="metric"><span class="metric-label">Model</span><span class="metric-value" id="model">-</span></div>
+                <div class="metric"><span class="metric-label">Nodes</span><span class="metric-value" id="nodes">-</span></div>
+                <div class="metric"><span class="metric-label">Total Requests</span><span class="metric-value" id="total-requests">-</span></div>
+                <div class="metric"><span class="metric-label">Total Tokens</span><span class="metric-value" id="total-tokens">-</span></div>
+                <div class="metric"><span class="metric-label">Avg Throughput</span><span class="metric-value" id="throughput">-</span></div>
+                <div class="metric"><span class="metric-label">Errors</span><span class="metric-value" id="errors">-</span></div>
+            </div>
+
+            <div class="card">
+                <h2>Scheduler</h2>
+                <div class="metric"><span class="metric-label">Active Requests</span><span class="metric-value" id="active-requests">-</span></div>
+                <div class="metric"><span class="metric-label">Pending</span><span class="metric-value" id="pending-requests">-</span></div>
+                <div class="metric"><span class="metric-label">Completed</span><span class="metric-value" id="completed-requests">-</span></div>
+            </div>
+
+            <div class="card">
+                <h2>Prefix Cache</h2>
+                <div class="metric"><span class="metric-label">Hits</span><span class="metric-value" id="cache-hits">-</span></div>
+                <div class="metric"><span class="metric-label">Misses</span><span class="metric-value" id="cache-misses">-</span></div>
+                <div class="metric"><span class="metric-label">Hit Rate</span><span class="metric-value" id="cache-rate">-</span></div>
+                <div class="metric"><span class="metric-label">Entries</span><span class="metric-value" id="cache-entries">-</span></div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h2>Node Health</h2>
+            <div id="nodes-container" class="grid" style="margin-top: 12px;"></div>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h2>Metrics (raw)</h2>
+            <pre id="raw-metrics" style="margin-top: 12px; padding: 12px; background: #0f172a; border-radius: 8px; overflow: auto; max-height: 300px; font-size: 12px;">Loading...</pre>
+        </div>
+    </div>
+
+    <script>
+        async function refresh() {
+            try {
+                const [statusRes, nodesRes] = await Promise.all([
+                    fetch('/api/status'),
+                    fetch('/api/nodes')
+                ]);
+
+                const status = await statusRes.json();
+                const nodes = await nodesRes.json();
+
+                document.getElementById('status-dot').classList.remove('error');
+                document.getElementById('status-text').textContent = 'Connected';
+                document.getElementById('last-update').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+
+                // System overview
+                document.getElementById('model').textContent = status.model || '-';
+                document.getElementById('nodes').textContent = status.nodes || 0;
+
+                const m = status.metrics || {};
+                document.getElementById('total-requests').textContent = m.distllm_requests_total || 0;
+                document.getElementById('total-tokens').textContent = m.distllm_total_tokens_generated || 0;
+                const throughput = m.distllm_avg_tokens_per_sec || 0;
+                document.getElementById('throughput').textContent = throughput.toFixed(1) + ' tok/s';
+                document.getElementById('errors').textContent = m.distllm_errors || 0;
+
+                // Scheduler
+                const s = status.scheduler || {};
+                document.getElementById('active-requests').textContent = s.active_requests || 0;
+                document.getElementById('pending-requests').textContent = s.pending_requests || 0;
+                document.getElementById('completed-requests').textContent = s.completed_requests || 0;
+
+                // Prefix cache
+                const pc = status.prefix_cache || {};
+                document.getElementById('cache-hits').textContent = pc.hits || 0;
+                document.getElementById('cache-misses').textContent = pc.misses || 0;
+                const total = (pc.hits || 0) + (pc.misses || 0);
+                const rate = total > 0 ? ((pc.hits || 0) / total * 100).toFixed(1) + '%' : '0%';
+                document.getElementById('cache-rate').textContent = rate;
+                document.getElementById('cache-entries').textContent = pc.entries || 0;
+
+                // Nodes
+                const container = document.getElementById('nodes-container');
+                container.innerHTML = nodes.map(n => `
+                    <div class="node-card">
+                        <div class="node-header">
+                            <span class="node-name">${n.node_id}</span>
+                            <span class="badge ${n.healthy ? 'healthy' : 'unhealthy'}">${n.healthy ? 'Healthy' : 'Unhealthy'}</span>
+                        </div>
+                        <div class="metric"><span class="metric-label">Host</span><span class="metric-value">${n.host}:${n.port}</span></div>
+                        <div class="metric"><span class="metric-label">Layers</span><span class="metric-value">${n.layers}</span></div>
+                        <div class="metric"><span class="metric-label">Role</span><span class="metric-value">${n.role}</span></div>
+                    </div>
+                `).join('');
+
+                // Raw metrics
+                document.getElementById('raw-metrics').textContent = JSON.stringify(status, null, 2);
+
+            } catch (e) {
+                document.getElementById('status-dot').classList.add('error');
+                document.getElementById('status-text').textContent = 'Disconnected';
+                document.getElementById('last-update').textContent = 'Error: ' + e.message;
+            }
+        }
+
+        // Auto-refresh every 5 seconds
+        refresh();
+        setInterval(refresh, 5000);
+    </script>
+</body>
+</html>

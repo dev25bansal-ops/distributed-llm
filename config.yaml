@@ -1,0 +1,52 @@
+# Distributed LLM Configuration
+
+model:
+  # HuggingFace model name or local path
+  name: "roneneldan/TinyStories-1M"
+  # Data type for model weights
+  dtype: "float16"  # float16, float32, bfloat16
+
+coordinator:
+  host: "localhost"
+  port: 50050
+  # API server
+  api_port: 8000
+
+# Worker nodes configuration
+nodes:
+  - node_id: "node_0"
+    host: "localhost"
+    port: 50051
+    start_layer: 0
+    end_layer: 3
+    device: "cuda"
+
+  - node_id: "node_1"
+    host: "localhost"
+    port: 50052
+    start_layer: 4
+    end_layer: 7
+    device: "cuda"
+
+# Generation settings
+generation:
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.9
+
+# Network settings
+network:
+  # gRPC timeout (seconds)
+  grpc_timeout: 30
+  # Retry settings
+  max_retries: 3
+  retry_delay: 1.0
+
+# TLS/Security
+tls:
+  enabled: false
+  cert_dir: "certs"
+  # For production: provide your own certs, or set enabled=false for dev
+  # cert_file: "/path/to/server.crt"
+  # key_file: "/path/to/server.key"
+  # ca_cert_file: "/path/to/ca.crt"

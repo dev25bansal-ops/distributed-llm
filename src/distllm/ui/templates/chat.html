@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}DistLLM - Chat{% endblock %}
+
+{% block content %}
+<div class="chat-container">
+    <div id="chat-messages" class="chat-messages">
+        <div class="message system">
+            <div class="message-content">
+                Welcome to DistLLM Chat. Type a message to begin.
+            </div>
+        </div>
+    </div>
+
+    <form id="chat-form" class="chat-form" hx-post="{{ api_url }}/v1/chat/completions"
+          hx-target="#chat-messages" hx-swap="beforeend">
+        <div class="chat-input-group">
+            <textarea id="chat-input" name="prompt" placeholder="Type your message..."
+                      rows="1" required></textarea>
+            <button type="submit" id="send-btn">
+                <span class="btn-text">Send</span>
+                <span class="btn-loading" style="display:none">Generating...</span>
+            </button>
+        </div>
+        <input type="hidden" name="model" value="distributed-llm">
+        <input type="hidden" name="max_tokens" value="256">
+        <input type="hidden" name="temperature" value="0.7">
+    </form>
+</div>
+{% endblock %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('chat-input');
+    const messages = document.getElementById('chat-messages');
+    const sendBtn = document.getElementById('send-btn');
+    const btnText = sendBtn.querySelector('.btn-text');
+    const btnLoading = sendBtn.querySelector('.btn-loading');
+
+    let conversation = [];
+
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+
+        const prompt = input.value.trim();
+        if (!prompt) return;
+
+        // Add user message
+        addMessage(prompt, 'user');
+        input.value = '';
+
+        // Update conversation history
+        conversation.push({role: 'user', content: prompt});
+
+        // Show loading
+        btnText.style.display = 'none';
+        btnLoading.style.display = 'inline';
+        sendBtn.disabled = true;
+
+        try {
+            const response = await fetch('{{ api_url }}/v1/chat/completions', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    model: 'distributed-llm',
+                    messages: conversation,
+                    max_tokens: 256,
+                    temperature: 0.7
+                })
+            });
+
+            const data = await response.json();
+            const assistantMsg = data.choices[0].message.content;
+
+            addMessage(assistantMsg, 'assistant');
+            conversation.push({role: 'assistant', content: assistantMsg});
+
+            // Show token stats if available
+            if (data.usage) {
+                const tokens = data.usage.completion_tokens || 0;
+                const time = data.generation_time || 0;
+                if (time > 0) {
+                    const tps = (tokens / time).toFixed(1);
+                    addSystemMessage(`${tokens} tokens in ${time.toFixed(1)}s (${tps} tokens/s)`);
+                }
+            }
+        } catch (error) {
+            addSystemMessage('Error: ' + error.message);
+        } finally {
+            btnText.style.display = 'inline';
+            btnLoading.style.display = 'none';
+            sendBtn.disabled = false;
+        }
+    });
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.dispatchEvent(new Event('submit'));
+        }
+    });
+
+    function addMessage(text, role) {
+        const msg = document.createElement('div');
+        msg.className = `message ${role}`;
+        msg.innerHTML = `<div class="message-content">${escapeHtml(text)}</div>`;
+        messages.appendChild(msg);
+        messages.scrollTop = messages.scrollHeight;
+    }
+
+    function addSystemMessage(text) {
+        const msg = document.createElement('div');
+        msg.className = 'message system';
+        msg.innerHTML = `<div class="message-content"><em>${escapeHtml(text)}</em></div>`;
+        messages.appendChild(msg);
+        messages.scrollTop = messages.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+});
+</script>

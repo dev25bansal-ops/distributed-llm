@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model cache (HuggingFace)
+.cache/huggingface/
+.huggingface/
+
+# Generated protobuf files (regenerate from .proto)
+src/*_pb2.py
+src/*_pb2_grpc.py
+
+# TLS certificates
+certs/
+*.crt
+*.key
+*.pem
+
+# Logs
+*.log
+logs/
+
+# Local config overrides
+config.local.yaml
+.env
+
+# Benchmark outputs
+benchmarks/results/
+benchmarks/*.json
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
