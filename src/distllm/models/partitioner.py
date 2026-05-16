@@ -10,6 +10,7 @@ import gc
 
 from distllm.core.kv_cache import KVCache
 from distllm.config.loader import QuantizationConfig
+from distllm.errors import ModelLoadError
 
 DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
 
@@ -83,11 +84,14 @@ def _should_trust_remote_code(model_name: str, trust_remote_code: Optional[bool]
     # Extract the model name part (last segment of HF repo path)
     model_lower = model_name.lower().split("/")[-1]
 
-    # Exact prefix match on model family names to avoid false positives
-    # (e.g., "my-qwen-exploit" should NOT match "qwen")
-    # Allow both dash and dot as version separators (qwen2-7b, qwen2.5-72b)
+    # Extract model family (prefix before first - or . separator)
+    # e.g., "qwen2-7b" -> "qwen2", "my-qwen-exploit" -> "my"
+    family = model_lower.split("-")[0].split(".")[0]
+
+    # Match model family against allowlist to prevent false positives
+    # (e.g., "my-qwen-exploit" has family "my" which won't match "qwen")
     for trusted in TRUSTED_MODELS_ALLOWLIST:
-        if model_lower == trusted or model_lower.startswith(trusted + "-") or model_lower.startswith(trusted + "."):
+        if model_lower == trusted or family == trusted:
             return True
     return False
 
@@ -251,7 +255,7 @@ class ModelPartitioner:
                 break
 
         if layers_attr is None:
-            raise ValueError(f"Cannot find transformer layers in {self.model_name}")
+            raise ModelLoadError(self.model_name, "Cannot find transformer layers")
 
         device_map = {}
         base_prefix = _get_base_prefix(temp_model)
@@ -332,7 +336,7 @@ class ModelPartitioner:
         layers_attr = _find_attr(base_model, ['layers', 'block', 'h'])
 
         if layers_attr is None:
-            raise ValueError(f"Cannot find transformer layers in {self.model_name}")
+            raise ModelLoadError(self.model_name, "Cannot find transformer layers")
 
         self.layers = nn.ModuleList()
         for i in range(start_layer, min(end_layer + 1, total_layers)):

@@ -33,7 +33,8 @@ class ConnectionManager:
         for conn in self.active_connections:
             try:
                 await conn.send_text(data)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"WebSocket send error: {e}")
                 disconnected.add(conn)
         # Clean up disconnected clients
         self.active_connections -= disconnected
@@ -68,8 +69,8 @@ async def metrics_broadcaster(coordinator, interval: float = 1.0):
             try:
                 if coordinator.scheduler:
                     data["data"]["scheduler"] = coordinator.scheduler.stats()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Scheduler stats unavailable: {e}")
 
             # Add node health
             try:
@@ -81,8 +82,8 @@ async def metrics_broadcaster(coordinator, interval: float = 1.0):
                         "layers": f"{reg.start_layer}-{reg.end_layer}",
                     }
                 data["data"]["nodes"] = nodes
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Node health unavailable: {e}")
 
             await manager.broadcast(data)
         except Exception as e:

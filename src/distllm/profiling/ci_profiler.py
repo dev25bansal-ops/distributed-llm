@@ -130,7 +130,8 @@ class MemoryProfiler:
             try:
                 pynvml.nvmlInit()
                 self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"GPU init failed: {e}")
                 self.track_gpu = False
 
     def snapshot(self, label: str = "") -> MemorySnapshot:
@@ -147,8 +148,8 @@ class MemoryProfiler:
                 info = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
                 snap.gpu_used_mb = info.used / (1024 * 1024)
                 snap.gpu_total_mb = info.total / (1024 * 1024)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"GPU memory snapshot failed: {e}")
         return snap
 
     def profile(

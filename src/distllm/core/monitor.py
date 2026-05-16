@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
+from distllm.core.batch_scheduler import BatchScheduler
+
 
 class SystemMonitor:
     """Collects system-level metrics for operational visibility.
@@ -33,17 +35,17 @@ class SystemMonitor:
             self._has_gpu = True
             atexit.register(self._shutdown_gpu)
             logger.info("GPU monitoring enabled via pynvml")
-        except Exception:
+        except (ImportError, OSError, Exception) as e:
             self._has_gpu = False
-            logger.debug("GPU monitoring not available (no pynvml or no GPU)")
+            logger.debug(f"GPU monitoring not available: {e}")
 
     def _shutdown_gpu(self) -> None:
         """Shut down pynvml to release resources."""
         if self._pynvml is not None:
             try:
                 self._pynvml.nvmlShutdown()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"GPU shutdown error: {e}")
             self._pynvml = None
 
     def __del__(self):
@@ -110,14 +112,14 @@ class SystemMonitor:
             ) if stats["max_batch_size"] > 0 else 0,
         }
 
-    def get_scheduler_stats(self, scheduler) -> Dict[str, Any]:
+    def get_scheduler_stats(self, scheduler: BatchScheduler) -> Dict[str, Any]:
         """Combined system + scheduler stats."""
         return {
             **self.collect(),
             "scheduler": self.get_request_metrics(scheduler),
         }
 
-    def health_check(self, scheduler) -> Dict[str, Any]:
+    def health_check(self, scheduler: BatchScheduler) -> Dict[str, Any]:
         """Return health status for the /health endpoint."""
         metrics = self.collect()
         gpu_ok = True

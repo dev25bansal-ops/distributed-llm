@@ -39,12 +39,20 @@ class CoordinatorSettings(BaseModel):
     host: str = "localhost"
     port: int = 50050
     api_port: int = 8000
+    cors_origins: str = "http://localhost:3000,http://localhost:8080"
 
     @field_validator("port", "api_port")
     @classmethod
     def validate_port(cls, v: int) -> int:
         if not (1 <= v <= 65535):
             raise ValueError(f"Port must be 1-65535, got {v}")
+        return v
+
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_origins(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("cors_origins must not be empty")
         return v
 
 
@@ -144,6 +152,7 @@ class PrefixCacheSettings(BaseModel):
     enabled: bool = True
     max_entries: int = 1024
     min_prefix_len: int = 16
+    radix_tree_enabled: bool = True  # Use RadixTree (trie) instead of hash-based LRU
 
     @field_validator("max_entries", "min_prefix_len")
     @classmethod
@@ -173,11 +182,47 @@ class MonitoringSettings(BaseModel):
 
 class QuantizationSettings(BaseModel):
     """Quantization configuration for model loading."""
-    method: str = "none"
+    method: str = "none"  # "none" | "bnb_4bit" | "bnb_8bit" | "gptq" | "awq" | "fp8"
     bnb_4bit_compute_dtype: str = "float16"
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_use_double_quant: bool = True
     llm_int8_threshold: float = 6.0
+    # GPTQ-specific
+    gptq_bits: int = 4
+    gptq_group_size: int = 128
+    gptq_desc_act: bool = False
+    gptq_use_marlin: bool = True  # Use Marlin kernel for Hopper
+    # AWQ-specific
+    awq_bits: int = 4
+    awq_group_size: int = 128
+    # FP8-specific
+    fp8_scheme: str = "e4m3"  # "e4m3" | "e5m2"
+    fp8_dynamic: bool = True
+    # KV cache quantization
+    kv_cache_quant: bool = False
+    kv_cache_bits: int = 8  # 4 or 8
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, v: str) -> str:
+        allowed = {"none", "bnb_4bit", "bnb_8bit", "gptq", "awq", "fp8"}
+        if v not in allowed:
+            raise ValueError(f"method must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("gptq_bits", "awq_bits")
+    @classmethod
+    def validate_bits(cls, v: int) -> int:
+        if v not in (4, 8):
+            raise ValueError(f"bits must be 4 or 8, got {v}")
+        return v
+
+    @field_validator("kv_cache_bits")
+    @classmethod
+    def validate_kv_bits(cls, v: int) -> int:
+        if v not in (4, 8):
+            raise ValueError(f"kv_cache_bits must be 4 or 8, got {v}")
+        return v
 
 
 class SpeculativeSettings(BaseModel):
@@ -186,12 +231,24 @@ class SpeculativeSettings(BaseModel):
     num_assistant_tokens: int = 5
     min_acceptance_rate: float = 0.3
     warmup_steps: int = 10
+    method: str = "draft_model"  # "draft_model" | "medusa" | "ngram" | "auto"
+    medusa_num_heads: int = 4
+    medusa_num_tokens_per_head: int = 3
+    ngram_min_match: int = 4  # Minimum n-gram match length
 
     @field_validator("num_assistant_tokens")
     @classmethod
     def validate_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError(f"Must be >= 1, got {v}")
+        return v
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, v: str) -> str:
+        allowed = {"draft_model", "medusa", "ngram", "auto"}
+        if v not in allowed:
+            raise ValueError(f"method must be one of {allowed}, got '{v}'")
         return v
 
 

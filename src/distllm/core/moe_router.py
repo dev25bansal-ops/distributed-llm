@@ -86,37 +86,3 @@ class MoERouter(nn.Module):
             result[node_id] = (token_tensors, token_weights)
 
         return result
-
-
-class MoEModelDetector:
-    """Detect if a model is an MoE model and extract config."""
-
-    MOE_ARCHITECTURES = {
-        "MixtralForCausalLM",
-        "DeepseekV2ForCausalLM",
-        "Qwen2MoeForCausalLM",
-        "JambaForCausalLM",
-    }
-
-    @staticmethod
-    def is_moe(config) -> bool:
-        """Check if the model config indicates an MoE architecture."""
-        arch = getattr(config, "architectures", [])
-        if any(a in MoEModelDetector.MOE_ARCHITECTURES for a in arch):
-            return True
-        # Check for MoE-specific config attributes
-        if hasattr(config, "num_local_experts"):
-            return True
-        if hasattr(config, "n_routed_experts"):
-            return True
-        return False
-
-    @staticmethod
-    def get_moe_config(config) -> dict:
-        """Extract MoE configuration from model config."""
-        return {
-            "num_experts": getattr(config, "num_local_experts", getattr(config, "n_routed_experts", 8)),
-            "num_experts_per_tok": getattr(config, "num_experts_per_token", 2),
-            "intermediate_size": getattr(config, "intermediate_size", None),
-            "hidden_dim": config.hidden_size,
-        }

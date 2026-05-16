@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from distllm.errors import ConfigValidationError
+
 
 class CompressionMethod(str, Enum):
     """Supported compression methods.
@@ -53,6 +55,6 @@ class CompressionConfig:
 
     def __post_init__(self):
         if self.target_bits not in (4, 8):
-            raise ValueError(f"target_bits must be 4 or 8, got {self.target_bits}")
+            raise ConfigValidationError("target_bits", f"must be 4 or 8, got {self.target_bits}")
         if not (0.0 <= self.pruning_ratio <= 1.0):
-            raise ValueError(f"pruning_ratio must be 0.0-1.0, got {self.pruning_ratio}")
+            raise ConfigValidationError("pruning_ratio", f"must be 0.0-1.0, got {self.pruning_ratio}")

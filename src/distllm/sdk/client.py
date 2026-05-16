@@ -1,11 +1,12 @@
 """DistLLM SDK client for Distributed LLM API."""
 
-import json
+import asyncio
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any, AsyncIterator, Iterator
+from typing import List, Optional, Dict, Any, AsyncIterator
 
 import httpx
 
+from distllm.constants import DEFAULT_HTTP_TIMEOUT
 from distllm.sdk.types import (
     ChatCompletionResponse,
     CompletionResponse,
@@ -17,27 +18,28 @@ from distllm.sdk.streaming import parse_sse_stream
 class _BaseClient(ABC):
     """Shared implementation of the Distributed LLM API client.
 
-    Subclasses implement _request() and _stream_request() for async/sync HTTP.
+    Subclasses implement _request() for async/sync HTTP.
     """
 
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
         api_key: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_HTTP_TIMEOUT,
     ):
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
 
-    def _build_headers(self) -> Dict[str, str]:
+    @staticmethod
+    def _build_headers(api_key: Optional[str]) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
+    @staticmethod
     def _build_chat_payload(
-        self,
         messages: List[Dict[str, str]],
         model: str,
         temperature: float,
@@ -111,10 +113,6 @@ class _BaseClient(ABC):
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         """Make an HTTP request and return parsed JSON."""
 
-    @abstractmethod
-    def _stream_request(self, method: str, path: str, **kwargs) -> Iterator[dict]:
-        """Make a streaming HTTP request and yield parsed SSE events."""
-
 
 class DistLLMClient(_BaseClient):
     """Async client for the Distributed LLM API.
@@ -130,12 +128,12 @@ class DistLLMClient(_BaseClient):
         self,
         base_url: str = "http://localhost:8000",
         api_key: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_HTTP_TIMEOUT,
     ):
         super().__init__(base_url, api_key, timeout)
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
-            headers=self._build_headers(),
+            headers=self._build_headers(self._api_key),
             timeout=timeout,
         )
 
@@ -159,11 +157,7 @@ class DistLLMClient(_BaseClient):
         response_format: Optional[dict] = None,
         adapter: Optional[str] = None,
     ) -> AsyncIterator[str]:
-        """Stream chat completions as an async generator.
-
-        Yields:
-            Generated text tokens
-        """
+        """Stream chat completions as an async generator."""
         payload = self._build_chat_payload(
             messages, model, temperature, top_p, max_tokens, True, response_format, adapter,
         )
@@ -183,12 +177,9 @@ class DistLLMClient(_BaseClient):
         response.raise_for_status()
         return response.json()
 
-    def _stream_request(self, method: str, path: str, **kwargs) -> AsyncIterator[dict]:
-        raise NotImplementedError("Use chat_completions_stream for async streaming")
 
-
-class DistLLMClientSync(_BaseClient):
-    """Synchronous client for the Distributed LLM API.
+class DistLLMClientSync:
+    """Synchronous client wrapping DistLLMClient via asyncio.run().
 
     Usage:
         with DistLLMClientSync() as client:
@@ -201,24 +192,19 @@ class DistLLMClientSync(_BaseClient):
         self,
         base_url: str = "http://localhost:8000",
         api_key: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_HTTP_TIMEOUT,
     ):
-        super().__init__(base_url, api_key, timeout)
-        self._client = httpx.Client(
-            base_url=self.base_url,
-            headers=self._build_headers(),
-            timeout=timeout,
-        )
+        self._async_client = DistLLMClient(base_url, api_key, timeout)
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        self.close()
+        asyncio.run(self._async_client.close())
 
     def close(self):
-        """Close the HTTP client."""
-        self._client.close()
+        """Close the underlying async client."""
+        asyncio.run(self._async_client.close())
 
     def chat_completions(
         self,
@@ -232,11 +218,9 @@ class DistLLMClientSync(_BaseClient):
         adapter: Optional[str] = None,
     ) -> ChatCompletionResponse:
         """Generate a chat completion."""
-        payload = self._build_chat_payload(
-            messages, model, temperature, top_p, max_tokens, stream, response_format, adapter,
+        return asyncio.run(
+            self._async_client.chat_completions(messages, model, temperature, top_p, max_tokens, stream, response_format, adapter)
         )
-        data = self._request("POST", "/v1/chat/completions", json=payload)
-        return ChatCompletionResponse(**data)
 
     def completions(
         self,
@@ -247,33 +231,14 @@ class DistLLMClientSync(_BaseClient):
         max_tokens: int = 256,
     ) -> CompletionResponse:
         """Generate a text completion."""
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_tokens,
-        }
-        data = self._request("POST", "/v1/completions", json=payload)
-        return CompletionResponse(**data)
+        return asyncio.run(
+            self._async_client.completions(prompt, model, temperature, top_p, max_tokens)
+        )
 
     def list_models(self) -> ModelList:
         """List available models."""
-        data = self._request("GET", "/v1/models")
-        return ModelList(**data)
+        return asyncio.run(self._async_client.list_models())
 
     def health_check(self) -> dict:
         """Check API server health."""
-        return self._request("GET", "/health")
-
-    def _request(self, method: str, path: str, **kwargs) -> dict:
-        response = self._client.request(method, path, **kwargs)
-        response.raise_for_status()
-        return response.json()
-
-    def _stream_request(self, method: str, path: str, **kwargs) -> Iterator[dict]:
-        raise NotImplementedError("Streaming not supported in sync client")
-
-    async def _request_async(self, method: str, path: str, **kwargs) -> dict:
-        """Async shim for base class compatibility."""
-        return self._request(method, path, **kwargs)
+        return asyncio.run(self._async_client.health_check())

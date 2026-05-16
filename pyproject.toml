@@ -35,11 +35,11 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
 ]
 dependencies = [
-    "torch>=2.1.0",
-    "transformers>=4.36.0",
+    "torch>=2.5.0",
+    "transformers>=4.48.0",
     "grpcio>=1.60.0",
     "grpcio-tools>=1.60.0",
-    "accelerate>=0.25.0",
+    "accelerate>=1.0.0",
     "safetensors>=0.4.0",
     "pyyaml>=6.0",
     "loguru>=0.7.0",
@@ -99,7 +99,7 @@ quant = [
     "bitsandbytes>=0.41.0",
 ]
 lora = [
-    "peft>=0.7.0",
+    "peft>=0.14.0",
 ]
 testing = [
     "hypothesis>=6.90",
@@ -115,7 +115,6 @@ distllm = "distllm.cli.main:main"
 distllm-node = "distllm.core.node:main"
 distllm-coordinator = "distllm.core.coordinator:main"
 distllm-api = "distllm.api.server:main"
-distllm-client = "distllm.cli.client:main"
 distllm-ui = "distllm.ui.app:main"
 distllm-tp = "distllm.core.tp_launcher:main"
 distllm-dashboard = "distllm.dashboard.app:main"

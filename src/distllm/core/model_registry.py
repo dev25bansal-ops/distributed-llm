@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from distllm.errors import ModelNotFoundError
+
 
 @dataclass
 class ModelEntry:
@@ -32,7 +34,7 @@ class ModelRegistry:
         """Register a model. Raises ValueError if max_models exceeded."""
         with self._lock:
             if name not in self._models and len(self._models) >= self._max_models:
-                raise ValueError(
+                raise ModelNotFoundError(name,
                     f"Maximum models ({self._max_models}) already registered. "
                     f"Remove a model before registering '{name}'."
                 )
@@ -63,7 +65,7 @@ class ModelRegistry:
         """Set the default model name. Raises if model not registered."""
         with self._lock:
             if name not in self._models:
-                raise ValueError(f"Model '{name}' is not registered")
+                raise ModelNotFoundError(name)
             self._default_model = name
 
     def is_registered(self, name: str) -> bool:

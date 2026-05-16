@@ -14,6 +14,7 @@ from loguru import logger
 
 from distllm.communication.grpc import NodeClient, AsyncNodeClient
 from distllm.config.loader import NodeRole
+from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError, CircuitBreakerError
 
 
 @dataclass
@@ -153,6 +154,15 @@ class ResourceManager:
         """
         results = {}
         for node_id, node in nodes.items():
+            if self.check_circuit_breaker(node_id):
+                failures = self._node_failure_counts.get(node_id, 0)
+                recovery_at = self._node_recovery_time.get(node_id, 0)
+                recovery_in = max(0, recovery_at - time.time()) if recovery_at > 0 else 0
+                results[node_id] = {
+                    "healthy": False,
+                    "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
+                }
+                continue
             try:
                 health = node.client.health_check()
                 results[node_id] = {
@@ -160,7 +170,8 @@ class ResourceManager:
                     "memory_used": health.memory_used,
                     "memory_total": health.memory_total,
                 }
-            except Exception as e:
+            except (NodeUnreachableError, GRPCTimeoutError, ConnectionError, OSError) as e:
+                self.record_failure(node_id)
                 results[node_id] = {"healthy": False, "error": str(e)}
 
         return results
@@ -175,6 +186,14 @@ class ResourceManager:
             Dict of node_id -> health status.
         """
         async def check_node(node_id: str, node: NodeRegistration) -> Tuple[str, dict]:
+            if self.check_circuit_breaker(node_id):
+                failures = self._node_failure_counts.get(node_id, 0)
+                recovery_at = self._node_recovery_time.get(node_id, 0)
+                recovery_in = max(0, recovery_at - time.time()) if recovery_at > 0 else 0
+                return node_id, {
+                    "healthy": False,
+                    "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
+                }
             try:
                 health = await node.async_client.health_check()
                 return node_id, {
@@ -182,7 +201,8 @@ class ResourceManager:
                     "memory_used": health.memory_used,
                     "memory_total": health.memory_total,
                 }
-            except Exception as e:
+            except (NodeUnreachableError, GRPCTimeoutError, ConnectionError, OSError) as e:
+                self.record_failure(node_id)
                 return node_id, {"healthy": False, "error": str(e)}
 
         tasks = [check_node(nid, node) for nid, node in nodes.items()]
@@ -205,16 +225,16 @@ class ResourceManager:
         for node in nodes.values():
             try:
                 node.client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error closing node connection: {e}")
 
     async def close_all_async(self, nodes: Dict[str, NodeRegistration]) -> None:
         """Close all node connections (async)."""
         async def close_node(node: NodeRegistration):
             try:
                 await node.async_client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error closing node connection: {e}")
 
         tasks = [close_node(node) for node in nodes.values()]
         await asyncio.gather(*tasks)
@@ -244,8 +264,6 @@ class ResourceManager:
             node_id: The node to simulate as failed.
         """
         logger.warning(f"[Chaos] Simulating failure for node {node_id}")
-        self.record_failure(node_id)
-        # Force circuit breaker open by setting failure count to threshold
-        self._node_failure_counts[node_id] = self.cb_config.threshold
-        # Set recovery time far in the future to ensure breaker stays open
-        self._node_recovery_time[node_id] = time.time() + 3600  # 1 hour
+        with self._lock:
+            self._node_failure_counts[node_id] = self.cb_config.threshold
+            self._node_recovery_time[node_id] = time.time() + 3600  # 1 hour

@@ -26,6 +26,14 @@ class _RateLimiter:
         self._attempts[ip] = [t for t in self._attempts[ip] if t > cutoff]
         return len(self._attempts[ip]) >= self.max_attempts
 
+    def retry_after(self, ip: str) -> int:
+        """Return the number of seconds until the rate limit resets for this IP."""
+        now = time.time()
+        if self._attempts.get(ip) and len(self._attempts[ip]) >= self.max_attempts:
+            oldest = min(self._attempts[ip])
+            return max(1, int(self.window_seconds - (now - oldest)))
+        return 0
+
     def record_attempt(self, ip: str) -> None:
         """Record a failed auth attempt."""
         self._attempts[ip].append(time.time())
@@ -39,31 +47,41 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Validate API key from Authorization header.
 
     Security: Requires API_KEY environment variable to be set.
-    When not set, authentication is bypassed with a warning log (development mode).
+    When not set, authentication fails-closed (returns 401) for security.
+    Set DISABLE_AUTH=1 to bypass in development only.
     Includes rate limiting to prevent brute-force attacks.
     """
 
     async def dispatch(self, request: Request, call_next):
         api_key = os.environ.get("API_KEY")
-        if not api_key:
-            # Security: Log warning on first bypass only
+
+        # Allow explicit opt-out for development only
+        if os.environ.get("DISABLE_AUTH") == "1":
             if not getattr(self, "_warned", False):
                 import logging
                 logging.getLogger("distllm.security").warning(
-                    "AUTHENTICATION DISABLED: Set API_KEY environment variable to enable API authentication. "
-                    "This is a security risk in production."
+                    "AUTHENTICATION DISABLED via DISABLE_AUTH=1. "
+                    "This is a security risk and should only be used in development."
                 )
                 self._warned = True
             return await call_next(request)
+
+        if not api_key:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication not configured: set API_KEY environment variable"},
+            )
 
         auth_header = request.headers.get("Authorization", "")
         client_ip = request.client.host if request.client else "unknown"
 
         # Check rate limit before validating
         if _rate_limiter.is_rate_limited(client_ip):
+            retry_after = _rate_limiter.retry_after(client_ip)
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Too many failed authentication attempts. Try again later."},
+                headers={"Retry-After": str(retry_after)},
             )
 
         if not auth_header.startswith("Bearer ") or len(auth_header) < 8 or not hmac.compare_digest(auth_header[7:], api_key):

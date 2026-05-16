@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from distllm.communication.grpc import (
     AsyncNodeService, AsyncCoordinatorService, AsyncGRPCServer,
-    AsyncNodeClient, AsyncChannelPool,
+    AsyncNodeClient,
 )
 from distllm.communication.node_pb2 import (
     ForwardPassRequest, HealthCheckRequest, HealthCheckResponse,
@@ -216,69 +216,6 @@ class TestAsyncNodeClient:
             await client.close()
 
             mock_channel_instance.close.assert_called_once()
-
-
-class TestAsyncChannelPool:
-    """Tests for AsyncChannelPool."""
-
-    @pytest.mark.asyncio
-    async def test_get_stub_creates_new_channel(self):
-        """get_stub should create new channel when pool is empty."""
-        pool = AsyncChannelPool()
-
-        with patch('distllm.communication.grpc.grpc.aio.insecure_channel') as mock_channel:
-            mock_channel.return_value = MagicMock()
-            stub, channel = await pool.get_stub("localhost:50051", MagicMock())
-
-            assert stub is not None
-            assert channel is not None
-            assert pool.active_connections == 1
-
-    @pytest.mark.asyncio
-    async def test_release_returns_to_pool(self):
-        """release should return channel to pool if healthy."""
-        from unittest.mock import AsyncMock
-        import grpc as grpc_module
-        pool = AsyncChannelPool()
-
-        with patch('distllm.communication.grpc.grpc.aio.insecure_channel') as mock_channel:
-            mock_ch = MagicMock()
-            mock_ch.check_connectivity_state.return_value = grpc_module.ChannelConnectivity.READY
-            mock_ch.close = AsyncMock()
-            mock_channel.return_value = mock_ch
-
-            stub_class = MagicMock()
-            mock_stub = MagicMock()
-            stub_class.return_value = mock_stub
-
-            stub, channel = await pool.get_stub("localhost:50051", stub_class)
-            await pool.release("localhost:50051", channel, stub)
-
-            assert pool.pooled_connections == 1
-
-    @pytest.mark.asyncio
-    async def test_close_all(self):
-        """close_all should close all pooled channels."""
-        import grpc as grpc_module
-        from unittest.mock import AsyncMock
-        pool = AsyncChannelPool()
-
-        with patch('distllm.communication.grpc.grpc.aio.insecure_channel') as mock_channel:
-            mock_ch = MagicMock()
-            mock_ch.close = AsyncMock()
-            mock_ch.check_connectivity_state.return_value = grpc_module.ChannelConnectivity.READY
-            mock_channel.return_value = mock_ch
-
-            stub_class = MagicMock()
-            stub_class.return_value = MagicMock()
-
-            stub, channel = await pool.get_stub("localhost:50051", stub_class)
-            await pool.release("localhost:50051", channel, stub)
-
-            await pool.close_all()
-
-            mock_ch.close.assert_called_once()
-            assert pool.pooled_connections == 0
 
 
 class TestAsyncGRPCServer:

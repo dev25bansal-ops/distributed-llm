@@ -85,7 +85,7 @@ class JSONSchemaConstraint:
             for token_id in range(vocab_size):
                 try:
                     token_str = tokenizer.decode([token_id])
-                except Exception:
+                except (ValueError, IndexError):
                     continue
                 if token_str and len(token_str) > 0:
                     first_char = token_str[0]

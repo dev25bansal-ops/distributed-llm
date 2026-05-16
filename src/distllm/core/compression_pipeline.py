@@ -62,8 +62,8 @@ class CalibrationDataLoader:
                     texts.append(text)
                 if len(texts) >= self.n_samples:
                     break
-        except Exception:
-            logger.debug("datasets library unavailable, using synthetic calibration data")
+        except (ImportError, Exception) as e:
+            logger.debug(f"datasets library unavailable: {e}, using synthetic calibration data")
 
         # Fallback to synthetic data
         if len(texts) < self.n_samples:
@@ -254,7 +254,7 @@ class CompressionPipeline:
                 device_map="auto",
             )
             teacher.eval()
-        except Exception as e:
+        except (OSError, ValueError) as e:
             logger.error(f"Failed to load teacher model: {e}")
             return model
 

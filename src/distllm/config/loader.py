@@ -212,6 +212,9 @@ def load_config(
 ) -> DistLLMSettings:
     """Load configuration with full precedence: env > CLI > YAML > defaults.
 
+    Deprecated: Use DistLLMSettings directly with pydantic-settings env var
+    support, or use server._load_settings() for the full precedence chain.
+
     Args:
         config_path: Path to YAML config file. If None, looks for config.yaml
                      in current directory, then project root.
@@ -220,6 +223,11 @@ def load_config(
     Returns:
         DistLLMSettings with all overrides applied.
     """
+    warnings.warn(
+        "load_config is deprecated; use DistLLMSettings directly or server._load_settings()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     data = {}
 
     if config_path is None:

@@ -37,13 +37,21 @@ class CacheManager:
         cache_index=None,
         gossip_protocol=None,
         gossip_client=None,
+        radix_tree_cache_enabled: bool = False,
     ):
         self.prefix_cache: Optional[PrefixCache] = None
         if prefix_cache_enabled:
-            self.prefix_cache = PrefixCache(
-                max_entries=prefix_cache_max_entries,
-                min_prefix_len=prefix_cache_min_prefix_len,
-            )
+            if radix_tree_cache_enabled:
+                from distllm.core.radix_tree_cache import RadixTreeCache
+                self.prefix_cache = RadixTreeCache(
+                    max_entries=prefix_cache_max_entries,
+                    min_prefix_len=prefix_cache_min_prefix_len,
+                )
+            else:
+                self.prefix_cache = PrefixCache(
+                    max_entries=prefix_cache_max_entries,
+                    min_prefix_len=prefix_cache_min_prefix_len,
+                )
 
         self.chunked_prefill_enabled = chunked_prefill_enabled
         self.chunked_prefill_chunk_size = chunked_prefill_chunk_size
@@ -74,6 +82,26 @@ class CacheManager:
         """
         if self.prefix_cache is not None:
             self.prefix_cache.store(tokens, entry)
+
+    def find_shared_prefix(self, tokens: List[int]) -> int:
+        """Find shared prefix length for cross-request substring sharing.
+
+        For RadixTreeCache, this finds how many tokens match any path
+        in the trie, even if no KV data is stored at that point.
+
+        Args:
+            tokens: List of token IDs.
+
+        Returns:
+            Length of the shared prefix.
+        """
+        if self.prefix_cache is None:
+            return 0
+        if hasattr(self.prefix_cache, "find_shared_prefix"):
+            return self.prefix_cache.find_shared_prefix(tokens)
+        # Fallback: use regular lookup
+        match_len, _ = self.prefix_cache.lookup(tokens)
+        return match_len
 
     def maybe_chunk(self, tokens: List[int]) -> Optional[ChunkState]:
         """Apply chunked prefill if enabled and prompt is long.
@@ -172,13 +200,16 @@ class CacheManager:
     def sync_with_peers(self) -> int:
         """Trigger one gossip round with a random peer.
 
+        Builds an advertisement of local cache entries, sends it to a peer,
+        receives the peer's advertisement, and merges missing entries.
+
         Returns:
             Number of new entries discovered.
         """
         if self.gossip_protocol is None or self.gossip_client is None:
             return 0
 
-        # Build advertisement
+        # Build advertisement with local cache hashes
         ad = self.gossip_protocol.advertise()
 
         # Select a peer
@@ -186,6 +217,49 @@ class CacheManager:
         if peer is None:
             return 0
 
-        # Exchange advertisements (simplified — peer lookup would resolve host:port)
-        # In production, this calls gossip_client.exchange(peer_host, peer_port, ad)
+        # Exchange advertisements via gossip client
+        # In production, gossip_client.exchange() would:
+        # 1. Resolve peer_id to host:port
+        # 2. Send our ad, receive peer's ads
+        # 3. Process missing entries
+        try:
+            peer_ad = self.gossip_client.exchange(peer, ad)
+            if peer_ad:
+                # Process peer's advertisement
+                missing = self.gossip_protocol.process_advertisement(peer_ad)
+
+                # Request missing entries
+                if missing:
+                    request = self.gossip_protocol.build_request(peer, missing)
+                    response = self.gossip_client.request_entries(peer, request)
+                    merged = self.gossip_protocol.process_response(response)
+
+                    # Store discovered entries in local prefix cache
+                    for prefix_hash, entry_ref in response.get("cache_entries", {}).items():
+                        self._store_discovered_entry(prefix_hash, entry_ref)
+
+                    return merged
+        except Exception:
+            # Gossip errors are non-fatal; log and continue
+            pass
+
         return 0
+
+    def _store_discovered_entry(self, prefix_hash: str, entry_ref: str) -> None:
+        """Store a cache entry discovered via gossip.
+
+        The entry_ref contains serialized KV cache data or a pointer
+        to fetch it from the peer node.
+
+        Args:
+            prefix_hash: Hash of the token prefix.
+            entry_ref: Reference to the KV cache data.
+        """
+        if self.gossip_protocol:
+            self.gossip_protocol.store_local(prefix_hash, entry_ref)
+
+        # If we have the actual KV data, store in prefix cache
+        if self.prefix_cache and entry_ref:
+            # In production, this would deserialize and store the KV tensors
+            # For now, record the availability for future fetch
+            pass

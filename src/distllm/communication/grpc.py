@@ -25,20 +25,123 @@ from distllm.communication.node_pb2_grpc import (
 )
 from distllm.core.kv_cache import KVCache
 from distllm.communication.serializers import tensor_to_proto, proto_to_tensor, kv_cache_to_proto, proto_to_kv_cache
+from distllm.errors import InputValidationError, SerializationError
+from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError, CircuitBreakerError
+from distllm.errors.retry import retry_grpc_call
 
-# Global debug mode flag — set via CLI --debug
-_debug_mode = False
+# Debug mode configuration — set via CLI --debug
+class DebugConfig:
+    """Module-level debug configuration for tensor shape logging."""
+    enabled = False
 
 
 def set_debug_mode(enabled: bool) -> None:
     """Enable or disable debug mode for tensor shape logging."""
-    global _debug_mode
-    _debug_mode = enabled
+    DebugConfig.enabled = enabled
 
 
 def is_debug_mode() -> bool:
     """Check if debug mode is enabled."""
-    return _debug_mode
+    return DebugConfig.enabled
+
+
+def _parse_forward_request(request, device: str) -> dict:
+    """Parse input tensors from a ForwardPassRequest proto.
+
+    Returns a dict with keys: input_ids, hidden_states, attention_mask,
+    position_ids, past_key_values.
+    """
+    past_key_values = None
+    if request.HasField('kv_cache') and request.use_cache:
+        past_key_values = proto_to_kv_cache(request.kv_cache, device).cache
+
+    input_ids = None
+    if request.input_ids:
+        input_ids = torch.tensor(request.input_ids, dtype=torch.long, device=device)
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+
+    hidden_states = None
+    if request.HasField('hidden_states'):
+        hidden_states = proto_to_tensor(request.hidden_states, device)
+    elif input_ids is None:
+        raise InputValidationError("Either hidden_states or input_ids must be provided", "input")
+
+    attention_mask = None
+    if request.HasField('attention_mask'):
+        attention_mask = proto_to_tensor(request.attention_mask, device)
+
+    position_ids = None
+    if request.HasField('position_ids'):
+        position_ids = proto_to_tensor(request.position_ids, device)
+
+    return {
+        "input_ids": input_ids,
+        "hidden_states": hidden_states,
+        "attention_mask": attention_mask,
+        "position_ids": position_ids,
+        "past_key_values": past_key_values,
+    }
+
+
+def _build_forward_response(
+    request_id: str,
+    output: torch.Tensor,
+    new_past_kv,
+    draft_tokens: Optional[list] = None,
+) -> ForwardPassResponse:
+    """Build a ForwardPassResponse from model output.
+
+    Handles draft token verification and KV cache serialization.
+    """
+    response = ForwardPassResponse(
+        request_id=request_id,
+        output=tensor_to_proto(output),
+        success=True,
+    )
+
+    # Handle speculative decoding: verify draft tokens
+    if draft_tokens:
+        if output.dim() == 3:
+            num_positions = min(len(draft_tokens), output.shape[1])
+            for i in range(num_positions):
+                token_at_pos = torch.argmax(output[:, i, :], dim=-1).item()
+                response.verified_tokens.append(token_at_pos)
+        elif output.dim() == 2:
+            token = torch.argmax(output, dim=-1).item()
+            response.verified_tokens.append(token)
+
+    if new_past_kv:
+        new_cache = KVCache()
+        new_cache.set_all(new_past_kv)
+        response.kv_cache.CopyFrom(kv_cache_to_proto(new_cache))
+
+    return response
+
+
+def _log_forward_debug(node_id: str, request, tensors: dict, output: Optional[torch.Tensor] = None) -> None:
+    """Log tensor shapes for debugging."""
+    if not is_debug_mode():
+        return
+
+    input_ids = tensors.get("input_ids")
+    hidden_states = tensors.get("hidden_states")
+    attention_mask = tensors.get("attention_mask")
+    past_key_values = tensors.get("past_key_values")
+
+    if input_ids is not None:
+        logger.debug(f"[{node_id}] ForwardPass input_ids shape: {input_ids.shape}")
+    if hidden_states is not None:
+        logger.debug(f"[{node_id}] ForwardPass hidden_states shape: {hidden_states.shape}")
+    if attention_mask is not None:
+        logger.debug(f"[{node_id}] ForwardPass attention_mask shape: {attention_mask.shape}")
+    if past_key_values:
+        cache_len = past_key_values[0][0].shape[-2]
+        logger.debug(f"[{node_id}] ForwardPass KV cache seq_len: {cache_len}")
+    if hasattr(request, 'draft_tokens') and request.draft_tokens:
+        logger.debug(f"[{node_id}] ForwardPass draft_tokens: {list(request.draft_tokens)}")
+    if output is not None:
+        logger.debug(f"[{node_id}] ForwardPass output shape: {output.shape}")
 
 
 class NodeService(NodeServiceServicer):
@@ -58,86 +161,22 @@ class NodeService(NodeServiceServicer):
     def ForwardPass(self, request, context):
         """Receive input, run forward pass, return output."""
         try:
-            past_key_values = None
-            if request.HasField('kv_cache') and request.use_cache:
-                past_key_values = proto_to_kv_cache(request.kv_cache, self.device).cache
-
-            input_ids = None
-            if request.input_ids:
-                input_ids = torch.tensor(request.input_ids, dtype=torch.long, device=self.device)
-                if input_ids.dim() == 1:
-                    input_ids = input_ids.unsqueeze(0)
-
-            hidden_states = None
-            if request.HasField('hidden_states'):
-                hidden_states = proto_to_tensor(request.hidden_states, self.device)
-            elif input_ids is None:
-                raise ValueError("Either hidden_states or input_ids must be provided")
-
-            attention_mask = None
-            if request.HasField('attention_mask'):
-                attention_mask = proto_to_tensor(request.attention_mask, self.device)
-
-            position_ids = None
-            if request.HasField('position_ids'):
-                position_ids = proto_to_tensor(request.position_ids, self.device)
-
-            # Debug logging
-            if _debug_mode:
-                if input_ids is not None:
-                    logger.debug(f"[{self.node_id}] ForwardPass input_ids shape: {input_ids.shape}")
-                if hidden_states is not None:
-                    logger.debug(f"[{self.node_id}] ForwardPass hidden_states shape: {hidden_states.shape}")
-                if attention_mask is not None:
-                    logger.debug(f"[{self.node_id}] ForwardPass attention_mask shape: {attention_mask.shape}")
-                if past_key_values:
-                    cache_len = past_key_values[0][0].shape[-2]
-                    logger.debug(f"[{self.node_id}] ForwardPass KV cache seq_len: {cache_len}")
-                if request.draft_tokens:
-                    logger.debug(f"[{self.node_id}] ForwardPass draft_tokens: {list(request.draft_tokens)}")
+            tensors = _parse_forward_request(request, self.device)
+            _log_forward_debug(self.node_id, request, tensors)
 
             with torch.no_grad():
                 output, new_past_kv = self.forward_fn(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    input_ids=input_ids,
+                    hidden_states=tensors["hidden_states"],
+                    attention_mask=tensors["attention_mask"],
+                    position_ids=tensors["position_ids"],
+                    past_key_values=tensors["past_key_values"],
+                    input_ids=tensors["input_ids"],
                 )
 
-            # Debug logging
-            if _debug_mode:
-                logger.debug(f"[{self.node_id}] ForwardPass output shape: {output.shape}")
-                if new_past_kv:
-                    cache_len = new_past_kv[0][0].shape[-2]
-                    logger.debug(f"[{self.node_id}] ForwardPass new KV cache seq_len: {cache_len}")
+            _log_forward_debug(self.node_id, request, tensors, output)
 
-            response = ForwardPassResponse(
-                request_id=request.request_id,
-                output=tensor_to_proto(output),
-                success=True,
-            )
-
-            # Handle speculative decoding: verify draft tokens
-            if request.draft_tokens:
-                draft_tokens = list(request.draft_tokens)
-                # Output is [batch, seq_len, vocab] or [batch, vocab]
-                if output.dim() == 3:
-                    # Get argmax at each position for the draft token positions
-                    num_positions = min(len(draft_tokens), output.shape[1])
-                    for i in range(num_positions):
-                        token_at_pos = torch.argmax(output[:, i, :], dim=-1).item()
-                        response.verified_tokens.append(token_at_pos)
-                elif output.dim() == 2:
-                    # Single token output, only verify first draft token
-                    token = torch.argmax(output, dim=-1).item()
-                    response.verified_tokens.append(token)
-
-            if new_past_kv:
-                new_cache = KVCache()
-                new_cache.set_all(new_past_kv)
-                response.kv_cache.CopyFrom(kv_cache_to_proto(new_cache))
-
+            draft_tokens = list(request.draft_tokens) if request.draft_tokens else None
+            response = _build_forward_response(request.request_id, output, new_past_kv, draft_tokens)
             return response
 
         except RuntimeError as e:
@@ -155,6 +194,15 @@ class NodeService(NodeServiceServicer):
                 error_message=error_msg,
                 error_code=error_code,
             )
+        except InputValidationError as e:
+            error_msg = f"Invalid input on {self.node_id}: {e}"
+            logger.error(f"ForwardPass invalid input on {self.node_id}: {e}")
+            return ForwardPassResponse(
+                request_id=request.request_id,
+                success=False,
+                error_message=error_msg,
+                error_code=ErrorCode.INVALID_INPUT,
+            )
         except ValueError as e:
             error_msg = f"Invalid input on {self.node_id}: {e}"
             logger.error(f"ForwardPass invalid input on {self.node_id}: {e}")
@@ -164,7 +212,7 @@ class NodeService(NodeServiceServicer):
                 error_message=error_msg,
                 error_code=ErrorCode.INVALID_INPUT,
             )
-        except Exception as e:
+        except (TypeError, MemoryError, AttributeError) as e:
             error_msg = f"Unexpected error on {self.node_id}: {e}"
             logger.error(f"ForwardPass error on {self.node_id}: {e}")
             return ForwardPassResponse(
@@ -200,8 +248,8 @@ class NodeService(NodeServiceServicer):
                     gpu_util = float(util.gpu)
                     temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
                     temperature = float(temp)
-                except Exception:
-                    pass  # pynvml not available or GPU access denied
+                except Exception as e:
+                    logger.debug(f"GPU stats unavailable: {e}")
             except ImportError:
                 pass  # pynvml not installed
 
@@ -247,7 +295,7 @@ class NodeService(NodeServiceServicer):
             hidden_states = proto_to_tensor(request.hidden_states, self.device)
             expert_ids = list(request.expert_ids)
 
-            if _debug_mode:
+            if is_debug_mode():
                 logger.debug(f"[{self.node_id}] MoEForward hidden_states shape: {hidden_states.shape}, expert_ids: {expert_ids}")
 
             with torch.no_grad():
@@ -261,7 +309,7 @@ class NodeService(NodeServiceServicer):
 
             processing_time_ms = (time.time() - start) * 1000
 
-            if _debug_mode:
+            if is_debug_mode():
                 logger.debug(f"[{self.node_id}] MoEForward output shape: {output.shape}")
 
             from distllm.communication.node_pb2 import MoEForwardResponse
@@ -271,13 +319,22 @@ class NodeService(NodeServiceServicer):
                 processing_time_ms=processing_time_ms,
             )
 
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             processing_time_ms = (time.time() - start) * 1000
             logger.error(f"MoEForward error on {self.node_id}: {e}")
             from distllm.communication.node_pb2 import MoEForwardResponse
             return MoEForwardResponse(
                 success=False,
                 error_message=f"MoE error on {self.node_id}: {e}",
+                processing_time_ms=processing_time_ms,
+            )
+        except (TypeError, MemoryError, AttributeError) as e:
+            processing_time_ms = (time.time() - start) * 1000
+            logger.error(f"MoEForward unexpected error on {self.node_id}: {e}")
+            from distllm.communication.node_pb2 import MoEForwardResponse
+            return MoEForwardResponse(
+                success=False,
+                error_message=f"Unexpected MoE error on {self.node_id}: {e}",
                 processing_time_ms=processing_time_ms,
             )
 
@@ -296,12 +353,14 @@ class NodeService(NodeServiceServicer):
 class CoordinatorService(CoordinatorServiceServicer):
     """gRPC service implementation for the coordinator."""
 
-    def __init__(self, quantization_config=None):
+    def __init__(self, quantization_config=None, use_tls: bool = True, ca_cert: Optional[str] = None):
         self.nodes = {}
         self.node_channels = {}
         self.node_stubs = {}
         self.quantization_config = quantization_config
         self._expert_registry = None
+        self.use_tls = use_tls
+        self.ca_cert = ca_cert
 
     def RegisterNode(self, request, context):
         """Register a worker node."""
@@ -327,7 +386,38 @@ class CoordinatorService(CoordinatorServiceServicer):
         if expert_ids:
             logger.info(f"Node {node_id} hosts experts: {expert_ids}")
 
-        channel = grpc.insecure_channel(f"{node_info.host}:{node_info.port}")
+        if self.use_tls:
+            if self.ca_cert:
+                from distllm.core.tls import load_tls_channel_credentials
+                credentials = load_tls_channel_credentials(self.ca_cert, node_info.host)
+            else:
+                import os as _os
+                auto_ca = _os.path.join("_auto_certs", "ca.crt")
+                if _os.path.exists(auto_ca):
+                    from distllm.core.tls import load_tls_channel_credentials
+                    credentials = load_tls_channel_credentials(auto_ca, node_info.host)
+                else:
+                    logger.warning(f"No CA cert found for {node_info.host}:{node_info.port}, falling back to insecure")
+                    channel = grpc.insecure_channel(f"{node_info.host}:{node_info.port}")
+                    stub = NodeServiceStub(channel)
+                    self.nodes[node_id] = node_info
+                    self.node_channels[node_id] = channel
+                    self.node_stubs[node_id] = stub
+                    response = RegistrationResponse(accepted=True)
+                    if expert_ids and hasattr(self, '_expert_registry') and self._expert_registry is not None:
+                        for eid in expert_ids:
+                            self._expert_registry.register_expert(eid, node_id)
+                    if self.quantization_config and self.quantization_config.method != "none":
+                        proto_q = response.quantization
+                        proto_q.method = self.quantization_config.method
+                        proto_q.bnb_4bit_compute_dtype = self.quantization_config.bnb_4bit_compute_dtype
+                        proto_q.bnb_4bit_quant_type = self.quantization_config.bnb_4bit_quant_type
+                        proto_q.bnb_4bit_use_double_quant = self.quantization_config.bnb_4bit_use_double_quant
+                        proto_q.llm_int8_threshold = self.quantization_config.llm_int8_threshold
+                    return response
+            channel = grpc.secure_channel(f"{node_info.host}:{node_info.port}", credentials)
+        else:
+            channel = grpc.insecure_channel(f"{node_info.host}:{node_info.port}")
         stub = NodeServiceStub(channel)
 
         self.nodes[node_id] = node_info
@@ -394,13 +484,13 @@ class CoordinatorService(CoordinatorServiceServicer):
                 success=False,
                 error_message=f"Node communication error: {e.details()}",
             )
-        except Exception as e:
-            logger.error(f"Unexpected inference error: {e}")
+        except SerializationError as e:
+            logger.error(f"Inference serialization error: {e}")
             return LogitsResponse(
                 request_id=request.request_id,
                 generated_text="",
                 success=False,
-                error_message=f"Internal error: {str(e)}",
+                error_message=f"Serialization error: {str(e)}",
             )
 
     def StreamInfer(self, request, context):
@@ -461,14 +551,14 @@ class CoordinatorService(CoordinatorServiceServicer):
                 success=False,
                 error_message=f"Node communication error: {e.details()}",
             )
-        except Exception as e:
-            logger.error(f"Unexpected streaming inference error: {e}")
+        except SerializationError as e:
+            logger.error(f"Streaming inference serialization error: {e}")
             yield TokenResponse(
                 request_id=request.request_id,
                 token="",
                 is_final=True,
                 success=False,
-                error_message=f"Internal error: {str(e)}",
+                error_message=f"Serialization error: {str(e)}",
             )
 
 
@@ -477,14 +567,20 @@ class GRPCServer:
 
     def __init__(self, port: int, servicer, max_workers: int = 10,
                  use_tls: bool = True, cert_file: Optional[str] = None,
-                 key_file: Optional[str] = None):
+                 key_file: Optional[str] = None, ca_cert: Optional[str] = None):
         self.port = port
         self.servicer = servicer
         self.max_workers = max_workers
         self.use_tls = use_tls
         self.cert_file = cert_file
         self.key_file = key_file
+        self.ca_cert = ca_cert
         self._cert_dir = None
+        # Propagate TLS settings to the servicer for outgoing connections
+        if hasattr(servicer, 'use_tls'):
+            servicer.use_tls = use_tls
+        if hasattr(servicer, 'ca_cert'):
+            servicer.ca_cert = ca_cert
         options = [
             ('grpc.max_send_message_length', 64 * 1024 * 1024),
             ('grpc.max_receive_message_length', 64 * 1024 * 1024),
@@ -528,8 +624,8 @@ class GRPCServer:
             for channel in self.servicer.node_channels.values():
                 try:
                     channel.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error closing channel: {e}")
             self.servicer.node_channels.clear()
         if hasattr(self.servicer, 'node_stubs'):
             self.servicer.node_stubs.clear()
@@ -584,12 +680,40 @@ class NodeClient:
         self.retry_delay = retry_delay
 
     def health_check(self) -> HealthCheckResponse:
-        """Check node health."""
-        return self.stub.HealthCheck(HealthCheckRequest(), timeout=10)
+        """Check node health with retry."""
+        def _call():
+            try:
+                return self.stub.HealthCheck(HealthCheckRequest(), timeout=10)
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    raise GRPCTimeoutError(node_id="unknown", timeout=10)
+                raise NodeUnreachableError(
+                    node_id="unknown", host=self.host, port=self.port, original_error=e
+                )
+        return retry_grpc_call(
+            _call,
+            max_retries=self.max_retries,
+            base_delay=self.retry_delay,
+            retryable_exceptions=(NodeUnreachableError, GRPCTimeoutError),
+        )
 
     def get_info(self) -> NodeInfo:
-        """Get node info."""
-        return self.stub.GetNodeInfo(HealthCheckRequest())
+        """Get node info with retry."""
+        def _call():
+            try:
+                return self.stub.GetNodeInfo(HealthCheckRequest())
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    raise GRPCTimeoutError(node_id="unknown", timeout=10)
+                raise NodeUnreachableError(
+                    node_id="unknown", host=self.host, port=self.port, original_error=e
+                )
+        return retry_grpc_call(
+            _call,
+            max_retries=self.max_retries,
+            base_delay=self.retry_delay,
+            retryable_exceptions=(NodeUnreachableError, GRPCTimeoutError),
+        )
 
     def close(self):
         """Close the gRPC channel."""
@@ -624,69 +748,22 @@ class AsyncNodeService(NodeServiceServicer):
     async def ForwardPass(self, request, context):
         """Receive input, run forward pass, return output (async)."""
         try:
-            past_key_values = None
-            if request.HasField('kv_cache') and request.use_cache:
-                past_key_values = proto_to_kv_cache(request.kv_cache, self.device).cache
-
-            input_ids = None
-            if request.input_ids:
-                input_ids = torch.tensor(request.input_ids, dtype=torch.long, device=self.device)
-                if input_ids.dim() == 1:
-                    input_ids = input_ids.unsqueeze(0)
-
-            hidden_states = None
-            if request.HasField('hidden_states'):
-                hidden_states = proto_to_tensor(request.hidden_states, self.device)
-            elif input_ids is None:
-                raise ValueError("Either hidden_states or input_ids must be provided")
-
-            attention_mask = None
-            if request.HasField('attention_mask'):
-                attention_mask = proto_to_tensor(request.attention_mask, self.device)
-
-            position_ids = None
-            if request.HasField('position_ids'):
-                position_ids = proto_to_tensor(request.position_ids, self.device)
+            tensors = _parse_forward_request(request, self.device)
+            _log_forward_debug(self.node_id, request, tensors)
 
             with torch.no_grad():
                 output, new_past_kv = self.forward_fn(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    input_ids=input_ids,
+                    hidden_states=tensors["hidden_states"],
+                    attention_mask=tensors["attention_mask"],
+                    position_ids=tensors["position_ids"],
+                    past_key_values=tensors["past_key_values"],
+                    input_ids=tensors["input_ids"],
                 )
 
-            # Debug logging
-            if _debug_mode:
-                logger.debug(f"[{self.node_id}] ForwardPass output shape: {output.shape}")
-                if new_past_kv:
-                    cache_len = new_past_kv[0][0].shape[-2]
-                    logger.debug(f"[{self.node_id}] ForwardPass new KV cache seq_len: {cache_len}")
+            _log_forward_debug(self.node_id, request, tensors, output)
 
-            response = ForwardPassResponse(
-                request_id=request.request_id,
-                output=tensor_to_proto(output),
-                success=True,
-            )
-
-            # Handle speculative decoding: verify draft tokens
-            if request.draft_tokens:
-                draft_tokens = list(request.draft_tokens)
-                if output.dim() == 3:
-                    num_positions = min(len(draft_tokens), output.shape[1])
-                    for i in range(num_positions):
-                        token_at_pos = torch.argmax(output[:, i, :], dim=-1).item()
-                        response.verified_tokens.append(token_at_pos)
-                elif output.dim() == 2:
-                    token = torch.argmax(output, dim=-1).item()
-                    response.verified_tokens.append(token)
-
-            if new_past_kv:
-                new_cache = KVCache()
-                new_cache.set_all(new_past_kv)
-                response.kv_cache.CopyFrom(kv_cache_to_proto(new_cache))
-
+            draft_tokens = list(request.draft_tokens) if request.draft_tokens else None
+            response = _build_forward_response(request.request_id, output, new_past_kv, draft_tokens)
             return response
 
         except RuntimeError as e:
@@ -704,6 +781,15 @@ class AsyncNodeService(NodeServiceServicer):
                 error_message=error_msg,
                 error_code=error_code,
             )
+        except InputValidationError as e:
+            error_msg = f"Invalid input on {self.node_id}: {e}"
+            logger.error(f"ForwardPass invalid input on {self.node_id}: {e}")
+            return ForwardPassResponse(
+                request_id=request.request_id,
+                success=False,
+                error_message=error_msg,
+                error_code=ErrorCode.INVALID_INPUT,
+            )
         except ValueError as e:
             error_msg = f"Invalid input on {self.node_id}: {e}"
             logger.error(f"ForwardPass invalid input on {self.node_id}: {e}")
@@ -713,7 +799,7 @@ class AsyncNodeService(NodeServiceServicer):
                 error_message=error_msg,
                 error_code=ErrorCode.INVALID_INPUT,
             )
-        except Exception as e:
+        except (TypeError, MemoryError, AttributeError) as e:
             error_msg = f"Unexpected error on {self.node_id}: {e}"
             logger.error(f"ForwardPass error on {self.node_id}: {e}")
             return ForwardPassResponse(
@@ -759,7 +845,7 @@ class AsyncNodeService(NodeServiceServicer):
             hidden_states = proto_to_tensor(request.hidden_states, self.device)
             expert_ids = list(request.expert_ids)
 
-            if _debug_mode:
+            if is_debug_mode():
                 logger.debug(f"[{self.node_id}] MoEForward hidden_states shape: {hidden_states.shape}, expert_ids: {expert_ids}")
 
             with torch.no_grad():
@@ -773,7 +859,7 @@ class AsyncNodeService(NodeServiceServicer):
 
             processing_time_ms = (time.time() - start) * 1000
 
-            if _debug_mode:
+            if is_debug_mode():
                 logger.debug(f"[{self.node_id}] MoEForward output shape: {output.shape}")
 
             from distllm.communication.node_pb2 import MoEForwardResponse
@@ -783,13 +869,22 @@ class AsyncNodeService(NodeServiceServicer):
                 processing_time_ms=processing_time_ms,
             )
 
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             processing_time_ms = (time.time() - start) * 1000
             logger.error(f"MoEForward error on {self.node_id}: {e}")
             from distllm.communication.node_pb2 import MoEForwardResponse
             return MoEForwardResponse(
                 success=False,
                 error_message=f"MoE error on {self.node_id}: {e}",
+                processing_time_ms=processing_time_ms,
+            )
+        except (TypeError, MemoryError, AttributeError) as e:
+            processing_time_ms = (time.time() - start) * 1000
+            logger.error(f"MoEForward unexpected error on {self.node_id}: {e}")
+            from distllm.communication.node_pb2 import MoEForwardResponse
+            return MoEForwardResponse(
+                success=False,
+                error_message=f"Unexpected MoE error on {self.node_id}: {e}",
                 processing_time_ms=processing_time_ms,
             )
 
@@ -808,12 +903,14 @@ class AsyncNodeService(NodeServiceServicer):
 class AsyncCoordinatorService(CoordinatorServiceServicer):
     """Async gRPC service implementation for the coordinator using grpc.aio."""
 
-    def __init__(self, quantization_config=None):
+    def __init__(self, quantization_config=None, use_tls: bool = True, ca_cert: Optional[str] = None):
         self.nodes = {}
         self.node_channels = {}
         self.node_stubs = {}
         self.quantization_config = quantization_config
         self._expert_registry = None
+        self.use_tls = use_tls
+        self.ca_cert = ca_cert
 
     async def RegisterNode(self, request, context):
         """Register a worker node (async)."""
@@ -839,7 +936,38 @@ class AsyncCoordinatorService(CoordinatorServiceServicer):
         if expert_ids:
             logger.info(f"Node {node_id} hosts experts: {expert_ids}")
 
-        channel = grpc.aio.insecure_channel(f"{node_info.host}:{node_info.port}")
+        if self.use_tls:
+            if self.ca_cert:
+                from distllm.core.tls import load_tls_channel_credentials
+                credentials = load_tls_channel_credentials(self.ca_cert, node_info.host)
+            else:
+                import os as _os
+                auto_ca = _os.path.join("_auto_certs", "ca.crt")
+                if _os.path.exists(auto_ca):
+                    from distllm.core.tls import load_tls_channel_credentials
+                    credentials = load_tls_channel_credentials(auto_ca, node_info.host)
+                else:
+                    logger.warning(f"No CA cert found for {node_info.host}:{node_info.port}, falling back to insecure")
+                    channel = grpc.aio.insecure_channel(f"{node_info.host}:{node_info.port}")
+                    stub = NodeServiceStub(channel)
+                    self.nodes[node_id] = node_info
+                    self.node_channels[node_id] = channel
+                    self.node_stubs[node_id] = stub
+                    response = RegistrationResponse(accepted=True)
+                    if expert_ids and self._expert_registry is not None:
+                        for eid in expert_ids:
+                            self._expert_registry.register_expert(eid, node_id)
+                    if self.quantization_config and self.quantization_config.method != "none":
+                        proto_q = response.quantization
+                        proto_q.method = self.quantization_config.method
+                        proto_q.bnb_4bit_compute_dtype = self.quantization_config.bnb_4bit_compute_dtype
+                        proto_q.bnb_4bit_quant_type = self.quantization_config.bnb_4bit_quant_type
+                        proto_q.bnb_4bit_use_double_quant = self.quantization_config.bnb_4bit_use_double_quant
+                        proto_q.llm_int8_threshold = self.quantization_config.llm_int8_threshold
+                    return response
+            channel = grpc.aio.secure_channel(f"{node_info.host}:{node_info.port}", credentials)
+        else:
+            channel = grpc.aio.insecure_channel(f"{node_info.host}:{node_info.port}")
         stub = NodeServiceStub(channel)
 
         self.nodes[node_id] = node_info
@@ -903,13 +1031,13 @@ class AsyncCoordinatorService(CoordinatorServiceServicer):
                 success=False,
                 error_message=f"Node communication error: {e.details()}",
             )
-        except Exception as e:
-            logger.error(f"Unexpected async inference error: {e}")
+        except SerializationError as e:
+            logger.error(f"Async inference serialization error: {e}")
             return LogitsResponse(
                 request_id=request.request_id,
                 generated_text="",
                 success=False,
-                error_message=f"Internal error: {str(e)}",
+                error_message=f"Serialization error: {str(e)}",
             )
 
     async def StreamInfer(self, request, context):
@@ -967,14 +1095,14 @@ class AsyncCoordinatorService(CoordinatorServiceServicer):
                 success=False,
                 error_message=f"Node communication error: {e.details()}",
             )
-        except Exception as e:
-            logger.error(f"Unexpected async streaming inference error: {e}")
+        except SerializationError as e:
+            logger.error(f"Async streaming inference serialization error: {e}")
             yield TokenResponse(
                 request_id=request.request_id,
                 token="",
                 is_final=True,
                 success=False,
-                error_message=f"Internal error: {str(e)}",
+                error_message=f"Serialization error: {str(e)}",
             )
 
 
@@ -983,15 +1111,21 @@ class AsyncGRPCServer:
 
     def __init__(self, port: int, servicer, max_workers: int = 10,
                  use_tls: bool = True, cert_file: Optional[str] = None,
-                 key_file: Optional[str] = None):
+                 key_file: Optional[str] = None, ca_cert: Optional[str] = None):
         self.port = port
         self.servicer = servicer
         self.max_workers = max_workers
         self.use_tls = use_tls
         self.cert_file = cert_file
         self.key_file = key_file
+        self.ca_cert = ca_cert
         self._cert_dir = None
         self.server = None
+        # Propagate TLS settings to the servicer for outgoing connections
+        if hasattr(servicer, 'use_tls'):
+            servicer.use_tls = use_tls
+        if hasattr(servicer, 'ca_cert'):
+            servicer.ca_cert = ca_cert
         options = [
             ('grpc.max_send_message_length', 64 * 1024 * 1024),
             ('grpc.max_receive_message_length', 64 * 1024 * 1024),
@@ -1038,8 +1172,8 @@ class AsyncGRPCServer:
             for channel in self.servicer.node_channels.values():
                 try:
                     await channel.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error closing channel: {e}")
             self.servicer.node_channels.clear()
         if hasattr(self.servicer, 'node_stubs'):
             self.servicer.node_stubs.clear()
@@ -1096,16 +1230,73 @@ class AsyncNodeClient:
         self.stub = NodeServiceStub(self.channel)
 
     async def health_check(self) -> HealthCheckResponse:
-        """Check node health (async)."""
-        return await self.stub.HealthCheck(HealthCheckRequest(), timeout=10)
+        """Check node health (async) with retry."""
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self.stub.HealthCheck(HealthCheckRequest(), timeout=10)
+            except grpc.aio.AioRpcError as e:
+                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    last_exc = GRPCTimeoutError(node_id="unknown", timeout=10)
+                else:
+                    last_exc = NodeUnreachableError(
+                        node_id="unknown", host=self.host, port=self.port, original_error=e
+                    )
+                if attempt == self.max_retries:
+                    raise last_exc
+                delay = min(self.retry_delay * (2 ** attempt), 60.0)
+                logger.warning(
+                    f"health_check failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                    f"{last_exc}, retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
 
     async def get_info(self) -> NodeInfo:
-        """Get node info (async)."""
-        return await self.stub.GetNodeInfo(HealthCheckRequest())
+        """Get node info (async) with retry."""
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self.stub.GetNodeInfo(HealthCheckRequest())
+            except grpc.aio.AioRpcError as e:
+                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    last_exc = GRPCTimeoutError(node_id="unknown", timeout=10)
+                else:
+                    last_exc = NodeUnreachableError(
+                        node_id="unknown", host=self.host, port=self.port, original_error=e
+                    )
+                if attempt == self.max_retries:
+                    raise last_exc
+                delay = min(self.retry_delay * (2 ** attempt), 60.0)
+                logger.warning(
+                    f"get_info failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                    f"{last_exc}, retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
 
     async def forward(self, request) -> ForwardPassResponse:
-        """Run forward pass (async)."""
-        return await self.stub.ForwardPass(request)
+        """Run forward pass (async) with retry."""
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await self.stub.ForwardPass(request)
+            except grpc.aio.AioRpcError as e:
+                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    last_exc = GRPCTimeoutError(node_id="unknown", timeout=10)
+                else:
+                    last_exc = NodeUnreachableError(
+                        node_id="unknown", host=self.host, port=self.port, original_error=e
+                    )
+                if attempt == self.max_retries:
+                    raise last_exc
+                delay = min(self.retry_delay * (2 ** attempt), 60.0)
+                logger.warning(
+                    f"forward failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                    f"{last_exc}, retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
 
     async def close(self):
         """Close the async gRPC channel."""

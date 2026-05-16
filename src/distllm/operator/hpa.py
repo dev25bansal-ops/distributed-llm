@@ -10,6 +10,49 @@ from typing import Optional
 import httpx
 from loguru import logger
 
+from distllm.errors import ConfigValidationError
+
+
+# Allowlisted Prometheus URLs for SSRF protection
+ALLOWED_PROMETHEUS_HOSTS: set = {
+    "prometheus",
+    "prometheus.monitoring",
+    "prometheus.monitoring.svc",
+    "prometheus.monitoring.svc.cluster.local",
+    "localhost",
+    "127.0.0.1",
+}
+
+
+def _validate_prometheus_url(url: str) -> str:
+    """Validate a Prometheus URL against the allowlist to prevent SSRF.
+
+    Args:
+        url: The Prometheus URL to validate.
+
+    Returns:
+        The validated URL.
+
+    Raises:
+        ValueError: If the URL is not in the allowlist.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    scheme = parsed.scheme
+
+    if scheme not in ("http", "https"):
+        raise ConfigValidationError("prometheus_url", f"Scheme must be http or https, got '{scheme}'")
+
+    if host not in ALLOWED_PROMETHEUS_HOSTS and not host.endswith(".svc.cluster.local"):
+        raise ConfigValidationError(
+            "prometheus_url",
+            f"Host '{host}' is not in the allowlist. Allowed: {', '.join(sorted(ALLOWED_PROMETHEUS_HOSTS))}"
+        )
+
+    return url
+
 
 class CustomHPA:
     """Horizontal Pod Autoscaler based on Prometheus metrics."""
@@ -25,7 +68,7 @@ class CustomHPA:
         scale_target_name: str = "",
         evaluation_interval: float = 30.0,
     ):
-        self._prometheus_url = prometheus_url.rstrip("/")
+        self._prometheus_url = _validate_prometheus_url(prometheus_url).rstrip("/")
         self._metric = metric
         self._target_value = target_value
         self._min_replicas = min_replicas
@@ -92,7 +135,7 @@ class CustomHPA:
                     results = data.get("data", {}).get("result", [])
                     if results:
                         return float(results[0].get("value", [0, 0])[1])
-        except Exception as e:
+        except httpx.HTTPError as e:
             logger.warning(f"HPA metric query failed: {e}")
         return None
 
@@ -114,5 +157,5 @@ class CustomHPA:
             )
         except ImportError:
             logger.warning("kubernetes package not available, cannot scale")
-        except Exception as e:
+        except Exception as e:  # kubernetes.client.ApiException
             logger.error(f"HPA scale failed: {e}")

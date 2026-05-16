@@ -54,7 +54,7 @@ async def health_proxy():
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{API_URL}/health", timeout=10.0)
             return response.json()
-    except Exception:
+    except (httpx.RequestError, httpx.HTTPStatusError):
         return {"status": "unavailable", "reason": "API server not reachable"}
 
 

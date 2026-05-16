@@ -36,6 +36,7 @@ class Sequence:
     constraint: Optional[object] = None  # JSONSchemaConstraint from structured_output
     prefix_match_len: int = 0  # Tokens served from prefix cache
     created_at: float = field(default_factory=time.time)
+    adapter_id: Optional[str] = None  # LoRA adapter ID for this request (S-LoRA style)
 
     @property
     def is_complete(self) -> bool:
@@ -64,6 +65,7 @@ class ScheduledBatch:
     request_ids: List[str]
     speculative_enabled: bool = False  # Whether speculative decoding is active for this batch
     batch_tags: Dict[str, object] = field(default_factory=dict)  # Metadata: length_bucket, avg_tokens_remaining, etc.
+    adapter_ids: List[Optional[str]] = field(default_factory=list)  # Per-sequence adapter IDs (S-LoRA)
 
     @property
     def batch_size(self) -> int:
@@ -212,6 +214,7 @@ class BatchScheduler:
             is_prefill=is_prefill_list,
             request_ids=request_ids,
             batch_tags=batch_tags,
+            adapter_ids=[seq.adapter_id for seq in batch_seqs],
         )
 
     def step(self, batch: ScheduledBatch, next_tokens: torch.Tensor) -> None:

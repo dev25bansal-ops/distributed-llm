@@ -15,11 +15,17 @@ from distllm.core.resource_manager import NodeRegistration
 from distllm.core.node import WorkerNode
 from distllm.core.batch_scheduler import BatchScheduler, Sequence, SequenceStatus, ScheduledBatch
 from distllm.core.prefix_cache import PrefixCache
+from distllm.core.radix_tree_cache import RadixTreeCache, RadixNode
 from distllm.core.chunked_prefill import ChunkState, maybe_chunk
 from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.core.monitor import SystemMonitor
 from distllm.core.tp_launcher import launch_tp_workers
 from distllm.core.moe_router import MoERouter
+from distllm.core.speculative_decoder import NgramMatcher, MedusaHeads
+from distllm.core.gossip_protocol import GossipClient
+from distllm.core.tool_engine import ToolCallingEngine, ToolCall, ToolResult
+from distllm.core.quantization_selector import apply_kv_cache_quantization, dequantize_kv_cache
+from distllm.models.adapter import AdapterManager, AdapterPool, AdapterInfo
 
 __all__ = [
     "__version__",
@@ -48,10 +54,23 @@ __all__ = [
     "SequenceStatus",
     "ScheduledBatch",
     "PrefixCache",
+    "RadixTreeCache",
+    "RadixNode",
     "ChunkState",
     "maybe_chunk",
     "JSONSchemaConstraint",
     "SystemMonitor",
     "launch_tp_workers",
     "MoERouter",
+    "NgramMatcher",
+    "MedusaHeads",
+    "GossipClient",
+    "ToolCallingEngine",
+    "ToolCall",
+    "ToolResult",
+    "apply_kv_cache_quantization",
+    "dequantize_kv_cache",
+    "AdapterManager",
+    "AdapterPool",
+    "AdapterInfo",
 ]

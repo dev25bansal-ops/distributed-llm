@@ -91,20 +91,21 @@ async def api_status():
 
     try:
         result["metrics"] = coordinator.get_metrics()
-    except Exception:
+    except (AttributeError, RuntimeError) as e:
+        logger.debug(f"Metrics unavailable: {e}")
         result["metrics"] = {}
 
     try:
         if coordinator.scheduler:
             result["scheduler"] = coordinator.scheduler.stats()
-    except Exception:
-        pass
+    except (AttributeError, RuntimeError) as e:
+        logger.debug(f"Scheduler stats unavailable: {e}")
 
     try:
         if coordinator.prefix_cache:
             result["prefix_cache"] = coordinator.prefix_cache.stats()
-    except Exception:
-        pass
+    except (AttributeError, RuntimeError) as e:
+        logger.debug(f"Prefix cache stats unavailable: {e}")
 
     return result
 
@@ -154,8 +155,8 @@ async def api_update_config(config: dict):
         if "batch_size" in config and coordinator.scheduler:
             coordinator.scheduler.max_batch_size = int(config["batch_size"])
             updated["batch_size"] = config["batch_size"]
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        logger.debug(f"Config update error: {e}")
 
     return {"status": "ok", "updated": updated}
 

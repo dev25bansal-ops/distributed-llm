@@ -57,7 +57,7 @@ def loki_sink(
                     json=payload,
                     timeout=10.0,
                 )
-        except Exception:
+        except httpx.HTTPError:
             # Drop logs on push failure to avoid blocking the logger
             pass
 

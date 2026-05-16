@@ -94,8 +94,8 @@ class SpotHandler:
                 if response.status == 200:
                     # This is a simplified check - in production, parse the response
                     return "spot-node"
-        except Exception:
-            pass
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as e:
+            logger.debug(f"Spot metadata check failed: {e}")
         return None
 
     def poll_interruptions(self, node_ids: List[str]) -> Dict[str, List[str]]:

@@ -8,6 +8,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
+from loguru import logger
 
 
 @dataclass
@@ -230,3 +231,71 @@ class GossipProtocol:
                 removed += 1
 
         return removed
+
+
+class GossipClient:
+    """Network transport layer for the gossip protocol.
+
+    Handles the actual HTTP/gRPC communication between nodes for
+    exchanging cache advertisements and fetching cache entries.
+
+    In production, this would use the existing gRPC infrastructure.
+    For now, it provides a pluggable interface that can be backed
+    by any transport (HTTP, gRPC, etc.).
+    """
+
+    def __init__(self, peer_resolver=None):
+        """Initialize the gossip client.
+
+        Args:
+            peer_resolver: Callable that resolves a peer_id to (host, port).
+                          If None, peer resolution is not supported.
+        """
+        self._peer_resolver = peer_resolver
+        self._request_count = 0
+        self._response_count = 0
+
+    def exchange(self, peer_id: str, advertisement: dict) -> Optional[dict]:
+        """Exchange advertisements with a peer.
+
+        Sends our cache advertisement to the peer and receives
+        the peer's advertisement in return.
+
+        Args:
+            peer_id: The peer node ID to exchange with.
+            advertisement: Our cache advertisement dict.
+
+        Returns:
+            Peer's advertisement dict, or None if exchange failed.
+        """
+        # In production, this would make a gRPC call:
+        # host, port = self._peer_resolver(peer_id)
+        # return self._grpc_client.gossip_exchange(host, port, advertisement)
+        logger.debug(f"Gossip exchange with {peer_id}: {advertisement.get('total_cache_entries', 0)} entries")
+        return None
+
+    def request_entries(
+        self, peer_id: str, request: dict
+    ) -> dict:
+        """Request specific cache entries from a peer.
+
+        Args:
+            peer_id: The peer node ID to request from.
+            request: Dict with requested_prefixes.
+
+        Returns:
+            Response dict with cache_entries (prefix_hash -> entry_ref).
+        """
+        # In production, this would make a gRPC call:
+        # host, port = self._peer_resolver(peer_id)
+        # return self._grpc_client.gossip_request_entries(host, port, request)
+        missing = request.get("requested_prefixes", [])
+        logger.debug(f"Requested {len(missing)} entries from {peer_id}")
+        return {"success": False, "cache_entries": {}, "entries_returned": 0}
+
+    @property
+    def stats(self) -> dict:
+        return {
+            "requests_sent": self._request_count,
+            "responses_received": self._response_count,
+        }

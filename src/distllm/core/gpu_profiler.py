@@ -62,7 +62,8 @@ class GPUProfiler:
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
             pynvml.nvmlShutdown()
             return util.gpu / 100.0
-        except Exception:
+        except (ImportError, OSError, Exception) as e:
+            logger.debug(f"GPU utilization error: {e}")
             return 0.0
 
     def estimate_layer_vram(

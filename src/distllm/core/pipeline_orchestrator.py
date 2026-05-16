@@ -6,6 +6,7 @@ Extracted from the Coordinator class.
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import grpc
 import torch
 from loguru import logger
 
@@ -17,7 +18,10 @@ from distllm.core.kv_cache import KVCache
 from distllm.core.resource_manager import NodeRegistration, ResourceManager
 from distllm.core.latency_tracker import LatencyTracker
 from distllm.config.loader import NodeRole
-from distllm.errors.types import ConfigValidationError, NodeUnreachableError, OOMError, InputValidationError
+from distllm.errors.types import (
+    ConfigValidationError, NodeUnreachableError, OOMError,
+    InputValidationError, GRPCTimeoutError,
+)
 
 
 class PipelineOrchestrator:
@@ -275,8 +279,15 @@ class PipelineOrchestrator:
                         new_cache.cache.append((k, v))
                     node_kv_caches[node_id] = new_cache.cache
 
-            except NodeUnreachableError:
+            except (NodeUnreachableError, OOMError, InputValidationError, GRPCTimeoutError):
                 raise
+            except grpc.RpcError as e:
+                self.resource_mgr.record_failure(node_id)
+                node_log.error(f"Pipeline gRPC error: {e}")
+                node.healthy = False
+                raise NodeUnreachableError(
+                    node_id=node_id, host=node.host, port=node.port, original_error=e
+                )
             except Exception as e:
                 self.resource_mgr.record_failure(node_id)
                 node_log.error(f"Pipeline failed: {e}")
@@ -410,11 +421,18 @@ class PipelineOrchestrator:
                         new_cache.cache.append((k, v))
                     node_kv_caches[node_id] = new_cache.cache
 
-            except NodeUnreachableError:
+            except (NodeUnreachableError, OOMError, InputValidationError, GRPCTimeoutError):
                 raise
+            except grpc.aio.AioRpcError as e:
+                self.resource_mgr.record_failure(node_id)
+                node_log.error(f"Pipeline async gRPC error: {e}")
+                node.healthy = False
+                raise NodeUnreachableError(
+                    node_id=node_id, host=node.host, port=node.port, original_error=e
+                )
             except Exception as e:
                 self.resource_mgr.record_failure(node_id)
-                node_log.error(f"Pipeline failed: {e}")
+                node_log.error(f"Pipeline async failed: {e}")
                 node.healthy = False
                 raise
 

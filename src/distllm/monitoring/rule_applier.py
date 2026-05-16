@@ -6,6 +6,7 @@ from typing import List, Optional
 import requests
 from loguru import logger
 
+from distllm.errors import ConfigValidationError
 from distllm.monitoring.alert_rules import (
     AlertRule,
     RecordingRule,
@@ -106,7 +107,7 @@ class RuleApplier:
                 all_issues.append(f"Recording '{rule.record}': {issue}")
 
         if all_issues:
-            raise ValueError(f"PromQL validation errors:\n" + "\n".join(all_issues))
+            raise ConfigValidationError("alert_rules", "\n".join(all_issues))
 
         yaml_content = rules_to_yaml(alerts, recording)
         return alerts, recording, yaml_content

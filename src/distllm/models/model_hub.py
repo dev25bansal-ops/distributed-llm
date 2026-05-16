@@ -138,6 +138,8 @@ class ModelHub:
                 self._write_manifest(model_name, revision, downloaded_path)
                 logger.info(f"Downloaded {model_name} to {downloaded_path}")
                 return downloaded_path
+            except (KeyboardInterrupt, SystemExit):
+                raise
             except Exception as e:
                 last_error = e
                 wait_time = 2 ** attempt  # 1s, 2s, 4s
@@ -267,7 +269,7 @@ class ModelHub:
             )
         except RepositoryNotFoundError:
             return None
-        except Exception as e:
+        except Exception as e:  # HfHubHTTPError, etc.
             logger.warning(f"Failed to fetch info for {model_name}: {e}")
             return None
 
@@ -289,7 +291,7 @@ class ModelHub:
             try:
                 path = self.download(name, revision=revision, token=token)
                 results[name] = path
-            except Exception as e:
+            except DownloadError as e:
                 logger.error(f"Failed to download {name}: {e}")
         return results
 

@@ -15,6 +15,11 @@ class KVCache:
     def __init__(self):
         self.cache: List[Tuple[torch.Tensor, torch.Tensor]] = []
         self.num_layers = 0
+        # Quantization state
+        self._quantized: bool = False
+        self._quant_bits: int = 8
+        self._scales_k: List[torch.Tensor] = []
+        self._scales_v: List[torch.Tensor] = []
 
     def init_cache(self, num_layers: int, batch_size: int, num_heads: int, head_dim: int, device: str = "cpu"):
         """Initialize empty KV cache for all layers."""
@@ -55,8 +60,6 @@ class KVCache:
         self.cache.clear()
         self.cache = cache
         self.num_layers = len(cache)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
     def to(self, device: str) -> "KVCache":
         """Move cache to device."""
@@ -82,7 +85,124 @@ class KVCache:
         total = 0
         for k, v in self.cache:
             total += k.element_size() * k.numel() + v.element_size() * v.numel()
+        if self._quantized:
+            # Add scale tensor memory
+            for s in self._scales_k:
+                total += s.element_size() * s.numel()
+            for s in self._scales_v:
+                total += s.element_size() * s.numel()
         return total
+
+    def enable_quantization(self, bits: int = 8) -> None:
+        """Enable KV cache quantization.
+
+        Args:
+            bits: Target bit width (4 or 8).
+        """
+        if bits not in (4, 8):
+            raise ValueError(f"KV cache quantization bits must be 4 or 8, got {bits}")
+        self._quantized = True
+        self._quant_bits = bits
+
+    def update(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Update KV cache for a layer with optional quantization.
+
+        Args:
+            layer_idx: Layer index.
+            new_key: New key tensor to append.
+            new_value: New value tensor to append.
+
+        Returns:
+            Updated (key, value) tuple for the layer.
+        """
+        if self._quantized:
+            return self._update_quantized(layer_idx, new_key, new_value)
+
+        # Original unquantized path
+        from distllm.core.quantization_selector import apply_kv_cache_quantization, dequantize_kv_cache
+
+        if layer_idx >= len(self.cache):
+            self.cache.append((new_key, new_value))
+            return new_key, new_value
+
+        old_k, old_v = self.cache[layer_idx]
+        key = torch.cat([old_k, new_key], dim=-2)
+        value = torch.cat([old_v, new_value], dim=-2)
+        self.cache[layer_idx] = (key, value)
+        return key, value
+
+    def _update_quantized(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Update KV cache with quantization for memory efficiency."""
+        from distllm.core.quantization_selector import apply_kv_cache_quantization, dequantize_kv_cache
+
+        # Quantize new tensors
+        qk, sk = apply_kv_cache_quantization(new_key, new_value, self._quant_bits)
+        qv, sv = apply_kv_cache_quantization(new_key, new_value, self._quant_bits)
+
+        if layer_idx >= len(self._scales_k):
+            # First update for this layer
+            self._scales_k.append(sk)
+            self._scales_v.append(sv)
+            self.cache.append((qk, qv))
+        else:
+            # Dequantize existing, append, re-quantize
+            old_k = dequantize_kv_cache(self.cache[layer_idx][0], self._scales_k[layer_idx], self._quant_bits)
+            old_v = dequantize_kv_cache(self.cache[layer_idx][1], self._scales_v[layer_idx], self._quant_bits)
+
+            key = torch.cat([old_k, new_key], dim=-2)
+            value = torch.cat([old_v, new_value], dim=-2)
+
+            # Re-quantize the combined tensor
+            qk, sk = apply_kv_cache_quantization(key, value, self._quant_bits)
+            qv, sv = apply_kv_cache_quantization(key, value, self._quant_bits)
+
+            self.cache[layer_idx] = (qk, qv)
+            self._scales_k[layer_idx] = sk
+            self._scales_v[layer_idx] = sv
+
+        return key, value
+
+    def get_quantized(self, layer_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get dequantized KV cache for a layer.
+
+        Returns:
+            (key, value) tensors in original dtype.
+        """
+        from distllm.core.quantization_selector import dequantize_kv_cache
+
+        if not self._quantized:
+            return self.cache[layer_idx]
+
+        qk, qv = self.cache[layer_idx]
+        key = dequantize_kv_cache(qk, self._scales_k[layer_idx], self._quant_bits)
+        value = dequantize_kv_cache(qv, self._scales_v[layer_idx], self._quant_bits)
+        return key, value
+
+    def quantization_savings(self) -> float:
+        """Calculate memory savings from quantization.
+
+        Returns:
+            Ratio of quantized memory to unquantized memory (lower is better).
+        """
+        if not self._quantized or not self.cache:
+            return 1.0
+
+        quantized_mem = self.memory_usage()
+
+        # Estimate unquantized memory
+        unquantized_mem = 0
+        for k, v in self.cache:
+            # Assume fp16 for unquantized
+            unquantized_mem += 2 * k.numel() + 2 * v.numel()
+
+        return quantized_mem / max(unquantized_mem, 1)
+
+    def clear(self):
+        """Clear the cache and quantization state."""
+        self.cache = []
+        self.num_layers = 0
+        self._scales_k = []
+        self._scales_v = []
 
 
 class KVCacheManager:
@@ -91,10 +211,31 @@ class KVCacheManager:
     def __init__(self):
         self.caches: Dict[str, KVCache] = {}
 
-    def create(self, request_id: str, num_layers: int, batch_size: int, num_heads: int, head_dim: int, device: str = "cpu") -> KVCache:
-        """Create a new KV cache for a request."""
+    def create(
+        self,
+        request_id: str,
+        num_layers: int,
+        batch_size: int,
+        num_heads: int,
+        head_dim: int,
+        device: str = "cpu",
+        quant_bits: int = 0,
+    ) -> KVCache:
+        """Create a new KV cache for a request.
+
+        Args:
+            request_id: Unique request identifier.
+            num_layers: Number of transformer layers.
+            batch_size: Batch size.
+            num_heads: Number of attention heads.
+            head_dim: Dimension of each head.
+            device: Device to allocate tensors on.
+            quant_bits: Enable KV cache quantization (4 or 8). 0 = disabled.
+        """
         cache = KVCache()
         cache.init_cache(num_layers, batch_size, num_heads, head_dim, device)
+        if quant_bits > 0:
+            cache.enable_quantization(quant_bits)
         self.caches[request_id] = cache
         return cache
 

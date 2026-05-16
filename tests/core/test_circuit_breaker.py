@@ -189,8 +189,8 @@ class TestCircuitBreakerExponentialBackoff:
         for _ in range(3):
             coord._record_node_failure("node-0")
 
-        # Set recovery time to past
-        coord._node_recovery_time["node-0"] = time.time() - 10
+        # Set recovery time to past via ResourceManager (the actual state store)
+        coord._resource_mgr._node_recovery_time["node-0"] = time.time() - 10
 
         # Cooldown elapsed - should allow retry (half-open)
         assert coord._check_circuit_breaker("node-0") is False
