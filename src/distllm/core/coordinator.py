@@ -94,6 +94,12 @@ class Coordinator:
         gossip_config=None,
         moe_config=None,
         discovery_mode: str = "static",
+        embedding_config=None,
+        version_config=None,
+        hybrid_parallel_config=None,
+        zero_copy_config=None,
+        adaptive_precision_config=None,
+        predictive_cache_config=None,
     ):
         self.model_name = model_name
         self.port = port
@@ -196,12 +202,23 @@ class Coordinator:
         # Metrics tracking (delegated to MetricsManager)
         self._metrics_mgr = MetricsManager()
 
+        # Node info for distributed state
+        self.nodes_info = {}
+
         # Multi-model registry and MoE (delegated to managers)
         self._multi_model: Optional[MultiModelManager] = None
         self._expert_registry = None
         self._moe_orchestrator = None
         self._init_multi_model(multi_model_config)
         self._init_moe(moe_config)
+        self._init_embedding_config()
+        self._init_version_config()
+        self._init_flash_attention(causal=True, enable_fa2=True)
+        self._init_plugin_manager()
+        self._init_hybrid_parallel(hybrid_parallel_config)
+        self._init_zero_copy(zero_copy_config)
+        self._init_adaptive_precision(adaptive_precision_config)
+        self._init_predictive_cache(predictive_cache_config)
 
         # Dynamic rebalancing
         self._latency_tracker: Optional[LatencyTracker] = None
@@ -220,6 +237,8 @@ class Coordinator:
 
         # Persistent KV cache state for batch pipeline (keyed by request_id)
         self._batch_kv_caches: Dict[str, Dict[str, Optional[List]]] = {}
+        self._batch_kv_caches_lock = threading.Lock()
+        self._batch_event = threading.Event()
 
         # P2P KV cache gossip
         self._cache_index = None
@@ -238,7 +257,9 @@ class Coordinator:
             # Create gossip client with peer resolver from node registrar
             def resolve_peer(peer_id: str):
                 """Resolve peer_id to (host, port) from registered nodes."""
-                for node_id, reg in self.nodes.items():
+                with self._nodes_lock:
+                    nodes_snapshot = dict(self.nodes)
+                for node_id, reg in nodes_snapshot.items():
                     if node_id == peer_id or peer_id in node_id:
                         return reg.host, reg.port
                 return None
@@ -261,6 +282,46 @@ class Coordinator:
         # Wire federation and expert resources to node registrar
         self._node_registrar.federation_manager = self._federation_manager
         self._node_registrar.expert_registry = self._expert_registry
+
+        # Embedding and reranking model loader
+        self._embedding_config = embedding_config
+        self._version_config = version_config
+        self._embedding_loader = None
+        self._embedding_max_length = 512
+        self._embedding_normalize = True
+        self._embedding_batch_size = 32
+
+        # Version manager (shadow mode, A/B testing, blue-green)
+        self._version_manager = None
+
+        # Multi-model hot-swap manager
+        self._model_hotswap = None
+
+        # PagedAttention block manager
+        self._paged_attention = None
+        self._paged_kv_backend = None
+
+        # VLM (Vision-Language Model) pipeline
+        self._vlm_pipeline = None
+
+        # FlashAttention wrapper
+        self._flash_attention = None
+
+        # Plugin manager
+        self._plugin_manager: Optional['PluginManager'] = None
+
+        # Hybrid parallelism (TP + PP + EP)
+        self._hybrid_parallel_planner = None
+        self._hybrid_parallel_executor = None
+
+        # Zero-copy GPU tensor transfer
+        self._zero_copy_engine = None
+
+        # Adaptive precision pipeline
+        self._adaptive_precision = None
+
+        # Predictive KV cache management
+        self._predictive_cache = None
 
     # -- Property aliases for backward compat --
 
@@ -400,6 +461,262 @@ class Coordinator:
                 model_registry=model_registry,
                 pipeline=self._pipeline,
             )
+
+    def _init_embedding_config(self) -> None:
+        """Initialize embedding loader from constructor config."""
+        # embedding_config is stored as self._embedding_config by constructor param
+        config = getattr(self, "_embedding_config", None)
+        self._init_embedding_loader(config)
+
+    def _init_version_config(self) -> None:
+        """Initialize version manager from constructor config."""
+        config = getattr(self, "_version_config", None)
+        self._init_version_manager(config)
+
+    def _init_embedding_loader(self, embedding_config=None) -> None:
+        """Initialize embedding and reranking model loader."""
+        if not embedding_config:
+            return
+        embed_model = getattr(embedding_config, "embedding_model", "") or ""
+        rerank_model = getattr(embedding_config, "rerank_model", "") or ""
+        if not embed_model and not rerank_model:
+            return
+
+        from distllm.core.embedding_loader import EmbeddingModelLoader
+        self._embedding_loader = EmbeddingModelLoader(
+            embedding_model=embed_model or None,
+            rerank_model=rerank_model or None,
+            device="auto",
+            dtype=self.dtype,
+            trust_remote_code=self.trust_remote_code,
+        )
+        if embed_model:
+            self._embedding_loader.load_embedding_model()
+            self._embedding_max_length = getattr(embedding_config, "max_length", 512)
+            self._embedding_normalize = getattr(embedding_config, "normalize", True)
+            self._embedding_batch_size = getattr(embedding_config, "batch_size", 32)
+        if rerank_model:
+            self._embedding_loader.load_rerank_model()
+
+    def _init_version_manager(self, version_config=None) -> None:
+        """Initialize version manager for shadow mode, A/B testing, blue-green."""
+        if not version_config or not getattr(version_config, "enabled", False):
+            return
+
+        from distllm.deploy.version_manager import VersionManager
+        self._version_manager = VersionManager(
+            max_versions=getattr(version_config, "max_versions", 4),
+            shadow_enabled=getattr(version_config, "shadow_enabled", False),
+            shadow_pct=getattr(version_config, "shadow_pct", 0.0),
+            blue_green_enabled=getattr(version_config, "blue_green_enabled", False),
+            ab_testing_enabled=getattr(version_config, "ab_testing_enabled", False),
+            ab_test_split=getattr(version_config, "ab_test_split", 50.0),
+            auto_promote_enabled=getattr(version_config, "auto_promote_enabled", False),
+            min_samples=getattr(version_config, "min_samples", 100),
+            significance_level=getattr(version_config, "significance_level", 0.05),
+        )
+
+    def _init_model_hotswap(self, max_models: int = 4, total_gpu_memory_gb: float = 0.0) -> None:
+        """Initialize multi-model hot-swap manager."""
+        from distllm.core.multi_model_serving import ModelHotSwapManager
+        from distllm.core.model_registry import ModelRegistry
+
+        registry = ModelRegistry(max_models=max_models)
+        registry.register(self.model_name, self.model_name, 0)
+
+        def _load_model_callback(name: str, path: str):
+            """Load a model and return (model, tokenizer, memory_gb)."""
+            from distllm.models.partitioner import ModelPartitioner
+            partitioner = ModelPartitioner(
+                model_name=path,
+                dtype=self.dtype,
+                trust_remote_code=self.trust_remote_code,
+                quantization_config=self.quantization_config,
+            )
+            partitioner.load_full_model()
+            # Estimate memory
+            import torch
+            mem_gb = 0.0
+            if torch.cuda.is_available():
+                mem_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+            return partitioner.full_model, partitioner.tokenizer, mem_gb
+
+        def _unload_model_callback(name: str, model, tokenizer):
+            """Unload a model and free GPU memory."""
+            import gc
+            import torch
+            del model
+            del tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        self._model_hotswap = ModelHotSwapManager(
+            model_registry=registry,
+            total_gpu_memory_gb=total_gpu_memory_gb,
+            max_models=max_models,
+            on_load_model=_load_model_callback,
+            on_unload_model=_unload_model_callback,
+        )
+
+    def _init_paged_attention(
+        self,
+        num_blocks: int = 256,
+        block_size: int = 16,
+        num_layers: int = 12,
+        num_heads: int = 12,
+        head_dim: int = 64,
+        swap_to_cpu: bool = False,
+        max_swap_blocks: int = 0,
+    ) -> None:
+        """Initialize PagedAttention block manager."""
+        import torch
+        from distllm.core.paged_attention import PagedAttentionManager
+
+        dtype = getattr(torch, self.dtype, torch.float16)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        self._paged_attention = PagedAttentionManager(
+            num_blocks=num_blocks,
+            block_size=block_size,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            dtype=dtype,
+            device=device,
+            swap_to_cpu=swap_to_cpu,
+            max_swap_blocks=max_swap_blocks,
+        )
+
+    def _init_vlm_pipeline(
+        self,
+        vision_model: Optional[str] = None,
+        llm_hidden_size: int = 4096,
+    ) -> None:
+        """Initialize VLM pipeline for multi-modal (image + text) support."""
+        if not vision_model:
+            return
+
+        from distllm.core.vlm_pipeline import VLMPipeline
+        self._vlm_pipeline = VLMPipeline(
+            vision_model_name=vision_model,
+            llm_hidden_size=llm_hidden_size,
+            device="auto",
+            dtype=self.dtype,
+            trust_remote_code=self.trust_remote_code,
+        )
+        self._vlm_pipeline.load_vision_tower()
+
+    def _init_flash_attention(self, causal: bool = True, enable_fa2: bool = True) -> None:
+        """Initialize FlashAttention wrapper.
+
+        Attempts to load flash-attn-2 (or flash-attn v1 as fallback).
+        Falls back to PyTorch SDPA when no CUDA kernel is available.
+
+        Args:
+            causal: Whether to use causal masking.
+            enable_fa2: If False, skip initialization entirely.
+        """
+        if not enable_fa2:
+            self._flash_attention = None
+            return
+        try:
+            from distllm.core.flash_attention import FlashAttentionWrapper
+            self._flash_attention = FlashAttentionWrapper(causal=causal)
+            logger.info("FlashAttention-2 wrapper initialized")
+        except ImportError:
+            self._flash_attention = None
+            logger.warning("FlashAttention module not available, using default attention")
+        if self._flash_attention is not None:
+            logger.info(f"FlashAttention initialized (available={self._flash_attention.is_available})")
+
+    def _init_plugin_manager(self) -> None:
+        """Initialize the plugin manager with coordinator context."""
+        from distllm.core.plugin import PluginManager
+        context = {
+            "coordinator": self,
+            "model_name": self.model_name,
+            "dtype": str(self.dtype),
+            "trust_remote_code": self.trust_remote_code,
+        }
+        self._plugin_manager = PluginManager(context=context)
+
+    def _init_hybrid_parallel(self, config: Optional[Any] = None) -> None:
+        """Initialize hybrid parallelism engine (TP + PP + EP)."""
+        self._hybrid_parallel_planner = None
+        self._hybrid_parallel_executor = None
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        from distllm.core.hybrid_parallel import (
+            HardwareProber,
+            HybridParallelPlanner,
+            HybridParallelExecutor,
+        )
+        topology = HardwareProber.probe()
+        self._hybrid_parallel_planner = HybridParallelPlanner(topology)
+        plan = self._hybrid_parallel_planner.plan(
+            total_layers=self.total_layers,
+            num_experts=getattr(self._expert_registry, 'num_experts', 0) if self._expert_registry else 0,
+            use_moe=self._moe_orchestrator is not None,
+        )
+        self._hybrid_parallel_executor = HybridParallelExecutor(plan, coordinator=self)
+        self._hybrid_parallel_executor.configure_pp(self._pipeline)
+        if hasattr(self, '_pipeline') and plan.pp_num_stages > 1:
+            self._pipeline.enable_overlap = True
+        logger.info(f"Hybrid parallel plan: {plan.explanation}")
+
+    def _init_zero_copy(self, config: Optional[Any] = None) -> None:
+        """Initialize zero-copy GPU tensor transfer engine."""
+        self._zero_copy_engine = None
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        from distllm.core.zero_copy_transfer import ZeroCopyTransferEngine
+        self._zero_copy_engine = ZeroCopyTransferEngine()
+        logger.info("Zero-copy transfer engine initialized")
+
+    def _init_adaptive_precision(self, config: Optional[Any] = None) -> None:
+        """Initialize adaptive precision pipeline."""
+        self._adaptive_precision = None
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        cal_samples = getattr(config, 'calibration_samples', 64) if not isinstance(config, bool) else 64
+        from distllm.core.adaptive_precision import AdaptivePrecisionEngine
+        self._adaptive_precision = AdaptivePrecisionEngine(calibration_samples=cal_samples)
+        logger.info("Adaptive precision engine initialized")
+
+    def _init_predictive_cache(self, config: Optional[Any] = None) -> None:
+        """Initialize predictive KV cache management."""
+        self._predictive_cache = None
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        gpu_mb = getattr(config, 'gpu_cache_mb', 512) if not isinstance(config, bool) else 512
+        cpu_mb = getattr(config, 'cpu_cache_mb', 4096) if not isinstance(config, bool) else 4096
+        compress_int = getattr(config, 'background_compress_interval_s', 300) if not isinstance(config, bool) else 300
+        from distllm.core.predictive_cache import PredictiveCacheManager
+        from distllm.core.prefix_cache import PrefixCache
+        gpu_cache = PrefixCache(
+            max_entries=0,
+            memory_budget_bytes=gpu_mb * 1024 * 1024,
+        ) if self._cache_mgr else None
+        self._predictive_cache = PredictiveCacheManager(
+            gpu_cache=gpu_cache,
+            gpu_memory_bytes=gpu_mb * 1024 * 1024,
+            cpu_memory_bytes=cpu_mb * 1024 * 1024,
+        )
+        self._predictive_cache.start_background_compression(compress_int)
+        logger.info(f"Predictive cache initialized (GPU={gpu_mb}MB, CPU={cpu_mb}MB)")
 
     def _init_moe(self, moe_config: Optional[MoESettings]) -> None:
         """Initialize MoE subsystem."""
@@ -587,17 +904,30 @@ class Coordinator:
         self.record_metric("total_requests", 1)
         start_time = time.time()
 
+        # Generation span
+        from distllm.observability.spans import span_prefill, record_ttft
+        prompt_len = len(self.tokenizer.encode(prompt)) if self.tokenizer else 0
+        tenant = "default"
+
         try:
+            if self.tokenizer is None:
+                raise ValueError("Tokenizer not loaded")
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
 
             if self.node_order:
                 req_log.info(f"Starting distributed generation: {max_new_tokens} tokens max")
                 input_ids = input_ids.to("cpu")
-                generated_ids = input_ids.clone()
+                prompt_len = input_ids.shape[1]
+                total_capacity = prompt_len + max_new_tokens
+                generated_ids = torch.zeros(1, total_capacity, dtype=torch.long)
+                generated_ids[:, :prompt_len] = input_ids
+                gen_pos = prompt_len
 
                 node_kv_caches: Dict[str, Optional[List]] = {
                     nid: None for nid in self.node_order
                 }
+
+                prefill_start = time.monotonic()
 
                 # Check if speculative decoding is available and enabled
                 active_method = self._spec_decoder.get_active_method(self.draft_model) if self._spec_decoder else None
@@ -612,10 +942,10 @@ class Coordinator:
 
                 step = 0
                 while step < max_new_tokens:
-                    if step == 0:
-                        step_input = generated_ids
+                    if gen_pos == prompt_len:
+                        step_input = generated_ids[:, :gen_pos]
                     else:
-                        step_input = generated_ids[:, -1:]
+                        step_input = generated_ids[:, gen_pos-1:gen_pos]
 
                     draft_tokens = None
                     if use_speculative:
@@ -658,33 +988,37 @@ class Coordinator:
                         )
                         # Append accepted tokens
                         for token_id in accepted_tokens:
-                            generated_ids = torch.cat([generated_ids, torch.tensor([[token_id]])], dim=1)
+                            generated_ids[:, gen_pos] = token_id
+                            gen_pos += 1
                             if next_token == self.tokenizer.eos_token_id:
                                 break
                         # If we got a valid next_token after accepted prefix, append it
                         if next_token > 0 and next_token != self.tokenizer.eos_token_id:
-                            generated_ids = torch.cat([generated_ids, torch.tensor([[next_token]])], dim=1)
+                            generated_ids[:, gen_pos] = next_token
+                            gen_pos += 1
                         elif next_token == self.tokenizer.eos_token_id:
-                            generated_ids = torch.cat([generated_ids, torch.tensor([[next_token]])], dim=1)
+                            generated_ids[:, gen_pos] = next_token
+                            gen_pos += 1
                             break
                         # Count tokens generated this step
                         step += accepted_count + (1 if next_token > 0 else 0)
 
                         # Record generated tokens for n-gram indexing
-                        self._spec_decoder.record_generated_tokens(generated_ids[0].tolist())
+                        self._spec_decoder.record_generated_tokens(generated_ids[0, :gen_pos].tolist())
                     else:
                         next_token = self._sample(logits[:, -1, :], temperature=temperature, top_p=top_p, top_k=top_k)
-                        generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0)], dim=1)
+                        generated_ids[:, gen_pos] = next_token.item()
+                        gen_pos += 1
                         step += 1
                         if next_token.item() == self.tokenizer.eos_token_id:
                             break
 
                         # Record tokens for n-gram indexing even without speculation
                         if self._spec_decoder:
-                            self._spec_decoder.record_generated_tokens(generated_ids[0].tolist())
+                            self._spec_decoder.record_generated_tokens(generated_ids[0, :gen_pos].tolist())
 
-                result = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-                tokens_generated = generated_ids.shape[1] - input_ids.shape[1]
+                result = self.tokenizer.decode(generated_ids[0, :gen_pos], skip_special_tokens=True)
+                tokens_generated = gen_pos - prompt_len
             else:
                 req_log.info(f"Starting local generation: {max_new_tokens} tokens max")
                 model_device = next(self.local_partitioner.full_model.parameters()).device
@@ -735,6 +1069,10 @@ class Coordinator:
             raise
 
         finally:
+            paged_bt = locals().get('paged_block_tables', {})
+            if self._paged_kv_backend is not None and paged_bt:
+                for nid, block_table in paged_bt.items():
+                    self._paged_kv_backend.free(block_table)
             self._param_update_channel.unregister(request_id)
             _current_request_id_ctx.reset(token)
 
@@ -790,6 +1128,7 @@ class Coordinator:
             seq.stop_token_ids = [self.tokenizer.eos_token_id]
 
         self.scheduler.add(seq)
+        self._batch_event.set()
 
         event = self._request_tracker.register_request(request_id)
 
@@ -811,7 +1150,8 @@ class Coordinator:
         while self.scheduler.has_pending:
             batch = self.scheduler.schedule()
             if batch is None:
-                time.sleep(0.01)
+                self._batch_event.wait(timeout=0.01)
+                self._batch_event.clear()
                 idle_time += 0.01
                 if idle_time > timeout:
                     break
@@ -819,10 +1159,17 @@ class Coordinator:
 
             idle_time = 0.0
 
-            if self.local_partitioner is not None:
-                self._generate_local_batch(batch)
-            else:
-                self._run_distributed_pipeline_batch(batch)
+            batch_request_ids = [seq.request_id for seq in batch.sequences]
+            try:
+                if self.local_partitioner is not None:
+                    self._generate_local_batch(batch)
+                else:
+                    self._run_distributed_pipeline_batch(batch)
+            except Exception:
+                with self._batch_kv_caches_lock:
+                    for rid in batch_request_ids:
+                        self._batch_kv_caches.pop(rid, None)
+                raise
 
             step += 1
             if max_steps > 0 and step >= max_steps:
@@ -833,9 +1180,10 @@ class Coordinator:
                 self.scheduler.active, list(self.scheduler.pending_queue), self.tokenizer
             )
             # Clean up KV cache state for completed requests
-            for rid in list(self._batch_kv_caches.keys()):
-                if rid not in self.scheduler.active:
-                    self._batch_kv_caches.pop(rid, None)
+            with self._batch_kv_caches_lock:
+                for rid in list(self._batch_kv_caches.keys()):
+                    if rid not in self.scheduler.active:
+                        self._batch_kv_caches.pop(rid, None)
 
     def _generate_local_batch(self, batch: ScheduledBatch) -> None:
         """Run a batch through the local model."""
@@ -910,19 +1258,30 @@ class Coordinator:
             input_ids = torch.tensor([tokens], dtype=torch.long)
 
             # Reuse KV cache state if it exists from a prior step
-            if seq.request_id in self._batch_kv_caches:
-                node_kv_caches = self._batch_kv_caches[seq.request_id]
-            else:
-                node_kv_caches: Dict[str, Optional[List]] = {
-                    nid: None for nid in self.node_order
-                }
-                self._batch_kv_caches[seq.request_id] = node_kv_caches
+            with self._batch_kv_caches_lock:
+                if seq.request_id in self._batch_kv_caches:
+                    node_kv_caches = self._batch_kv_caches[seq.request_id]
+                else:
+                    node_kv_caches: Dict[str, Optional[List]] = {
+                        nid: None for nid in self.node_order
+                    }
 
-            logits = self._pipeline.run_pipeline(
-                input_ids,
-                node_kv_caches,
-                request_id=seq.request_id,
-            )
+                    if self._paged_kv_backend is not None:
+                        logger.debug("PagedAttention backend available for distributed pipeline")
+                    self._batch_kv_caches[seq.request_id] = node_kv_caches
+
+            if self._pipeline.enable_overlap:
+                logits = self._pipeline.run_pipeline_overlap(
+                    input_ids,
+                    node_kv_caches,
+                    request_id=seq.request_id,
+                )
+            else:
+                logits = self._pipeline.run_pipeline(
+                    input_ids,
+                    node_kv_caches,
+                    request_id=seq.request_id,
+                )
 
             seq_logits = logits[:, -1, :]
             if seq.constraint is not None:
@@ -940,6 +1299,58 @@ class Coordinator:
     def load_local_model(self):
         """Load the full model locally (for single-node testing)."""
         self._model_mgr.load_local_model(self)
+        self._apply_flash_attention()
+        self._apply_rope_scaling()
+        self._wire_paged_attention()
+
+    def _apply_flash_attention(self):
+        """Patch the loaded model's attention layers to use FlashAttention-2."""
+        if self.local_partitioner is not None and self.local_partitioner.full_model is not None:
+            model = self.local_partitioner.full_model
+            try:
+                from distllm.core.flash_attention import apply_flash_attention_to_model
+                patched = apply_flash_attention_to_model(model)
+                if patched > 0:
+                    logger.info(f"FlashAttention-2: patched {patched} attention modules in model")
+            except ImportError:
+                logger.debug("FlashAttention module not available, skipping patch")
+
+    def _apply_rope_scaling(self):
+        """Apply RoPE scaling for long context support (128K+).
+
+        Uses YaRN scaling by default, with NTK-aware fallback.
+        Only applies if target context > model's native max position.
+        """
+        if self.local_partitioner is not None and self.local_partitioner.full_model is not None:
+            model = self.local_partitioner.full_model
+            config = getattr(model, "config", None)
+            if config is not None:
+                max_pos = getattr(config, "max_position_embeddings", 4096)
+                target_ctx = 131072
+                if target_ctx > max_pos:
+                    from distllm.models.partitioner import apply_rope_scaling
+                    apply_rope_scaling(model, target_context_len=target_ctx, scaling_type="yarn")
+                    logger.info(f"RoPE scaling applied: {max_pos} -> {target_ctx}")
+
+    def _wire_paged_attention(self):
+        """Initialize PagedAttention and wire it into the KV cache flow."""
+        if self.local_partitioner is not None and self.local_partitioner.full_model is not None:
+            model = self.local_partitioner.full_model
+            config = getattr(model, "config", None)
+            if config is not None:
+                num_layers = getattr(config, "num_hidden_layers", 32)
+                num_heads = getattr(config, "num_attention_heads", 32)
+                head_dim = getattr(config, "hidden_size", 4096) // num_heads
+                self._init_paged_attention(
+                    num_blocks=512,
+                    block_size=16,
+                    num_layers=num_layers,
+                    num_heads=num_heads,
+                    head_dim=head_dim,
+                )
+                if self._paged_attention is not None:
+                    from distllm.core.kv_cache import PagedKVCacheBackend
+                    self._paged_kv_backend = PagedKVCacheBackend(self._paged_attention)
 
     def _load_draft_model(self):
         """Load a smaller draft model for speculative decoding."""
@@ -979,6 +1390,19 @@ class Coordinator:
                 target=self._gossip_loop, daemon=True, name="gossip-loop"
             )
             self._gossip_loop_task.start()
+
+        # Apply RoPE scaling for long context if model info is available
+        if self.model_info is not None:
+            max_pos = self.model_info.get("max_position_embeddings", 4096)
+            target_ctx = 131072
+            if target_ctx > max_pos and self.nodes_info:
+                rope_config = {
+                    "type": "yarn",
+                    "factor": target_ctx / max_pos,
+                    "original_max_position_embeddings": max_pos,
+                }
+                self.nodes_info["rope_scaling"] = rope_config
+                logger.info(f"Distributed RoPE scaling configured: {max_pos} -> {target_ctx}")
 
         servicer = CoordinatorService()
         self.server = GRPCServer(port=self.port, servicer=servicer)
@@ -1048,8 +1472,12 @@ class Coordinator:
             events = list(self._request_tracker._events.values())
         if events:
             logger.info(f"Phase 2: Waiting for {len(events)} in-flight requests...")
+            deadline = time.monotonic() + 30.0
             for event in events:
-                event.wait(timeout=30.0)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                event.wait(timeout=remaining)
 
         # Phase 3: Persist cache if enabled
         if self._cache_persistence and self._cache_persistence._settings.enabled:
@@ -1140,6 +1568,11 @@ class Coordinator:
         self.record_metric("total_requests", 1)
         start_time = time.time()
 
+        # Generation span
+        from distllm.observability.spans import async_span_generation, record_ttft
+        prompt_len = len(self.tokenizer.encode(prompt)) if self.tokenizer else 0
+        tenant = "default"
+
         try:
             # Tokenize in thread pool
             input_ids = await asyncio.to_thread(
@@ -1148,7 +1581,11 @@ class Coordinator:
 
             if self.node_order:
                 input_ids = input_ids.to("cpu")
-                generated_ids = input_ids.clone()
+                prompt_len = input_ids.shape[1]
+                total_capacity = prompt_len + max_new_tokens
+                generated_ids = torch.zeros(1, total_capacity, dtype=torch.long)
+                generated_ids[:, :prompt_len] = input_ids
+                gen_pos = prompt_len
 
                 node_kv_caches: Dict[str, Optional[List]] = {
                     nid: None for nid in self.node_order
@@ -1161,10 +1598,13 @@ class Coordinator:
                     and active_method in ("draft_model", "medusa", "ngram")
                 )
 
+                prefill_start = time.monotonic()
+                ttft_recorded = None
+
                 step = 0
                 while step < max_new_tokens:
-                    step_input = generated_ids if step == 0 else generated_ids[:, -1:]
-                    request_id = str(uuid.uuid4())
+                    step_input = generated_ids[:, :gen_pos] if gen_pos == prompt_len else generated_ids[:, gen_pos-1:gen_pos]
+                    step_request_id = str(uuid.uuid4())
 
                     draft_tokens = None
                     if use_speculative:
@@ -1181,7 +1621,7 @@ class Coordinator:
                             )
 
                     logits = await self._pipeline.run_pipeline_async(
-                        step_input, node_kv_caches, request_id,
+                        step_input, node_kv_caches, step_request_id,
                         draft_tokens=draft_tokens if use_speculative else None,
                     )
 
@@ -1197,40 +1637,56 @@ class Coordinator:
                             draft_tokens, logits, self.tokenizer,
                         )
                         for token_id in accepted_tokens:
-                            generated_ids = torch.cat([generated_ids, torch.tensor([[token_id]])], dim=1)
+                            generated_ids[:, gen_pos] = token_id
+                            gen_pos += 1
                         if next_token > 0 and next_token != self.tokenizer.eos_token_id:
-                            generated_ids = torch.cat([generated_ids, torch.tensor([[next_token]])], dim=1)
+                            generated_ids[:, gen_pos] = next_token
+                            gen_pos += 1
                         elif next_token == self.tokenizer.eos_token_id:
-                            generated_ids = torch.cat([generated_ids, torch.tensor([[next_token]])], dim=1)
+                            generated_ids[:, gen_pos] = next_token
+                            gen_pos += 1
                             break
                         step += accepted_count + (1 if next_token > 0 else 0)
                     else:
                         next_token = self._sample(logits[:, -1, :], temperature=temperature, top_p=top_p, top_k=top_k)
-                        generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0)], dim=1)
+                        generated_ids[:, gen_pos] = next_token.item()
+                        gen_pos += 1
                         step += 1
                         if next_token.item() == self.tokenizer.eos_token_id:
                             break
 
                 result = await asyncio.to_thread(
-                    self.tokenizer.decode, generated_ids[0], skip_special_tokens=True
+                    self.tokenizer.decode, generated_ids[0, :gen_pos], skip_special_tokens=True
                 )
+                tokens_generated = gen_pos - prompt_len
             else:
                 result = await asyncio.to_thread(
                     self._generate_local_sync, prompt, max_new_tokens, temperature, top_p
                 )
+                tokens_generated = len(self.tokenizer.encode(result)) - len(self.tokenizer.encode(prompt))
 
             elapsed = time.time() - start_time
-            tokens_generated = len(self.tokenizer.encode(result)) - len(self.tokenizer.encode(prompt))
             self.record_metric("total_tokens_generated", tokens_generated)
             self.record_metric("total_generation_time", elapsed)
+
+            # Prometheus exporter updates (was missing)
+            if self.metrics_exporter:
+                self.metrics_exporter.tokens_generated.inc(tokens_generated)
+                self.metrics_exporter.token_latency.observe(elapsed)
+                if elapsed > 0:
+                    self.metrics_exporter.tokens_per_second.set(tokens_generated / elapsed)
 
             return result
 
         except (NodeUnreachableError, OOMError, GRPCTimeoutError, NodeError) as e:
             self.record_metric("errors", 1)
+            if self.metrics_exporter:
+                self.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()
             raise
         except Exception as e:
             self.record_metric("errors", 1)
+            if self.metrics_exporter:
+                self.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()
             raise
 
         finally:

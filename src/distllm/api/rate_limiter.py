@@ -1,8 +1,8 @@
 """Token bucket rate limiter for API requests."""
 
 import time
-from collections import defaultdict
-from typing import Dict, Optional, Tuple
+from collections import defaultdict, OrderedDict
+from typing import Dict, List, Optional, Tuple
 
 
 class TokenBucket:
@@ -72,16 +72,16 @@ class RateLimiter:
         self.burst_multiplier = burst_multiplier
         self.max_clients = max_clients  # Security: Prevent unbounded memory growth
         self._buckets: Dict[str, Dict[str, TokenBucket]] = defaultdict(dict)
-        self._access_order: List[str] = []  # For LRU eviction
+        self._access_order: OrderedDict[str, bool] = OrderedDict()
 
     def _get_bucket(self, client_id: str, endpoint: str) -> TokenBucket:
         """Get or create a token bucket for a client+endpoint."""
         if client_id not in self._buckets:
             # Security: LRU eviction when max clients reached
             if len(self._buckets) >= self.max_clients:
-                oldest = self._access_order.pop(0)
+                oldest, _ = self._access_order.popitem(last=False)
                 self._buckets.pop(oldest, None)
-            self._access_order.append(client_id)
+            self._access_order[client_id] = True
 
         if endpoint not in self._buckets[client_id]:
             rpm = self.endpoint_limits.get(endpoint, self.default_rpm)
@@ -102,10 +102,8 @@ class RateLimiter:
             True if allowed, False if rate limited.
         """
         bucket = self._get_bucket(client_id, endpoint)
-        # Update access order for LRU
-        if client_id in self._access_order:
-            self._access_order.remove(client_id)
-            self._access_order.append(client_id)
+        # Update access order for LRU — O(1) with OrderedDict
+        self._access_order.move_to_end(client_id)
         return bucket.consume()
 
     def get_limits(self, client_id: str, endpoint: str) -> Tuple[int, int, float]:

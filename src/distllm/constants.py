@@ -38,4 +38,15 @@ MAX_CLIENTS: int = 10000
 # --- Security ---
 TENSOR_MAX_DIMS: int = 8
 TENSOR_MAX_DIM_SIZE: int = 65536
-TENSOR_MAX_TOTAL_BYTES: int = 64 * 1024 * 1024  # 64 MiB
+TENSOR_MAX_TOTAL_BYTES: int = 4 * 1024 * 1024 * 1024  # 4 GiB (configurable via env var DISTLLM_MAX_TENSOR_BYTES)
+
+def get_tensor_max_bytes() -> int:
+    """Return TENSOR_MAX_TOTAL_BYTES, overridable via environment variable."""
+    import os
+    env_val = os.environ.get("DISTLLM_MAX_TENSOR_BYTES")
+    if env_val is not None:
+        try:
+            return int(env_val)
+        except (ValueError, TypeError):
+            pass
+    return TENSOR_MAX_TOTAL_BYTES

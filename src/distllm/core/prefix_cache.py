@@ -1,8 +1,13 @@
-"""Hash-based LRU prefix cache for token sequences."""
+"""Hash-based LRU prefix cache for token sequences with memory-based limits."""
 
 import time
+import sys
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+
+# Default memory budget: 512 MiB
+_DEFAULT_MEMORY_BUDGET_BYTES = 512 * 1024 * 1024
 
 
 class PrefixCache:
@@ -12,23 +17,66 @@ class PrefixCache:
     conversation history). Returns the longest matching cached prefix so
     the caller can skip recomputing those tokens.
 
-    Uses a rolling polynomial hash for O(n) lookup instead of O(n) SHA-256
-    computations. Each prefix length gets one hash computed incrementally.
+    Uses memory-based limits instead of a hard 1024-entry limit.
+    Dynamic budget: tracks total bytes of stored KV data and evicts LRU
+    entries when the budget is exceeded.
 
     In pipeline parallelism, each node maintains its own prefix cache
     since KV cache is split across machines.
     """
 
-    # Polynomial hash parameters (large prime modulus, random-ish base)
     _HASH_BASE = 31337
-    _HASH_MOD = (1 << 61) - 1  # Mersenne prime for fast modulo
+    _HASH_MOD = (1 << 61) - 1
 
-    def __init__(self, max_entries: int = 1024, min_prefix_len: int = 16):
-        self.max_entries = max_entries
+    def __init__(
+        self,
+        max_entries: int = 0,
+        min_prefix_len: int = 16,
+        memory_budget_bytes: int = _DEFAULT_MEMORY_BUDGET_BYTES,
+        paged_attention_mgr: Optional[object] = None,
+    ):
         self.min_prefix_len = min_prefix_len
+        self._paged_attention_mgr = paged_attention_mgr
         self._cache: OrderedDict[int, dict] = OrderedDict()
         self._hits = 0
         self._misses = 0
+
+        # Memory-based limits
+        self._memory_budget = memory_budget_bytes
+        self._total_memory_bytes = 0
+        self._max_entries_soft = max_entries or 0  # 0 = unlimited soft cap
+
+    @property
+    def max_entries(self) -> int:
+        return self._max_entries_soft or len(self._cache) + 1
+
+    @max_entries.setter
+    def max_entries(self, value: int) -> None:
+        self._max_entries_soft = value
+
+    def _estimate_entry_memory(self, kv_data: dict) -> int:
+        """Estimate memory used by a prefix entry's KV data."""
+        total = 0
+        if isinstance(kv_data, dict):
+            for v in kv_data.values():
+                if hasattr(v, 'element_size') and hasattr(v, 'numel'):
+                    total += v.element_size() * v.numel()
+                elif isinstance(v, tuple) and v:
+                    for t in v:
+                        if hasattr(t, 'element_size') and hasattr(t, 'numel'):
+                            total += t.element_size() * t.numel()
+        elif isinstance(kv_data, list):
+            for t in kv_data:
+                if hasattr(t, 'element_size') and hasattr(t, 'numel'):
+                    total += t.element_size() * t.numel()
+        return total
+
+    def _evict_until_fit(self, needed_bytes: int) -> None:
+        """Evict LRU entries until enough memory is free."""
+        while self._cache and (self._total_memory_bytes + needed_bytes > self._memory_budget):
+            _key, entry = self._cache.popitem(last=False)
+            entry_bytes = self._estimate_entry_memory(entry.get("kv_data", {}))
+            self._total_memory_bytes = max(0, self._total_memory_bytes - entry_bytes)
 
     def lookup(self, token_ids: List[int]) -> Tuple[int, Optional[dict]]:
         """Find the longest cached prefix.
@@ -99,6 +147,9 @@ class PrefixCache:
             "kv_data": kv_data,
             "stored_at": time.time(),
         }
+        entry_bytes = self._estimate_entry_memory(kv_data)
+        self._total_memory_bytes += entry_bytes
+        self._evict_until_fit(0)
 
     def evict(self, token_ids: List[int]) -> bool:
         """Remove a specific prefix from the cache.
@@ -131,4 +182,13 @@ class PrefixCache:
             "prefix_cache_hits": self._hits,
             "prefix_cache_misses": self._misses,
             "prefix_cache_hit_rate": round(self.hit_rate, 4),
+            "prefix_cache_memory_bytes": self._total_memory_bytes,
+            "prefix_cache_memory_budget": self._memory_budget,
+            "prefix_cache_memory_util": round(
+                self._total_memory_bytes / max(self._memory_budget, 1), 4
+            ),
         }
+
+    def adjust_memory_budget(self, new_budget_bytes: int) -> None:
+        self._memory_budget = new_budget_bytes
+        self._evict_until_fit(0)

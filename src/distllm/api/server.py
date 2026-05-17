@@ -14,10 +14,16 @@ from distllm.core.coordinator import Coordinator
 from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware
 from distllm.api.rate_limiter import RateLimiter
 from distllm.api.rate_limit_middleware import RateLimitMiddleware
+from distllm.api.observability_middleware import ObservabilityMiddleware
 from distllm.core.monitor import SystemMonitor
 from distllm.config.settings import DistLLMSettings
 from distllm.config.loader import load_config_file
 from distllm.communication.grpc import set_debug_mode
+from distllm.observability.tracing import setup_tracing
+from distllm.observability.logging import setup_logging
+from distllm.observability.exporter import DistLLMPrometheusExporter
+from distllm.monitoring.anomaly_detector import AnomalyDetector
+from distllm.scheduling.cost_aware_scaler import GPUCostTracker
 from loguru import logger
 
 # Re-export route routers
@@ -27,6 +33,14 @@ from distllm.api.routes import (
     embeddings_router,
     adapters_router,
     health_router,
+    versions_router,
+    multi_model_router,
+    batch_router,
+    audio_router,
+    images_router,
+    moderations_router,
+    files_router,
+    fine_tuning_router,
 )
 
 # Re-export models from route modules for backward compatibility
@@ -204,6 +218,59 @@ monitor: Optional[SystemMonitor] = None
 _startup_time: float = time.time()
 
 app.add_middleware(RequestIDMiddleware)
+
+# Observability globals
+metrics_exporter: Optional[DistLLMPrometheusExporter] = None
+cost_tracker: Optional[GPUCostTracker] = None
+anomaly_detector: Optional[AnomalyDetector] = None
+
+# Observability middleware (after RequestIDMiddleware, before AuthMiddleware)
+def _init_observability():
+    """Initialize tracing, logging, metrics exporter, cost tracker, anomaly detector."""
+    global metrics_exporter, cost_tracker, anomaly_detector
+
+    # Structured logging with OTel trace injection
+    setup_logging(level="INFO", json_format=True)
+
+    # OpenTelemetry tracing with head-based sampling (100% by default)
+    setup_tracing(
+        service_name="distllm-api",
+        sampling_strategy="head",
+        sampling_ratio=1.0,
+    )
+
+    # Prometheus metrics exporter
+    metrics_exporter = DistLLMPrometheusExporter()
+
+    # Cost tracker
+    cost_tracker = GPUCostTracker()
+
+    # Anomaly detector
+    anomaly_detector = AnomalyDetector(sigma_threshold=3.0)
+    anomaly_detector.register_metric("http_request_duration", window_size=60, sigma_threshold=3.0)
+    anomaly_detector.register_metric("http_error_rate", window_size=30, sigma_threshold=2.5)
+
+    # Wire anomaly callbacks to increment Prometheus counter
+    def _on_anomaly(event):
+        metrics_exporter.anomaly_detected_total.labels(
+            metric=event.metric, type="statistical_deviation"
+        ).inc()
+        logger.warning(f"Anomaly detected: {event.metric}={event.value:.2f} "
+                       f"(mean={event.mean:.2f}, sigma={event.deviation_sigma:.1f})")
+
+    anomaly_detector.on_anomaly(_on_anomaly)
+
+    # Add ObservabilityMiddleware
+    app.add_middleware(
+        ObservabilityMiddleware,
+        metrics_exporter=metrics_exporter,
+        cost_tracker=cost_tracker,
+        anomaly_detector=anomaly_detector,
+    )
+
+
+_init_observability()
+
 app.add_middleware(AuthMiddleware)
 
 
@@ -319,6 +386,14 @@ app.include_router(completion_router)
 app.include_router(embeddings_router)
 app.include_router(adapters_router)
 app.include_router(health_router)
+app.include_router(versions_router)
+app.include_router(multi_model_router)
+app.include_router(batch_router)
+app.include_router(audio_router)
+app.include_router(images_router)
+app.include_router(moderations_router)
+app.include_router(files_router)
+app.include_router(fine_tuning_router)
 
 
 def _build_quantization_config(settings: DistLLMSettings):
@@ -431,6 +506,9 @@ def create_coordinator(
         quantization_config=quantization_config,
         speculative_config=speculative_config,
         lora_config=lora_config,
+        embedding_config=getattr(settings, "embedding", None) if settings else None,
+        version_config=getattr(settings, "version", None) if settings else None,
+        metrics_exporter=metrics_exporter,
     )
 
     if local:

@@ -34,7 +34,7 @@ class ModelRegistry:
         """Register a model. Raises ValueError if max_models exceeded."""
         with self._lock:
             if name not in self._models and len(self._models) >= self._max_models:
-                raise ModelNotFoundError(name,
+                raise ValueError(
                     f"Maximum models ({self._max_models}) already registered. "
                     f"Remove a model before registering '{name}'."
                 )

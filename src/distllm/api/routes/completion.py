@@ -36,6 +36,7 @@ class CompletionRequest(BaseModel):
     top_k: int = Field(default=0, ge=0, description="Top-k sampling (0 = disabled)")
     stream: bool = Field(default=False, description="Whether to stream the response")
     priority: int = Field(default=2, ge=0, le=3, description="Request priority: 0=critical, 1=high, 2=normal, 3=low")
+    user: Optional[str] = Field(default=None, description="Tenant/user identifier for rate limiting")
 
 
 class CompletionChoice(BaseModel):
@@ -57,6 +58,10 @@ class CompletionResponse(BaseModel):
 @router.post("/v1/completions")
 async def completions(request: Request, body: CompletionRequest):
     """Text completions endpoint."""
+    # Set observability state for middleware
+    request.state.model = body.model
+    request.state.tenant = body.user or "default"
+
     coord = g.coordinator
     if coord is None:
         raise HTTPException(status_code=503, detail="No model loaded")

@@ -1,0 +1,87 @@
+{{- range $pool := .Values.nodePools }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "distributed-llm.fullname" $ }}-worker-{{ $pool.name }}
+  labels:
+    {{- include "distributed-llm.labels" $ | nindent 4 }}
+    {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 4 }}
+spec:
+  serviceName: {{ include "distributed-llm.fullname" $ }}-worker-{{ $pool.name }}
+  replicas: {{ $pool.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ $.Values.updateStrategy.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["distllm-node"]
+          args:
+            - --node-id
+            - "$(POD_NAME)"
+            - --model
+            - {{ $.Values.model.name | quote }}
+            - --start-layer
+            - {{ $pool.startLayer | quote }}
+            - --end-layer
+            - {{ $pool.endLayer | quote }}
+            - --total-layers
+            - {{ $.Values.model.totalLayers | default 32 | quote }}
+            - --coordinator-host
+            - {{ include "distributed-llm.fullname" $ }}-coordinator
+            - --coordinator-port
+            - {{ $.Values.coordinator.grpcPort | quote }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: DISTLLM_MODEL
+              value: {{ $.Values.model.name | quote }}
+            - name: DISTLLM_DTYPE
+              value: {{ $.Values.model.dtype | quote }}
+            {{- if $.Values.quantization.enabled }}
+            - name: DISTLLM_QUANTIZATION
+              value: {{ $.Values.quantization.method | quote }}
+            - name: DISTLLM_QUANT_BITS
+              value: {{ $.Values.quantization.bits | quote }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 30"]
+          resources:
+            requests:
+              cpu: {{ $pool.resources.requests.cpu | quote }}
+              memory: {{ $pool.resources.requests.memory | quote }}
+              {{ $pool.gpuType | default "nvidia.com/gpu" }}: {{ $pool.gpuCount | default 1 | quote }}
+            limits:
+              cpu: {{ $pool.resources.limits.cpu | quote }}
+              memory: {{ $pool.resources.limits.memory | quote }}
+              {{ $pool.gpuType | default "nvidia.com/gpu" }}: {{ $pool.resources.limits.gpu | default $pool.gpuCount | default 1 | quote }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

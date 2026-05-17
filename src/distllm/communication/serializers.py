@@ -5,8 +5,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 from distllm.communication.node_pb2 import Tensor, KVCache as ProtoKVCache, KVLayerCache
-from distllm.core.kv_cache import KVCache
-from distllm.constants import TENSOR_MAX_DIMS as MAX_TENSOR_DIMS, TENSOR_MAX_DIM_SIZE as MAX_DIM_SIZE, TENSOR_MAX_TOTAL_BYTES as MAX_TENSOR_BYTES
+from distllm.constants import TENSOR_MAX_DIMS as MAX_TENSOR_DIMS, TENSOR_MAX_DIM_SIZE as MAX_DIM_SIZE, get_tensor_max_bytes
 from distllm.errors import SerializationError
 
 
@@ -42,7 +41,10 @@ def tensor_to_proto(tensor: torch.Tensor) -> Tensor:
     if tensor is None:
         return Tensor(data=[], shape=[], dtype="none")
 
-    t = tensor.cpu().detach()
+    t = tensor.detach()
+    if t.is_cuda:
+        t = t.to('cpu', non_blocking=True)
+        torch.cuda.current_stream().synchronize()
     dtype_str = str(t.dtype)
     if not dtype_str.startswith("torch."):
         dtype_str = f"torch.{dtype_str}"
@@ -116,10 +118,11 @@ def _validate_tensor_shape(shape: list, dtype_str: str, raw_data_len: int) -> in
         expected_elements *= dim
     expected_bytes = expected_elements * item_size
 
-    if expected_bytes > MAX_TENSOR_BYTES:
+    max_bytes = get_tensor_max_bytes()
+    if expected_bytes > max_bytes:
         raise SerializationError(
             f"Tensor size {expected_bytes} bytes exceeds maximum allowed "
-            f"({MAX_TENSOR_BYTES} bytes) for shape {shape} with dtype {dtype_str}"
+            f"({max_bytes} bytes) for shape {shape} with dtype {dtype_str}"
         )
 
     if raw_data_len != expected_bytes:
@@ -187,8 +190,9 @@ def proto_to_tensor(proto: Tensor, device: str = "cpu") -> torch.Tensor:
     return tensor.to(device)
 
 
-def kv_cache_to_proto(cache: KVCache) -> ProtoKVCache:
+def kv_cache_to_proto(cache: "KVCache") -> ProtoKVCache:
     """Serialize KVCache to protobuf KVCache message."""
+    from distllm.core.kv_cache import KVCache
     layers = []
     for k, v in cache.cache:
         layers.append(KVLayerCache(
@@ -198,8 +202,100 @@ def kv_cache_to_proto(cache: KVCache) -> ProtoKVCache:
     return ProtoKVCache(layers=layers)
 
 
-def proto_to_kv_cache(proto: ProtoKVCache, device: str = "cpu") -> KVCache:
+_activation_quant_enabled = True
+_activation_quant_bits = 8
+_activation_quant_fp8 = False  # Use FP8 instead of INT when available
+
+
+def set_activation_quant(enabled: bool, bits: int = 8, use_fp8: bool = False) -> None:
+    global _activation_quant_enabled, _activation_quant_bits, _activation_quant_fp8
+    _activation_quant_enabled = enabled
+    _activation_quant_bits = bits
+    _activation_quant_fp8 = use_fp8 and bits == 8 and torch.cuda.is_available() and hasattr(torch, 'float8_e4m3fn')
+
+
+def quantize_activation(tensor: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """Quantize activations for efficient inter-node transfer (FP8, INT8, or INT4).
+
+    For FP8 e4m3: native float8 cast (halves bandwidth vs fp16, 1:1 with fp16 range).
+    For INT8: per-tensor absmax symmetric quantization.
+    For INT4: per-group asymmetric quantization with 32-element groups.
+
+    Args:
+        tensor: Activation tensor (fp16/bf16/fp32).
+
+    Returns:
+        (quantized_tensor, scale) or (original, None) if disabled.
+    """
+    if not _activation_quant_enabled:
+        return tensor, None
+
+    if _activation_quant_fp8 and _activation_quant_bits == 8:
+        if tensor.dtype == torch.float16 and hasattr(torch, 'float8_e4m3fn'):
+            return tensor.to(torch.float8_e4m3fn), None
+        return tensor, None
+
+    if _activation_quant_bits == 8:
+        scale = tensor.abs().max().clamp(min=1e-5) / 127.0
+        quantized = (tensor / scale).round().clamp(-128, 127).to(torch.int8)
+        return quantized, scale
+
+    # INT4 per-group quantization (32-element groups)
+    if _activation_quant_bits == 4:
+        orig_shape = tensor.shape
+        flat = tensor.flatten()
+        group_size = 32
+        pad = (group_size - flat.numel() % group_size) % group_size
+        if pad > 0:
+            flat = torch.cat([flat, torch.zeros(pad, dtype=flat.dtype, device=flat.device)])
+        groups = flat.view(-1, group_size)
+        scale = groups.abs().max(dim=-1, keepdim=True).values.clamp(min=1e-5) / 7.0
+        quantized = (groups / scale).round().clamp(-8, 7).to(torch.int8)
+        # Strip padding from output
+        out_flat = quantized.flatten()[:orig_shape.numel()] if pad > 0 else quantized.flatten()
+        return out_flat.reshape(orig_shape), scale.reshape(-1)
+
+    return tensor, None
+
+
+def dequantize_activation(quantized: torch.Tensor, scale: Optional[torch.Tensor], orig_dtype: torch.dtype) -> torch.Tensor:
+    """Dequantize activations back to original precision.
+
+    Args:
+        quantized: Quantized activation or original tensor.
+        scale: Scale factor (None if not quantized).
+        orig_dtype: Original dtype to restore.
+
+    Returns:
+        Dequantized tensor in original dtype.
+    """
+    if _activation_quant_fp8 and not isinstance(quantized, torch.Tensor):
+        return quantized
+
+    if _activation_quant_fp8 and quantized.dtype == torch.float8_e4m3fn:
+        return quantized.to(orig_dtype)
+
+    if scale is None:
+        return quantized.to(orig_dtype) if quantized.dtype != orig_dtype else quantized
+
+    # INT4: per-group dequant
+    if scale.dim() > 0 and scale.numel() > 1:
+        group_size = 32
+        flat_quant = quantized.flatten()
+        num_groups = (flat_quant.numel() + group_size - 1) // group_size
+        pad = num_groups * group_size - flat_quant.numel()
+        if pad > 0:
+            flat_quant = torch.cat([flat_quant, torch.zeros(pad, dtype=flat_quant.dtype, device=flat_quant.device)])
+        groups = flat_quant.view(-1, group_size).to(orig_dtype)
+        result = (groups * scale.unsqueeze(-1)).flatten()[:flat_quant.numel() - pad] if pad > 0 else (groups * scale.unsqueeze(-1)).flatten()
+        return result.reshape(quantized.shape).to(orig_dtype)
+
+    return (quantized.to(orig_dtype) * scale).to(orig_dtype)
+
+
+def proto_to_kv_cache(proto: ProtoKVCache, device: str = "cpu") -> "KVCache":
     """Deserialize protobuf KVCache message to KVCache."""
+    from distllm.core.kv_cache import KVCache
     if len(proto.layers) > MAX_KV_CACHE_LAYERS:
         raise ValueError(
             f"KV cache has {len(proto.layers)} layers, maximum allowed is {MAX_KV_CACHE_LAYERS}"

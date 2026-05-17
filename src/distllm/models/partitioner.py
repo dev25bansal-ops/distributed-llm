@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import inspect
+from dataclasses import dataclass
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from loguru import logger
 from typing import List, Tuple, Optional, Dict, Set
@@ -11,6 +12,10 @@ import gc
 from distllm.core.kv_cache import KVCache
 from distllm.config.loader import QuantizationConfig
 from distllm.errors import ModelLoadError
+from distllm.core.architecture_registry import (
+    get_architecture_info,
+    get_trusted_models,
+)
 
 DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
 
@@ -54,16 +59,13 @@ def build_quantization_config(quant_config: Optional[QuantizationConfig]) -> Opt
     return None
 
 # Models known to require trust_remote_code=True for legitimate reasons
-TRUSTED_MODELS_ALLOWLIST: Set[str] = {
-    "qwen", "qwen2", "qwen3",
+# Auto-populated from the ArchitectureRegistry; extend with additional entries as needed.
+_TRUSTED_FROM_REGISTRY = get_trusted_models()
+TRUSTED_MODELS_ALLOWLIST: Set[str] = _TRUSTED_FROM_REGISTRY | {
     "baichuan", "baichuan2",
     "chatglm", "chatglm2", "chatglm3",
     "internlm", "internlm2",
-    "deepseek", "deepseek-v2",
-    "phi", "phi-3",
     "stablelm",
-    "gemma2",
-    "mixtral",
     "jina",
 }
 
@@ -80,6 +82,12 @@ def _should_trust_remote_code(model_name: str, trust_remote_code: Optional[bool]
     """
     if trust_remote_code is not None:
         return trust_remote_code
+
+    # Check ArchitectureRegistry first (covers DeepSeek, Phi-3, etc.)
+    from distllm.core.architecture_registry import lookup_by_model_name
+    arch_info = lookup_by_model_name(model_name)
+    if arch_info is not None and arch_info.trust_remote_code:
+        return True
 
     # Extract the model name part (last segment of HF repo path)
     model_lower = model_name.lower().split("/")[-1]
@@ -339,6 +347,7 @@ class ModelPartitioner:
             raise ModelLoadError(self.model_name, "Cannot find transformer layers")
 
         self.layers = nn.ModuleList()
+        self.assigned_layers = []
         for i in range(start_layer, min(end_layer + 1, total_layers)):
             self.layers.append(layers_attr[i].to(device))
             self.assigned_layers.append(i)
@@ -392,15 +401,14 @@ class ModelPartitioner:
         total_len = past_len + seq_len
 
         device = hidden_states.device
+        # Use 2D causal mask (not expanded to 4D) to save memory.
+        # Each layer will expand it internally if needed, or use FlashAttention.
         if self._causal_mask is None or self._causal_mask.shape[0] < total_len or self._causal_mask_device != str(device):
-            max_len = max(total_len * 2, 4096)
             self._causal_mask = torch.tril(
-                torch.ones(max_len, max_len, device=device, dtype=torch.bool)
+                torch.ones(max(total_len, 4096), max(total_len, 4096), device=device, dtype=torch.bool)
             )
             self._causal_mask_device = str(device)
-
-        causal_mask = self._causal_mask[:total_len, :total_len]
-        attention_mask_4d = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, total_len, total_len)
+        attention_mask_4d = self._causal_mask[:total_len, :total_len]
 
         for i, layer in enumerate(self.layers):
             layer_past = None
@@ -611,4 +619,267 @@ def get_model_info(model_name: str, trust_remote_code: Optional[bool] = None) ->
         "num_attention_heads": config.num_attention_heads,
         "num_key_value_heads": getattr(config, 'num_key_value_heads', config.num_attention_heads),
         "vocab_size": config.vocab_size,
+        "rope_scaling": getattr(config, 'rope_scaling', None),
+        "max_position_embeddings": getattr(config, 'max_position_embeddings', 2048),
+        "head_dim": getattr(config, 'hidden_size', 4096) // getattr(config, 'num_attention_heads', 32),
     }
+
+
+# --- RoPE Scaling for Long Context (128K+) ---
+
+def build_rope_scaling_config(
+    model_type: str = "llama",
+    original_max_pos: int = 4096,
+    target_max_pos: int = 131072,
+    scaling_type: str = "yarn",
+    rope_theta: float = 10000.0,
+    attention_head_dim: int = 128,
+) -> dict:
+    """Build RoPE scaling configuration for extending context to 128K+.
+
+    Supports NTK-aware, YaRN, and linear scaling methods.
+
+    Args:
+        model_type: Model architecture (llama, mistral, gemma, qwen2).
+        original_max_pos: Original max position embeddings (e.g., 4096).
+        target_max_pos: Desired max position embeddings (e.g., 131072).
+        scaling_type: Scaling method: "linear", "ntk", "ntk_aware", "yarn".
+        rope_theta: Base theta for RoPE (default 10000.0).
+        attention_head_dim: Dimension per attention head (default 128).
+
+    Returns:
+        Dict suitable for setting model config's rope_scaling field.
+
+    Raises:
+        ValueError: If scaling_type is not recognized.
+    """
+    scale = target_max_pos / original_max_pos
+
+    if scaling_type == "linear":
+        return {
+            "type": "linear",
+            "factor": scale,
+        }
+
+    if scaling_type in ("ntk", "ntk_aware"):
+        rope_theta_scaled = rope_theta * (scale ** (attention_head_dim / (attention_head_dim - 2)))
+        return {
+            "type": "ntk",
+            "factor": scale,
+            "rope_theta": rope_theta_scaled,
+            "original_max_position_embeddings": original_max_pos,
+        }
+
+    if scaling_type == "yarn":
+        return {
+            "type": "yarn",
+            "factor": scale,
+            "original_max_position_embeddings": original_max_pos,
+            "attention_factor": 1.0,
+            "beta_fast": 32,
+            "beta_slow": 1,
+            "mscale": 1.0,
+            "mscale_all_dim": 1.0,
+        }
+
+    raise ValueError(f"Unknown RoPE scaling type: {scaling_type}. Supported: linear, ntk, ntk_aware, yarn")
+
+
+def apply_rope_scaling(
+    model,
+    target_context_len: int = 131072,
+    scaling_type: str = "yarn",
+) -> bool:
+    """Apply RoPE scaling to a loaded model for extended context.
+
+    Modifies the model's config in-place and re-initializes RoPE
+    embeddings if possible.
+
+    Args:
+        model: Loaded HuggingFace model.
+        target_context_len: Desired context window length.
+        scaling_type: Scaling method ("linear", "ntk", "ntk_aware", "yarn").
+
+    Returns:
+        True if scaling was applied, False if model doesn't support it.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        logger.warning("Model has no config, cannot apply RoPE scaling")
+        return False
+
+    original_max_pos = getattr(config, "max_position_embeddings", 4096)
+    head_dim = getattr(config, "hidden_size", 4096) // getattr(config, "num_attention_heads", 32)
+    rope_theta = float(getattr(config, "rope_theta", 10000.0))
+    model_type = getattr(config, "model_type", "llama")
+
+    rope_config = build_rope_scaling_config(
+        model_type=model_type,
+        original_max_pos=original_max_pos,
+        target_max_pos=target_context_len,
+        scaling_type=scaling_type,
+        rope_theta=rope_theta,
+        attention_head_dim=head_dim,
+    )
+
+    config.max_position_embeddings = target_context_len
+    config.rope_scaling = rope_config
+
+    if "theta" in rope_config:
+        config.rope_theta = rope_config["theta"]
+
+    logger.info(
+        f"Applied {scaling_type} RoPE scaling: "
+        f"{original_max_pos} -> {target_context_len} "
+        f"(factor={target_context_len / original_max_pos:.1f}x)"
+    )
+    return True
+
+
+# --- Auto-Partitioning Optimizer ---
+
+@dataclass
+class PartitionProfile:
+    """Profiling results for a single layer assignment."""
+    node_id: str
+    start_layer: int
+    end_layer: int
+    vram_mb: float = 0.0
+    compute_ms: float = 0.0
+    communication_ms: float = 0.0
+    throughput: float = 0.0  # tokens/second
+
+
+def profile_partition_throughput(
+    model_name: str,
+    num_nodes: int,
+    batch_size: int = 1,
+    seq_len: int = 2048,
+    trust_remote_code: Optional[bool] = None,
+    gpu_info: Optional[Dict[str, List]] = None,
+) -> List[Tuple[int, int, float]]:
+    """Profile and find the optimal layer partition for max throughput.
+
+    Estimates each partition's throughput by considering:
+    - VRAM capacity per node (or equal split if not provided)
+    - Compute cost proportional to layers assigned
+    - Communication cost (proportional to activations sent between nodes)
+
+    Args:
+        model_name: HuggingFace model identifier.
+        num_nodes: Number of pipeline nodes.
+        batch_size: Micro-batch size for profiling.
+        seq_len: Sequence length for profiling.
+        trust_remote_code: Whether to trust remote HF code.
+        gpu_info: Optional dict of node_id -> list of GPUInfo objects.
+
+    Returns:
+        List of (start_layer, end_layer, estimated_throughput) sorted by
+        throughput descending.
+    """
+    trust = _should_trust_remote_code(model_name, trust_remote_code)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
+    total_layers = config.num_hidden_layers or 32
+    hidden_size = config.hidden_size or 4096
+    num_heads = config.num_attention_heads or 32
+    head_dim = hidden_size // num_heads
+
+    # Estimate per-layer compute cost (relative)
+    per_layer_flops = (
+        4 * batch_size * seq_len * hidden_size * hidden_size  # MLP
+        + 2 * batch_size * seq_len * hidden_size * (num_heads * head_dim)  # Attention
+        + 4 * batch_size * seq_len * hidden_size  # LayerNorm + residual
+    )
+
+    # Activation size sent between nodes (bytes per step)
+    activation_bytes = batch_size * seq_len * hidden_size * 2  # fp16
+
+    results: List[Tuple[int, int, float, float, float, float]] = []
+
+    # Try multiple partition strategies and evaluate
+    strategies = [
+        ("equal", None),
+    ]
+
+    if gpu_info:
+        strategies.append(("gpu_aware", gpu_info))
+
+    for strategy_name, gpus in strategies:
+        if strategy_name == "equal":
+            partitions = partition_model_across_nodes(model_name, num_nodes, trust)
+        else:
+            result_dict = partition_model_gpu_aware(gpus, model_name, total_layers, trust)
+            partitions = [result_dict[nid] for nid in sorted(result_dict.keys())]
+
+        for start, end in partitions:
+            num_assigned_layers = end - start + 1
+
+            # Compute cost (proportional to FLOPs)
+            compute_cost = num_assigned_layers * per_layer_flops
+
+            # Communication cost (activation transfer)
+            comm_cost = activation_bytes  # one send per step
+
+            # Throughput = 1 / (compute + communication)
+            total_cost = compute_cost + comm_cost
+            throughput = 1.0 / max(total_cost, 1)
+
+            # VRAM estimate
+            vram_per_layer_mb = (
+                hidden_size * head_dim * 2 * 2  # K/V cache per layer (fp16)
+                + hidden_size * hidden_size * 4 * 2 / (1024 ** 2)  # weights (fp16)
+            )
+            estimated_vram_mb = num_assigned_layers * vram_per_layer_mb
+
+            results.append((
+                start, end, throughput, estimated_vram_mb, compute_cost, comm_cost
+            ))
+
+    # Sort by throughput descending
+    results.sort(key=lambda r: r[2], reverse=True)
+    return results
+
+
+def find_optimal_partition(
+    model_name: str,
+    num_nodes: int,
+    batch_size: int = 1,
+    seq_len: int = 2048,
+    trust_remote_code: Optional[bool] = None,
+    gpu_info: Optional[Dict[str, List]] = None,
+) -> List[Tuple[int, int]]:
+    """Find the optimal layer partition maximizing throughput.
+
+    Profiles multiple partition strategies and returns the best one.
+
+    Args:
+        Same as profile_partition_throughput.
+
+    Returns:
+        List of (start_layer, end_layer) tuples for the optimal partition.
+    """
+    profiles = profile_partition_throughput(
+        model_name, num_nodes, batch_size, seq_len,
+        trust_remote_code, gpu_info,
+    )
+    if not profiles:
+        return partition_model_across_nodes(model_name, num_nodes, trust_remote_code)
+
+    best_start, best_end = profiles[0][0], profiles[0][1]
+    # Use proportional allocation: faster layer counts get more layers
+    total_layers = AutoConfig.from_pretrained(
+        model_name,
+        trust_remote_code=_should_trust_remote_code(model_name, trust_remote_code),
+    ).num_hidden_layers
+
+    throughputs = {i * (total_layers // num_nodes): prof[2] for i, prof in enumerate(profiles[:num_nodes])}
+    total_throughput = sum(throughputs.values()) or 1.0
+    result = []
+    current = 0
+    for i in range(num_nodes):
+        fraction = throughputs.get(current, 1.0) / total_throughput
+        n_layers = max(1, int(total_layers * fraction)) if i < num_nodes - 1 else total_layers - current
+        end = min(current + n_layers - 1, total_layers - 1)
+        result.append((current, end))
+        current = end + 1
+    return result

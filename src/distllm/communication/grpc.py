@@ -23,7 +23,6 @@ from distllm.communication.node_pb2_grpc import (
     add_NodeServiceServicer_to_server,
     add_CoordinatorServiceServicer_to_server,
 )
-from distllm.core.kv_cache import KVCache
 from distllm.communication.serializers import tensor_to_proto, proto_to_tensor, kv_cache_to_proto, proto_to_kv_cache
 from distllm.errors import InputValidationError, SerializationError
 from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError, CircuitBreakerError
@@ -94,6 +93,7 @@ def _build_forward_response(
 
     Handles draft token verification and KV cache serialization.
     """
+    from distllm.core.kv_cache import KVCache  # lazy import to avoid circular dep
     response = ForwardPassResponse(
         request_id=request_id,
         output=tensor_to_proto(output),
@@ -582,12 +582,14 @@ class GRPCServer:
         if hasattr(servicer, 'ca_cert'):
             servicer.ca_cert = ca_cert
         options = [
-            ('grpc.max_send_message_length', 64 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 64 * 1024 * 1024),
+            ('grpc.max_send_message_length', 2 * 1024 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 2 * 1024 * 1024 * 1024),
+            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
         ]
         self.server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=max_workers),
             options=options,
+            compression=grpc.Compression.Gzip,
         )
 
     def start(self):
@@ -645,8 +647,9 @@ class NodeClient:
 
     def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: Optional[str] = None):
         options = [
-            ('grpc.max_send_message_length', 64 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 64 * 1024 * 1024),
+            ('grpc.max_send_message_length', 2 * 1024 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 2 * 1024 * 1024 * 1024),
+            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
             # Auto-reconnect options
             ('grpc.keepalive_time_ms', 30000),
             ('grpc.keepalive_timeout_ms', 10000),
@@ -667,17 +670,16 @@ class NodeClient:
                 else:
                     # Fallback to insecure if no certs found
                     logger.warning(f"No CA cert found for {host}:{port}, falling back to insecure")
-                    self.channel = grpc.insecure_channel(f"{host}:{port}", options=options)
+                    self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)
                     self.stub = NodeServiceStub(self.channel)
-                    self.max_retries = max_retries
-                    self.retry_delay = retry_delay
                     return
-            self.channel = grpc.secure_channel(f"{host}:{port}", credentials, options=options)
+            self.channel = grpc.aio.secure_channel(f"{host}:{port}", credentials, options=options)
         else:
-            self.channel = grpc.insecure_channel(f"{host}:{port}", options=options)
+            self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)
         self.stub = NodeServiceStub(self.channel)
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        return
 
     def health_check(self) -> HealthCheckResponse:
         """Check node health with retry."""
@@ -1194,8 +1196,9 @@ class AsyncNodeClient:
 
     def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: Optional[str] = None):
         options = [
-            ('grpc.max_send_message_length', 64 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 64 * 1024 * 1024),
+            ('grpc.max_send_message_length', 2 * 1024 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 2 * 1024 * 1024 * 1024),
+            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
             # Auto-reconnect options
             ('grpc.keepalive_time_ms', 30000),
             ('grpc.keepalive_timeout_ms', 10000),

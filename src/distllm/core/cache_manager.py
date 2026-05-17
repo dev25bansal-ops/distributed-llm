@@ -7,6 +7,7 @@ Extracted from the Coordinator class.
 from typing import Any, List, Optional, Tuple
 
 import torch
+from loguru import logger
 
 from distllm.core.prefix_cache import PrefixCache
 from distllm.core.chunked_prefill import ChunkState, maybe_chunk
@@ -202,6 +203,7 @@ class CacheManager:
 
         Builds an advertisement of local cache entries, sends it to a peer,
         receives the peer's advertisement, and merges missing entries.
+        Only fetches KV cache data when bandwidth is available.
 
         Returns:
             Number of new entries discovered.
@@ -217,49 +219,70 @@ class CacheManager:
         if peer is None:
             return 0
 
-        # Exchange advertisements via gossip client
-        # In production, gossip_client.exchange() would:
-        # 1. Resolve peer_id to host:port
-        # 2. Send our ad, receive peer's ads
-        # 3. Process missing entries
         try:
             peer_ad = self.gossip_client.exchange(peer, ad)
             if peer_ad:
                 # Process peer's advertisement
                 missing = self.gossip_protocol.process_advertisement(peer_ad)
 
-                # Request missing entries
+                # Request missing entries (bandwidth-aware)
                 if missing:
                     request = self.gossip_protocol.build_request(peer, missing)
                     response = self.gossip_client.request_entries(peer, request)
                     merged = self.gossip_protocol.process_response(response)
 
-                    # Store discovered entries in local prefix cache
+                    # Store discovered entries
                     for prefix_hash, entry_ref in response.get("cache_entries", {}).items():
-                        self._store_discovered_entry(prefix_hash, entry_ref)
+                        self._store_discovered_entry(prefix_hash, entry_ref, peer)
 
                     return merged
         except Exception:
-            # Gossip errors are non-fatal; log and continue
             pass
 
         return 0
 
-    def _store_discovered_entry(self, prefix_hash: str, entry_ref: str) -> None:
+    def fetch_from_peer(self, peer_id: str, prefix_hash: str, tokens: List[int]) -> Optional[dict]:
+        """Fetch a specific KV cache entry from a peer node.
+
+        Args:
+            peer_id: Peer node ID to fetch from.
+            prefix_hash: Hash of the prefix to fetch.
+            tokens: Original token sequence (for verification).
+
+        Returns:
+            KV cache data dict, or None if fetch failed.
+        """
+        if self.gossip_client is None:
+            return None
+
+        try:
+            kv_data = self.gossip_client.fetch_kv_cache(peer_id, prefix_hash)
+            if kv_data:
+                # Verify the fetched cache matches our token sequence
+                if self.prefix_cache is not None:
+                    self.prefix_cache.store(tokens, kv_data)
+                return kv_data
+        except Exception as e:
+            logger.debug(f"Failed to fetch cache from {peer_id}: {e}")
+
+        return None
+
+    def _store_discovered_entry(
+        self, prefix_hash: str, entry_ref: str, source_peer: str
+    ) -> None:
         """Store a cache entry discovered via gossip.
 
-        The entry_ref contains serialized KV cache data or a pointer
-        to fetch it from the peer node.
+        Records the entry in the gossip protocol's index and,
+        if we have the actual KV data, stores in the prefix cache.
 
         Args:
             prefix_hash: Hash of the token prefix.
             entry_ref: Reference to the KV cache data.
+            source_peer: Node ID of the source peer.
         """
         if self.gossip_protocol:
             self.gossip_protocol.store_local(prefix_hash, entry_ref)
 
-        # If we have the actual KV data, store in prefix cache
-        if self.prefix_cache and entry_ref:
-            # In production, this would deserialize and store the KV tensors
-            # For now, record the availability for future fetch
-            pass
+        # Update cache index with discovered entry location
+        if self.cache_index is not None:
+            self.cache_index.store(prefix_hash, source_peer, entry_ref)

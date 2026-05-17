@@ -1,0 +1,19 @@
+{{/*
+Post-install/upgrade notes
+*/}}
+1. Get the coordinator service URL:
+   kubectl get svc {{ include "distributed-llm.fullname" . }}-coordinator
+
+2. Access the API:
+   export POD_NAME=$(kubectl get pods -l "app.distllm.io/component=coordinator" -o jsonpath="{.items[0].metadata.name}")
+   kubectl port-forward $POD_NAME 8000:{{ .Values.coordinator.port }}
+   curl http://localhost:8000/health
+
+3. For rolling updates with zero downtime:
+   kubectl cordon <old-node>
+   kubectl drain <old-node> --delete-emptydir-data --ignore-daemonsets
+   helm upgrade {{ .Release.Name }} {{ .Chart.Name }}/ -f values.yaml --wait --timeout 10m
+   kubectl uncordon <old-node>
+
+4. Scale worker pools:
+   kubectl scale statefulset {{ include "distributed-llm.fullname" . }}-worker-pool-0 --replicas=3

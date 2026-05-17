@@ -26,6 +26,25 @@ class AlertRule:
 
 
 @dataclass
+class SLOConfig:
+    """Service Level Objective configuration.
+
+    Defines target thresholds for error budget, latency, and availability.
+    Error budget = 1 - (target / 100), e.g. 99.9% SLO = 0.1% error budget.
+    """
+    name: str = "distllm-api"
+    error_budget_target: float = 99.9  # percentage
+    latency_p99_target_s: float = 2.0
+    latency_p95_target_s: float = 1.0
+    availability_target: float = 99.95  # percentage
+
+    @property
+    def error_budget_ratio(self) -> float:
+        """Return error budget as a ratio (0.001 for 99.9% SLO)."""
+        return (100.0 - self.error_budget_target) / 100.0
+
+
+@dataclass
 class RecordingRule:
     """A Prometheus recording rule for pre-computed metrics."""
     record: str
@@ -116,6 +135,58 @@ def get_default_alerts() -> List[AlertRule]:
                 "description": "Current throughput is {{ $value }} tokens/s, less than half the 1-hour average.",
             },
         ),
+        # SLO-based alerts
+        AlertRule(
+            alert="SLOErrorBudgetBurn",
+            expr="1 - (rate(distllm_requests_total{status=\"success\"}[5m]) / rate(distllm_requests_total[5m])) > 0.001",
+            for_duration="1m",
+            labels={"severity": "critical", "slo": "error-budget"},
+            annotations={
+                "summary": "SLO error budget is being consumed too fast",
+                "description": "Error rate {{ $value | humanizePercentage }} exceeds 0.1% SLO budget.",
+            },
+        ),
+        AlertRule(
+            alert="SLOLatencyP99Breach",
+            expr="histogram_quantile(0.99, rate(distllm_request_latency_bucket[5m])) > 2",
+            for_duration="5m",
+            labels={"severity": "warning", "slo": "latency-p99"},
+            annotations={
+                "summary": "P99 latency SLO breach (>2s target)",
+                "description": "P99 latency is {{ $value }}s, exceeding the 2s SLO target.",
+            },
+        ),
+        AlertRule(
+            alert="SLOLatencyP95Breach",
+            expr="histogram_quantile(0.95, rate(distllm_request_latency_bucket[5m])) > 1",
+            for_duration="5m",
+            labels={"severity": "warning", "slo": "latency-p95"},
+            annotations={
+                "summary": "P95 latency SLO breach (>1s target)",
+                "description": "P95 latency is {{ $value }}s, exceeding the 1s SLO target.",
+            },
+        ),
+        # Anomaly detection alerts
+        AlertRule(
+            alert="AnomalousRequestDuration",
+            expr="distllm_anomaly_detected_total{metric=\"http_request_duration\"} > 0",
+            for_duration="2m",
+            labels={"severity": "warning", "type": "anomaly"},
+            annotations={
+                "summary": "Anomalous request duration detected",
+                "description": "Request duration deviates significantly from baseline ({{ $value }} anomalies in window).",
+            },
+        ),
+        AlertRule(
+            alert="AnomalousErrorRate",
+            expr="rate(distllm_anomaly_detected_total{metric=\"http_error_rate\"}[5m]) > 0.1",
+            for_duration="5m",
+            labels={"severity": "critical", "type": "anomaly"},
+            annotations={
+                "summary": "Anomalous error rate spike detected",
+                "description": "Error rate anomaly frequency is above baseline.",
+            },
+        ),
     ]
 
 
@@ -133,6 +204,23 @@ def get_default_recording_rules() -> List[RecordingRule]:
         RecordingRule(
             record="error_ratio:5m",
             expr="rate(distllm_errors_total[5m]) / rate(distllm_request_duration_seconds_count[5m])",
+        ),
+        # SLO recording rules
+        RecordingRule(
+            record="slo:error_budget_remaining_ratio:5m",
+            expr="1 - (rate(distllm_requests_total{status=\"success\"}[5m]) / rate(distllm_requests_total[5m]))",
+        ),
+        RecordingRule(
+            record="slo:latency_p99_s:5m",
+            expr="histogram_quantile(0.99, rate(distllm_request_latency_bucket[5m]))",
+        ),
+        RecordingRule(
+            record="slo:latency_p95_s:5m",
+            expr="histogram_quantile(0.95, rate(distllm_request_latency_bucket[5m]))",
+        ),
+        RecordingRule(
+            record="slo:availability_ratio:5m",
+            expr="avg(distllm_node_health == 0) / count(distllm_node_health)",
         ),
     ]
 

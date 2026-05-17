@@ -56,16 +56,22 @@ class Sequence:
 
 @dataclass
 class ScheduledBatch:
-    """A batch of sequences ready for one forward pass."""
+    """A batch of sequences ready for one forward pass.
+    
+    Uses ragged/flat token layout (no padding) for zero wasted GPU compute.
+    Each sequence's tokens are concatenated into a flat 1D tensor, with
+    seq_starts tracking per-sequence boundaries in the flat array.
+    """
     sequences: List[Sequence]
-    input_ids: torch.Tensor       # [total_tokens] — flattened for prefill, single token per seq for decode
+    input_ids: torch.Tensor       # [total_tokens] — flattened 1D, all tokens concatenated (no padding)
+    seq_starts: List[int]         # Start index in input_ids for each sequence
     seq_lengths: List[int]        # Per-sequence total length
     position_offsets: List[int]   # Cached KV length per sequence
     is_prefill: List[bool]        # Whether each seq is doing prefill vs decode
     request_ids: List[str]
-    speculative_enabled: bool = False  # Whether speculative decoding is active for this batch
-    batch_tags: Dict[str, object] = field(default_factory=dict)  # Metadata: length_bucket, avg_tokens_remaining, etc.
-    adapter_ids: List[Optional[str]] = field(default_factory=list)  # Per-sequence adapter IDs (S-LoRA)
+    speculative_enabled: bool = False
+    batch_tags: Dict[str, object] = field(default_factory=dict)
+    adapter_ids: List[Optional[str]] = field(default_factory=list)
 
     @property
     def batch_size(self) -> int:
@@ -75,6 +81,11 @@ class ScheduledBatch:
     def max_seq_len(self) -> int:
         return max(self.seq_lengths) if self.seq_lengths else 0
 
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens in the flat tensor (sum of all seq lengths)."""
+        return sum(self.seq_lengths) if self.seq_lengths else 0
+
 
 class BatchScheduler:
     """Continuous batch scheduler for distributed inference.
@@ -83,16 +94,23 @@ class BatchScheduler:
     1. All active (non-complete) sequences stay in the batch
     2. Fill remaining capacity with pending sequences
     3. Respect max_batch_size and max_tokens_per_batch limits
+
+    Supports dynamic token budgets from 32K to 128K tokens per batch,
+    auto-scaled based on GPU memory pressure. Integrates with PagedAttention
+    for efficient KV cache block allocation.
     """
 
     def __init__(
         self,
         max_batch_size: int = 32,
-        max_tokens_per_batch: int = 4096,
+        max_tokens_per_batch: int = 32768,
         model_info: Optional[dict] = None,
+        paged_attention_mgr: Optional[object] = None,
     ):
         self.max_batch_size = max_batch_size
-        self.max_tokens_per_batch = max_tokens_per_batch
+        self._base_tokens_per_batch = max_tokens_per_batch
+        self.max_tokens_per_batch = self._compute_dynamic_budget(max_tokens_per_batch)
+        self._paged_attention_mgr = paged_attention_mgr
         self._pending_heap: list = []  # Min-heap of (priority, counter, Sequence)
         self._counter: int = 0  # Tiebreaker for FIFO within same priority
         self.active: Dict[str, Sequence] = {}
@@ -104,6 +122,40 @@ class BatchScheduler:
     def set_tensor_pool(self, pool: TensorPool) -> None:
         """Use an external tensor pool (for shared pool across schedulers)."""
         self._tensor_pool = pool
+
+    def set_paged_attention(self, mgr: object) -> None:
+        """Connect to PagedAttention manager for KV block-aware scheduling."""
+        self._paged_attention_mgr = mgr
+
+    def _compute_dynamic_budget(self, base_budget: int) -> int:
+        """Auto-scale token budget from 32K-128K based on available GPU memory.
+
+        If PagedAttention is available, uses pool utilization to adjust down
+        under memory pressure. Otherwise keeps the base budget.
+        """
+        budget = max(32768, min(base_budget, 131072))
+        if self._paged_attention_mgr is not None:
+            pool_util = getattr(self._paged_attention_mgr, 'pool_utilization', 0.0)
+            if pool_util > 0.85:
+                budget = int(budget * 0.75)
+            elif pool_util > 0.70:
+                budget = int(budget * 0.9)
+        return budget
+
+    def adjust_budget(self) -> None:
+        """Recompute the dynamic token budget based on current memory state.
+
+        Call this between batches to adapt to changing memory conditions.
+        """
+        self.max_tokens_per_batch = self._compute_dynamic_budget(self._base_tokens_per_batch)
+
+    def paged_kv_block_count(self, tokens: int) -> int:
+        """Estimate number of PagedAttention blocks needed for this many tokens."""
+        if self._paged_attention_mgr is not None:
+            block_size = getattr(self._paged_attention_mgr, 'block_size', 16)
+        else:
+            block_size = 16
+        return (tokens + block_size - 1) // block_size
 
     def add(self, seq: Sequence) -> None:
         """Add a new request to the pending queue (priority-ordered)."""
@@ -129,11 +181,16 @@ class BatchScheduler:
         while self._pending_heap:
             if len(batch_seqs) >= self.max_batch_size:
                 break
-            # Peek at highest priority (lowest number)
             _pri, _cnt, candidate = self._pending_heap[0]
             candidate_tokens = candidate.total_len
             if current_tokens + candidate_tokens > self.max_tokens_per_batch:
                 break
+            # Check PagedAttention block capacity if available
+            if self._paged_attention_mgr is not None:
+                blocks_needed = self.paged_kv_block_count(current_tokens + candidate_tokens)
+                pool = getattr(self._paged_attention_mgr, 'pool', None)
+                if pool is not None and blocks_needed > getattr(pool, 'total_blocks', blocks_needed + 1):
+                    break
             heapq.heappop(self._pending_heap)
             candidate.status = SequenceStatus.PREFILLING
             batch_seqs.append(candidate)
@@ -148,49 +205,36 @@ class BatchScheduler:
                 self.active[seq.request_id] = seq
                 self._total_tokens += seq.total_len
 
-        # 5. Build batch tensors
+        # 5. Build batch tensors (ragged/flat layout — no padding)
         request_ids = []
         seq_lengths = []
+        seq_starts = []
         position_offsets = []
         is_prefill_list = []
-        input_tokens: List[int] = []
+        flat_tokens: List[int] = []
 
         for seq in batch_seqs:
             request_ids.append(seq.request_id)
+            seq_starts.append(len(flat_tokens))
             is_prefill = (len(seq.generated_tokens) == 0 and seq.prefix_match_len == 0)
 
             if is_prefill:
-                # Prefill: send all prompt tokens (minus prefix match)
                 start = seq.prefix_match_len
                 tokens = seq.prompt_tokens[start:]
-                input_tokens.extend(tokens)
+                flat_tokens.extend(tokens)
                 seq_lengths.append(len(tokens))
                 position_offsets.append(seq.prefix_match_len)
                 seq.status = SequenceStatus.PREFILLING
             else:
-                # Decode: send only the last generated token
-                input_tokens.append(seq.decode_input_token)
+                flat_tokens.append(seq.decode_input_token)
                 seq_lengths.append(1)
                 position_offsets.append(seq.total_len - 1)
                 seq.status = SequenceStatus.DECODING
 
             is_prefill_list.append(is_prefill)
 
-        # Build padded input tensor for the forward pass
-        # For mixed prefill/decode, we need ragged batch handling
-        # Simplest: pad all sequences to max length
-        max_len = max(seq_lengths) if seq_lengths else 1
-        padded = []
-        for i, seq in enumerate(batch_seqs):
-            if is_prefill_list[i]:
-                start = seq.prefix_match_len
-                tokens = seq.prompt_tokens[start:]
-                row = tokens + [0] * (max_len - len(tokens))
-            else:
-                row = [seq.decode_input_token] + [0] * (max_len - 1)
-            padded.append(row)
-
-        input_ids = torch.tensor(padded, dtype=torch.long)
+        # Flat 1D tensor — zero wasted compute vs padded [batch, max_len]
+        input_ids = torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0)
 
         # 6. Build batch metadata tags
         batch_tags: Dict[str, object] = {}
@@ -209,6 +253,7 @@ class BatchScheduler:
         return ScheduledBatch(
             sequences=batch_seqs,
             input_ids=input_ids,
+            seq_starts=seq_starts,
             seq_lengths=seq_lengths,
             position_offsets=position_offsets,
             is_prefill=is_prefill_list,
@@ -303,4 +348,6 @@ class BatchScheduler:
             "active_requests": self.active_count,
             "pending_requests": self.pending_count,
             "max_batch_size": self.max_batch_size,
+            "max_tokens_per_batch": self.max_tokens_per_batch,
+            "paged_attention": self._paged_attention_mgr is not None,
         }

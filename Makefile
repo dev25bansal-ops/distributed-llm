@@ -1,4 +1,4 @@
-.PHONY: help install lint format test test-cov bench bench-regression bench-update security memory-profile clean proto docker-build docker-up docker-down run-local run-api run-distributed
+.PHONY: help install lint format test test-cov bench bench-regression bench-update security memory-profile clean proto docker-build docker-up docker-down run-local run-api run-distributed helm-install helm-upgrade helm-template helm-lint kustomize-build-dev kustomize-build-staging kustomize-build-prod docker-build-multi docker-push sbom container-scan security-full pre-commit-install
 
 help: ## Show this help
 	@python -c "import re; lines = open('$(MAKEFILE_LIST)').readlines(); [print(f'\033[36m{m.group(1):20}\033[0m {m.group(2)}') for l in lines if (m := re.match(r'^([a-zA-Z_-]+):.*?## (.+)', l))]"
@@ -67,3 +67,57 @@ run-api: ## Run API server
 
 run-distributed: ## Run distributed mode (starts all processes)
 	scripts\start.bat
+
+# --- Helm ---
+helm-install: ## Install Helm chart
+	helm install distllm deploy/helm/ -f deploy/helm/values.yaml
+
+helm-upgrade: ## Upgrade Helm release
+	helm upgrade distllm deploy/helm/ -f deploy/helm/values.yaml --wait --timeout 10m
+
+helm-template: ## Render Helm templates
+	helm template distllm deploy/helm/ -f deploy/helm/values.yaml
+
+helm-lint: ## Lint Helm chart
+	helm lint deploy/helm/
+
+# --- Kustomize ---
+kustomize-build-dev: ## Build dev overlay manifests
+	kustomize build deploy/kustomize/dev
+
+kustomize-build-staging: ## Build staging overlay manifests
+	kustomize build deploy/kustomize/staging
+
+kustomize-build-prod: ## Build production overlay manifests
+	kustomize build deploy/kustomize/production
+
+# --- Docker multi-build ---
+docker-build-multi: ## Build all CUDA variant images
+	docker build -t distributed-llm:cuda12.8 -f Dockerfile --build-arg CUDA_VERSION=12.8.0 .
+	docker build -t distributed-llm:cuda12.6 -f Dockerfile.cuda12.6 .
+	docker build -t distributed-llm:cuda12.1 -f Dockerfile.cuda12.1 .
+
+docker-push: ## Push images to registry
+	docker tag distributed-llm:cuda12.8 $(REGISTRY)/distributed-llm:cuda12.8-$(TAG)
+	docker tag distributed-llm:cuda12.6 $(REGISTRY)/distributed-llm:cuda12.6-$(TAG)
+	docker tag distributed-llm:cuda12.1 $(REGISTRY)/distributed-llm:cuda12.1-$(TAG)
+	docker push $(REGISTRY)/distributed-llm:cuda12.8-$(TAG)
+	docker push $(REGISTRY)/distributed-llm:cuda12.6-$(TAG)
+	docker push $(REGISTRY)/distributed-llm:cuda12.1-$(TAG)
+
+# --- SBOM + Scanning ---
+sbom: ## Generate CycloneDX SBOM
+	cyclonedx-py -e . -o sbom.json --format json
+
+container-scan: ## Scan Docker image with Trivy
+	trivy image --severity HIGH,CRITICAL distributed-llm:cuda12.8
+
+security-full: ## Run full security scan (bandit, safety, SBOM, container scan)
+	$(MAKE) security
+	$(MAKE) sbom
+	$(MAKE) container-scan
+
+# --- Pre-commit ---
+pre-commit-install: ## Install pre-commit hooks
+	pre-commit install
+	pre-commit install --hook-type pre-push

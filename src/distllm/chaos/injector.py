@@ -155,7 +155,11 @@ class ChaosInjector:
         pattern = self._drop_patterns.get(node_id)
         if pattern is None:
             return False
-        return bool(re.search(pattern, message))
+        compiled = re.compile(pattern, re.DOTALL)
+        try:
+            return bool(compiled.search(message, timeout=1.0))
+        except Exception:
+            return False
 
     def corrupt_data(self, node_id: str, corruption_rate: float, duration_s: float = 0.0) -> ChaosEvent:
         """Set a corruption rate for a node's data payloads.

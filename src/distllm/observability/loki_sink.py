@@ -2,13 +2,30 @@
 
 Uses httpx for async HTTP POST to Loki's push API.
 Logs are batched by count or time interval, whichever comes first.
+Includes OpenTelemetry trace_id/span_id as Loki stream labels.
 """
 
 import asyncio
 import json
 import time
 from collections import deque
-from typing import Callable
+from typing import Callable, Dict
+
+
+def _get_otel_labels() -> Dict[str, str]:
+    """Extract OTel trace context as Loki labels."""
+    try:
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx and ctx.is_valid:
+            return {
+                "trace_id": f"{ctx.trace_id:032x}",
+                "span_id": f"{ctx.span_id:016x}",
+            }
+    except Exception:
+        pass
+    return {}
 
 
 def loki_sink(
@@ -28,13 +45,15 @@ def loki_sink(
     import httpx
 
     buffer: deque = deque()
-    labels = {"service": service_name}
+    base_labels = {"service": service_name}
     push_url = f"{url.rstrip('/')}/loki/api/v1/push"
 
     async def _push_batch() -> None:
         entries = []
         while buffer:
-            ts_ns, line = buffer.popleft()
+            ts_ns, line, otel_labels = buffer.popleft()
+            # Merge per-record OTel labels into stream labels
+            stream_labels = {**base_labels, **otel_labels}
             entries.append([str(ts_ns), line])
 
         if not entries:
@@ -43,7 +62,7 @@ def loki_sink(
         payload = {
             "streams": [
                 {
-                    "stream": dict(labels),
+                    "stream": dict(base_labels),
                     "values": entries,
                 }
             ]
@@ -67,27 +86,29 @@ def loki_sink(
             await _push_batch()
 
     # Start the periodic flush task
+    _loop_task = None
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_periodic_flush())
+        _loop_task = loop.create_task(_periodic_flush())
     except RuntimeError:
-        # No running event loop — flush will run on first log call
-        _loop_task = None
+        pass
 
     def _sink(message) -> None:
         record = message.record
         ts_ns = int(time.time() * 1e9)
+        otel_labels = _get_otel_labels()
         line = json.dumps(
             {
                 "level": record["level"].name,
                 "module": record["name"],
                 "function": record["function"],
                 "message": record["message"],
+                **otel_labels,
                 **{k: v for k, v in record["extra"].items()},
             },
             default=str,
         )
-        buffer.append((ts_ns, line))
+        buffer.append((ts_ns, line, otel_labels))
 
         if len(buffer) >= batch_size:
             try:

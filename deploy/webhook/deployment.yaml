@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: distllm-webhook
+  namespace: distllm-system
+  labels:
+    app: distllm-webhook
+    app.kubernetes.io/name: distributed-llm
+    app.kubernetes.io/component: webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: distllm-webhook
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: distllm-webhook
+    spec:
+      containers:
+        - name: webhook
+          image: ghcr.io/distributed-llm/webhook:0.4.0
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/webhook/tls
+              readOnly: true
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: distllm-webhook-tls

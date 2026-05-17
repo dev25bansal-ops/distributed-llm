@@ -1,15 +1,19 @@
-"""RadixTree (trie) based prefix cache for token sequences.
+"""RadixTree (trie) based prefix cache for token sequences with memory limits.
 
 Replaces the flat hash-based LRU with a trie structure (like SGLang's).
 Provides:
 - O(log n) lookups via trie traversal
 - Substring sharing (common prefixes share nodes)
 - Cross-request KV cache reuse
-- LRU eviction at the node level
+- LRU eviction at the node level with memory-based budgets
+- PagedAttention integration for block-level caching
 """
 
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+
+_DEFAULT_MEMORY_BUDGET_BYTES = 512 * 1024 * 1024
 
 
 class RadixNode:
@@ -214,7 +218,7 @@ class RadixNode:
 
 
 class RadixTreeCache:
-    """RadixTree (trie) based prefix cache with LRU eviction.
+    """RadixTree (trie) based prefix cache with memory-based LRU eviction.
 
     Provides O(log n) lookups, substring sharing, and cross-request
     KV cache reuse. Replaces the flat hash-based LRU PrefixCache.
@@ -222,14 +226,27 @@ class RadixTreeCache:
     The trie structure naturally shares common prefixes across requests,
     so if multiple requests share a system prompt or conversation history,
     they share the same trie nodes.
+
+    Uses memory-based limits: tracks total bytes of KV data and evicts
+    LRU entries when the memory budget is exceeded. The max_entries
+    parameter serves as a soft cap (0 = unlimited).
     """
 
-    def __init__(self, max_entries: int = 1024, min_prefix_len: int = 16):
+    def __init__(
+        self,
+        max_entries: int = 0,
+        min_prefix_len: int = 16,
+        memory_budget_bytes: int = _DEFAULT_MEMORY_BUDGET_BYTES,
+        paged_attention_mgr: Optional[object] = None,
+    ):
         self.max_entries = max_entries
         self.min_prefix_len = min_prefix_len
         self._root = RadixNode()
         self._hits = 0
         self._misses = 0
+        self._memory_budget = memory_budget_bytes
+        self._total_memory_bytes = 0
+        self._paged_attention_mgr = paged_attention_mgr
 
     def lookup(self, token_ids: List[int]) -> Tuple[int, Optional[Any]]:
         """Find the longest cached prefix.
@@ -269,8 +286,63 @@ class RadixTreeCache:
 
         self._root.insert(token_ids, kv_data)
 
-        # Evict if over capacity
-        self._root.evict_lru(self.max_entries)
+        # Track memory
+        entry_bytes = self._estimate_kv_memory(kv_data)
+        self._total_memory_bytes += entry_bytes
+
+        # Evict if over capacity or memory budget
+        self._evict_until_fit()
+
+    def _estimate_kv_memory(self, kv_data: Any) -> int:
+        total = 0
+        if isinstance(kv_data, dict):
+            for v in kv_data.values():
+                if hasattr(v, 'element_size') and hasattr(v, 'numel'):
+                    total += v.element_size() * v.numel()
+                elif isinstance(v, (list, tuple)):
+                    for t in v:
+                        if hasattr(t, 'element_size') and hasattr(t, 'numel'):
+                            total += t.element_size() * t.numel()
+        elif isinstance(kv_data, (list, tuple)):
+            for t in kv_data:
+                if hasattr(t, 'element_size') and hasattr(t, 'numel'):
+                    total += t.element_size() * t.numel()
+        return total
+
+    def _recompute_memory(self) -> None:
+        """Walk the entire tree and recalculate total memory usage."""
+        total = 0
+        def _walk(node):
+            nonlocal total
+            if node.kv_data is not None:
+                total += self._estimate_kv_memory(node.kv_data)
+            for child in node.children.values():
+                _walk(child)
+        _walk(self._root)
+        self._total_memory_bytes = total
+
+    def _evict_until_fit(self) -> None:
+        max_iterations = 1000
+        for _ in range(max_iterations):
+            if self.max_entries > 0 and self._root._count_entries() > self.max_entries:
+                self._root.evict_lru(self.max_entries)
+                continue
+            if self._total_memory_bytes > self._memory_budget:
+                before = self._total_memory_bytes
+                evicted = self._root.evict_lru(max(0, self._root._count_entries() - 1))
+                if evicted == 0:
+                    break
+                self._recompute_memory()
+                if self._total_memory_bytes >= before:
+                    break
+                continue
+            break
+        if self._total_memory_bytes > self._memory_budget:
+            from loguru import logger
+            logger.warning(
+                f"RadixTreeCache: budget {self._memory_budget} exceeded "
+                f"({self._total_memory_bytes} bytes) after max evictions"
+            )
 
     def find_shared_prefix(self, token_ids: List[int]) -> int:
         """Find how many tokens share a prefix with existing cache entries.
@@ -323,4 +395,14 @@ class RadixTreeCache:
             "prefix_cache_hit_rate": round(self.hit_rate, 4),
             "radix_tree_nodes": trie_stats["total_nodes"],
             "radix_tree_max_depth": trie_stats["max_depth"],
+            "prefix_cache_memory_bytes": self._total_memory_bytes,
+            "prefix_cache_memory_budget": self._memory_budget,
+            "prefix_cache_memory_util": round(
+                self._total_memory_bytes / max(self._memory_budget, 1), 4
+            ),
+            "paged_attention_attached": self._paged_attention_mgr is not None,
         }
+
+    def adjust_memory_budget(self, new_budget_bytes: int) -> None:
+        self._memory_budget = new_budget_bytes
+        self._evict_until_fit()

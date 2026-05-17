@@ -13,17 +13,17 @@ class DistLLMPrometheusExporter:
     def __init__(self):
         self.registry = CollectorRegistry()
 
-        # --- Request metrics ---
+        # --- Request metrics (with model/tenant labels) ---
         self.requests_total = Counter(
             "distllm_requests_total",
             "Total requests processed",
-            ["method", "status"],
+            ["method", "status", "model", "tenant"],
             registry=self.registry,
         )
         self.request_latency = Histogram(
             "distllm_request_latency_seconds",
             "End-to-end request latency",
-            ["method"],
+            ["method", "model", "tenant"],
             buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0],
             registry=self.registry,
         )
@@ -32,17 +32,20 @@ class DistLLMPrometheusExporter:
         self.tokens_generated = Counter(
             "distllm_tokens_generated_total",
             "Total tokens generated",
+            ["model", "tenant"],
             registry=self.registry,
         )
         self.token_latency = Histogram(
             "distllm_token_generation_latency_seconds",
             "Time to generate a single token",
+            ["model"],
             buckets=[0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
             registry=self.registry,
         )
         self.tokens_per_second = Gauge(
             "distllm_tokens_per_second",
             "Current token generation rate",
+            ["model"],
             registry=self.registry,
         )
 
@@ -96,11 +99,11 @@ class DistLLMPrometheusExporter:
             registry=self.registry,
         )
 
-        # --- Error metrics ---
+        # --- Error metrics (with model/tenant labels) ---
         self.errors_total = Counter(
             "distllm_errors_total",
             "Total errors encountered",
-            ["type"],
+            ["type", "model", "tenant"],
             registry=self.registry,
         )
 
@@ -114,7 +117,7 @@ class DistLLMPrometheusExporter:
         self.request_duration_seconds = Histogram(
             "distllm_request_duration_seconds",
             "Request duration in seconds",
-            ["method"],
+            ["method", "model", "tenant"],
             buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
             registry=self.registry,
         )
@@ -124,7 +127,15 @@ class DistLLMPrometheusExporter:
             registry=self.registry,
         )
 
-        # --- Cost metrics (Feature 18) ---
+        # --- Anomaly detection ---
+        self.anomaly_detected_total = Counter(
+            "distllm_anomaly_detected_total",
+            "Total anomaly detection events",
+            ["metric", "type"],
+            registry=self.registry,
+        )
+
+        # --- Cost tracking metrics ---
         self.cost_per_hour_total = Gauge(
             "distllm_cost_per_hour_total",
             "Total cost per hour for all active nodes",
@@ -138,6 +149,18 @@ class DistLLMPrometheusExporter:
         self.spot_interruptions_total = Counter(
             "distllm_spot_interruptions_total",
             "Total spot instance interruptions",
+            registry=self.registry,
+        )
+        self.request_cost_total = Counter(
+            "distllm_request_cost_total",
+            "Estimated $ cost per request",
+            ["model", "tenant"],
+            registry=self.registry,
+        )
+        self.request_gpu_hours = Counter(
+            "distllm_request_gpu_hours",
+            "GPU-hours consumed per request",
+            ["model", "tenant"],
             registry=self.registry,
         )
 

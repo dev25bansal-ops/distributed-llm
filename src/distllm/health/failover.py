@@ -50,11 +50,14 @@ class FailoverEngine:
                 record.state = NodeState.DEGRADED
             elif old_state == NodeState.DEGRADED and record.consecutive_successes >= self._recovery_threshold:
                 record.state = NodeState.HEALTHY
-            elif old_state in (NodeState.HEALTHY, NodeState.DEGRADED):
+            elif old_state == NodeState.HEALTHY:
                 if latency_ms > self._degraded_latency_ms:
                     record.state = NodeState.DEGRADED
                 else:
                     record.state = NodeState.HEALTHY
+            else:
+                # UNHEALTHY → stay UNHEALTHY until recovery threshold met
+                record.state = old_state
         else:
             record.consecutive_successes = 0
             record.consecutive_failures += 1

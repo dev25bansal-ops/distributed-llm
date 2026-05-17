@@ -239,19 +239,20 @@ class GossipClient:
     Handles the actual HTTP/gRPC communication between nodes for
     exchanging cache advertisements and fetching cache entries.
 
-    In production, this would use the existing gRPC infrastructure.
-    For now, it provides a pluggable interface that can be backed
-    by any transport (HTTP, gRPC, etc.).
+    Uses GossipTransport for bandwidth-aware transfers.
     """
 
-    def __init__(self, peer_resolver=None):
+    def __init__(self, peer_resolver=None, transport=None):
         """Initialize the gossip client.
 
         Args:
             peer_resolver: Callable that resolves a peer_id to (host, port).
                           If None, peer resolution is not supported.
+            transport: Optional GossipTransport instance. If None, uses
+                      stub mode (no actual network communication).
         """
         self._peer_resolver = peer_resolver
+        self._transport = transport
         self._request_count = 0
         self._response_count = 0
 
@@ -268,10 +269,17 @@ class GossipClient:
         Returns:
             Peer's advertisement dict, or None if exchange failed.
         """
-        # In production, this would make a gRPC call:
-        # host, port = self._peer_resolver(peer_id)
-        # return self._grpc_client.gossip_exchange(host, port, advertisement)
-        logger.debug(f"Gossip exchange with {peer_id}: {advertisement.get('total_cache_entries', 0)} entries")
+        self._request_count += 1
+
+        # If transport is available, use it for real communication
+        if self._transport is not None:
+            result = self._transport.exchange_advertisements(peer_id, advertisement)
+            if result:
+                self._response_count += 1
+            return result
+
+        # Stub mode: simulate exchange for local testing
+        logger.debug(f"Gossip exchange with {peer_id}: {advertisement.get('total_cache_entries', 0)} entries (stub)")
         return None
 
     def request_entries(
@@ -286,16 +294,48 @@ class GossipClient:
         Returns:
             Response dict with cache_entries (prefix_hash -> entry_ref).
         """
-        # In production, this would make a gRPC call:
-        # host, port = self._peer_resolver(peer_id)
-        # return self._grpc_client.gossip_request_entries(host, port, request)
+        self._request_count += 1
+
+        if self._transport is not None:
+            prefix_hashes = request.get("requested_prefixes", [])
+            result = self._transport.request_kv_cache(peer_id, prefix_hashes)
+            if result:
+                self._response_count += 1
+                return result
+
+        # Stub mode
         missing = request.get("requested_prefixes", [])
-        logger.debug(f"Requested {len(missing)} entries from {peer_id}")
+        logger.debug(f"Requested {len(missing)} entries from {peer_id} (stub)")
         return {"success": False, "cache_entries": {}, "entries_returned": 0}
+
+    def fetch_kv_cache(self, peer_id: str, prefix_hash: str) -> Optional[dict]:
+        """Fetch a single KV cache entry from a peer.
+
+        Args:
+            peer_id: Peer node ID.
+            prefix_hash: Hash of the prefix to fetch.
+
+        Returns:
+            KV cache data dict, or None if fetch failed.
+        """
+        self._request_count += 1
+
+        if self._transport is not None:
+            result = self._transport.request_kv_cache(peer_id, [prefix_hash])
+            if result and result.get("cache_entries"):
+                self._response_count += 1
+                return result["cache_entries"].get(prefix_hash)
+
+        return None
 
     @property
     def stats(self) -> dict:
+        transfer_stats = {}
+        if self._transport:
+            transfer_stats = self._transport.transfer_stats
+
         return {
             "requests_sent": self._request_count,
             "responses_received": self._response_count,
+            "transfer": transfer_stats,
         }

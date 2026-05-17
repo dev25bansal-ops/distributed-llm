@@ -1,0 +1,46 @@
+# CUDA 12.6 variant for H100/B200 GPUs
+ARG CUDA_VERSION=12.6.0
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime-base
+
+ARG CUDA_VERSION
+ARG PYTHON_VERSION=3.10
+ARG DISTLLM_VERSION=0.4.0
+
+LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distributed-llm"
+LABEL org.opencontainers.image.version="${DISTLLM_VERSION}"
+LABEL org.opencontainers.image.title="Distributed LLM (CUDA 12.6)"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
+    python${PYTHON_VERSION}-distutils curl && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python
+
+FROM python:3.10-slim AS builder
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml .
+COPY src/ src/
+RUN pip install --no-cache-dir --prefix=/install -e .
+
+FROM runtime-base
+COPY --from=builder /install /usr/local
+
+RUN groupadd -r distllm && useradd -r -g distllm -d /app -s /bin/bash distllm \
+    && chown -R distllm:distllm /app
+USER distllm
+
+ENV DISTLLM_NODE_ID=worker-0
+ENV DISTLLM_MODEL=roneneldan/TinyStories-1M
+ENV DISTLLM_START_LAYER=0
+ENV DISTLLM_END_LAYER=3
+ENV DISTLLM_TOTAL_LAYERS=8
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+EXPOSE 8000 50051
+
+ENTRYPOINT ["sh", "-c", "distllm-node --node-id ${DISTLLM_NODE_ID} --model ${DISTLLM_MODEL} --start-layer ${DISTLLM_START_LAYER} --end-layer ${DISTLLM_END_LAYER} --total-layers ${DISTLLM_TOTAL_LAYERS}"]

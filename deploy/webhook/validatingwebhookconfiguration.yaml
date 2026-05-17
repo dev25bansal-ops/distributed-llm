@@ -1,0 +1,50 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: distllm-crd-validator
+  annotations:
+    cert-manager.io/inject-ca-from: distllm-system/distllm-webhook-tls
+  labels:
+    app.kubernetes.io/name: distributed-llm
+    app.kubernetes.io/component: webhook
+webhooks:
+  - name: validate-crd.distllm.zeroroute.ai
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 10
+    rules:
+      - apiGroups: ["apiextensions.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["customresourcedefinitions"]
+        scope: Cluster
+    clientConfig:
+      service:
+        namespace: distllm-system
+        name: distllm-webhook
+        path: /validate-crd
+        port: 443
+    objectSelector:
+      matchLabels:
+        app.kubernetes.io/name: distributed-llm
+
+  - name: validate-cluster.distllm.zeroroute.ai
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 10
+    rules:
+      - apiGroups: ["distllm.zeroroute.ai"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["distributedllmclusters"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        namespace: distllm-system
+        name: distllm-webhook
+        path: /validate-cluster
+        port: 443

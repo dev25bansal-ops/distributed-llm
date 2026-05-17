@@ -1,0 +1,18 @@
+# Staging: moderate resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: distllm-operator
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: operator
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 512Mi

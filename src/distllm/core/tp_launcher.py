@@ -1,10 +1,88 @@
-"""Tensor parallelism worker and launcher for multi-GPU inference within a single node."""
+"""Tensor parallelism worker and launcher for multi-GPU inference within a single node.
+
+Uses PyTorch's tensor.parallel (distributed._tensor) for actual tensor slicing:
+- Attention heads are split across GPUs
+- MLP intermediate dims are split across GPUs
+- All-reduce aggregates partial results
+- No layer-serial bottleneck (vs pipeline parallelism)
+"""
 
 import os
+
 import torch
 import torch.distributed as dist
 from loguru import logger
-from typing import Optional
+from torch.distributed._tensor import DeviceMesh
+try:
+    from torch.distributed.tensor.parallel import (
+        ColwiseParallel,
+        PairwiseParallel,
+        RowwiseParallel,
+        parallelize_module,
+    )
+except ImportError:
+    from torch.distributed.tensor.parallel import (
+        ColwiseParallel,
+        RowwiseParallel,
+        parallelize_module,
+    )
+    PairwiseParallel = None
+
+
+def _start_tp_server(rank: int, world_size: int, model, tokenizer, device: str, port: int) -> None:
+    """Start gRPC server for this TP worker with NCCL all-reduce coordination.
+
+    Each TP worker handles a subset of attention heads and MLP neurons.
+    During inference, all-reduce aggregates outputs across workers.
+    """
+    from concurrent import futures
+
+    import grpc
+
+    from distllm.communication.node_pb2 import ForwardPassResponse
+    from distllm.communication.node_pb2_grpc import (
+        NodeServiceServicer,
+        add_NodeServiceServicer_to_server,
+    )
+    from distllm.communication.serializers import (
+        proto_to_tensor,
+        tensor_to_proto,
+    )
+
+    class TPServicer(NodeServiceServicer):
+        def ForwardPass(self, request, context):
+            try:
+                if request.input_ids:
+                    input_ids = torch.tensor([list(request.input_ids)], dtype=torch.long, device=device)
+                    with torch.no_grad():
+                        output = model(input_ids, use_cache=request.use_cache)
+                        logits = output.logits
+                        # All-reduce across TP group to aggregate sharded outputs
+                        dist.all_reduce(logits, op=dist.ReduceOp.SUM)
+                elif request.HasField('hidden_states'):
+                    hidden = proto_to_tensor(request.hidden_states, device)
+                    with torch.no_grad():
+                        output = model(inputs_embeds=hidden, use_cache=request.use_cache)
+                        logits = output.logits
+                        dist.all_reduce(logits, op=dist.ReduceOp.SUM)
+                else:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    return ForwardPassResponse(success=False)
+
+                response = ForwardPassResponse(success=True)
+                response.output.CopyFrom(tensor_to_proto(logits))
+                return response
+            except Exception as e:
+                logger.error(f"TP rank {rank} ForwardPass failed: {e}")
+                context.set_code(grpc.StatusCode.INTERNAL)
+                return ForwardPassResponse(success=False)
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    add_NodeServiceServicer_to_server(TPServicer(), server)
+    server.add_insecure_port(f"[::]:{port}")
+    server.start()
+    logger.info(f"TP worker rank {rank} serving on port {port}")
+    server.wait_for_termination()
 
 
 def _tp_worker_entry(
@@ -17,7 +95,6 @@ def _tp_worker_entry(
     master_addr: str = "localhost",
 ):
     """Entry point for a single tensor parallel worker process."""
-    # Initialize process group
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = str(port)
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
@@ -27,76 +104,55 @@ def _tp_worker_entry(
     logger.info(f"TP worker rank {rank}/{world_size} on {device}")
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-        from distllm.models.partitioner import DTYPE_MAP, _get_base_prefix
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
         trust = trust_remote_code
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust)
-        total_layers = config.num_hidden_layers
-        torch_dtype = DTYPE_MAP.get(dtype, torch.float16)
 
-        # Simple layer sharding: each GPU gets a contiguous chunk of layers
-        layers_per_gpu = total_layers // world_size
-        remainder = total_layers % world_size
-        start_layer = rank * layers_per_gpu + min(rank, remainder)
-        end_layer = start_layer + layers_per_gpu - 1
-        if rank < remainder:
-            end_layer += 1
+        torch_dtype = torch.bfloat16 if dtype == "bfloat16" else torch.float16
 
-        logger.info(f"Rank {rank}: loading layers {start_layer}-{end_layer}")
+        # Load model on meta device first for fast initialization
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch_dtype,
+                trust_remote_code=trust,
+                low_cpu_mem_usage=True,
+            )
 
-        model_kwargs = {
-            "config": config,
-            "torch_dtype": torch_dtype,
-            "trust_remote_code": trust,
-            "low_cpu_mem_usage": True,
-        }
+        # Create a device mesh for tensor parallelism
+        mesh = DeviceMesh("cuda", list(range(world_size)))
 
-        # For TP v1: use device_map to place different layers on different GPUs
-        device_map = {}
-        temp_model = AutoModelForCausalLM.from_pretrained(
-            model_name, **{**model_kwargs, "device_map": "meta"}
+        # Parallelize the transformer layers using PyTorch's tensor.parallel
+        # This splits attention heads and MLP dimensions across GPUs
+        if PairwiseParallel is None:
+            raise ImportError(
+                "PairwiseParallel is not available. This version of PyTorch does not support "
+                "torch.distributed.tensor.parallel.PairwiseParallel. "
+                "Install PyTorch >= 2.1.0 or use a different parallelism strategy."
+            )
+        model = parallelize_module(
+            model,
+            mesh,
+            {
+                "model.layers": PairwiseParallel(),
+                "model.embed_tokens": RowwiseParallel(),
+                "model.norm": RowwiseParallel(),
+                "lm_head": ColwiseParallel(),
+            },
         )
-        base_prefix = _get_base_prefix(temp_model)
-        temp_base = getattr(temp_model, base_prefix, None) if base_prefix else temp_model
 
-        if rank == 0:
-            for attr in ['embed_tokens', 'wte', 'word_embeddings']:
-                if hasattr(temp_base, attr):
-                    device_map[f"{base_prefix}.{attr}"] = device
-                    break
-
-        for attr in ['layers', 'block', 'h']:
-            if hasattr(temp_base, attr):
-                layers_name = attr
-                break
-
-        for i in range(total_layers):
-            layer_device = device if start_layer <= i <= end_layer else "cpu"
-            device_map[f"{base_prefix}.{layers_name}.{i}"] = layer_device
-
-        if rank == world_size - 1:
-            for attr in ['norm', 'final_layer_norm', 'ln_f']:
-                if hasattr(temp_base, attr):
-                    device_map[f"{base_prefix}.{attr}"] = device
-                    break
-            device_map["lm_head"] = device
-
-        model = AutoModelForCausalLM.from_pretrained(model_name, **{**model_kwargs, "device_map": device_map})
+        model.to(device)
         model.eval()
+        logger.info(f"Rank {rank}: TP model loaded and parallelized")
 
-        logger.info(f"Rank {rank} loaded model with layers {start_layer}-{end_layer} on {device}")
-
-        # Keep the process alive and ready for inference requests
-        # In a full implementation, this would connect to a coordinator
-        # For now, we just log and wait
-        import time
-        while True:
-            time.sleep(1)
+        # Start gRPC server for inference requests with NCCL all-reduce coordination
+        _start_tp_server(rank, world_size, model, tokenizer, device, port + rank + 1)
 
     except Exception as e:
         logger.error(f"TP worker rank {rank} failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise
     finally:
         dist.destroy_process_group()

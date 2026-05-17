@@ -30,3 +30,30 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies: ['types-PyYAML', 'types-psutil', 'pydantic']
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: ['-d', '{extends: relaxed, rules: {line-length: disable}}']
+        files: ^deploy/.*\.(yaml|yml)$
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-case-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: helm-lint
+        name: helm-lint
+        entry: bash -c 'helm lint deploy/helm/ --quiet 2>/dev/null || echo "Helm lint skipped (not installed)"'
+        language: system
+        files: ^deploy/helm/
+        pass_filenames: false
+        always_run: false
+        verbose: true

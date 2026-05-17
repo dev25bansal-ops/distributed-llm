@@ -1,13 +1,30 @@
 """Structured logging configuration for distributed-llm.
 
 Configures loguru with JSON output, structured context fields,
-and optional Loki push for centralized log aggregation.
+OpenTelemetry trace/span injection, and optional Loki push
+for centralized log aggregation.
 """
 
 import sys
 import json
 from typing import Optional
 from loguru import logger
+
+
+def _get_otel_context() -> dict:
+    """Extract current OpenTelemetry trace context into a dict."""
+    try:
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx and ctx.is_valid:
+            return {
+                "trace_id": f"{ctx.trace_id:032x}",
+                "span_id": f"{ctx.span_id:016x}",
+            }
+    except Exception:
+        pass
+    return {}
 
 
 def setup_logging(
@@ -38,6 +55,7 @@ def setup_logging(
                     "function": record["function"],
                     "line": record["line"],
                     "message": record["message"],
+                    **_get_otel_context(),
                     "extra": {
                         k: v for k, v in record["extra"].items()
                         if k not in ("elaborated",)

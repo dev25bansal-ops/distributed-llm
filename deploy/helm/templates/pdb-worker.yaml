@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.worker.enabled }}
+{{- range $pool := .Values.nodePools }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "distributed-llm.fullname" $ }}-worker-{{ $pool.name }}
+  labels:
+    {{- include "distributed-llm.labels" $ | nindent 4 }}
+    {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 4 }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.worker.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 6 }}
+{{- end }}
+{{- end }}

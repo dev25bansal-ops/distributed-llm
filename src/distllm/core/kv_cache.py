@@ -1,8 +1,57 @@
 """KV cache management for distributed LLM inference."""
 
+from typing import Dict, List, Optional, Tuple
+
 import torch
-from typing import Dict, Optional, Tuple, List
-from loguru import logger
+
+from distllm.communication.serializers import tensor_to_proto
+
+
+class PagedKVCacheBackend:
+    """Paged KV cache backend using block-based allocation.
+
+    Wraps PagedAttentionManager to provide a KVCache-compatible interface
+    while using paged memory for O(1) allocation and automatic defragmentation.
+    """
+
+    def __init__(self, paged_mgr: Optional[object] = None):
+        self._paged_mgr = paged_mgr
+        self._request_id: Optional[str] = None
+
+    def attach(self, request_id: str) -> None:
+        self._request_id = request_id
+        if self._paged_mgr is not None:
+            self._paged_mgr.create_sequence(request_id)
+
+    def append_kv(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> None:
+        if self._paged_mgr is not None and self._request_id is not None:
+            self._paged_mgr.free_layer_kv(self._request_id, layer_idx, new_key, new_value)
+
+    def get_kv(self, request_id: str, layer_idx: int, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self._paged_mgr is not None:
+            return self._paged_mgr.gather_kv_for_attention(request_id, layer_idx, seq_len)
+        raise RuntimeError("Paged backend not available")
+
+    def free(self, request_id: str) -> None:
+        if self._paged_mgr is not None:
+            self._paged_mgr.free_sequence(request_id)
+
+    @property
+    def available(self) -> bool:
+        return self._paged_mgr is not None
+
+    def memory_usage(self) -> int:
+        if self._paged_mgr is not None:
+            pool = self._paged_mgr.pool
+            used = pool.used_count * pool.num_layers * 2 * pool.num_heads * pool.block_size * pool.head_dim * pool.dtype.itemsize
+            return used
+        return 0
+
+    @property
+    def pool_utilization(self) -> float:
+        if self._paged_mgr is not None:
+            return self._paged_mgr.pool.utilization
+        return 0.0
 
 
 class KVCache:
@@ -29,20 +78,6 @@ class KVCache:
             k = torch.zeros(batch_size, num_heads, 0, head_dim, device=device)
             v = torch.zeros(batch_size, num_heads, 0, head_dim, device=device)
             self.cache.append((k, v))
-
-    def update(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Append new key/value states for a layer, return updated states."""
-        if layer_idx >= len(self.cache):
-            raise IndexError(f"Layer {layer_idx} out of range for KV cache with {len(self.cache)} layers")
-
-        k_cache, v_cache = self.cache[layer_idx]
-
-        # Concatenate new states
-        k = torch.cat([k_cache, new_key], dim=-2)
-        v = torch.cat([v_cache, new_value], dim=-2)
-
-        self.cache[layer_idx] = (k, v)
-        return k, v
 
     def get(self, layer_idx: int) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
         """Get cached key/value states for a layer."""
@@ -76,9 +111,11 @@ class KVCache:
         return self.cache[0][0].shape[-2]
 
     def clear(self):
-        """Clear the cache."""
+        """Clear the cache and quantization state."""
         self.cache = []
         self.num_layers = 0
+        self._scales_k = []
+        self._scales_v = []
 
     def memory_usage(self) -> int:
         """Get memory usage in bytes."""
@@ -119,7 +156,6 @@ class KVCache:
             return self._update_quantized(layer_idx, new_key, new_value)
 
         # Original unquantized path
-        from distllm.core.quantization_selector import apply_kv_cache_quantization, dequantize_kv_cache
 
         if layer_idx >= len(self.cache):
             self.cache.append((new_key, new_value))
@@ -133,17 +169,22 @@ class KVCache:
 
     def _update_quantized(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Update KV cache with quantization for memory efficiency."""
-        from distllm.core.quantization_selector import apply_kv_cache_quantization, dequantize_kv_cache
+        from distllm.core.quantization_selector import (
+            apply_kv_cache_quantization,
+            dequantize_kv_cache,
+        )
 
         # Quantize new tensors
-        qk, sk = apply_kv_cache_quantization(new_key, new_value, self._quant_bits)
-        qv, sv = apply_kv_cache_quantization(new_key, new_value, self._quant_bits)
+        qk, sk = apply_kv_cache_quantization(new_key, None, self._quant_bits)
+        qv, sv = apply_kv_cache_quantization(None, new_value, self._quant_bits)
 
         if layer_idx >= len(self._scales_k):
-            # First update for this layer
+            # First update for this layer — store quantized, return dequantized
             self._scales_k.append(sk)
             self._scales_v.append(sv)
             self.cache.append((qk, qv))
+            key = dequantize_kv_cache(qk, sk, self._quant_bits)
+            value = dequantize_kv_cache(qv, sv, self._quant_bits)
         else:
             # Dequantize existing, append, re-quantize
             old_k = dequantize_kv_cache(self.cache[layer_idx][0], self._scales_k[layer_idx], self._quant_bits)
@@ -153,8 +194,8 @@ class KVCache:
             value = torch.cat([old_v, new_value], dim=-2)
 
             # Re-quantize the combined tensor
-            qk, sk = apply_kv_cache_quantization(key, value, self._quant_bits)
-            qv, sv = apply_kv_cache_quantization(key, value, self._quant_bits)
+            qk, sk = apply_kv_cache_quantization(key, None, self._quant_bits)
+            qv, sv = apply_kv_cache_quantization(None, value, self._quant_bits)
 
             self.cache[layer_idx] = (qk, qv)
             self._scales_k[layer_idx] = sk
@@ -197,12 +238,56 @@ class KVCache:
 
         return quantized_mem / max(unquantized_mem, 1)
 
-    def clear(self):
-        """Clear the cache and quantization state."""
-        self.cache = []
-        self.num_layers = 0
-        self._scales_k = []
-        self._scales_v = []
+    def to_proto(self):
+        """Serialize KVCache to protobuf format.
+
+        Handles both quantized and unquantized caches.
+        Quantized caches include scale tensors in the serialized output.
+        """
+        from distllm.communication.node_pb2 import KVCache as ProtoKVCache, KVLayerCache
+
+        layers = []
+        for i, (k, v) in enumerate(self.cache):
+            layer_msg = KVLayerCache()
+            if self._quantized and i < len(self._scales_k):
+                qk = tensor_to_proto(k)
+                qk.scale.extend(self._scales_k[i].flatten().tolist())
+                layer_msg.key_states.CopyFrom(qk)
+                qv = tensor_to_proto(v)
+                qv.scale.extend(self._scales_v[i].flatten().tolist())
+                layer_msg.value_states.CopyFrom(qv)
+            else:
+                layer_msg.key_states.CopyFrom(tensor_to_proto(k))
+                layer_msg.value_states.CopyFrom(tensor_to_proto(v))
+            layers.append(layer_msg)
+        proto = ProtoKVCache(layers=layers)
+        if self._quantized:
+            proto.quant_bits = self._quant_bits
+        return proto
+
+    @staticmethod
+    def from_proto(proto, device: str = "cpu"):
+        """Deserialize KVCache from protobuf format.
+
+        Restores quantization state if the serialized cache was quantized.
+        """
+        from distllm.communication.serializers import proto_to_tensor
+
+        cache = KVCache()
+        if hasattr(proto, 'quant_bits') and proto.quant_bits > 0:
+            cache._quantized = True
+            cache._quant_bits = proto.quant_bits
+        for layer in proto.layers:
+            k = proto_to_tensor(layer.key_states, device)
+            v = proto_to_tensor(layer.value_states, device)
+            cache.cache.append((k, v))
+            if cache._quantized and layer.key_states.scale:
+                sk = torch.tensor(list(layer.key_states.scale), device=device)
+                sv = torch.tensor(list(layer.value_states.scale), device=device)
+                cache._scales_k.append(sk)
+                cache._scales_v.append(sv)
+        cache.num_layers = len(cache.cache)
+        return cache
 
 
 class KVCacheManager:

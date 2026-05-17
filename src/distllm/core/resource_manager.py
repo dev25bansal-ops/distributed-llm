@@ -5,6 +5,7 @@ Extracted from the Coordinator class.
 """
 
 import asyncio
+import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass, field
@@ -144,7 +145,7 @@ class ResourceManager:
     # -- Health Checks --
 
     def health_check_all(self, nodes: Dict[str, NodeRegistration]) -> dict:
-        """Check health of all registered nodes.
+        """Check health of all registered nodes concurrently.
 
         Args:
             nodes: Dict of node_id -> NodeRegistration.
@@ -153,6 +154,8 @@ class ResourceManager:
             Dict of node_id -> health status.
         """
         results = {}
+        nodes_to_check = {}
+
         for node_id, node in nodes.items():
             if self.check_circuit_breaker(node_id):
                 failures = self._node_failure_counts.get(node_id, 0)
@@ -162,17 +165,22 @@ class ResourceManager:
                     "healthy": False,
                     "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
                 }
-                continue
+            else:
+                nodes_to_check[node_id] = node
+
+        def check_one(nid: str, nd: NodeRegistration) -> Tuple[str, dict]:
             try:
-                health = node.client.health_check()
-                results[node_id] = {
-                    "healthy": health.healthy,
-                    "memory_used": health.memory_used,
-                    "memory_total": health.memory_total,
-                }
+                health = nd.client.health_check()
+                return nid, {"healthy": health.healthy, "memory_used": health.memory_used, "memory_total": health.memory_total}
             except (NodeUnreachableError, GRPCTimeoutError, ConnectionError, OSError) as e:
-                self.record_failure(node_id)
-                results[node_id] = {"healthy": False, "error": str(e)}
+                self.record_failure(nid)
+                return nid, {"healthy": False, "error": str(e)}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(nodes_to_check) or 1) as executor:
+            futures = {executor.submit(check_one, nid, nd): nid for nid, nd in nodes_to_check.items()}
+            for future in concurrent.futures.as_completed(futures):
+                nid, status = future.result()
+                results[nid] = status
 
         return results
 

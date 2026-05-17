@@ -105,28 +105,27 @@ class RequestTracker:
             scheduler_pending: List of pending sequences from scheduler.
             tokenizer: Tokenizer for decoding.
         """
+        completed = []
         with self._lock:
             for rid, seq in scheduler_active.items():
                 if seq.is_complete:
-                    result = tokenizer.decode(
-                        seq.prompt_tokens + seq.generated_tokens,
-                        skip_special_tokens=True,
-                    )
-                    self._results[rid] = result
-                    event = self._events.pop(rid, None)
-                    if event:
-                        event.set()
+                    completed.append((rid, seq))
 
             for seq in list(scheduler_pending):
                 if seq.is_complete:
-                    result = tokenizer.decode(
-                        seq.prompt_tokens + seq.generated_tokens,
-                        skip_special_tokens=True,
-                    )
-                    self._results[seq.request_id] = result
-                    event = self._events.pop(seq.request_id, None)
-                    if event:
-                        event.set()
+                    completed.append((seq.request_id, seq))
+
+        for rid, seq in completed:
+            # Decode outside the lock to avoid blocking other requests
+            result = tokenizer.decode(
+                seq.prompt_tokens + seq.generated_tokens,
+                skip_special_tokens=True,
+            )
+            with self._lock:
+                self._results[rid] = result
+                event = self._events.pop(rid, None)
+                if event:
+                    event.set()
 
     def clear(self) -> None:
         """Clear all request state."""

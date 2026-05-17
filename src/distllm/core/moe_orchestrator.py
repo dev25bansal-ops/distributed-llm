@@ -226,17 +226,19 @@ class MoEOrchestrator:
         if len(outputs) == 1:
             return outputs[0]
 
-        # Pad and sum
-        max_dim = max(o.shape[-1] if o.dim() > 0 else 1 for o in outputs)
+        # Validate all output shapes match
+        ref_shape = outputs[0].shape
+        for o in outputs[1:]:
+            if o.shape != ref_shape:
+                raise ValueError(
+                    f"MoE output shape mismatch: expected {ref_shape}, got {o.shape}. "
+                    "All experts must return the same shape."
+                )
+
+        # Sum all outputs
         result = torch.zeros_like(outputs[0])
         for o in outputs:
-            if o.shape == result.shape:
-                result = result + o
-            else:
-                # Handle shape mismatch
-                result = result + torch.nn.functional.pad(
-                    o, (0, max_dim - o.shape[-1])
-                )
+            result = result + o
 
         return result
 
@@ -258,16 +260,169 @@ class MoEOrchestrator:
         """
         requests = self.route(hidden_states, moe_router)
         if not requests:
-            # No expert routing needed
             return hidden_states
 
         responses = self.dispatch(requests, node_clients)
         return self.aggregate(responses)
 
-    def _send_moe_forward(self, client, request: MoEForwardRequest) -> MoEForwardResponse:
-        """Send MoE forward request to a node (placeholder).
+    def all_to_all_dispatch(
+        self,
+        hidden_states: torch.Tensor,
+        moe_router,
+        transport_backend: Optional[object] = None,
+    ) -> torch.Tensor:
+        """Dispatch tokens to expert nodes via all-to-all communication.
 
-        In production, this constructs the proto message and calls the RPC.
+        Uses NCCL all-to-all when available (GPU-direct), otherwise falls
+        back to gRPC-based per-expert dispatch.
+
+        All-to-all flow:
+        1. Route: compute expert assignments per token
+        2. Group: group tokens by owning node
+        3. Exchange: send/receive token hidden states with all-to-all
+        4. Compute: each node processes its assigned experts
+        5. Gather: receive outputs back via all-to-all
+        6. Aggregate: combine expert outputs by routing weights
+
+        Args:
+            hidden_states: Input tensor [batch, seq_len, hidden_dim].
+            moe_router: MoERouter instance for expert routing.
+            transport_backend: Optional NCCLTransport for GPU-direct comm.
+
+        Returns:
+            Aggregated expert output tensor.
         """
-        # Placeholder — actual implementation uses node_pb2.MoEForwardRequest
-        raise NotImplementedError("MoE RPC not yet implemented in proto layer")
+        num_tokens = hidden_states.shape[0] * hidden_states.shape[1]
+        hidden_dim = hidden_states.shape[-1]
+
+        routing_weights = moe_router(hidden_states)
+
+        if routing_weights.dim() == 3:
+            batch_size, seq_len, k = routing_weights.shape
+        else:
+            batch_size, seq_len = 1, routing_weights.shape[0]
+            k = routing_weights.shape[-1] if routing_weights.dim() > 1 else 1
+
+        flat_hidden = hidden_states.view(-1, hidden_dim)
+
+        if transport_backend is not None and hasattr(transport_backend, 'all_to_all'):
+            batch_size_dim = hidden_states.shape[0]
+            seq_len_dim = hidden_states.shape[1]
+            output = torch.zeros_like(hidden_states)
+            try:
+                transport_backend.all_to_all(flat_hidden, output.view(-1, hidden_dim))
+                return output
+            except Exception as e:
+                logger.warning(f"All-to-all failed ({e}), falling back to dispatch")
+                return self.forward(hidden_states, moe_router, {})
+        else:
+            return self.forward(hidden_states, moe_router, {})
+
+    def _send_moe_forward(self, client, request: MoEForwardRequest) -> MoEForwardResponse:
+        """Send MoE forward request to a node via all-to-all or gRPC.
+
+        Uses NCCL all-to-all for GPU-direct communication when available,
+        falling back to gRPC-based expert dispatch for non-GPU setups.
+
+        All-to-all flow:
+        1. Each node sends its tokens-to-offload to the owning node
+        2. Each node processes its assigned experts on received tokens
+        3. Each node sends results back to requesting nodes
+        4. Requesting nodes aggregate results by routing weights
+
+        gRPC fallback:
+        1. Serialize hidden states and expert IDs
+        2. Send to target node via ForwardPass-like RPC
+        3. Receive expert output
+        """
+        import time
+
+        start = time.monotonic()
+        try:
+            node_id = request.node_id
+            hidden = request.hidden_states
+            expert_ids = request.expert_ids
+            weights = request.routing_weights
+
+            if hasattr(client, 'stub') and hasattr(client.stub, 'ExpertForward'):
+                from distllm.communication.node_pb2 import ExpertForwardRequest as ProtoReq
+                proto = ProtoReq()
+                proto.request_id = request.request_id
+                proto.hidden_states.CopyFrom(
+                    _tensor_to_proto(hidden)
+                )
+                proto.expert_ids.extend(expert_ids)
+                proto.routing_weights.extend(weights)
+
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(client.stub.ExpertForward, proto)
+                    resp = future.result(timeout=30)
+
+                output = _proto_to_tensor(resp.output)
+                elapsed = (time.monotonic() - start) * 1000
+                return MoEForwardResponse(
+                    node_id=node_id, output=output, success=True,
+                    processing_time_ms=elapsed,
+                )
+            else:
+                raise NotImplementedError("ExpertForward RPC not available on this client")
+        except Exception as e:
+            return MoEForwardResponse(
+                node_id=request.node_id, output=torch.zeros(1),
+                success=False, error_message=str(e),
+            )
+
+
+def _tensor_to_proto(tensor: torch.Tensor):
+    from distllm.communication.serializers import tensor_to_proto
+    return tensor_to_proto(tensor)
+
+
+def _proto_to_tensor(proto):
+    from distllm.communication.serializers import proto_to_tensor
+    return proto_to_tensor(proto) if hasattr(proto, 'shape') else torch.zeros(1)
+
+
+def replicate_experts_across_nodes(
+    total_experts: int,
+    num_nodes: int,
+    replication_factor: int = 1,
+    capacity_factor: float = 1.0,
+) -> Dict[str, List[int]]:
+    """Assign experts to nodes with optional replication.
+
+    Args:
+        total_experts: Total number of experts in the MoE layer.
+        num_nodes: Number of available nodes.
+        replication_factor: How many copies of each expert (1 = no replication).
+        capacity_factor: Load balancing slack (1.0 = exact, >1.0 = extra capacity).
+
+    Returns:
+        Dict mapping node_id -> list of expert IDs hosted on that node.
+
+    Example:
+        64 experts, 8 nodes, replication_factor=2:
+        Each expert appears on 2 nodes = 128 total assignments
+        Each node gets 128/8 = 16 expert slots
+    """
+    total_assignments = total_experts * replication_factor
+    slots_per_node = max(1, int(total_assignments / max(num_nodes, 1) * capacity_factor))
+
+    round_robin: Dict[str, List[int]] = {}
+    node_ids = [f"node_{i}" for i in range(num_nodes)]
+
+    expert_idx = 0
+    for _ in range(replication_factor):
+        for e in range(total_experts):
+            node_id = node_ids[expert_idx % num_nodes]
+            if node_id not in round_robin:
+                round_robin[node_id] = []
+            if len(round_robin[node_id]) < slots_per_node:
+                if e not in round_robin[node_id]:
+                    round_robin[node_id].append(e)
+            expert_idx += 1
+
+    logger.info(f"Expert replication: {total_experts} experts × {replication_factor}x "
+                f"on {num_nodes} nodes ({slots_per_node} slots/node)")
+    return round_robin

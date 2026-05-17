@@ -501,6 +501,29 @@ class PromptTemplateSettings(BaseModel):
         return v
 
 
+class EmbeddingSettings(BaseModel):
+    """Embedding and reranking model configuration."""
+    embedding_model: str = ""  # Dedicated embedding model (e.g., sentence-transformers)
+    rerank_model: str = ""  # Cross-encoder reranking model
+    normalize: bool = True  # L2-normalize embeddings
+    max_length: int = 512
+    batch_size: int = 32
+
+
+class VersionSettings(BaseModel):
+    """Model versioning and A/B testing configuration."""
+    enabled: bool = False
+    max_versions: int = 4
+    shadow_enabled: bool = False
+    shadow_pct: float = 0.0  # Percentage of traffic to shadow (0-100)
+    blue_green_enabled: bool = False
+    ab_testing_enabled: bool = False
+    ab_test_split: float = 50.0  # Percentage for variant B (0-100)
+    auto_promote_enabled: bool = False
+    min_samples: int = 100  # Minimum samples before statistical test
+    significance_level: float = 0.05  # p-value threshold
+
+
 class PluginSettings(BaseModel):
     """Plugin system configuration."""
     enabled: bool = False
@@ -514,6 +537,43 @@ class PluginSettings(BaseModel):
                 if "." not in item["module"]:
                     raise ValueError(f"Plugin module must be fully qualified, got {item['module']}")
         return v
+
+
+class HybridParallelSettings(BaseModel):
+    """Hybrid parallelism (TP + PP + EP) configuration."""
+    enabled: bool = False
+    auto_detect: bool = True
+    tp_enabled: bool = True
+    pp_overlap: bool = True
+    ep_enabled: bool = True
+    force_tp_world_size: int = 0
+    force_pp_stages: int = 0
+
+
+class ZeroCopySettings(BaseModel):
+    """Zero-copy GPU tensor transfer configuration."""
+    enabled: bool = False
+    prefer_rdma: bool = True
+    fallback_to_nccl: bool = True
+    intranode_ipc: bool = True
+
+
+class AdaptivePrecisionSettings(BaseModel):
+    """Adaptive precision pipeline configuration."""
+    enabled: bool = False
+    calibration_samples: int = 64
+    target_precision: str = "auto"  # "auto", "fp16", "int8"
+    max_quality_loss_pct: float = 0.1
+
+
+class PredictiveCacheSettings(BaseModel):
+    """Predictive KV cache management configuration."""
+    enabled: bool = False
+    gpu_cache_mb: int = 512
+    cpu_cache_mb: int = 4096
+    pattern_decay_hours: float = 24.0
+    min_prefix_len: int = 8
+    background_compress_interval_s: int = 300
 
 
 class DistLLMSettings(BaseSettings):
@@ -558,7 +618,13 @@ class DistLLMSettings(BaseSettings):
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     model_hub: ModelHubSettings = Field(default_factory=ModelHubSettings)
     prompt_template: PromptTemplateSettings = Field(default_factory=PromptTemplateSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    version: VersionSettings = Field(default_factory=VersionSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
+    hybrid_parallel: HybridParallelSettings = Field(default_factory=HybridParallelSettings)
+    zero_copy: ZeroCopySettings = Field(default_factory=ZeroCopySettings)
+    adaptive_precision: AdaptivePrecisionSettings = Field(default_factory=AdaptivePrecisionSettings)
+    predictive_cache: PredictiveCacheSettings = Field(default_factory=PredictiveCacheSettings)
 
     @classmethod
     def validate_startup(cls) -> "DistLLMSettings":

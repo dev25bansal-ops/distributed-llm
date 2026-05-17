@@ -26,9 +26,25 @@ htmlcov/
 .coverage
 
 # Docker
-Dockerfile
-docker-compose.yml
+Dockerfile*
+docker-compose*.yml
 .dockerignore
+
+# Deployment (Helm/Kustomize source files are excluded; CRDs are included via chart)
+deploy/kustomize/
+deploy/helm/templates/
+deploy/operator/
+deploy/monitoring/
+deploy/logging/
+deploy/karpenter/
+deploy/gitops/
+deploy/webhook/
+
+# CI/CD
+.github/
+
+# Benchmarks
+benchmarks/
 
 # OS
 .DS_Store
@@ -47,3 +63,9 @@ config.yaml
 
 # Scripts
 scripts/
+
+# Examples
+examples/
+
+# Proto
+proto/

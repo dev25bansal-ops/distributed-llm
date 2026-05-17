@@ -3,12 +3,18 @@
 Deduplicates the nearly-identical _stream_chat and _stream_completion
 functions into a single _stream_response() that parameterizes the
 object_type and request_id prefix.
+
+Supports:
+- include_usage: true (usage data in final chunk)
+- logprobs in streaming (per-token logprobs)
 """
 
 import asyncio
 import json
+import math
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, Optional, List
 
 import torch
@@ -40,7 +46,58 @@ def _sample_token(logits: torch.Tensor, temperature: float, top_p: float, top_k:
         return torch.argmax(logits, dim=-1, keepdim=True)
 
 
-def _stream_event(request_id: str, object_type: str, model: str, token_text: str) -> str:
+def _compute_logprobs(
+    logits: torch.Tensor,
+    token_id: int,
+    tokenizer,
+    top_logprobs: int = 0,
+    temperature: float = 1.0,
+) -> Dict[str, Any]:
+    """Compute logprobs for a sampled token.
+
+    Args:
+        logits: Raw logits [batch, vocab].
+        token_id: The sampled token ID.
+        tokenizer: Tokenizer for decoding token strings.
+        top_logprobs: Number of top alternatives to return.
+        temperature: Sampling temperature used.
+
+    Returns:
+        Dict with token logprob and top alternatives.
+    """
+    probs = torch.softmax(logits / max(temperature, 1e-6), dim=-1)
+    log_probs = torch.log(probs + 1e-10)
+
+    token_logprob = log_probs[0, token_id].item()
+    token_str = tokenizer.decode([token_id])
+
+    result = {
+        "token": token_str,
+        "logprob": token_logprob,
+        "bytes": list(token_str.encode('utf-8')) if token_str else None,
+    }
+
+    if top_logprobs > 0:
+        top_indices = torch.topk(log_probs[0], min(top_logprobs, log_probs.shape[-1])).indices
+        result["top_logprobs"] = []
+        for idx in top_indices:
+            alt_str = tokenizer.decode([idx.item()])
+            result["top_logprobs"].append({
+                "token": alt_str,
+                "logprob": log_probs[0, idx].item(),
+                "bytes": list(alt_str.encode('utf-8')) if alt_str else None,
+            })
+
+    return result
+
+
+def _stream_event(
+    request_id: str,
+    object_type: str,
+    model: str,
+    token_text: str,
+    logprob_data: Optional[Dict] = None,
+) -> str:
     """Format a single streaming SSE event for chat or completion."""
     d: Dict[str, Any] = {
         "id": request_id,
@@ -49,9 +106,38 @@ def _stream_event(request_id: str, object_type: str, model: str, token_text: str
         "model": model,
     }
     if object_type == "chat.completion.chunk":
-        d["choices"] = [{"index": 0, "delta": {"content": token_text}}]
+        choice = {"index": 0, "delta": {"content": token_text}}
+        if logprob_data:
+            choice["logprobs"] = {"content": [logprob_data]}
+        d["choices"] = [choice]
     else:
-        d["choices"] = [{"index": 0, "text": token_text}]
+        choice = {"index": 0, "text": token_text}
+        if logprob_data:
+            choice["logprobs"] = logprob_data
+        d["choices"] = [choice]
+    return f"data: {json.dumps(d)}\n\n"
+
+
+def _stream_usage_event(
+    request_id: str,
+    object_type: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> str:
+    """Format usage data as a streaming SSE event (final chunk when include_usage=true)."""
+    d: Dict[str, Any] = {
+        "id": request_id,
+        "object": object_type,
+        "created": int(time.time()),
+        "model": model,
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
     return f"data: {json.dumps(d)}\n\n"
 
 
@@ -92,11 +178,12 @@ async def _generate_tokens(
     temperature: float,
     top_p: float,
     top_k: int,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[tuple, None]:
     """Core token generation loop shared by chat and completion streaming.
 
-    Yields token text strings as they are generated, handling both
-    local and distributed modes with dynamic param updates.
+    Yields (token_text, logprob_data, ttft) tuples as they are generated.
+    logprob_data is None unless logprobs are requested.
+    ttft is set only on the first token yield, None thereafter.
     """
     coord = g.coordinator
     if not coord:
@@ -110,11 +197,15 @@ async def _generate_tokens(
         input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
         past_key_values = None
 
+        prefill_start = time.monotonic()
+
         with torch.no_grad():
             for step in range(max_tokens):
                 temp = temperature
                 tp = top_p
                 tk = top_k
+                include_logprobs = False
+                top_logprobs_n = 0
                 if coord:
                     from distllm.core.param_update_channel import GenerationParams
                     params = coord._param_update_channel.get(request_id)
@@ -122,6 +213,8 @@ async def _generate_tokens(
                         temp = params.temperature
                         tp = params.top_p
                         tk = params.top_k
+                        include_logprobs = getattr(params, 'include_logprobs', False)
+                        top_logprobs_n = getattr(params, 'top_logprobs', 0)
 
                 if step == 0:
                     outputs = await asyncio.to_thread(model, input_ids, use_cache=True)
@@ -133,7 +226,16 @@ async def _generate_tokens(
 
                 next_token = _sample_token(logits, temp, tp, tk)
                 token_text = tokenizer.decode(next_token[0], skip_special_tokens=True)
-                yield token_text
+
+                logprob_data = None
+                if include_logprobs:
+                    logprob_data = _compute_logprobs(logits, next_token[0].item(), tokenizer, top_logprobs_n, temp)
+
+                ttft = None
+                if step == 0:
+                    ttft = time.monotonic() - prefill_start
+
+                yield token_text, logprob_data, ttft
 
                 if next_token.item() == tokenizer.eos_token_id:
                     break
@@ -147,10 +249,14 @@ async def _generate_tokens(
             nid: None for nid in coord.node_order
         }
 
+        prefill_start = time.monotonic()
+
         for step in range(max_tokens):
             temp = temperature
             tp = top_p
             tk = top_k
+            include_logprobs = False
+            top_logprobs_n = 0
             if coord:
                 from distllm.core.param_update_channel import GenerationParams
                 params = coord._param_update_channel.get(request_id)
@@ -158,6 +264,8 @@ async def _generate_tokens(
                     temp = params.temperature
                     tp = params.top_p
                     tk = params.top_k
+                    include_logprobs = getattr(params, 'include_logprobs', False)
+                    top_logprobs_n = getattr(params, 'top_logprobs', 0)
 
             step_input = generated_ids if step == 0 else generated_ids[:, -1:]
 
@@ -170,7 +278,16 @@ async def _generate_tokens(
             generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0)], dim=1)
 
             token_text = tokenizer.decode(next_token[0], skip_special_tokens=True)
-            yield token_text
+
+            logprob_data = None
+            if include_logprobs:
+                logprob_data = _compute_logprobs(logits[:, -1, :], next_token[0].item(), tokenizer, top_logprobs_n, temp)
+
+            ttft = None
+            if step == 0:
+                ttft = time.monotonic() - prefill_start
+
+            yield token_text, logprob_data, ttft
 
             if next_token.item() == tokenizer.eos_token_id:
                 break
@@ -184,33 +301,87 @@ async def _stream_response(
 ) -> AsyncGenerator[str, None]:
     """Unified streaming response generator for both chat and completion.
 
-    Args:
-        prompt: The text prompt to generate from.
-        request: The pydantic request object (chat or completion).
-        object_type: SSE object type, e.g. "chat.completion.chunk" or "text_completion.chunk".
-        request_id_prefix: Prefix for the request ID, e.g. "chatcmpl-" or "cmpl-".
+    Supports:
+    - include_usage: true (sends usage data in final chunk)
+    - logprobs: per-token logprobs in streaming
+    - OTel generation span with TTFT tracking
+    - Cost tracking completion
     """
     request_id = f"{request_id_prefix}{uuid.uuid4().hex[:12]}"
+    include_usage = getattr(request, 'stream_options', None)
+    if include_usage and isinstance(include_usage, dict):
+        include_usage = include_usage.get('include_usage', False)
+    else:
+        include_usage = getattr(request, 'include_usage', False)
 
     coord = g.coordinator
     if coord:
         coord._param_update_channel.register(request_id)
 
-    yield _stream_start_event(request_id, object_type, request.model)
+    model_name = request.model
+    tenant = getattr(request, 'user', None) or 'default'
+    prompt_len = len(coord.tokenizer.encode(prompt)) if coord and coord.tokenizer else 0
 
-    if not coord:
-        yield _stream_stop_event(request_id, object_type, request.model)
+    from distllm.observability.spans import async_span_generation, record_ttft
+
+    stream_start = time.monotonic()
+    ttft_recorded = None
+
+    async with async_span_generation(request_id, model_name, prompt_len, tenant) as gen_span:
+        yield _stream_start_event(request_id, object_type, model_name)
+
+        if not coord:
+            yield _stream_stop_event(request_id, object_type, model_name)
+            yield "data: [DONE]\n\n"
+            return
+
+        completion_tokens = 0
+        async for token_text, logprob_data, ttft in _generate_tokens(
+            prompt, request_id, request.max_tokens,
+            request.temperature, request.top_p, request.top_k,
+        ):
+            completion_tokens += 1
+            # Record TTFT on first token
+            if ttft is not None:
+                ttft_recorded = ttft
+                record_ttft(gen_span, ttft)
+                gen_span.set_attribute("generation.ttft_s", ttft)
+
+            yield _stream_event(request_id, object_type, model_name, token_text, logprob_data)
+
+        yield _stream_stop_event(request_id, object_type, model_name)
+
+        # Usage event if requested
+        if include_usage and coord and coord.tokenizer:
+            prompt_tokens = len(coord.tokenizer.encode(prompt))
+            yield _stream_usage_event(request_id, object_type, model_name, prompt_tokens, completion_tokens)
+
         yield "data: [DONE]\n\n"
-        return
 
-    async for token_text in _generate_tokens(
-        prompt, request_id, request.max_tokens,
-        request.temperature, request.top_p, request.top_k,
-    ):
-        yield _stream_event(request_id, object_type, request.model, token_text)
+        # Record final metrics on the generation span
+        duration = time.monotonic() - stream_start
+        gen_span.set_attribute("generation.duration_s", duration)
+        gen_span.set_attribute("generation.completion_tokens", completion_tokens)
+        gen_span.add_event("generation_complete", {
+            "duration": duration,
+            "ttft": ttft_recorded or 0.0,
+            "tokens": completion_tokens,
+        })
 
-    yield _stream_stop_event(request_id, object_type, request.model)
-    yield "data: [DONE]\n\n"
+        # Prometheus metrics via exporter
+        if coord.metrics_exporter:
+            coord.metrics_exporter.tokens_generated.inc(completion_tokens)
+            coord.metrics_exporter.token_latency.observe(duration)
+            if duration > 0:
+                coord.metrics_exporter.tokens_per_second.set(completion_tokens / duration)
+
+        # Cost tracking completion
+        cost_tracker = getattr(g, 'cost_tracker', None)
+        if cost_tracker and request_id:
+            try:
+                cost_tracker.complete_request(request_id)
+            except Exception:
+                pass  # Non-fatal
 
     if coord:
         coord._param_update_channel.unregister(request_id)
