@@ -8,7 +8,7 @@ Supports three discovery modes:
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 
 @dataclass
@@ -23,9 +23,9 @@ class CoordinatorDiscovery:
 
     def __init__(self, mode: str = "static"):
         self.mode = mode
-        self._coordinators: Dict[str, CoordinatorInfo] = {}
-        self._callbacks: List[Callable[[str, bool], None]] = []
-        self._watch_task: Optional[asyncio.Task] = None
+        self._coordinators: dict[str, CoordinatorInfo] = {}
+        self._callbacks: list[Callable[[str, bool], None]] = []
+        self._watch_task: asyncio.Task | None = None
 
     def on_change(self, callback: Callable[[str, bool], None]) -> None:
         """Register callback for coordinator add/remove events."""
@@ -41,10 +41,10 @@ class CoordinatorDiscovery:
         for cb in self._callbacks:
             cb(node_id, False)
 
-    def get_all(self) -> Dict[str, CoordinatorInfo]:
+    def get_all(self) -> dict[str, CoordinatorInfo]:
         return dict(self._coordinators)
 
-    def get_healthy(self) -> List[CoordinatorInfo]:
+    def get_healthy(self) -> list[CoordinatorInfo]:
         return [c for c in self._coordinators.values() if c.healthy]
 
     def set_health(self, node_id: str, healthy: bool) -> None:

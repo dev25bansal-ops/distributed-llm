@@ -3,10 +3,9 @@
 import os
 import grpc
 from loguru import logger
-from typing import List, Tuple, Optional
 
 
-def generate_self_signed_certs(cert_dir: str = "certs", extra_hosts: Optional[List[str]] = None) -> Tuple[str, str, str]:
+def generate_self_signed_certs(cert_dir: str = "certs", extra_hosts: list[str] | None = None) -> tuple[str, str, str]:
     """Generate self-signed TLS certificates for development.
 
     Security: Includes proper SANs for common deployment scenarios.

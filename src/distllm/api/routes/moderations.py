@@ -6,7 +6,6 @@ into harmful categories.
 
 import re
 import time
-from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -17,7 +16,7 @@ router = APIRouter(tags=["moderations"])
 
 
 class ModerationRequest(BaseModel):
-    input: str | List[str] = Field(..., description="Text to moderate")
+    input: str | list[str] = Field(..., max_length=65536, description="Text to moderate")
     model: str = Field(default="text-moderation-latest", description="Moderation model")
 
 
@@ -58,11 +57,11 @@ class ModerationResult(BaseModel):
 class ModerationResponse(BaseModel):
     id: str = Field(default_factory=lambda: f"modr-{time.time():.0f}")
     model: str
-    results: List[ModerationResult]
+    results: list[ModerationResult]
 
 
 # Keyword-based detection patterns (simplified heuristic approach)
-_HARMFUL_PATTERNS: Dict[str, List[str]] = {
+_HARMFUL_PATTERNS: dict[str, list[str]] = {
     "sexual": ["explicit", "nude", "naked", "sex", "porn"],
     "hate": ["hate speech", "slur", "inferior race", "ethnic cleansing"],
     "harassment": ["bully", "harass", "stalk", "threaten you"],
@@ -101,7 +100,7 @@ async def create_moderation(body: ModerationRequest):
     )
 
 
-async def _moderate_with_model(inputs: List[str], model) -> List[ModerationResult]:
+async def _moderate_with_model(inputs: list[str], model) -> list[ModerationResult]:
     """Moderate using a trained model (e.g., fine-tuned classifier)."""
     import torch
 

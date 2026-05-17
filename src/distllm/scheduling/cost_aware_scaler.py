@@ -10,7 +10,6 @@ Provides:
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 
@@ -43,7 +42,7 @@ class TenantCostReport:
     total_tokens: int = 0
     avg_cost_per_token: float = 0.0
     avg_cost_per_request: float = 0.0
-    cost_by_node: Dict[str, float] = field(default_factory=dict)
+    cost_by_node: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,7 +52,7 @@ class PreemptionRisk:
     risk_score: float = 0.0  # 0.0-1.0
     current_price: float = 0.0
     on_demand_price: float = 0.0
-    price_history: List[float] = field(default_factory=list)
+    price_history: list[float] = field(default_factory=list)
     interruption_history: int = 0
     uptime_hours: float = 0.0
     recommendation: str = "keep"  # keep, drain, replace
@@ -68,9 +67,9 @@ class GPUCostTracker:
 
     def __init__(self, gpu_hourly_rate: float = 1.0):
         self._gpu_hourly_rate = gpu_hourly_rate
-        self._requests: Dict[str, RequestCost] = {}
-        self._tenant_requests: Dict[str, List[str]] = {}
-        self._completed_requests: List[RequestCost] = []
+        self._requests: dict[str, RequestCost] = {}
+        self._tenant_requests: dict[str, list[str]] = {}
+        self._completed_requests: list[RequestCost] = []
 
     def start_request(
         self,
@@ -107,7 +106,7 @@ class GPUCostTracker:
         if req:
             req.tokens_generated += token_count
 
-    def complete_request(self, request_id: str) -> Optional[RequestCost]:
+    def complete_request(self, request_id: str) -> RequestCost | None:
         """Finalize cost tracking for a request.
 
         Args:
@@ -154,8 +153,8 @@ class GPUCostTracker:
     def get_tenant_report(
         self,
         tenant_id: str,
-        period_start: Optional[float] = None,
-        period_end: Optional[float] = None,
+        period_start: float | None = None,
+        period_end: float | None = None,
     ) -> TenantCostReport:
         """Generate a detailed cost report for a tenant.
 
@@ -203,7 +202,7 @@ class GPUCostTracker:
 
         return report
 
-    def get_all_tenant_reports(self) -> Dict[str, TenantCostReport]:
+    def get_all_tenant_reports(self) -> dict[str, TenantCostReport]:
         """Generate cost reports for all tenants."""
         tenant_ids = set()
         for req in self._completed_requests:
@@ -240,7 +239,7 @@ class PreemptionPredictor:
     def __init__(self, price_history_window: int = 24):
         # hours of price history to consider
         self._price_history_window = price_history_window
-        self._node_history: Dict[str, PreemptionRisk] = {}
+        self._node_history: dict[str, PreemptionRisk] = {}
 
     def update_price(
         self,
@@ -337,7 +336,7 @@ class PreemptionPredictor:
 
         return risk
 
-    def get_risky_nodes(self, threshold: float = 0.5) -> List[str]:
+    def get_risky_nodes(self, threshold: float = 0.5) -> list[str]:
         """Get list of nodes with preemption risk above threshold.
 
         Args:
@@ -372,7 +371,7 @@ class CostAwareScaler:
         self._preemption = PreemptionPredictor()
         self._budget_per_hour = budget_per_hour
         self._cost_per_token = cost_per_token
-        self._scaling_events: List[dict] = []
+        self._scaling_events: list[dict] = []
 
     # --- GPU cost tracking ---
     def start_request(
@@ -385,7 +384,7 @@ class CostAwareScaler:
         """Record generated tokens."""
         self._gpu_tracker.record_tokens(request_id, token_count)
 
-    def complete_request(self, request_id: str) -> Optional[RequestCost]:
+    def complete_request(self, request_id: str) -> RequestCost | None:
         """Finalize cost tracking for a request."""
         return self._gpu_tracker.complete_request(request_id)
 
@@ -397,13 +396,13 @@ class CostAwareScaler:
     def get_tenant_report(
         self,
         tenant_id: str,
-        period_start: Optional[float] = None,
-        period_end: Optional[float] = None,
+        period_start: float | None = None,
+        period_end: float | None = None,
     ) -> TenantCostReport:
         """Get detailed cost report for a tenant."""
         return self._gpu_tracker.get_tenant_report(tenant_id, period_start, period_end)
 
-    def get_all_tenant_reports(self) -> Dict[str, TenantCostReport]:
+    def get_all_tenant_reports(self) -> dict[str, TenantCostReport]:
         """Get cost reports for all tenants."""
         return self._gpu_tracker.get_all_tenant_reports()
 
@@ -418,7 +417,7 @@ class CostAwareScaler:
         """Assess preemption risk for a node."""
         return self._preemption.assess_risk(node_id)
 
-    def get_risky_nodes(self, threshold: float = 0.5) -> List[str]:
+    def get_risky_nodes(self, threshold: float = 0.5) -> list[str]:
         """Get nodes at high preemption risk."""
         return self._preemption.get_risky_nodes(threshold)
 
@@ -439,9 +438,9 @@ class CostAwareScaler:
 
     def select_node_for_sla(
         self,
-        candidates: List[dict],
+        candidates: list[dict],
         target_latency_ms: float = 200.0,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Select the best node balancing cost and latency SLA.
 
         Args:

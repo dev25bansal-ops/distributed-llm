@@ -12,7 +12,7 @@ from collections import deque
 from typing import Callable, Dict
 
 
-def _get_otel_labels() -> Dict[str, str]:
+def _get_otel_labels() -> dict[str, str]:
     """Extract OTel trace context as Loki labels."""
     try:
         from opentelemetry import trace

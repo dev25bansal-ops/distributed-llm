@@ -5,8 +5,6 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
-
 from loguru import logger
 
 
@@ -24,7 +22,7 @@ class ModelCache:
 
     METADATA_FILE = ".cache_metadata.json"
 
-    def __init__(self, cache_dir: Optional[str] = None, max_size_gb: float = 50.0):
+    def __init__(self, cache_dir: str | None = None, max_size_gb: float = 50.0):
         self.cache_dir = Path(cache_dir) if cache_dir else self._default_cache_dir()
         self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +64,7 @@ class ModelCache:
             return 0.0
         return min(100.0, (self.get_disk_usage() / self.max_size_bytes) * 100.0)
 
-    def list_entries(self) -> List[dict]:
+    def list_entries(self) -> list[dict]:
         """List all cached models with metadata."""
         entries = self._metadata.get("entries", {})
         result = []
@@ -125,7 +123,7 @@ class ModelCache:
         self._save_metadata()
         return True
 
-    def evict_if_needed(self, target_pct: float = 90.0) -> List[str]:
+    def evict_if_needed(self, target_pct: float = 90.0) -> list[str]:
         """Evict least-recently-used models until cache is below target percentage.
 
         Args:

@@ -1,7 +1,6 @@
 """gRPC health probing for distributed-llm nodes."""
 
 import time
-from typing import Callable, Optional
 
 
 async def probe_node(

@@ -25,7 +25,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 from loguru import logger
@@ -64,7 +64,7 @@ class OpSample:
 class OpProfile:
     """Aggregated profile for an operation type."""
     op_type: OpType
-    samples: List[OpSample] = field(default_factory=list)
+    samples: list[OpSample] = field(default_factory=list)
     avg_duration_ms: float = 0.0
     p50_duration_ms: float = 0.0
     p95_duration_ms: float = 0.0
@@ -93,11 +93,11 @@ class TunableParams:
     communication_compression: bool = True
     flash_attention_enabled: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> TunableParams:
+    def from_dict(cls, d: dict[str, Any]) -> TunableParams:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -117,7 +117,7 @@ class PerformanceModel:
     """
 
     def __init__(self):
-        self._profiles: Dict[OpType, OpProfile] = {}
+        self._profiles: dict[OpType, OpProfile] = {}
         self._lock = threading.Lock()
 
     def record_sample(self, sample: OpSample) -> None:
@@ -145,7 +145,7 @@ class PerformanceModel:
             avg_input = sum(s.input_size for s in profile.samples) / n
             profile.throughput_tok_s = avg_input / (profile.avg_duration_ms / 1000.0) if profile.avg_duration_ms > 0 else 0.0
 
-    def get_profile(self, op_type: OpType) -> Optional[OpProfile]:
+    def get_profile(self, op_type: OpType) -> OpProfile | None:
         with self._lock:
             return self._profiles.get(op_type)
 
@@ -185,7 +185,7 @@ class PerformanceModel:
         total_ms = sum(costs) + 1.0
         return (batch_size * seq_len) / (total_ms / 1000.0)
 
-    def all_profiles(self) -> Dict[str, Any]:
+    def all_profiles(self) -> dict[str, Any]:
         result = {}
         with self._lock:
             for op_type, profile in self._profiles.items():
@@ -297,7 +297,7 @@ class SelfOptimizingEngine:
     def __init__(
         self,
         model_name: str = "",
-        profile_dir: Optional[str] = None,
+        profile_dir: str | None = None,
         tune_interval_seconds: float = 60.0,
         warmup_seconds: float = 30.0,
         exploration_noise: float = 0.1,
@@ -321,8 +321,8 @@ class SelfOptimizingEngine:
 
         self._lock = threading.Lock()
         self._running = False
-        self._tune_thread: Optional[threading.Thread] = None
-        self._sample_buffer: List[OpSample] = []
+        self._tune_thread: threading.Thread | None = None
+        self._sample_buffer: list[OpSample] = []
         self._buffer_lock = threading.Lock()
 
         # Load saved profile if available
@@ -410,7 +410,7 @@ class SelfOptimizingEngine:
                 # Estimate throughput for candidate
                 estimated = self._perf_model.predict_throughput(
                     candidate.batch_size,
-                    candidate.seq_len or 512,
+                    candidate.max_seq_len or 512,
                 )
 
                 # Accept if better
@@ -529,7 +529,7 @@ class SelfOptimizingEngine:
         except Exception as e:
             logger.debug(f"Failed to load profile: {e}")
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         self._flush_samples()
         profiles = self._perf_model.all_profiles()
         best = self._tuner.best_params

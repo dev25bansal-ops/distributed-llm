@@ -1,7 +1,5 @@
 """OpenTelemetry metrics for distributed LLM."""
 
-from typing import Optional
-
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, MetricExporter
@@ -11,7 +9,7 @@ from opentelemetry.sdk.metrics import Histogram, Counter
 
 def setup_metrics(
     service_name: str = "distllm",
-    endpoint: Optional[str] = None,
+    endpoint: str | None = None,
     exporter: MetricExporter = None,
 ) -> metrics.MeterProvider:
     """Initialize OpenTelemetry metrics.

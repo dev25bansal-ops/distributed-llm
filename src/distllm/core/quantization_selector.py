@@ -9,8 +9,6 @@ Supports:
 """
 
 from dataclasses import dataclass
-from typing import Optional
-
 from loguru import logger
 
 
@@ -33,7 +31,7 @@ class NodeVRAMInfo:
 def select_for_node(
     node_info: NodeVRAMInfo,
     model_size_bytes: int,
-    target_latency_ms: Optional[float] = None,
+    target_latency_ms: float | None = None,
 ) -> str:
     """Select quantization method based on node VRAM and model size.
 
@@ -102,7 +100,7 @@ def estimate_model_size_bytes(hidden_size: int, num_layers: int, vocab_size: int
     return total_params * dtype_bytes
 
 
-def build_quantization_config(method: str, **kwargs) -> Optional[object]:
+def build_quantization_config(method: str, **kwargs) -> object | None:
     """Build quantization config from method string and optional overrides.
 
     Supports BitsAndBytesConfig, GPTQConfig, and AWQ config dicts.

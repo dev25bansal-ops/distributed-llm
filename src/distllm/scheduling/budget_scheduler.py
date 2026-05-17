@@ -1,7 +1,5 @@
 """Budget-aware scheduler for cost-optimized node selection."""
 
-from typing import Callable, List, Optional
-
 from loguru import logger
 
 
@@ -24,9 +22,9 @@ class BudgetScheduler:
 
     def select_node(
         self,
-        candidates: List,
+        candidates: list,
         current_spend: float = 0.0,
-    ) -> Optional:
+    ) -> object | None:
         """Select the best node from candidates based on cost.
 
         Args:
@@ -71,10 +69,10 @@ class BudgetScheduler:
 
     def select_nodes_batch(
         self,
-        candidates: List,
+        candidates: list,
         count: int,
         current_spend: float = 0.0,
-    ) -> List:
+    ) -> list:
         """Select multiple nodes from candidates based on cost.
 
         Args:

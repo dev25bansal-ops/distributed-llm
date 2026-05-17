@@ -13,7 +13,7 @@ Routes use::
 
 import sys
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from distllm.core.coordinator import Coordinator
@@ -29,19 +29,19 @@ class _ServerGlobals:
     """
 
     @property
-    def coordinator(self) -> Optional["Coordinator"]:
+    def coordinator(self) -> "Coordinator | None":
         return sys.modules["distllm.api.server"].coordinator
 
     @coordinator.setter
-    def coordinator(self, value: Optional["Coordinator"]) -> None:
+    def coordinator(self, value: "Coordinator | None") -> None:
         sys.modules["distllm.api.server"].coordinator = value
 
     @property
-    def monitor(self) -> Optional["SystemMonitor"]:
+    def monitor(self) -> "SystemMonitor | None":
         return sys.modules["distllm.api.server"].monitor
 
     @monitor.setter
-    def monitor(self, value: Optional["SystemMonitor"]) -> None:
+    def monitor(self, value: "SystemMonitor | None") -> None:
         sys.modules["distllm.api.server"].monitor = value
 
     @property

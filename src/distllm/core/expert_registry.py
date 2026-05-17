@@ -1,7 +1,6 @@
 """Thread-safe expert-to-node mapping for distributed MoE inference."""
 
 import threading
-from typing import Dict, List, Optional
 
 
 class ExpertRegistry:
@@ -14,11 +13,11 @@ class ExpertRegistry:
     def __init__(self):
         self._lock = threading.Lock()
         # expert_id -> list of (node_id, layer_idx)
-        self._expert_to_nodes: Dict[int, List[tuple]] = {}
+        self._expert_to_nodes: dict[int, list[tuple]] = {}
         # node_id -> list of (expert_id, layer_idx)
-        self._node_to_experts: Dict[str, List[tuple]] = {}
+        self._node_to_experts: dict[str, list[tuple]] = {}
         # node_id -> request count (for load balancing)
-        self._node_load: Dict[str, int] = {}
+        self._node_load: dict[str, int] = {}
 
     def register_expert(self, expert_id: int, node_id: str, layer_idx: int) -> None:
         """Register an expert on a node.
@@ -61,7 +60,7 @@ class ExpertRegistry:
             self._node_to_experts.pop(node_id, None)
             self._node_load.pop(node_id, None)
 
-    def get_expert_nodes(self, expert_id: int) -> List[str]:
+    def get_expert_nodes(self, expert_id: int) -> list[str]:
         """Get all nodes that hold a specific expert.
 
         Args:
@@ -74,7 +73,7 @@ class ExpertRegistry:
             entries = self._expert_to_nodes.get(expert_id, [])
             return list(set(nid for nid, _ in entries))
 
-    def get_node_experts(self, node_id: str) -> List[int]:
+    def get_node_experts(self, node_id: str) -> list[int]:
         """Get all experts hosted on a node.
 
         Args:
@@ -87,7 +86,7 @@ class ExpertRegistry:
             entries = self._node_to_experts.get(node_id, [])
             return [eid for eid, _ in entries]
 
-    def list_all(self) -> Dict[int, List[str]]:
+    def list_all(self) -> dict[int, list[str]]:
         """Get full expert-to-node mapping.
 
         Returns:
@@ -99,7 +98,7 @@ class ExpertRegistry:
                 for eid, nodes in self._expert_to_nodes.items()
             }
 
-    def select_best_node(self, expert_id: int) -> Optional[str]:
+    def select_best_node(self, expert_id: int) -> str | None:
         """Select the least-loaded node for an expert.
 
         Args:

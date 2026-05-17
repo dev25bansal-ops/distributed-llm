@@ -1,7 +1,6 @@
 """Structured output: JSON schema-constrained decoding."""
 
 import string
-from typing import Dict, List, Optional, Set
 
 import torch
 
@@ -21,16 +20,16 @@ class JSONSchemaConstraint:
     # Avoids rebuilding the expensive token index for every new constraint
     _token_index_cache: dict = {}
 
-    def __init__(self, schema: Optional[dict] = None):
+    def __init__(self, schema: dict | None = None):
         self.schema = schema
         self._state = "object_start"
-        self._stack: List[str] = []
+        self._stack: list[str] = []
         self._in_string = False
         self._escape_next = False
         self._generated = ""
-        self._token_first_chars: Optional[Dict[int, str]] = None
+        self._token_first_chars: dict[int, str] | None = None
 
-    def _build_token_index(self, tokenizer) -> Dict[int, str]:
+    def _build_token_index(self, tokenizer) -> dict[int, str]:
         """Precompute the first character of every token ID.
 
         Uses class-level cache keyed by tokenizer id to avoid rebuilding
@@ -112,13 +111,13 @@ class JSONSchemaConstraint:
         for ch in token_str:
             self._state = self._transition(self._state, ch)
 
-    def _valid_next_chars(self) -> Set[str]:
+    def _valid_next_chars(self) -> set[str]:
         """Return the set of characters valid for the current JSON state."""
         if self._in_string and not self._escape_next:
             # Inside a JSON string: any printable char except control chars
             return set(string.printable) - {'\n', '\r', '\x0b', '\x0c'}
 
-        transitions: Dict[str, Set[str]] = {
+        transitions: dict[str, set[str]] = {
             "object_start": {'"', '}'},
             "after_open_brace": {'"', '}'},
             "after_key": {':'},

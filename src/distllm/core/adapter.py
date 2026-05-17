@@ -18,8 +18,6 @@ import gc
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
-
 import torch
 import torch.nn as nn
 from loguru import logger
@@ -32,8 +30,8 @@ class LoRAAdapter:
     r: int = 16
     alpha: float = 16.0
     dropout: float = 0.05
-    target_modules: Optional[List[str]] = None
-    weights: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = field(default_factory=dict)
+    target_modules: list[str] | None = None
+    weights: dict[str, tuple[torch.Tensor, torch.Tensor]] = field(default_factory=dict)
     loaded_at: float = 0.0
     use_count: int = 0
 
@@ -73,22 +71,22 @@ class BatchedLoRAManager:
         self._lock = threading.Lock()
 
         # Adapter storage
-        self._adapters: Dict[str, LoRAAdapter] = {}
-        self._adapter_lru: List[str] = []
+        self._adapters: dict[str, LoRAAdapter] = {}
+        self._adapter_lru: list[str] = []
 
         # Original weight cache: (module_path, weight_name) -> original_weight
-        self._original_weights: Dict[Tuple[str, str], torch.Tensor] = {}
+        self._original_weights: dict[tuple[str, str], torch.Tensor] = {}
 
         # Currently merged adapter (None = base model only)
-        self._current_adapter_id: Optional[str] = None
+        self._current_adapter_id: str | None = None
 
         # Track which modules have LoRA applied
-        self._lora_target_modules: Set[str] = set()
+        self._lora_target_modules: set[str] = set()
 
         logger.info(f"LoRA manager initialized: max_adapters={max_adapters}, "
                     f"budget={memory_budget_mb}MB")
 
-    def _get_target_modules(self, adapter: LoRAAdapter) -> List[str]:
+    def _get_target_modules(self, adapter: LoRAAdapter) -> list[str]:
         """Get target module names for this adapter.
 
         Default: q_proj, v_proj, k_proj, o_proj, gate_proj, up_proj, down_proj
@@ -98,7 +96,7 @@ class BatchedLoRAManager:
         return ["q_proj", "v_proj", "k_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj"]
 
-    def _find_module(self, module_path: str) -> Optional[nn.Module]:
+    def _find_module(self, module_path: str) -> nn.Module | None:
         """Find a module by its dotted path in the base model."""
         parts = module_path.split(".")
         module = self.base_model
@@ -112,11 +110,11 @@ class BatchedLoRAManager:
     def register_adapter(
         self,
         adapter_id: str,
-        weights: Dict[str, Tuple[torch.Tensor, torch.Tensor]],
+        weights: dict[str, tuple[torch.Tensor, torch.Tensor]],
         r: int = 16,
         alpha: float = 16.0,
         dropout: float = 0.05,
-        target_modules: Optional[List[str]] = None,
+        target_modules: list[str] | None = None,
     ) -> LoRAAdapter:
         """Register a new LoRA adapter with its weights.
 
@@ -250,7 +248,7 @@ class BatchedLoRAManager:
                 logger.debug(f"Unmerged LoRA adapter {adapter_id}, restored {restored_count} modules")
             return True
 
-    def batch_merge(self, adapter_ids: List[str]) -> bool:
+    def batch_merge(self, adapter_ids: list[str]) -> bool:
         """Merge multiple adapters sequentially for a batch.
 
         In S-LoRA, only one adapter is active at a time per forward pass,
@@ -266,13 +264,13 @@ class BatchedLoRAManager:
             return False
         return self.merge_adapter(adapter_ids[0])
 
-    def get_weights(self, adapter_id: str) -> Optional[Dict[str, Tuple[torch.Tensor, torch.Tensor]]]:
+    def get_weights(self, adapter_id: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]] | None:
         adapter = self._adapters.get(adapter_id)
         if adapter is None:
             return None
         return adapter.weights
 
-    def get_merged_adapter_id(self) -> Optional[str]:
+    def get_merged_adapter_id(self) -> str | None:
         return self._current_adapter_id
 
     @property

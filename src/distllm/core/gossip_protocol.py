@@ -7,7 +7,6 @@ to build a distributed index of where cache entries are located.
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
 from loguru import logger
 
 
@@ -15,12 +14,12 @@ from loguru import logger
 class GossipState:
     """Internal state for the gossip protocol."""
     node_id: str = ""
-    known_peers: Set[str] = field(default_factory=set)
+    known_peers: set[str] = field(default_factory=set)
     # prefix_hash -> list of (node_id, entry_ref, timestamp)
-    cache_index: Dict[str, List[tuple]] = field(default_factory=dict)
+    cache_index: dict[str, list[tuple]] = field(default_factory=dict)
     last_exchange_time: float = 0.0
     # Local cache advertisements: prefix_hash -> entry_ref
-    local_entries: Dict[str, str] = field(default_factory=dict)
+    local_entries: dict[str, str] = field(default_factory=dict)
 
 
 class GossipProtocol:
@@ -88,7 +87,7 @@ class GossipProtocol:
             "timestamp": now,
         }
 
-    def process_advertisement(self, peer_ad: dict) -> List[str]:
+    def process_advertisement(self, peer_ad: dict) -> list[str]:
         """Process a peer's advertisement.
 
         Updates the cache index with peer's entries and returns
@@ -126,7 +125,7 @@ class GossipProtocol:
         missing = peer_prefixes - local_prefixes
         return list(missing)
 
-    def build_request(self, target_node_id: str, missing_prefixes: List[str]) -> dict:
+    def build_request(self, target_node_id: str, missing_prefixes: list[str]) -> dict:
         """Build a gossip request for missing entries.
 
         Args:
@@ -176,7 +175,7 @@ class GossipProtocol:
 
         return count
 
-    def select_peer(self) -> Optional[str]:
+    def select_peer(self) -> str | None:
         """Select a random peer for the next gossip round.
 
         Returns:
@@ -186,7 +185,7 @@ class GossipProtocol:
             return None
         return random.choice(list(self.state.known_peers))
 
-    def get_peers(self) -> List[str]:
+    def get_peers(self) -> list[str]:
         """Get all known peers.
 
         Returns:
@@ -194,7 +193,7 @@ class GossipProtocol:
         """
         return list(self.state.known_peers)
 
-    def lookup(self, prefix_hash: str) -> Optional[str]:
+    def lookup(self, prefix_hash: str) -> str | None:
         """Look up which node holds a cache entry.
 
         Args:
@@ -256,7 +255,7 @@ class GossipClient:
         self._request_count = 0
         self._response_count = 0
 
-    def exchange(self, peer_id: str, advertisement: dict) -> Optional[dict]:
+    def exchange(self, peer_id: str, advertisement: dict) -> dict | None:
         """Exchange advertisements with a peer.
 
         Sends our cache advertisement to the peer and receives
@@ -308,7 +307,7 @@ class GossipClient:
         logger.debug(f"Requested {len(missing)} entries from {peer_id} (stub)")
         return {"success": False, "cache_entries": {}, "entries_returned": 0}
 
-    def fetch_kv_cache(self, peer_id: str, prefix_hash: str) -> Optional[dict]:
+    def fetch_kv_cache(self, peer_id: str, prefix_hash: str) -> dict | None:
         """Fetch a single KV cache entry from a peer.
 
         Args:

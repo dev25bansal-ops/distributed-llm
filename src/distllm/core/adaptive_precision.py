@@ -10,7 +10,7 @@ Achieves 30-40% memory reduction with <0.1% quality loss.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -33,7 +33,7 @@ class LayerPrecision:
 @dataclass
 class PrecisionPlan:
     """Full precision plan for a model."""
-    layer_precisions: List[LayerPrecision] = field(default_factory=list)
+    layer_precisions: list[LayerPrecision] = field(default_factory=list)
     total_memory_original_mb: float = 0.0
     total_memory_optimized_mb: float = 0.0
     estimated_quality_loss: float = 0.0  # Percentage
@@ -48,7 +48,7 @@ class SensitivityAnalyzer:
 
     def __init__(self, calibration_samples: int = 64):
         self.calibration_samples = calibration_samples
-        self._activation_stats: Dict[str, Dict[str, torch.Tensor]] = {}
+        self._activation_stats: dict[str, dict[str, torch.Tensor]] = {}
 
     def analyze_layer(self, name: str, module: nn.Module, input_hook: torch.Tensor, output_hook: torch.Tensor) -> LayerPrecision:
         layer_type = self._classify_layer(name, module)
@@ -134,16 +134,16 @@ class AdaptivePrecisionEngine:
 
     def __init__(self, calibration_samples: int = 64):
         self.analyzer = SensitivityAnalyzer(calibration_samples)
-        self._plan: Optional[PrecisionPlan] = None
+        self._plan: PrecisionPlan | None = None
 
-    def profile_model(self, model: nn.Module, sample_input: Optional[torch.Tensor] = None) -> PrecisionPlan:
+    def profile_model(self, model: nn.Module, sample_input: torch.Tensor | None = None) -> PrecisionPlan:
         plan = PrecisionPlan()
         layer_precisions = []
         total_orig = 0.0
         total_opt = 0.0
 
-        hooks: List[Any] = []
-        activations: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        hooks: list[Any] = []
+        activations: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
         def make_hook(name: str):
             def hook(module, inp, out):
@@ -232,7 +232,7 @@ class AdaptivePrecisionEngine:
         return converted
 
     @property
-    def plan(self) -> Optional[PrecisionPlan]:
+    def plan(self) -> PrecisionPlan | None:
         return self._plan
 
     def report(self) -> str:

@@ -2,15 +2,13 @@
 
 import torch
 import numpy as np
-from typing import List, Tuple, Optional
-
 from distllm.communication.node_pb2 import Tensor, KVCache as ProtoKVCache, KVLayerCache
 from distllm.constants import TENSOR_MAX_DIMS as MAX_TENSOR_DIMS, TENSOR_MAX_DIM_SIZE as MAX_DIM_SIZE, get_tensor_max_bytes
 from distllm.errors import SerializationError
 
 
 # Shared memory buffer pool for zero-copy deserialization
-_tensor_buffer_pool: List[np.ndarray] = []
+_tensor_buffer_pool: list[np.ndarray] = []
 _buffer_pool_max_size: int = 256  # Max buffers to retain
 _buffer_pool_size: int = 0  # Current pool size
 
@@ -214,7 +212,7 @@ def set_activation_quant(enabled: bool, bits: int = 8, use_fp8: bool = False) ->
     _activation_quant_fp8 = use_fp8 and bits == 8 and torch.cuda.is_available() and hasattr(torch, 'float8_e4m3fn')
 
 
-def quantize_activation(tensor: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def quantize_activation(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Quantize activations for efficient inter-node transfer (FP8, INT8, or INT4).
 
     For FP8 e4m3: native float8 cast (halves bandwidth vs fp16, 1:1 with fp16 range).
@@ -258,7 +256,7 @@ def quantize_activation(tensor: torch.Tensor) -> Tuple[torch.Tensor, Optional[to
     return tensor, None
 
 
-def dequantize_activation(quantized: torch.Tensor, scale: Optional[torch.Tensor], orig_dtype: torch.dtype) -> torch.Tensor:
+def dequantize_activation(quantized: torch.Tensor, scale: torch.Tensor | None, orig_dtype: torch.dtype) -> torch.Tensor:
     """Dequantize activations back to original precision.
 
     Args:

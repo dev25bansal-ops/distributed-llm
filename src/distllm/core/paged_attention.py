@@ -175,7 +175,7 @@ class BlockPool:
                 else:
                     return None
 
-            block_id = self._free_blocks.pop(0)
+            block_id = self._free_blocks.pop()
             self._block_usage[block_id] = Block(block_id=block_id)
             self._total_allocations += 1
             return block_id
@@ -188,7 +188,6 @@ class BlockPool:
                 if self._block_usage[block_id].is_free:
                     del self._block_usage[block_id]
                     self._free_blocks.append(block_id)
-                    self._free_blocks.sort()  # Keep sorted for consistency
 
     def free_blocks(self, block_ids: List[int]) -> None:
         """Free multiple blocks."""
@@ -287,7 +286,6 @@ class BlockPool:
         # Free the GPU block
         del self._block_usage[lru_id]
         self._free_blocks.append(lru_id)
-        self._free_blocks.sort()
         return True
 
     def restore_block(self, block_id: int) -> bool:
@@ -565,7 +563,6 @@ class PagedAttentionManager:
         pool._block_usage.pop(phys_id, None)
         if phys_id not in pool._free_blocks:
             pool._free_blocks.append(phys_id)
-            pool._free_blocks.sort()
         return True
 
     @property

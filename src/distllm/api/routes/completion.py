@@ -3,7 +3,6 @@
 import asyncio
 import time
 import uuid
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -29,21 +28,21 @@ class CompletionRequest(BaseModel):
         }
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
-    prompt: str = Field(..., description="The prompt text to generate from")
+    prompt: str = Field(..., max_length=131072, description="The prompt text to generate from")
     max_tokens: int = Field(default=256, ge=1, le=8192, description="Maximum tokens to generate (1-8192)")
     temperature: float = Field(default=0.7, ge=0, le=2.0, description="Sampling temperature (0-2.0)")
     top_p: float = Field(default=0.9, ge=0, le=1.0, description="Nucleus sampling threshold (0-1)")
     top_k: int = Field(default=0, ge=0, description="Top-k sampling (0 = disabled)")
     stream: bool = Field(default=False, description="Whether to stream the response")
     priority: int = Field(default=2, ge=0, le=3, description="Request priority: 0=critical, 1=high, 2=normal, 3=low")
-    user: Optional[str] = Field(default=None, description="Tenant/user identifier for rate limiting")
+    user: str | None = Field(default=None, description="Tenant/user identifier for rate limiting")
 
 
 class CompletionChoice(BaseModel):
     index: int = 0
     text: str = ""
-    delta: Optional[str] = None
-    finish_reason: Optional[str] = None
+    delta: str | None = None
+    finish_reason: str | None = None
 
 
 class CompletionResponse(BaseModel):
@@ -51,8 +50,8 @@ class CompletionResponse(BaseModel):
     object: str = "text_completion"
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str = "distributed-llm"
-    choices: List[CompletionChoice]
-    generation_time: Optional[float] = None
+    choices: list[CompletionChoice]
+    generation_time: float | None = None
 
 
 @router.post("/v1/completions")

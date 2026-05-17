@@ -15,7 +15,7 @@ import time
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Iterator, AsyncIterator, Union
+from typing import Any, Iterator, AsyncIterator
 
 import httpx
 
@@ -72,7 +72,7 @@ def _compute_delay(attempt: int, cfg: RetryConfig) -> float:
     return delay * (0.5 + random.random() * 0.5)  # jitter
 
 
-def _parse_usage(data: dict) -> Optional[UsageInfo]:
+def _parse_usage(data: dict) -> UsageInfo | None:
     """Parse usage dict from API response into UsageInfo."""
     raw = data.get("usage")
     if not raw:
@@ -94,10 +94,10 @@ class _BaseClient:
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
-        retry: Optional[RetryConfig] = None,
-        pool: Optional[PoolConfig] = None,
+        retry: RetryConfig | None = None,
+        pool: PoolConfig | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -116,7 +116,7 @@ class _BaseClient:
         self._stats = ClientStats()
 
     @staticmethod
-    def _build_headers(api_key: Optional[str]) -> Dict[str, str]:
+    def _build_headers(api_key: str | None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -124,18 +124,18 @@ class _BaseClient:
 
     @staticmethod
     def _build_chat_payload(
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model: str,
         temperature: float,
         top_p: float,
         max_tokens: int,
         stream: bool,
-        response_format: Optional[dict],
-        adapter: Optional[str],
-        logprobs: Optional[dict],
+        response_format: dict | None,
+        adapter: str | None,
+        logprobs: dict | None,
         include_usage: bool,
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
@@ -156,26 +156,26 @@ class _BaseClient:
 
     # ---- Public API methods (common to sync and async) ----
 
-    async def _embeddings_async(self, input: Union[str, List[str]], model: str = "distributed-llm", **kwargs) -> EmbeddingResponse:
+    async def _embeddings_async(self, input: str | list[str], model: str = "distributed-llm", **kwargs) -> EmbeddingResponse:
         payload = {"model": model, "input": input, **kwargs}
         data = await self._request("POST", "/v1/embeddings", json=payload)
         objects = [EmbeddingObject(index=e["index"], embedding=e["embedding"]) for e in data.get("data", [])]
         return EmbeddingResponse(model=data.get("model", model), data=objects, usage=_parse_usage(data))
 
-    def _embeddings_sync(self, input: Union[str, List[str]], model: str = "distributed-llm", **kwargs) -> EmbeddingResponse:
+    def _embeddings_sync(self, input: str | list[str], model: str = "distributed-llm", **kwargs) -> EmbeddingResponse:
         payload = {"model": model, "input": input, **kwargs}
         data = self._request_sync("POST", "/v1/embeddings", json=payload)
         objects = [EmbeddingObject(index=e["index"], embedding=e["embedding"]) for e in data.get("data", [])]
         return EmbeddingResponse(model=data.get("model", model), data=objects, usage=_parse_usage(data))
 
-    async def _batch_submit_async(self, input_file_id: str, endpoint: str, metadata: Optional[dict] = None) -> BatchJob:
+    async def _batch_submit_async(self, input_file_id: str, endpoint: str, metadata: dict | None = None) -> BatchJob:
         payload = {"input_file_id": input_file_id, "endpoint": endpoint}
         if metadata:
             payload["metadata"] = metadata
         data = await self._request("POST", "/v1/batches", json=payload)
         return self._parse_batch(data)
 
-    def _batch_submit_sync(self, input_file_id: str, endpoint: str, metadata: Optional[dict] = None) -> BatchJob:
+    def _batch_submit_sync(self, input_file_id: str, endpoint: str, metadata: dict | None = None) -> BatchJob:
         payload = {"input_file_id": input_file_id, "endpoint": endpoint}
         if metadata:
             payload["metadata"] = metadata
@@ -184,8 +184,8 @@ class _BaseClient:
 
     async def _batch_get_async(
         self,
-        batch_id: Optional[str] = None,
-    ) -> Union[BatchJob, BatchList]:
+        batch_id: str | None = None,
+    ) -> BatchJob | BatchList:
         if batch_id:
             data = await self._request("GET", f"/v1/batches/{batch_id}")
             return self._parse_batch(data)
@@ -194,8 +194,8 @@ class _BaseClient:
 
     def _batch_get_sync(
         self,
-        batch_id: Optional[str] = None,
-    ) -> Union[BatchJob, BatchList]:
+        batch_id: str | None = None,
+    ) -> BatchJob | BatchList:
         if batch_id:
             data = self._request_sync("GET", f"/v1/batches/{batch_id}")
             return self._parse_batch(data)
@@ -210,7 +210,7 @@ class _BaseClient:
         data = self._request_sync("POST", f"/v1/batches/{batch_id}/cancel")
         return self._parse_batch(data)
 
-    async def _moderations_async(self, input: Union[str, List[str]], model: str = "distributed-llm") -> ModerationResponse:
+    async def _moderations_async(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
         data = await self._request("POST", "/v1/moderations", json={"model": model, "input": input})
         results = [
             ModerationResult(
@@ -222,7 +222,7 @@ class _BaseClient:
         ]
         return ModerationResponse(id=data.get("id", ""), model=data.get("model", model), results=results)
 
-    def _moderations_sync(self, input: Union[str, List[str]], model: str = "distributed-llm") -> ModerationResponse:
+    def _moderations_sync(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
         data = self._request_sync("POST", "/v1/moderations", json={"model": model, "input": input})
         results = [
             ModerationResult(
@@ -239,7 +239,7 @@ class _BaseClient:
         file_path: str,
         model: str = "whisper-1",
         response_format: str = "json",
-        language: Optional[str] = None,
+        language: str | None = None,
         temperature: float = 0.0,
     ) -> TranscriptionResponse:
         path = Path(file_path)
@@ -259,7 +259,7 @@ class _BaseClient:
         file_path: str,
         model: str = "whisper-1",
         response_format: str = "json",
-        language: Optional[str] = None,
+        language: str | None = None,
         temperature: float = 0.0,
     ) -> TranscriptionResponse:
         path = Path(file_path)
@@ -310,7 +310,7 @@ class _BaseClient:
         size: str = "1024x1024",
         response_format: str = "url",
         quality: str = "standard",
-        style: Optional[str] = None,
+        style: str | None = None,
     ) -> ImageGenerationResponse:
         payload = {"model": model, "prompt": prompt, "n": n, "size": size, "response_format": response_format, "quality": quality}
         if style:
@@ -330,7 +330,7 @@ class _BaseClient:
         size: str = "1024x1024",
         response_format: str = "url",
         quality: str = "standard",
-        style: Optional[str] = None,
+        style: str | None = None,
     ) -> ImageGenerationResponse:
         payload = {"model": model, "prompt": prompt, "n": n, "size": size, "response_format": response_format, "quality": quality}
         if style:
@@ -356,11 +356,11 @@ class _BaseClient:
             data = self._request_sync("POST", "/v1/files", data={"purpose": purpose}, files=files)
         return FileInfo(id=data["id"], filename=data["filename"], purpose=data["purpose"], bytes=data["bytes"], created_at=data["created_at"])
 
-    async def _files_list_async(self) -> List[FileInfo]:
+    async def _files_list_async(self) -> list[FileInfo]:
         data = await self._request("GET", "/v1/files")
         return [FileInfo(id=f["id"], filename=f["filename"], purpose=f["purpose"], bytes=f["bytes"], created_at=f["created_at"]) for f in data.get("data", [])]
 
-    def _files_list_sync(self) -> List[FileInfo]:
+    def _files_list_sync(self) -> list[FileInfo]:
         data = self._request_sync("GET", "/v1/files")
         return [FileInfo(id=f["id"], filename=f["filename"], purpose=f["purpose"], bytes=f["bytes"], created_at=f["created_at"]) for f in data.get("data", [])]
 
@@ -376,9 +376,9 @@ class _BaseClient:
         self,
         training_file: str,
         model: str = "distributed-llm",
-        validation_file: Optional[str] = None,
-        hyperparameters: Optional[dict] = None,
-        suffix: Optional[str] = None,
+        validation_file: str | None = None,
+        hyperparameters: dict | None = None,
+        suffix: str | None = None,
     ) -> FineTuningJob:
         payload = {"training_file": training_file, "model": model}
         if validation_file:
@@ -394,9 +394,9 @@ class _BaseClient:
         self,
         training_file: str,
         model: str = "distributed-llm",
-        validation_file: Optional[str] = None,
-        hyperparameters: Optional[dict] = None,
-        suffix: Optional[str] = None,
+        validation_file: str | None = None,
+        hyperparameters: dict | None = None,
+        suffix: str | None = None,
     ) -> FineTuningJob:
         payload = {"training_file": training_file, "model": model}
         if validation_file:
@@ -408,11 +408,11 @@ class _BaseClient:
         data = self._request_sync("POST", "/v1/fine_tuning/jobs", json=payload)
         return self._parse_fine_tuning(data)
 
-    async def _fine_tuning_list_async(self) -> List[FineTuningJob]:
+    async def _fine_tuning_list_async(self) -> list[FineTuningJob]:
         data = await self._request("GET", "/v1/fine_tuning/jobs")
         return [self._parse_fine_tuning(j) for j in data.get("data", [])]
 
-    def _fine_tuning_list_sync(self) -> List[FineTuningJob]:
+    def _fine_tuning_list_sync(self) -> list[FineTuningJob]:
         data = self._request_sync("GET", "/v1/fine_tuning/jobs")
         return [self._parse_fine_tuning(j) for j in data.get("data", [])]
 
@@ -471,10 +471,10 @@ class DistLLMClient(_BaseClient):
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
-        retry: Optional[RetryConfig] = None,
-        pool: Optional[PoolConfig] = None,
+        retry: RetryConfig | None = None,
+        pool: PoolConfig | None = None,
     ):
         super().__init__(base_url, api_key, timeout, retry, pool)
         limits = httpx.Limits(
@@ -502,17 +502,17 @@ class DistLLMClient(_BaseClient):
 
     async def chat_completions(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model: str = "distributed-llm",
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_tokens: int = 256,
         stream: bool = False,
-        response_format: Optional[dict] = None,
-        adapter: Optional[str] = None,
-        logprobs: Optional[dict] = None,
+        response_format: dict | None = None,
+        adapter: str | None = None,
+        logprobs: dict | None = None,
         include_usage: bool = False,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> ChatCompletionResponse:
         """Generate a chat completion."""
         payload = self._build_chat_payload(
@@ -538,16 +538,16 @@ class DistLLMClient(_BaseClient):
 
     async def chat_completions_stream(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model: str = "distributed-llm",
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_tokens: int = 256,
-        response_format: Optional[dict] = None,
-        adapter: Optional[str] = None,
-        logprobs: Optional[dict] = None,
+        response_format: dict | None = None,
+        adapter: str | None = None,
+        logprobs: dict | None = None,
         include_usage: bool = False,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[str]:
         """Stream chat completions as an async generator."""
         payload = self._build_chat_payload(
@@ -574,7 +574,7 @@ class DistLLMClient(_BaseClient):
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_tokens: int = 256,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> CompletionResponse:
         """Generate a text completion."""
         payload = {
@@ -607,10 +607,10 @@ class DistLLMClient(_BaseClient):
 
     async def embeddings(
         self,
-        input: Union[str, List[str]],
+        input: str | list[str],
         model: str = "distributed-llm",
         encoding_format: str = "float",
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> EmbeddingResponse:
         """Create embeddings for input text."""
         return await self._embeddings_async(input, model, encoding_format=encoding_format)
@@ -621,12 +621,12 @@ class DistLLMClient(_BaseClient):
         self,
         input_file_id: str,
         endpoint: str = "/v1/chat/completions",
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> BatchJob:
         """Submit a batch job."""
         return await self._batch_submit_async(input_file_id, endpoint, metadata)
 
-    async def get_batch(self, batch_id: Optional[str] = None) -> Union[BatchJob, BatchList]:
+    async def get_batch(self, batch_id: str | None = None) -> BatchJob | BatchList:
         """Get a batch job by ID, or list all batches."""
         return await self._batch_get_async(batch_id)
 
@@ -638,7 +638,7 @@ class DistLLMClient(_BaseClient):
 
     async def moderations(
         self,
-        input: Union[str, List[str]],
+        input: str | list[str],
         model: str = "distributed-llm",
     ) -> ModerationResponse:
         """Moderate input text."""
@@ -651,7 +651,7 @@ class DistLLMClient(_BaseClient):
         file_path: str,
         model: str = "whisper-1",
         response_format: str = "json",
-        language: Optional[str] = None,
+        language: str | None = None,
         temperature: float = 0.0,
     ) -> TranscriptionResponse:
         """Transcribe audio file."""
@@ -678,7 +678,7 @@ class DistLLMClient(_BaseClient):
         size: str = "1024x1024",
         response_format: str = "url",
         quality: str = "standard",
-        style: Optional[str] = None,
+        style: str | None = None,
     ) -> ImageGenerationResponse:
         """Generate images from prompt."""
         return await self._images_generate_async(prompt, model, n, size, response_format, quality, style)
@@ -689,7 +689,7 @@ class DistLLMClient(_BaseClient):
         """Upload a file."""
         return await self._files_upload_async(file_path, purpose)
 
-    async def list_files(self) -> List[FileInfo]:
+    async def list_files(self) -> list[FileInfo]:
         """List uploaded files."""
         return await self._files_list_async()
 
@@ -703,14 +703,14 @@ class DistLLMClient(_BaseClient):
         self,
         training_file: str,
         model: str = "distributed-llm",
-        validation_file: Optional[str] = None,
-        hyperparameters: Optional[dict] = None,
-        suffix: Optional[str] = None,
+        validation_file: str | None = None,
+        hyperparameters: dict | None = None,
+        suffix: str | None = None,
     ) -> FineTuningJob:
         """Create a fine-tuning job."""
         return await self._fine_tuning_create_async(training_file, model, validation_file, hyperparameters, suffix)
 
-    async def list_fine_tuning(self) -> List[FineTuningJob]:
+    async def list_fine_tuning(self) -> list[FineTuningJob]:
         """List fine-tuning jobs."""
         return await self._fine_tuning_list_async()
 
@@ -720,7 +720,7 @@ class DistLLMClient(_BaseClient):
 
     # ---- Internal ----
 
-    def _record_call(self, endpoint: str, latency: float, usage: Optional[UsageInfo]):
+    def _record_call(self, endpoint: str, latency: float, usage: UsageInfo | None):
         self._stats.total_calls += 1
         self._stats.total_latency += latency
         if usage:
@@ -801,10 +801,10 @@ class DistLLMClientSync(_BaseClient):
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
-        retry: Optional[RetryConfig] = None,
-        pool: Optional[PoolConfig] = None,
+        retry: RetryConfig | None = None,
+        pool: PoolConfig | None = None,
     ):
         super().__init__(base_url, api_key, timeout, retry, pool)
         limits = httpx.Limits(
@@ -832,17 +832,17 @@ class DistLLMClientSync(_BaseClient):
 
     def chat_completions(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model: str = "distributed-llm",
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_tokens: int = 256,
         stream: bool = False,
-        response_format: Optional[dict] = None,
-        adapter: Optional[str] = None,
-        logprobs: Optional[dict] = None,
+        response_format: dict | None = None,
+        adapter: str | None = None,
+        logprobs: dict | None = None,
         include_usage: bool = False,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> ChatCompletionResponse:
         """Generate a chat completion."""
         payload = self._build_chat_payload(
@@ -868,16 +868,16 @@ class DistLLMClientSync(_BaseClient):
 
     def chat_completions_stream(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model: str = "distributed-llm",
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_tokens: int = 256,
-        response_format: Optional[dict] = None,
-        adapter: Optional[str] = None,
-        logprobs: Optional[dict] = None,
+        response_format: dict | None = None,
+        adapter: str | None = None,
+        logprobs: dict | None = None,
         include_usage: bool = False,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> Iterator[str]:
         """Stream chat completions as a sync generator (yield from httpx.stream())."""
         payload = self._build_chat_payload(
@@ -899,7 +899,7 @@ class DistLLMClientSync(_BaseClient):
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_tokens: int = 256,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> CompletionResponse:
         """Generate a text completion."""
         payload = {
@@ -932,10 +932,10 @@ class DistLLMClientSync(_BaseClient):
 
     def embeddings(
         self,
-        input: Union[str, List[str]],
+        input: str | list[str],
         model: str = "distributed-llm",
         encoding_format: str = "float",
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> EmbeddingResponse:
         """Create embeddings for input text."""
         return self._embeddings_sync(input, model, encoding_format=encoding_format)
@@ -946,12 +946,12 @@ class DistLLMClientSync(_BaseClient):
         self,
         input_file_id: str,
         endpoint: str = "/v1/chat/completions",
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> BatchJob:
         """Submit a batch job."""
         return self._batch_submit_sync(input_file_id, endpoint, metadata)
 
-    def get_batch(self, batch_id: Optional[str] = None) -> Union[BatchJob, BatchList]:
+    def get_batch(self, batch_id: str | None = None) -> BatchJob | BatchList:
         """Get a batch job by ID, or list all batches."""
         return self._batch_get_sync(batch_id)
 
@@ -963,7 +963,7 @@ class DistLLMClientSync(_BaseClient):
 
     def moderations(
         self,
-        input: Union[str, List[str]],
+        input: str | list[str],
         model: str = "distributed-llm",
     ) -> ModerationResponse:
         """Moderate input text."""
@@ -976,7 +976,7 @@ class DistLLMClientSync(_BaseClient):
         file_path: str,
         model: str = "whisper-1",
         response_format: str = "json",
-        language: Optional[str] = None,
+        language: str | None = None,
         temperature: float = 0.0,
     ) -> TranscriptionResponse:
         """Transcribe audio file."""
@@ -1003,7 +1003,7 @@ class DistLLMClientSync(_BaseClient):
         size: str = "1024x1024",
         response_format: str = "url",
         quality: str = "standard",
-        style: Optional[str] = None,
+        style: str | None = None,
     ) -> ImageGenerationResponse:
         """Generate images from prompt."""
         return self._images_generate_sync(prompt, model, n, size, response_format, quality, style)
@@ -1014,7 +1014,7 @@ class DistLLMClientSync(_BaseClient):
         """Upload a file."""
         return self._files_upload_sync(file_path, purpose)
 
-    def list_files(self) -> List[FileInfo]:
+    def list_files(self) -> list[FileInfo]:
         """List uploaded files."""
         return self._files_list_sync()
 
@@ -1028,14 +1028,14 @@ class DistLLMClientSync(_BaseClient):
         self,
         training_file: str,
         model: str = "distributed-llm",
-        validation_file: Optional[str] = None,
-        hyperparameters: Optional[dict] = None,
-        suffix: Optional[str] = None,
+        validation_file: str | None = None,
+        hyperparameters: dict | None = None,
+        suffix: str | None = None,
     ) -> FineTuningJob:
         """Create a fine-tuning job."""
         return self._fine_tuning_create_sync(training_file, model, validation_file, hyperparameters, suffix)
 
-    def list_fine_tuning(self) -> List[FineTuningJob]:
+    def list_fine_tuning(self) -> list[FineTuningJob]:
         """List fine-tuning jobs."""
         return self._fine_tuning_list_sync()
 
@@ -1045,7 +1045,7 @@ class DistLLMClientSync(_BaseClient):
 
     # ---- Internal ----
 
-    def _record_call(self, endpoint: str, latency: float, usage: Optional[UsageInfo]):
+    def _record_call(self, endpoint: str, latency: float, usage: UsageInfo | None):
         self._stats.total_calls += 1
         self._stats.total_latency += latency
         if usage:

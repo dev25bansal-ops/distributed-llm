@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import math
 from enum import Enum
-from typing import Optional
-
 import torch
 from loguru import logger
 
@@ -201,7 +199,7 @@ class RoPEScaling:
     def apply_rope(
         self,
         x: torch.Tensor,
-        positions: Optional[torch.Tensor] = None,
+        positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply rotary position embeddings to a tensor.
 

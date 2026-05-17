@@ -19,7 +19,7 @@ import gc
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
@@ -80,7 +80,7 @@ class MedusaDraftHead(nn.Module):
             for _ in range(num_heads)
         ])
 
-    def forward(self, hidden_states: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor) -> list[torch.Tensor]:
         shared = self.shared(hidden_states)
         return [head(shared) for head in self.heads]
 
@@ -112,7 +112,7 @@ class EAGLEDraftHead(nn.Module):
             for _ in range(num_heads)
         ])
 
-    def forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, embedding_layer: nn.Module) -> List[torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, embedding_layer: nn.Module) -> list[torch.Tensor]:
         embeds = embedding_layer(input_ids)
         combined = torch.cat([hidden_states, embeds], dim=-1)
         features = self.feature_proj(combined)
@@ -140,8 +140,8 @@ class SpeculativeTrainer:
         base_model: nn.Module,
         tokenizer: Any = None,
         head_type: str = "medusa",
-        config: Optional[TrainerConfig] = None,
-        data_fn: Optional[Callable] = None,
+        config: TrainerConfig | None = None,
+        data_fn: Callable | None = None,
         device: str = "cuda",
     ):
         self._base_model = base_model
@@ -153,11 +153,11 @@ class SpeculativeTrainer:
 
         self._hidden_size = 4096
         self._vocab_size = 32000
-        self._embedding_layer: Optional[nn.Module] = None
+        self._embedding_layer: nn.Module | None = None
 
-        self._draft_head: Optional[nn.Module] = None
-        self._optimizer: Optional[torch.optim.Optimizer] = None
-        self._scheduler: Optional[torch.optim.lr_scheduler.LambdaLR] = None
+        self._draft_head: nn.Module | None = None
+        self._optimizer: torch.optim.Optimizer | None = None
+        self._scheduler: torch.optim.lr_scheduler.LambdaLR | None = None
         self._stats = TrainingStats()
 
     def build_head(self) -> nn.Module:
@@ -181,7 +181,7 @@ class SpeculativeTrainer:
         self._embedding_layer = self._find_embedding_layer()
         return head.to(self._device)
 
-    def _find_embedding_layer(self) -> Optional[nn.Module]:
+    def _find_embedding_layer(self) -> nn.Module | None:
         for name, module in self._base_model.named_modules():
             if isinstance(module, nn.Embedding) and module.weight.shape[0] == self._vocab_size:
                 return module
@@ -197,7 +197,7 @@ class SpeculativeTrainer:
             return self._data_fn(batch_size, seq_len)
         return torch.randint(0, min(self._vocab_size, 1000), (batch_size, seq_len), device=self._device)
 
-    def train(self, num_steps: Optional[int] = None) -> TrainingStats:
+    def train(self, num_steps: int | None = None) -> TrainingStats:
         """Run training loop for draft heads.
 
         Args:
@@ -301,7 +301,7 @@ class SpeculativeTrainer:
         return self._stats
 
     @torch.no_grad()
-    def evaluate(self, eval_data: Optional[torch.Tensor] = None) -> Dict[str, float]:
+    def evaluate(self, eval_data: torch.Tensor | None = None) -> dict[str, float]:
         """Evaluate draft head accuracy on evaluation data."""
         if self._draft_head is None:
             return {"loss": float('inf'), "accuracy": 0.0}

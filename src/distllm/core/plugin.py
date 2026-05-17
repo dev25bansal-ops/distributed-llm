@@ -10,7 +10,7 @@ import importlib
 import importlib.metadata
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from loguru import logger
 
@@ -41,7 +41,7 @@ class IPlugin(Protocol):
     version: str = "0.1.0"
     description: str = ""
 
-    def initialize(self, context: Dict[str, Any]) -> None:
+    def initialize(self, context: dict[str, Any]) -> None:
         """Called when the plugin is loaded.
 
         Args:
@@ -58,7 +58,7 @@ class HookRegistry:
     """Registry for hook callbacks."""
 
     def __init__(self) -> None:
-        self._hooks: Dict[str, List[Callable]] = {}
+        self._hooks: dict[str, list[Callable]] = {}
 
     def register(self, hook: str, callback: Callable) -> None:
         """Register a callback for a hook point."""
@@ -72,7 +72,7 @@ class HookRegistry:
         if hook in self._hooks:
             self._hooks[hook] = [c for c in self._hooks[hook] if c != callback]
 
-    def emit(self, hook: str, *args: Any, **kwargs: Any) -> List[Any]:
+    def emit(self, hook: str, *args: Any, **kwargs: Any) -> list[Any]:
         """Fire all callbacks for a hook point."""
         results = []
         callbacks = self._hooks.get(hook, [])
@@ -84,7 +84,7 @@ class HookRegistry:
                 logger.error(f"Hook '{hook}' callback failed: {e}")
         return results
 
-    def list_hooks(self) -> Dict[str, int]:
+    def list_hooks(self) -> dict[str, int]:
         """Return count of callbacks per hook point."""
         return {hook: len(cbs) for hook, cbs in self._hooks.items()}
 
@@ -92,9 +92,9 @@ class HookRegistry:
 class PluginManager:
     """Manages plugin lifecycle and discovery."""
 
-    def __init__(self, context: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, context: dict[str, Any] | None = None) -> None:
         self.hooks = HookRegistry()
-        self._plugins: Dict[str, IPlugin] = {}
+        self._plugins: dict[str, IPlugin] = {}
         self._context = context or {}
 
     def register_plugin(self, plugin: IPlugin) -> None:
@@ -118,11 +118,11 @@ class PluginManager:
             except Exception as e:
                 logger.error(f"Plugin '{name}' shutdown failed: {e}")
 
-    def get_plugin(self, name: str) -> Optional[IPlugin]:
+    def get_plugin(self, name: str) -> IPlugin | None:
         """Get a registered plugin by name."""
         return self._plugins.get(name)
 
-    def list_plugins(self) -> List[Dict[str, str]]:
+    def list_plugins(self) -> list[dict[str, str]]:
         """Return information about all loaded plugins."""
         return [
             {
@@ -133,7 +133,7 @@ class PluginManager:
             for p in self._plugins.values()
         ]
 
-    def discover_entry_points(self) -> List[IPlugin]:
+    def discover_entry_points(self) -> list[IPlugin]:
         """Discover plugins via Python entry points."""
         plugins = []
         try:
@@ -155,7 +155,7 @@ class PluginManager:
             logger.debug(f"No entry point plugins found: {e}")
         return plugins
 
-    def discover_from_config(self, config: Dict[str, Any]) -> List[IPlugin]:
+    def discover_from_config(self, config: dict[str, Any]) -> list[IPlugin]:
         """Load plugins specified in configuration.
 
         Security: Only allows imports from trusted plugin modules.
@@ -209,7 +209,7 @@ class PluginManager:
                 logger.error(f"Failed to load plugin {module_path}: {e}")
         return plugins
 
-    def load_all(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def load_all(self, config: dict[str, Any] | None = None) -> None:
         """Discover and load all plugins."""
         # Load from entry points
         for plugin in self.discover_entry_points():
@@ -225,7 +225,7 @@ class PluginManager:
         for name in list(self._plugins.keys()):
             self.unregister_plugin(name)
 
-    def emit_hook(self, hook: str, *args: Any, **kwargs: Any) -> List[Any]:
+    def emit_hook(self, hook: str, *args: Any, **kwargs: Any) -> list[Any]:
         """Emit a hook to all registered plugins."""
         return self.hooks.emit(hook, *args, **kwargs)
 
@@ -242,7 +242,7 @@ class RequestLoggingPlugin:
     def __init__(self, log_level: str = "INFO") -> None:
         self.log_level = log_level
 
-    def initialize(self, context: Dict[str, Any]) -> None:
+    def initialize(self, context: dict[str, Any]) -> None:
         hooks = context.get("hooks")
         if hooks and isinstance(hooks, HookRegistry):
             hooks.register(HookPoint.ON_REQUEST, self._on_request)
@@ -266,9 +266,9 @@ class MetricsPlugin:
     description = "Collects and exports plugin metrics"
 
     def __init__(self) -> None:
-        self._metrics: Dict[str, Any] = {}
+        self._metrics: dict[str, Any] = {}
 
-    def initialize(self, context: Dict[str, Any]) -> None:
+    def initialize(self, context: dict[str, Any]) -> None:
         hooks = context.get("hooks")
         if hooks and isinstance(hooks, HookRegistry):
             hooks.register(HookPoint.ON_REQUEST, self._count_request)
@@ -276,7 +276,7 @@ class MetricsPlugin:
     def shutdown(self) -> None:
         self._metrics.clear()
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         return dict(self._metrics)
 
     def _count_request(self, request: Any) -> None:
@@ -293,7 +293,7 @@ class HealthCheckPlugin:
     def __init__(self) -> None:
         self._healthy = True
 
-    def initialize(self, context: Dict[str, Any]) -> None:
+    def initialize(self, context: dict[str, Any]) -> None:
         hooks = context.get("hooks")
         if hooks and isinstance(hooks, HookRegistry):
             hooks.register(HookPoint.ON_ERROR, self._on_error)

@@ -4,7 +4,8 @@ Manages prefix cache, KV cache lifecycle, and chunked prefill.
 Extracted from the Coordinator class.
 """
 
-from typing import Any, List, Optional, Tuple
+import hashlib
+from typing import Any
 
 import torch
 from loguru import logger
@@ -40,7 +41,7 @@ class CacheManager:
         gossip_client=None,
         radix_tree_cache_enabled: bool = False,
     ):
-        self.prefix_cache: Optional[PrefixCache] = None
+        self.prefix_cache: PrefixCache | None = None
         if prefix_cache_enabled:
             if radix_tree_cache_enabled:
                 from distllm.core.radix_tree_cache import RadixTreeCache
@@ -61,7 +62,7 @@ class CacheManager:
         self.gossip_protocol = gossip_protocol
         self.gossip_client = gossip_client
 
-    def lookup_prefix(self, tokens: List[int]) -> Tuple[int, Any]:
+    def lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
         """Lookup prefix match length for tokens.
 
         Args:
@@ -74,7 +75,7 @@ class CacheManager:
             return (0, None)
         return self.prefix_cache.lookup(tokens)
 
-    def store_prefix(self, tokens: List[int], entry: Any) -> None:
+    def store_prefix(self, tokens: list[int], entry: Any) -> None:
         """Store tokens and entry in the prefix cache.
 
         Args:
@@ -84,7 +85,7 @@ class CacheManager:
         if self.prefix_cache is not None:
             self.prefix_cache.store(tokens, entry)
 
-    def find_shared_prefix(self, tokens: List[int]) -> int:
+    def find_shared_prefix(self, tokens: list[int]) -> int:
         """Find shared prefix length for cross-request substring sharing.
 
         For RadixTreeCache, this finds how many tokens match any path
@@ -104,7 +105,7 @@ class CacheManager:
         match_len, _ = self.prefix_cache.lookup(tokens)
         return match_len
 
-    def maybe_chunk(self, tokens: List[int]) -> Optional[ChunkState]:
+    def maybe_chunk(self, tokens: list[int]) -> ChunkState | None:
         """Apply chunked prefill if enabled and prompt is long.
 
         Args:
@@ -129,7 +130,7 @@ class CacheManager:
         """Release a KV cache and free associated memory."""
         del cache
 
-    def lookup_with_disk_fallback(self, tokens: List[int], model_name: str) -> Tuple[int, Optional[dict]]:
+    def lookup_with_disk_fallback(self, tokens: list[int], model_name: str) -> tuple[int, dict | None]:
         """Lookup prefix with disk cache fallback.
 
         First checks in-memory prefix cache, then falls back to disk cache.
@@ -146,7 +147,7 @@ class CacheManager:
             return match_len, entry
 
         if self.persistence_manager is not None:
-            request_id = str(hash(tuple(tokens)))
+            request_id = hashlib.sha256(str(tokens).encode()).hexdigest()
             cached = self.persistence_manager.load(request_id, model_name)
             if cached is not None:
                 return len(tokens), cached
@@ -158,7 +159,7 @@ class CacheManager:
         if self.persistence_manager is not None:
             self.persistence_manager.mark_dirty(request_id)
 
-    def lookup_with_gossip(self, tokens: List[int]) -> Optional[str]:
+    def lookup_with_gossip(self, tokens: list[int]) -> str | None:
         """Lookup prefix with gossip fallback: local → disk → peer nodes.
 
         Checks in-memory prefix cache first, then disk cache, then
@@ -241,7 +242,7 @@ class CacheManager:
 
         return 0
 
-    def fetch_from_peer(self, peer_id: str, prefix_hash: str, tokens: List[int]) -> Optional[dict]:
+    def fetch_from_peer(self, peer_id: str, prefix_hash: str, tokens: list[int]) -> dict | None:
         """Fetch a specific KV cache entry from a peer node.
 
         Args:

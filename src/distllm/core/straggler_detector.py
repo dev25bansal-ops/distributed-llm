@@ -20,7 +20,7 @@ import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -100,7 +100,7 @@ class StragglerDetector:
 
     def __init__(
         self,
-        on_straggler_cb: Optional[Callable[[StragglerReport], None]] = None,
+        on_straggler_cb: Callable[[StragglerReport], None] | None = None,
         detection_method: DetectionMethod = DetectionMethod.MAD,
         slow_threshold_ms: float = 100.0,
         consecutive_threshold: int = 3,
@@ -116,7 +116,7 @@ class StragglerDetector:
         self._mad_threshold = mad_threshold
         self._check_interval = check_interval_s
 
-        self._nodes: Dict[str, NodeTiming] = {}
+        self._nodes: dict[str, NodeTiming] = {}
         self._lock = threading.Lock()
         self._last_check = 0.0
         self._total_checks = 0
@@ -158,7 +158,7 @@ class StragglerDetector:
         if tokens_generated > 0 and latency_ms > 0:
             self.record_throughput(node_id, tokens_generated / (latency_ms / 1000.0))
 
-    def check(self) -> List[StragglerReport]:
+    def check(self) -> list[StragglerReport]:
         """Run straggler detection on all tracked nodes.
 
         Returns list of StragglerReport for nodes flagged as stragglers.
@@ -169,7 +169,7 @@ class StragglerDetector:
 
         self._last_check = now
         self._total_checks += 1
-        reports: List[StragglerReport] = []
+        reports: list[StragglerReport] = []
 
         with self._lock:
             if len(self._nodes) < 2:
@@ -261,7 +261,7 @@ class StragglerDetector:
             return "reduce_batch"
         return "monitor_only"
 
-    def get_reports(self) -> List[StragglerReport]:
+    def get_reports(self) -> list[StragglerReport]:
         self.check()
         reports = []
         with self._lock:
@@ -290,7 +290,7 @@ class StragglerDetector:
             self._total_checks = 0
             self._total_detections = 0
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         with self._lock:
             active = len(self._nodes)
             stragglers = sum(1 for n in self._nodes.values() if n.is_straggler)

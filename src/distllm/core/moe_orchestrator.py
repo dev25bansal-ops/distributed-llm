@@ -4,7 +4,6 @@ Coordinates expert routing, dispatch, and aggregation across
 distributed worker nodes for Mixture of Experts models.
 """
 
-from typing import Dict, List, Optional
 
 import torch
 from loguru import logger
@@ -14,7 +13,7 @@ class MoEForwardRequest:
     """Container for an MoE forward request to a single node."""
 
     def __init__(self, node_id: str, hidden_states: torch.Tensor,
-                 expert_ids: List[int], routing_weights: List[float],
+                 expert_ids: list[int], routing_weights: list[float],
                  request_id: str):
         self.node_id = node_id
         self.hidden_states = hidden_states
@@ -52,7 +51,7 @@ class MoEOrchestrator:
         self,
         hidden_states: torch.Tensor,
         moe_router,
-    ) -> Dict[str, MoEForwardRequest]:
+    ) -> dict[str, MoEForwardRequest]:
         """Route hidden states to expert nodes.
 
         Uses the MoE router to compute expert assignments, then groups
@@ -71,11 +70,11 @@ class MoEOrchestrator:
         routing_output = moe_router(hidden_states)  # [batch, seq_len, num_experts_per_tok]
 
         # Group by expert
-        expert_tokens: Dict[int, List[tuple]] = {}  # expert_id -> list of (token_idx, weight)
+        expert_tokens: dict[int, list[tuple]] = {}  # expert_id -> list of (token_idx, weight)
 
         # Simplified: assume flat routing for demonstration
         # In production, this would handle the full [batch, seq_len, k] routing
-        requests_by_node: Dict[str, MoEForwardRequest] = {}
+        requests_by_node: dict[str, MoEForwardRequest] = {}
 
         if self.expert_registry is None:
             # Fallback: treat as standard forward pass
@@ -112,9 +111,9 @@ class MoEOrchestrator:
                         expert_tokens[expert_idx].append((i, weight))
 
         # Group by node
-        node_expert_tokens: Dict[str, List[tuple]] = {}
-        node_expert_ids: Dict[str, set] = {}
-        node_weights: Dict[str, List[float]] = {}
+        node_expert_tokens: dict[str, list[tuple]] = {}
+        node_expert_ids: dict[str, set] = {}
+        node_weights: dict[str, list[float]] = {}
 
         for expert_id, token_weights in expert_tokens.items():
             nodes = self.expert_registry.get_expert_nodes(expert_id)
@@ -156,9 +155,9 @@ class MoEOrchestrator:
 
     def dispatch(
         self,
-        requests: Dict[str, MoEForwardRequest],
-        node_clients: Dict[str, object],
-    ) -> Dict[str, MoEForwardResponse]:
+        requests: dict[str, MoEForwardRequest],
+        node_clients: dict[str, object],
+    ) -> dict[str, MoEForwardResponse]:
         """Dispatch expert requests to nodes in parallel.
 
         Args:
@@ -168,7 +167,7 @@ class MoEOrchestrator:
         Returns:
             Dict mapping node_id to MoEForwardResponse.
         """
-        responses: Dict[str, MoEForwardResponse] = {}
+        responses: dict[str, MoEForwardResponse] = {}
 
         for node_id, request in requests.items():
             client = node_clients.get(node_id)
@@ -202,8 +201,8 @@ class MoEOrchestrator:
 
     def aggregate(
         self,
-        responses: Dict[str, MoEForwardResponse],
-        routing_weights: Optional[torch.Tensor] = None,
+        responses: dict[str, MoEForwardResponse],
+        routing_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Combine expert outputs weighted by routing weights.
 
@@ -246,7 +245,7 @@ class MoEOrchestrator:
         self,
         hidden_states: torch.Tensor,
         moe_router,
-        node_clients: Dict[str, object],
+        node_clients: dict[str, object],
     ) -> torch.Tensor:
         """Full MoE forward pass: route → dispatch → aggregate.
 
@@ -269,7 +268,7 @@ class MoEOrchestrator:
         self,
         hidden_states: torch.Tensor,
         moe_router,
-        transport_backend: Optional[object] = None,
+        transport_backend: object | None = None,
     ) -> torch.Tensor:
         """Dispatch tokens to expert nodes via all-to-all communication.
 
@@ -389,7 +388,7 @@ def replicate_experts_across_nodes(
     num_nodes: int,
     replication_factor: int = 1,
     capacity_factor: float = 1.0,
-) -> Dict[str, List[int]]:
+) -> dict[str, list[int]]:
     """Assign experts to nodes with optional replication.
 
     Args:
@@ -409,7 +408,7 @@ def replicate_experts_across_nodes(
     total_assignments = total_experts * replication_factor
     slots_per_node = max(1, int(total_assignments / max(num_nodes, 1) * capacity_factor))
 
-    round_robin: Dict[str, List[int]] = {}
+    round_robin: dict[str, list[int]] = {}
     node_ids = [f"node_{i}" for i in range(num_nodes)]
 
     expert_idx = 0

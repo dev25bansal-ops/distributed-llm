@@ -2,7 +2,6 @@
 
 import torch
 from dataclasses import dataclass
-from typing import List, Optional
 from loguru import logger
 
 
@@ -28,7 +27,7 @@ class GPUInfo:
 class GPUProfiler:
     """Profiles GPU hardware and estimates VRAM requirements for model layers."""
 
-    def enumerate_gpus(self) -> List[GPUInfo]:
+    def enumerate_gpus(self) -> list[GPUInfo]:
         """List all available GPUs with their memory and utilization."""
         if not torch.cuda.is_available():
             logger.warning("No CUDA GPUs available")

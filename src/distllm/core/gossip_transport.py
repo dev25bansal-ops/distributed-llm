@@ -10,7 +10,6 @@ and data between peer nodes. Supports:
 
 import hashlib
 import time
-from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 import torch
@@ -38,7 +37,7 @@ class KVCacheTransfer:
         self._transfers_failed = 0
 
     @classmethod
-    def hash_tokens(cls, token_ids: List[int]) -> str:
+    def hash_tokens(cls, token_ids: list[int]) -> str:
         """Compute polynomial rolling hash for a token sequence.
 
         Uses the same hash as PrefixCache and CacheIndex for consistency.
@@ -55,7 +54,7 @@ class KVCacheTransfer:
         return f"h{h}"
 
     @classmethod
-    def hash_tokens_sha256(cls, token_ids: List[int]) -> str:
+    def hash_tokens_sha256(cls, token_ids: list[int]) -> str:
         """Compute SHA-256 hash for collision-safe identification.
 
         Args:
@@ -201,7 +200,7 @@ class GossipTransport:
 
     def exchange_advertisements(
         self, peer_id: str, my_ad: dict
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Exchange cache advertisements with a peer node.
 
         In production this uses gRPC; here we use HTTP as fallback.
@@ -243,8 +242,8 @@ class GossipTransport:
         return None
 
     def request_kv_cache(
-        self, peer_id: str, prefix_hashes: List[str]
-    ) -> Optional[dict]:
+        self, peer_id: str, prefix_hashes: list[str]
+    ) -> dict | None:
         """Request KV cache data from a peer node.
 
         Only requests entries that are beneficial to transfer
@@ -311,7 +310,7 @@ class GossipTransport:
 
         return None
 
-    def _resolve_peer(self, peer_id: str) -> Tuple[Optional[str], int]:
+    def _resolve_peer(self, peer_id: str) -> tuple[str | None, int]:
         """Resolve peer_id to (host, port).
 
         Args:

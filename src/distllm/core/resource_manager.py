@@ -9,7 +9,7 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from loguru import logger
 
@@ -39,9 +39,9 @@ class NodeRegistration:
         max_retries: int = 3,
         retry_delay: float = 1.0,
         use_tls: bool = True,
-        ca_cert: Optional[str] = None,
+        ca_cert: str | None = None,
         role: NodeRole = NodeRole.AUTO,
-        expert_ids: Optional[List[int]] = None,
+        expert_ids: list[int] | None = None,
         cluster_id: str = "default",
         version: str = "stable",
         instance_type: str = "unknown",
@@ -87,12 +87,12 @@ class ResourceManager:
         _lock: Thread lock for thread-safe state updates.
     """
 
-    def __init__(self, cb_config: Optional[CircuitBreakerConfig] = None):
+    def __init__(self, cb_config: CircuitBreakerConfig | None = None):
         self.cb_config = cb_config or CircuitBreakerConfig()
-        self._node_failure_counts: Dict[str, int] = {}
-        self._node_recovery_time: Dict[str, float] = {}
+        self._node_failure_counts: dict[str, int] = {}
+        self._node_recovery_time: dict[str, float] = {}
         self._lock = threading.Lock()
-        self._metrics: Dict[str, int] = {
+        self._metrics: dict[str, int] = {
             "node_failures": 0,
             "errors": 0,
         }
@@ -144,7 +144,7 @@ class ResourceManager:
 
     # -- Health Checks --
 
-    def health_check_all(self, nodes: Dict[str, NodeRegistration]) -> dict:
+    def health_check_all(self, nodes: dict[str, NodeRegistration]) -> dict:
         """Check health of all registered nodes concurrently.
 
         Args:
@@ -168,7 +168,7 @@ class ResourceManager:
             else:
                 nodes_to_check[node_id] = node
 
-        def check_one(nid: str, nd: NodeRegistration) -> Tuple[str, dict]:
+        def check_one(nid: str, nd: NodeRegistration) -> tuple[str, dict]:
             try:
                 health = nd.client.health_check()
                 return nid, {"healthy": health.healthy, "memory_used": health.memory_used, "memory_total": health.memory_total}
@@ -184,7 +184,7 @@ class ResourceManager:
 
         return results
 
-    async def health_check_all_async(self, nodes: Dict[str, NodeRegistration]) -> dict:
+    async def health_check_all_async(self, nodes: dict[str, NodeRegistration]) -> dict:
         """Check health of all registered nodes (async).
 
         Args:
@@ -193,7 +193,7 @@ class ResourceManager:
         Returns:
             Dict of node_id -> health status.
         """
-        async def check_node(node_id: str, node: NodeRegistration) -> Tuple[str, dict]:
+        async def check_node(node_id: str, node: NodeRegistration) -> tuple[str, dict]:
             if self.check_circuit_breaker(node_id):
                 failures = self._node_failure_counts.get(node_id, 0)
                 recovery_at = self._node_recovery_time.get(node_id, 0)
@@ -228,7 +228,7 @@ class ResourceManager:
 
     # -- Connection Management --
 
-    def close_all(self, nodes: Dict[str, NodeRegistration]) -> None:
+    def close_all(self, nodes: dict[str, NodeRegistration]) -> None:
         """Close all node connections."""
         for node in nodes.values():
             try:
@@ -236,7 +236,7 @@ class ResourceManager:
             except Exception as e:
                 logger.debug(f"Error closing node connection: {e}")
 
-    async def close_all_async(self, nodes: Dict[str, NodeRegistration]) -> None:
+    async def close_all_async(self, nodes: dict[str, NodeRegistration]) -> None:
         """Close all node connections (async)."""
         async def close_node(node: NodeRegistration):
             try:
@@ -249,7 +249,7 @@ class ResourceManager:
 
     # -- Metrics --
 
-    def get_metrics(self) -> Dict[str, int]:
+    def get_metrics(self) -> dict[str, int]:
         """Get resource manager metrics."""
         return dict(self._metrics)
 

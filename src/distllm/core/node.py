@@ -1,7 +1,6 @@
 """Worker node for distributed LLM inference."""
 
 import argparse
-from typing import List, Optional, Tuple
 
 import torch
 from loguru import logger
@@ -29,7 +28,7 @@ class WorkerNode:
         device: str = "auto",
         dtype: str = "float16",
         quantization_config=None,
-        expert_ids: Optional[List[int]] = None,
+        expert_ids: list[int] | None = None,
         compression_config=None,
     ):
         self.node_id = node_id
@@ -46,8 +45,8 @@ class WorkerNode:
         self.expert_ids = expert_ids or []
         self.compression_config = compression_config
 
-        self.partitioner: Optional[ModelPartitioner] = None
-        self.server: Optional[GRPCServer] = None
+        self.partitioner: ModelPartitioner | None = None
+        self.server: GRPCServer | None = None
         self.is_first = (start_layer == 0)
         self.is_last = (end_layer >= total_layers - 1)
 
@@ -79,12 +78,12 @@ class WorkerNode:
 
     def forward_fn(
         self,
-        hidden_states: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
-        input_ids: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
+        hidden_states: torch.Tensor | None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        input_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """Forward pass through assigned layers with KV cache support.
 
         For first node: if input_ids provided, embed them first.
@@ -113,8 +112,16 @@ class WorkerNode:
 
         return output, new_kv
 
-    def start(self) -> None:
-        """Start the worker node gRPC server."""
+    def start(self, use_tls: bool = True, cert_file: str | None = None,
+              key_file: str | None = None, ca_cert: str | None = None) -> None:
+        """Start the worker node gRPC server.
+
+        Args:
+            use_tls: Enable TLS encryption. Use --insecure to disable in dev.
+            cert_file: Path to TLS certificate file.
+            key_file: Path to TLS key file.
+            ca_cert: Path to CA certificate for client verification.
+        """
         self.load_model()
 
         servicer = NodeService(
@@ -122,7 +129,14 @@ class WorkerNode:
             forward_fn=self.forward_fn,
         )
 
-        self.server = GRPCServer(port=self.port, servicer=servicer)
+        self.server = GRPCServer(
+            port=self.port,
+            servicer=servicer,
+            use_tls=use_tls,
+            cert_file=cert_file,
+            key_file=key_file,
+            ca_cert=ca_cert,
+        )
         self.server.start()
 
         logger.info(f"[{self.node_id}] Worker node started on port {self.port}")
@@ -160,6 +174,10 @@ def main():
     parser.add_argument("--distillation-teacher", type=str, default=None, help="Teacher model for knowledge distillation")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode with tensor shape logging")
     parser.add_argument("--validate-config", action="store_true", help="Validate configuration at startup and exit")
+    parser.add_argument("--insecure", action="store_true", help="Disable TLS for gRPC (development only)")
+    parser.add_argument("--tls-cert", type=str, default=None, help="Path to TLS certificate file")
+    parser.add_argument("--tls-key", type=str, default=None, help="Path to TLS key file")
+    parser.add_argument("--tls-ca", type=str, default=None, help="Path to TLS CA certificate file")
 
     args = parser.parse_args()
 
@@ -187,7 +205,7 @@ def main():
             enabled: bool
             target_bits: int
             pruning_ratio: float
-            distillation_teacher: Optional[str]
+            distillation_teacher: str | None
             calibration_samples: int
             pruning_targets: list
         comp_config = SimpleCompressionConfig(
@@ -218,7 +236,20 @@ def main():
         compression_config=comp_config,
     )
 
-    node.start()
+    use_tls = not args.insecure
+    if args.insecure:
+        logger.warning(
+            "TLS DISABLED via --insecure flag. "
+            "gRPC communication will be unencrypted. "
+            "Only use this in isolated development environments."
+        )
+
+    node.start(
+        use_tls=use_tls,
+        cert_file=args.tls_cert,
+        key_file=args.tls_key,
+        ca_cert=args.tls_ca,
+    )
 
 
 if __name__ == "__main__":

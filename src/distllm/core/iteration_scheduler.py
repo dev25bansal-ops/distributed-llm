@@ -11,8 +11,6 @@ Separates prefill and decode scheduling at each token step, with:
 import time
 import heapq
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-
 import torch
 
 from distllm.core.batch_scheduler import (
@@ -69,17 +67,17 @@ class SLATracker:
     """Tracks SLA compliance per request and triggers priority boosting."""
 
     def __init__(self):
-        self._request_start_times: Dict[str, float] = {}
-        self._request_first_token_at: Dict[str, float] = {}
-        self._request_last_token_at: Dict[str, float] = {}
-        self._request_token_counts: Dict[str, int] = {}
-        self._tenant_slas: Dict[str, TenantSLA] = {}
-        self._request_tenants: Dict[str, str] = {}  # request_id -> tenant_id
+        self._request_start_times: dict[str, float] = {}
+        self._request_first_token_at: dict[str, float] = {}
+        self._request_last_token_at: dict[str, float] = {}
+        self._request_token_counts: dict[str, int] = {}
+        self._tenant_slas: dict[str, TenantSLA] = {}
+        self._request_tenants: dict[str, str] = {}  # request_id -> tenant_id
 
     def register_request(
         self,
         request_id: str,
-        tenant_id: Optional[str] = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Register a new request for SLA tracking."""
         now = time.time()
@@ -142,7 +140,7 @@ class SLATracker:
 
         return base_priority
 
-    def get_request_metrics(self, request_id: str) -> Dict:
+    def get_request_metrics(self, request_id: str) -> dict:
         """Get SLA metrics for a request."""
         start = self._request_start_times.get(request_id)
         first = self._request_first_token_at.get(request_id)
@@ -160,7 +158,7 @@ class SLATracker:
             "token_count": count,
         }
 
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         return {
             "active_requests": len(self._request_start_times),
             "tenants_tracked": len(self._tenant_slas),
@@ -181,7 +179,7 @@ class IterationScheduler(BatchScheduler):
         self,
         max_batch_size: int = 32,
         max_tokens_per_batch: int = 4096,
-        model_info: Optional[dict] = None,
+        model_info: dict | None = None,
         prefill_chunk_size: int = 256,
         decode_priority: bool = True,
     ):
@@ -197,10 +195,10 @@ class IterationScheduler(BatchScheduler):
         self.sla_tracker = SLATracker()
 
         # Tenant budgets
-        self._tenant_budgets: Dict[str, TenantBudget] = {}
+        self._tenant_budgets: dict[str, TenantBudget] = {}
 
         # Per-sequence tenant mapping
-        self._seq_tenants: Dict[str, str] = {}
+        self._seq_tenants: dict[str, str] = {}
 
     def set_tenant_sla(self, sla: TenantSLA) -> None:
         """Set SLA configuration for a tenant."""
@@ -217,7 +215,7 @@ class IterationScheduler(BatchScheduler):
             max_tokens_per_minute=max_tokens_per_minute,
         )
 
-    def add(self, seq: Sequence, tenant_id: Optional[str] = None) -> None:
+    def add(self, seq: Sequence, tenant_id: str | None = None) -> None:
         """Add a request with optional tenant tracking."""
         if tenant_id:
             self._seq_tenants[seq.request_id] = tenant_id
@@ -246,14 +244,14 @@ class IterationScheduler(BatchScheduler):
         self._apply_sla_boosts()
 
         # 3. Include all active decode sequences
-        decode_seqs: List[Sequence] = [
+        decode_seqs: list[Sequence] = [
             s for s in self.active.values()
             if len(s.generated_tokens) > 0 or s.prefix_match_len > 0
         ]
         decode_tokens = sum(s.total_len for s in decode_seqs)
 
         # 4. Fill remaining with chunked prefill from pending
-        prefill_seqs: List[Sequence] = []
+        prefill_seqs: list[Sequence] = []
         prefill_tokens = 0
         remaining_slots = self.max_batch_size - len(decode_seqs)
         remaining_token_budget = self.max_tokens_per_batch - decode_tokens
@@ -311,13 +309,13 @@ class IterationScheduler(BatchScheduler):
         # 5. Build batch tensors
         return self._build_batch(batch_seqs)
 
-    def _build_batch(self, batch_seqs: List[Sequence]) -> ScheduledBatch:
+    def _build_batch(self, batch_seqs: list[Sequence]) -> ScheduledBatch:
         """Build the ScheduledBatch from selected sequences."""
         request_ids = []
         seq_lengths = []
         position_offsets = []
         is_prefill_list = []
-        input_tokens: List[int] = []
+        input_tokens: list[int] = []
 
         for seq in batch_seqs:
             request_ids.append(seq.request_id)
@@ -360,7 +358,7 @@ class IterationScheduler(BatchScheduler):
         input_ids = torch.tensor(padded, dtype=torch.long)
 
         # Batch tags
-        batch_tags: Dict[str, object] = {
+        batch_tags: dict[str, object] = {
             "decode_count": len([s for s in batch_seqs if not is_prefill_list[i] for i, _ in enumerate(batch_seqs) if s.request_id == s.request_id]),
             "prefill_count": sum(is_prefill_list),
             "sarathi_iteration": True,
@@ -415,7 +413,7 @@ class IterationScheduler(BatchScheduler):
         if budget:
             budget.spend(tokens)
 
-    def get_sla_metrics(self, request_id: str) -> Dict:
+    def get_sla_metrics(self, request_id: str) -> dict:
         return self.sla_tracker.get_request_metrics(request_id)
 
     def stats(self) -> dict:

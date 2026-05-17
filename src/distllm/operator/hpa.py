@@ -5,12 +5,17 @@ based on throughput and queue depth targets.
 """
 
 import asyncio
-from typing import Optional
 
 import httpx
 from loguru import logger
 
 from distllm.errors import ConfigValidationError
+
+try:
+    from kubernetes import client as k8s_client, config as k8s_config
+    HAS_K8S = True
+except ImportError:
+    HAS_K8S = False
 
 
 # Allowlisted Prometheus URLs for SSRF protection
@@ -77,7 +82,7 @@ class CustomHPA:
         self._scale_target_name = scale_target_name
         self._interval = evaluation_interval
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._running = True
@@ -117,7 +122,7 @@ class CustomHPA:
             )
             await self._scale(desired)
 
-    async def _query_metric(self) -> Optional[float]:
+    async def _query_metric(self) -> float | None:
         """Query Prometheus for the current metric value."""
         query_map = {
             "tokens_per_second": "distllm_tokens_per_second",
@@ -139,23 +144,46 @@ class CustomHPA:
             logger.warning(f"HPA metric query failed: {e}")
         return None
 
+    def _get_k8s_apps_client(self):
+        """Get authenticated K8s AppsV1Api client."""
+        if not HAS_K8S:
+            return None
+        try:
+            k8s_config.load_incluster_config()
+        except k8s_config.ConfigException:
+            k8s_config.load_kube_config()
+        return k8s_client.AppsV1Api()
+
     def _get_current_replicas(self) -> int:
-        """Get current replica count (simplified — in production, read from K8s API)."""
-        return self._min_replicas
+        """Read current replica count from K8s StatefulSet status."""
+        apps_api = self._get_k8s_apps_client()
+        if apps_api is None:
+            return self._min_replicas
+
+        try:
+            ss = apps_api.read_namespaced_stateful_set_status(
+                self._scale_target_name, "default"
+            )
+            return ss.status.replicas or self._min_replicas
+        except Exception:
+            logger.warning(f"Could not read replicas for {self._scale_target_name}, using min")
+            return self._min_replicas
 
     async def _scale(self, desired_replicas: int) -> None:
-        """Scale the target resource to desired replicas."""
+        """Scale the target resource to desired replicas using K8s API."""
+        if not HAS_K8S:
+            logger.warning("kubernetes package not available, cannot scale")
+            return
         try:
-            from kubernetes import client as k8s_client
-
-            api = k8s_client.AppsV1Api()
+            apps_api = self._get_k8s_apps_client()
+            if apps_api is None:
+                return
             scale = k8s_client.V1Scale(
                 spec=k8s_client.V1ScaleSpec(replicas=desired_replicas)
             )
-            api.patch_namespaced_stateful_set_scale(
+            apps_api.patch_namespaced_stateful_set_scale(
                 self._scale_target_name, "default", scale
             )
-        except ImportError:
-            logger.warning("kubernetes package not available, cannot scale")
-        except Exception as e:  # kubernetes.client.ApiException
+            logger.info(f"HPA: scaled {self._scale_target_name} to {desired_replicas}")
+        except Exception as e:
             logger.error(f"HPA scale failed: {e}")

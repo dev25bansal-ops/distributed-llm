@@ -1,6 +1,6 @@
 """Canary controller for managing deployments."""
 
-from typing import Callable, Dict, Optional
+from typing import Callable
 
 from loguru import logger
 
@@ -23,7 +23,7 @@ class CanaryController:
         stable_version: str = "stable",
         canary_version: str = "canary",
         rollback_threshold: float = 0.05,
-        strategy: Optional[RolloutStrategy] = None,
+        strategy: RolloutStrategy | None = None,
     ):
         self.stable_version = stable_version
         self.canary_version = canary_version
@@ -34,9 +34,9 @@ class CanaryController:
             stable_version=stable_version,
             canary_version=canary_version,
         )
-        self._rollout_state: Optional[RolloutState] = None
-        self._on_rollback: Optional[Callable] = None
-        self._on_promotion: Optional[Callable] = None
+        self._rollout_state: RolloutState | None = None
+        self._on_rollback: Callable | None = None
+        self._on_promotion: Callable | None = None
 
     def set_rollback_callback(self, callback: Callable) -> None:
         """Set callback invoked when rollback is triggered."""
@@ -52,7 +52,7 @@ class CanaryController:
         return self._rollout_state is not None and not self._rollout_state.is_complete
 
     @property
-    def rollout_state(self) -> Optional[RolloutState]:
+    def rollout_state(self) -> RolloutState | None:
         return self._rollout_state
 
     def start_canary(self, canary_version: str) -> RolloutState:

@@ -9,7 +9,7 @@ Supports four speculation methods:
 
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Optional, Dict
+from typing import Any
 from collections import defaultdict
 from loguru import logger
 
@@ -26,10 +26,10 @@ class NgramMatcher:
         self.min_match = min_match
         self.max_match = max_match
         # Maps n-gram tuple -> list of next tokens seen
-        self._ngram_index: Dict[Tuple[int, ...], List[int]] = defaultdict(list)
+        self._ngram_index: dict[tuple[int, ...], list[int]] = defaultdict(list)
         self._total_tokens_seen = 0
 
-    def update(self, token_ids: List[int]) -> None:
+    def update(self, token_ids: list[int]) -> None:
         """Index newly generated tokens for future matching."""
         for n in range(self.min_match, min(self.max_match + 1, len(token_ids) + 1)):
             for i in range(len(token_ids) - n):
@@ -38,7 +38,7 @@ class NgramMatcher:
                 self._ngram_index[ngram].append(next_token)
         self._total_tokens_seen += len(token_ids)
 
-    def predict(self, context: List[int], max_drafts: int = 5) -> List[int]:
+    def predict(self, context: list[int], max_drafts: int = 5) -> list[int]:
         """Predict draft tokens based on n-gram matching.
 
         Uses the longest matching n-gram from the end of context
@@ -106,8 +106,8 @@ class MedusaHeads:
     def generate_draft_tokens(
         self,
         logits: torch.Tensor,
-        hidden_states: Optional[torch.Tensor] = None,
-    ) -> List[List[int]]:
+        hidden_states: torch.Tensor | None = None,
+    ) -> list[list[int]]:
         """Generate draft tokens from each Medusa head.
 
         Each head predicts a sequence of tokens autoregressively.
@@ -143,7 +143,7 @@ class MedusaHeads:
         logits: torch.Tensor,
         num_tokens: int,
         temperature: float = 1.0,
-    ) -> List[int]:
+    ) -> list[int]:
         """Generate draft tokens autoregressively from logits.
 
         Uses argmax sampling with diversity: each position picks the most likely
@@ -175,7 +175,7 @@ class MedusaHeads:
 
         return drafts
 
-    def merge_heads(self, head_drafts: List[List[int]]) -> List[int]:
+    def merge_heads(self, head_drafts: list[list[int]]) -> list[int]:
         """Merge draft sequences from multiple heads into one sequence.
 
         Uses majority voting / consensus across heads.
@@ -228,8 +228,8 @@ class EAGLEGenerator:
 
         # Lightweight predictor: predicts next hidden state from current
         # In production this would be trained; here we use a simple projection
-        self._predictor: Optional[nn.Sequential] = None
-        self._lm_head: Optional[nn.Linear] = None
+        self._predictor: nn.Sequential | None = None
+        self._lm_head: nn.Linear | None = None
         self._initialized = False
 
     def _init_networks(self, device: torch.device) -> None:
@@ -257,7 +257,7 @@ class EAGLEGenerator:
         lm_head: nn.Module,
         num_drafts: int = 5,
         temperature: float = 0.8,
-    ) -> List[int]:
+    ) -> list[int]:
         """Generate draft tokens via hidden state extrapolation.
 
         Args:
@@ -302,7 +302,7 @@ class EAGLEGenerator:
         lm_head: nn.Module,
         num_drafts: int = 5,
         anchor_ratio: float = 0.3,
-    ) -> List[int]:
+    ) -> list[int]:
         """Generate draft tokens with anchor-based extrapolation.
 
         Uses a weighted combination of predicted and original hidden states
@@ -429,12 +429,12 @@ class SpeculativeDecoder:
         self,
         draft_model,
         input_ids: torch.Tensor,
-        past_key_values: Optional[List] = None,
-        target_logits: Optional[torch.Tensor] = None,
-        generated_ids: Optional[List[int]] = None,
-        hidden_states: Optional[torch.Tensor] = None,
-        lm_head: Optional[nn.Module] = None,
-    ) -> Tuple[List[int], Optional[List]]:
+        past_key_values: list | None = None,
+        target_logits: torch.Tensor | None = None,
+        generated_ids: list[int] | None = None,
+        hidden_states: torch.Tensor | None = None,
+        lm_head: nn.Module | None = None,
+    ) -> Tuple[list[int], list | None]:
         """Generate draft tokens using the active speculation method.
 
         Args:
@@ -464,8 +464,8 @@ class SpeculativeDecoder:
         self,
         draft_model,
         input_ids: torch.Tensor,
-        past_key_values: Optional[List] = None,
-    ) -> Tuple[List[int], Optional[List]]:
+        past_key_values: list | None = None,
+    ) -> Tuple[list[int], list | None]:
         """Generate draft tokens using a draft model."""
         with torch.no_grad():
             if past_key_values is not None:
@@ -501,8 +501,8 @@ class SpeculativeDecoder:
 
     def _generate_medusa_drafts(
         self,
-        target_logits: Optional[torch.Tensor],
-    ) -> Tuple[List[int], None]:
+        target_logits: torch.Tensor | None,
+    ) -> Tuple[list[int], None]:
         """Generate draft tokens using Medusa multi-head speculation."""
         if target_logits is None:
             return [], None
@@ -513,8 +513,8 @@ class SpeculativeDecoder:
 
     def _generate_ngram_drafts(
         self,
-        generated_ids: Optional[List[int]],
-    ) -> Tuple[List[int], None]:
+        generated_ids: list[int] | None,
+    ) -> Tuple[list[int], None]:
         """Generate draft tokens using n-gram matching."""
         if generated_ids is None or len(generated_ids) < self._ngram_matcher.min_match:
             return [], None
@@ -524,9 +524,9 @@ class SpeculativeDecoder:
 
     def _generate_eagle_drafts(
         self,
-        hidden_states: Optional[torch.Tensor],
-        lm_head: Optional[nn.Module],
-    ) -> Tuple[List[int], None]:
+        hidden_states: torch.Tensor | None,
+        lm_head: nn.Module | None,
+    ) -> Tuple[list[int], None]:
         """Generate draft tokens using EAGLE hidden state extrapolation."""
         if hidden_states is None or lm_head is None:
             return [], None
@@ -538,7 +538,7 @@ class SpeculativeDecoder:
         )
         return drafts, None
 
-    def record_generated_tokens(self, token_ids: List[int]) -> None:
+    def record_generated_tokens(self, token_ids: list[int]) -> None:
         """Record generated tokens for n-gram indexing."""
         self._ngram_matcher.update(token_ids)
 
@@ -548,7 +548,7 @@ class SpeculativeDecoder:
         target_logits: torch.Tensor,
         tokenizer,
         temperature: float = 1.0,
-    ) -> Tuple[int, List[int], int]:
+    ) -> Tuple[int, list[int], int]:
         """Verify draft tokens against target model logits.
 
         For each draft token, checks if it matches the target model's argmax.
@@ -650,12 +650,11 @@ class SpeculativeDecoder:
     def generate_batch_draft_tokens(
         self,
         draft_model,
-        input_ids_list: List[torch.Tensor],
-        past_key_values_list: Optional[List] = None,
-        target_logits_list: Optional[List] = None,
-        generated_ids_list: Optional[List[List[int]]] = None,
-    ) -> Tuple[List[List[int]], Optional[List]]:
-        """Generate draft tokens for multiple sequences in parallel."""
+        input_ids_list: list[torch.Tensor],
+        past_key_values_list: list | None = None,
+        target_logits_list: list | None = None,
+        generated_ids_list: list[list[int]] | None = None,
+    ) -> Tuple[list[list[int]], list | None]:
         all_draft_tokens = []
         all_new_kvs = []
 
@@ -678,10 +677,10 @@ class SpeculativeDecoder:
 
     def verify_batch(
         self,
-        draft_logits_list: List[torch.Tensor],
-        target_logits_list: List[torch.Tensor],
+        draft_logits_list: list[torch.Tensor],
+        target_logits_list: list[torch.Tensor],
         temperature: float = 1.0,
-    ) -> List[bool]:
+    ) -> list[bool]:
         """Verify draft logits for multiple sequences."""
         results = []
         for draft_logits, target_logits in zip(draft_logits_list, target_logits_list):
@@ -755,7 +754,7 @@ class TrainedEAGLEHeads(nn.Module):
         num_drafts: int = 5,
         temperature: float = 0.8,
         top_k: int = 50,
-    ) -> List[int]:
+    ) -> list[int]:
         """Generate draft tokens autoregressively.
 
         Uses the trained head to predict each token, feeding predicted
@@ -851,7 +850,7 @@ class EAGLE2Heads(nn.Module):
                     if m.bias is not None:
                         nn.init.zeros_(m.bias)
 
-    def forward(self, hidden_states: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor) -> list[torch.Tensor]:
         features = self.feature_extractor(hidden_states)
         aligned = self.feature_align(features)
         return [head(aligned) for head in self.draft_heads]
@@ -859,8 +858,8 @@ class EAGLE2Heads(nn.Module):
     def generate_draft_tokens(
         self,
         hidden_states: torch.Tensor,
-        num_drafts: Optional[int] = None,
-    ) -> List[int]:
+        num_drafts: int | None = None,
+    ) -> list[int]:
         n = num_drafts or self.num_draft_tokens
         all_logits = self.forward(hidden_states)
         draft_tokens = []

@@ -6,8 +6,6 @@ import inspect
 from dataclasses import dataclass
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from loguru import logger
-from typing import List, Tuple, Optional, Dict, Set
-import gc
 
 from distllm.core.kv_cache import KVCache
 from distllm.config.loader import QuantizationConfig
@@ -20,7 +18,7 @@ from distllm.core.architecture_registry import (
 DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
 
 
-def _find_attr(model, candidates: List[str]):
+def _find_attr(model, candidates: list[str]):
     """Find the first matching attribute on a model object."""
     for attr in candidates:
         if hasattr(model, attr):
@@ -36,7 +34,7 @@ def _get_base_prefix(model) -> str:
     return ""
 
 
-def build_quantization_config(quant_config: Optional[QuantizationConfig]) -> Optional["BitsAndBytesConfig"]:
+def build_quantization_config(quant_config: QuantizationConfig | None) -> "BitsAndBytesConfig | None":
     """Build a BitsAndBytesConfig from QuantizationConfig dataclass."""
     if quant_config.method == "none":
         return None
@@ -61,7 +59,7 @@ def build_quantization_config(quant_config: Optional[QuantizationConfig]) -> Opt
 # Models known to require trust_remote_code=True for legitimate reasons
 # Auto-populated from the ArchitectureRegistry; extend with additional entries as needed.
 _TRUSTED_FROM_REGISTRY = get_trusted_models()
-TRUSTED_MODELS_ALLOWLIST: Set[str] = _TRUSTED_FROM_REGISTRY | {
+TRUSTED_MODELS_ALLOWLIST: set[str] = _TRUSTED_FROM_REGISTRY | {
     "baichuan", "baichuan2",
     "chatglm", "chatglm2", "chatglm3",
     "internlm", "internlm2",
@@ -70,7 +68,7 @@ TRUSTED_MODELS_ALLOWLIST: Set[str] = _TRUSTED_FROM_REGISTRY | {
 }
 
 
-def _should_trust_remote_code(model_name: str, trust_remote_code: Optional[bool] = None) -> bool:
+def _should_trust_remote_code(model_name: str, trust_remote_code: bool | None = None) -> bool:
     """Determine whether to trust remote code for a model.
 
     Args:
@@ -107,7 +105,7 @@ def _should_trust_remote_code(model_name: str, trust_remote_code: Optional[bool]
 class ModelPartitioner:
     """Splits a model's layers across multiple nodes for pipeline parallelism."""
 
-    def __init__(self, model_name: str, device: str = "auto", dtype: str = "float16", trust_remote_code: Optional[bool] = None, quantization_config: Optional[QuantizationConfig] = None, compression_config=None):
+    def __init__(self, model_name: str, device: str = "auto", dtype: str = "float16", trust_remote_code: bool | None = None, quantization_config: QuantizationConfig | None = None, compression_config=None):
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -128,13 +126,13 @@ class ModelPartitioner:
         # Pipeline role
         self.is_first_node = False
         self.is_last_node = False
-        self.assigned_layers: List[int] = []
+        self.assigned_layers: list[int] = []
 
         # Cached layer forward signatures (avoid inspect on every call)
-        self._layer_params: List[set] = []
+        self._layer_params: list[set] = []
 
         # Cached causal attention mask (built once, extended incrementally)
-        self._causal_mask: Optional[torch.Tensor] = None
+        self._causal_mask: torch.Tensor | None = None
         self._causal_mask_device: str = ""
 
     def load_full_model(self) -> None:
@@ -222,7 +220,7 @@ class ModelPartitioner:
 
         logger.info(f"Full model loaded: {self.model_name}")
 
-    def load_layer_subset(self, start_layer: int, end_layer: int, total_layers: int, device: Optional[str] = None) -> None:
+    def load_layer_subset(self, start_layer: int, end_layer: int, total_layers: int, device: str | None = None) -> None:
         """Load only a subset of layers (start_layer to end_layer inclusive)."""
         logger.info(f"Loading layers {start_layer}-{end_layer} of {total_layers} for {self.model_name}")
         trust = _should_trust_remote_code(self.model_name, self.trust_remote_code)
@@ -373,10 +371,10 @@ class ModelPartitioner:
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
-    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]] | None]:
         """Run forward pass through assigned layers."""
         new_past_key_values = []
         seq_len = hidden_states.shape[1]
@@ -494,7 +492,7 @@ class ModelPartitioner:
         }
 
 
-def partition_model_across_nodes(model_name: str, num_nodes: int, trust_remote_code: Optional[bool] = None) -> List[Tuple[int, int]]:
+def partition_model_across_nodes(model_name: str, num_nodes: int, trust_remote_code: bool | None = None) -> list[tuple[int, int]]:
     """Calculate layer assignments for each node using equal split."""
     trust = _should_trust_remote_code(model_name, trust_remote_code)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
@@ -515,12 +513,12 @@ def partition_model_across_nodes(model_name: str, num_nodes: int, trust_remote_c
 
 
 def partition_model_gpu_aware(
-    node_gpus: Dict[str, List],
+    node_gpus: dict[str, list],
     model_name: str,
     total_layers: int,
-    trust_remote_code: Optional[bool] = None,
+    trust_remote_code: bool | None = None,
     safety_margin: float = 0.1,
-) -> Dict[str, Tuple[int, int]]:
+) -> dict[str, tuple[int, int]]:
     """Calculate VRAM-aware layer assignments for each node.
 
     Args:
@@ -608,7 +606,7 @@ def partition_model_gpu_aware(
     return result
 
 
-def get_model_info(model_name: str, trust_remote_code: Optional[bool] = None) -> dict:
+def get_model_info(model_name: str, trust_remote_code: bool | None = None) -> dict:
     """Get model configuration info."""
     trust = _should_trust_remote_code(model_name, trust_remote_code)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
@@ -755,9 +753,9 @@ def profile_partition_throughput(
     num_nodes: int,
     batch_size: int = 1,
     seq_len: int = 2048,
-    trust_remote_code: Optional[bool] = None,
-    gpu_info: Optional[Dict[str, List]] = None,
-) -> List[Tuple[int, int, float]]:
+    trust_remote_code: bool | None = None,
+    gpu_info: dict[str, list] | None = None,
+) -> list[tuple[int, int, float]]:
     """Profile and find the optimal layer partition for max throughput.
 
     Estimates each partition's throughput by considering:
@@ -794,7 +792,7 @@ def profile_partition_throughput(
     # Activation size sent between nodes (bytes per step)
     activation_bytes = batch_size * seq_len * hidden_size * 2  # fp16
 
-    results: List[Tuple[int, int, float, float, float, float]] = []
+    results: list[tuple[int, int, float, float, float, float]] = []
 
     # Try multiple partition strategies and evaluate
     strategies = [
@@ -845,9 +843,9 @@ def find_optimal_partition(
     num_nodes: int,
     batch_size: int = 1,
     seq_len: int = 2048,
-    trust_remote_code: Optional[bool] = None,
-    gpu_info: Optional[Dict[str, List]] = None,
-) -> List[Tuple[int, int]]:
+    trust_remote_code: bool | None = None,
+    gpu_info: dict[str, list] | None = None,
+) -> list[tuple[int, int]]:
     """Find the optimal layer partition maximizing throughput.
 
     Profiles multiple partition strategies and returns the best one.

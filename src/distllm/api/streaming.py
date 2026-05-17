@@ -15,7 +15,7 @@ import math
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Dict, Optional, List
+from typing import Any, AsyncGenerator
 
 import torch
 
@@ -52,7 +52,7 @@ def _compute_logprobs(
     tokenizer,
     top_logprobs: int = 0,
     temperature: float = 1.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Compute logprobs for a sampled token.
 
     Args:
@@ -96,10 +96,10 @@ def _stream_event(
     object_type: str,
     model: str,
     token_text: str,
-    logprob_data: Optional[Dict] = None,
+    logprob_data: dict | None = None,
 ) -> str:
     """Format a single streaming SSE event for chat or completion."""
-    d: Dict[str, Any] = {
+    d: dict[str, Any] = {
         "id": request_id,
         "object": object_type,
         "created": int(time.time()),
@@ -126,7 +126,7 @@ def _stream_usage_event(
     completion_tokens: int,
 ) -> str:
     """Format usage data as a streaming SSE event (final chunk when include_usage=true)."""
-    d: Dict[str, Any] = {
+    d: dict[str, Any] = {
         "id": request_id,
         "object": object_type,
         "created": int(time.time()),
@@ -143,7 +143,7 @@ def _stream_usage_event(
 
 def _stream_start_event(request_id: str, object_type: str, model: str) -> str:
     """Format the initial streaming SSE event with role/text start."""
-    d: Dict[str, Any] = {
+    d: dict[str, Any] = {
         "id": request_id,
         "object": object_type,
         "created": int(time.time()),
@@ -158,7 +158,7 @@ def _stream_start_event(request_id: str, object_type: str, model: str) -> str:
 
 def _stream_stop_event(request_id: str, object_type: str, model: str) -> str:
     """Format the final streaming SSE stop event."""
-    d: Dict[str, Any] = {
+    d: dict[str, Any] = {
         "id": request_id,
         "object": object_type,
         "created": int(time.time()),
@@ -245,7 +245,7 @@ async def _generate_tokens(
         input_ids = tokenizer.encode(prompt, return_tensors="pt")
         generated_ids = input_ids.clone()
 
-        node_kv_caches: Dict[str, Optional[List]] = {
+        node_kv_caches: dict[str, list | None] = {
             nid: None for nid in coord.node_order
         }
 

@@ -15,7 +15,7 @@ Key features:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 from loguru import logger
@@ -45,7 +45,7 @@ class ActivationCompressor:
 
     def __init__(
         self,
-        quant_format: Optional[QuantFormat] = None,
+        quant_format: QuantFormat | None = None,
         scale_mode: ScaleMode = ScaleMode.PER_TOKEN,
         amax_clip_ratio: float = 1.0,
     ):
@@ -81,7 +81,7 @@ class ActivationCompressor:
     def compress(
         self,
         tensor: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compress a float tensor to the target format.
 
         Args:
@@ -108,7 +108,7 @@ class ActivationCompressor:
 
         return compressed, scale
 
-    def _quantize_fp8(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _quantize_fp8(self, tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """FP8 quantization using float8_e4m3fn or float8_e5m2."""
         if self._scale_mode == ScaleMode.PER_TENSOR:
             amax = tensor.abs().max().item() + 1e-12
@@ -132,7 +132,7 @@ class ActivationCompressor:
             q = scaled.to(dtype)
             return q, torch.tensor([scale], device=tensor.device)
 
-    def _quantize_int8(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _quantize_int8(self, tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """INT8 symmetric quantization with per-token scaling."""
         if self._scale_mode == ScaleMode.PER_TENSOR:
             amax = tensor.abs().max().item() + 1e-12
@@ -188,7 +188,7 @@ class ActivationCompressor:
         self,
         key: torch.Tensor,
         value: torch.Tensor,
-    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
         """Compress both K and V cache tensors.
 
         Returns ((k_q, k_scale), (v_q, v_scale)).
@@ -197,7 +197,7 @@ class ActivationCompressor:
         v_q, v_scale = self.compress(value)
         return (k_q, k_scale), (v_q, v_scale)
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {
             "format": self._quant_format.value,
             "scale_mode": self._scale_mode.value,

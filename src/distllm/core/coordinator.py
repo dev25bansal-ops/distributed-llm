@@ -16,13 +16,12 @@ from loguru import logger
 import uuid
 import time
 import asyncio
-import concurrent.futures
 import threading
-from typing import List, Dict, Optional, Tuple, Callable
+from typing import Any, Callable
 from contextvars import ContextVar
 
 # Context variable for per-request isolation of generation parameters
-_current_request_id_ctx: ContextVar[Optional[str]] = ContextVar(
+_current_request_id_ctx: ContextVar[str | None] = ContextVar(
     "current_request_id", default=None
 )
 
@@ -34,7 +33,7 @@ from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.core.chunked_prefill import ChunkState, maybe_chunk
 from distllm.config.loader import NodeRole
 from distllm.config.settings import DistLLMSettings, MultiModelSettings, MoESettings
-from distllm.communication.grpc import set_debug_mode
+from distllm.communication.grpc import set_debug_mode, is_debug_mode
 from distllm.core.moe_router import MoERouter
 from distllm.core.prefix_cache import PrefixCache
 from distllm.errors.types import (
@@ -75,7 +74,7 @@ class Coordinator:
         model_name: str,
         port: int = 50050,
         dtype: str = "float16",
-        trust_remote_code: Optional[bool] = None,
+        trust_remote_code: bool | None = None,
         max_batch_size: int = 1,
         max_tokens_per_batch: int = 4096,
         prefix_cache_enabled: bool = False,
@@ -130,6 +129,8 @@ class Coordinator:
         # Health checker (delegates to resource_mgr + metrics_exporter)
         self._health_checker = HealthChecker(self._resource_mgr, self.metrics_exporter)
 
+        self._nodes_lock = threading.Lock()
+
         # Node registrar (node registration, layer assignment, expert registration)
         self._node_registrar = NodeRegistrar(
             pipeline=self._pipeline,
@@ -165,7 +166,7 @@ class Coordinator:
         # Speculative decoding
         self.draft_model = None
         self.num_assistant_tokens = 5
-        self._spec_decoder: Optional[SpeculativeDecoder] = None
+        self._spec_decoder: SpeculativeDecoder | None = None
         self._spec_method = "draft_model"
         if speculative_config:
             self._draft_model_name = speculative_config.get("draft_model") or None
@@ -182,7 +183,7 @@ class Coordinator:
             self._draft_model_name = None
 
         # Batch scheduler
-        self.scheduler: Optional[BatchScheduler] = None
+        self.scheduler: BatchScheduler | None = None
         if max_batch_size > 1:
             # Pass model_info if available for model-aware batch sizing
             model_info = getattr(self, "model_info", None)
@@ -206,7 +207,7 @@ class Coordinator:
         self.nodes_info = {}
 
         # Multi-model registry and MoE (delegated to managers)
-        self._multi_model: Optional[MultiModelManager] = None
+        self._multi_model: MultiModelManager | None = None
         self._expert_registry = None
         self._moe_orchestrator = None
         self._init_multi_model(multi_model_config)
@@ -221,22 +222,22 @@ class Coordinator:
         self._init_predictive_cache(predictive_cache_config)
 
         # Dynamic rebalancing
-        self._latency_tracker: Optional[LatencyTracker] = None
-        self._rebalancer: Optional[Rebalancer] = None
-        self._rebalancer_task: Optional[threading.Thread] = None
+        self._latency_tracker: LatencyTracker | None = None
+        self._rebalancer: Rebalancer | None = None
+        self._rebalancer_task: threading.Thread | None = None
         if rebalancer_config and rebalancer_config.enabled:
             self._latency_tracker = LatencyTracker()
             self._pipeline.set_latency_tracker(self._latency_tracker)
             self._rebalancer = Rebalancer(self._latency_tracker, rebalancer_config)
 
         # Cache persistence
-        self._cache_persistence: Optional[CachePersistenceManager] = None
+        self._cache_persistence: CachePersistenceManager | None = None
         if cache_persistence_config and cache_persistence_config.enabled:
             self._cache_persistence = CachePersistenceManager(cache_persistence_config)
             self._cache_mgr.persistence_manager = self._cache_persistence
 
         # Persistent KV cache state for batch pipeline (keyed by request_id)
-        self._batch_kv_caches: Dict[str, Dict[str, Optional[List]]] = {}
+        self._batch_kv_caches: dict[str, dict[str, list | None]] = {}
         self._batch_kv_caches_lock = threading.Lock()
         self._batch_event = threading.Event()
 
@@ -244,7 +245,7 @@ class Coordinator:
         self._cache_index = None
         self._gossip_protocol = None
         self._gossip_client = None
-        self._gossip_loop_task: Optional[threading.Thread] = None
+        self._gossip_loop_task: threading.Thread | None = None
         if gossip_config and gossip_config.enabled:
             from distllm.core.cache_index import CacheIndex
             from distllm.core.gossip_protocol import GossipProtocol, GossipClient
@@ -308,82 +309,76 @@ class Coordinator:
         self._flash_attention = None
 
         # Plugin manager
-        self._plugin_manager: Optional['PluginManager'] = None
+        self._plugin_manager: 'PluginManager' | None = None
 
-        # Hybrid parallelism (TP + PP + EP)
+        # Extension points (initialized on demand via _init_* config methods)
         self._hybrid_parallel_planner = None
         self._hybrid_parallel_executor = None
-
-        # Zero-copy GPU tensor transfer
         self._zero_copy_engine = None
-
-        # Adaptive precision pipeline
         self._adaptive_precision = None
-
-        # Predictive KV cache management
         self._predictive_cache = None
 
     # -- Property aliases for backward compat --
 
     @property
-    def nodes(self) -> Dict[str, object]:
+    def nodes(self) -> dict[str, object]:
         return self._pipeline.nodes
 
     @nodes.setter
-    def nodes(self, value: Dict[str, object]):
+    def nodes(self, value: dict[str, object]):
         self._pipeline.nodes = value
 
     @property
-    def node_order(self) -> List[str]:
+    def node_order(self) -> list[str]:
         return self._pipeline.node_order
 
     @node_order.setter
-    def node_order(self, value: List[str]):
+    def node_order(self, value: list[str]):
         self._pipeline.node_order = value
 
     @property
-    def prefill_nodes(self) -> Dict[str, object]:
+    def prefill_nodes(self) -> dict[str, object]:
         return self._pipeline.prefill_nodes
 
     @prefill_nodes.setter
-    def prefill_nodes(self, value: Dict[str, object]):
+    def prefill_nodes(self, value: dict[str, object]):
         self._pipeline.prefill_nodes = value
 
     @property
-    def decode_nodes(self) -> Dict[str, object]:
+    def decode_nodes(self) -> dict[str, object]:
         return self._pipeline.decode_nodes
 
     @decode_nodes.setter
-    def decode_nodes(self, value: Dict[str, object]):
+    def decode_nodes(self, value: dict[str, object]):
         self._pipeline.decode_nodes = value
 
     @property
-    def prefix_cache(self) -> "Optional[PrefixCache]":
+    def prefix_cache(self) -> "PrefixCache | None":
         return self._cache_mgr.prefix_cache
 
     @prefix_cache.setter
-    def prefix_cache(self, value: "Optional[PrefixCache]") -> None:
+    def prefix_cache(self, value: "PrefixCache | None") -> None:
         self._cache_mgr.prefix_cache = value
 
     # -- Backward-compat for circuit breaker internals (used by tests) --
 
     @property
-    def _node_failure_counts(self) -> Dict[str, int]:
+    def _node_failure_counts(self) -> dict[str, int]:
         with self._resource_mgr._lock:
             return dict(self._resource_mgr._node_failure_counts)
 
     @_node_failure_counts.setter
-    def _node_failure_counts(self, value: Dict[str, int]):
+    def _node_failure_counts(self, value: dict[str, int]):
         with self._resource_mgr._lock:
             self._resource_mgr._node_failure_counts = dict(value)
 
     @property
-    def _node_recovery_time(self) -> Dict[str, float]:
+    def _node_recovery_time(self) -> dict[str, float]:
         with self._resource_mgr._lock:
             return dict(self._resource_mgr._node_recovery_time)
 
     @_node_recovery_time.setter
-    def _node_recovery_time(self, value: Dict[str, float]):
+    def _node_recovery_time(self, value: dict[str, float]):
         with self._resource_mgr._lock:
             self._resource_mgr._node_recovery_time = dict(value)
 
@@ -412,7 +407,7 @@ class Coordinator:
         self._resource_mgr.cb_config.max_delay = value
 
     @property
-    def metrics(self) -> Dict[str, float]:
+    def metrics(self) -> dict[str, float]:
         return self._metrics_mgr.get()
 
     @property
@@ -424,12 +419,12 @@ class Coordinator:
         self._request_tracker.shutting_down = value
 
     @property
-    def _request_results(self) -> Dict[str, str]:
+    def _request_results(self) -> dict[str, str]:
         """Backward compat: access to request results dict."""
         return self._request_tracker._results
 
     @property
-    def _request_events(self) -> Dict[str, threading.Event]:
+    def _request_events(self) -> dict[str, threading.Event]:
         """Backward compat: access to request events dict."""
         return self._request_tracker._events
 
@@ -447,9 +442,9 @@ class Coordinator:
 
     # -- Multi-Model Serving (delegated to MultiModelManager) --
 
-    def _init_multi_model(self, multi_model_config: Optional[MultiModelSettings]) -> None:
+    def _init_multi_model(self, multi_model_config: MultiModelSettings | None) -> None:
         """Initialize multi-model and MoE subsystems."""
-        self._multi_model: Optional[MultiModelManager] = None
+        self._multi_model: MultiModelManager | None = None
         if multi_model_config and multi_model_config.enabled:
             model_registry = ModelRegistry(max_models=multi_model_config.max_models)
             model_registry._default_model = multi_model_config.default_model or self.model_name
@@ -590,7 +585,7 @@ class Coordinator:
 
     def _init_vlm_pipeline(
         self,
-        vision_model: Optional[str] = None,
+        vision_model: str | None = None,
         llm_hidden_size: int = 4096,
     ) -> None:
         """Initialize VLM pipeline for multi-modal (image + text) support."""
@@ -641,7 +636,7 @@ class Coordinator:
         }
         self._plugin_manager = PluginManager(context=context)
 
-    def _init_hybrid_parallel(self, config: Optional[Any] = None) -> None:
+    def _init_hybrid_parallel(self, config: Any = None) -> None:
         """Initialize hybrid parallelism engine (TP + PP + EP)."""
         self._hybrid_parallel_planner = None
         self._hybrid_parallel_executor = None
@@ -668,7 +663,7 @@ class Coordinator:
             self._pipeline.enable_overlap = True
         logger.info(f"Hybrid parallel plan: {plan.explanation}")
 
-    def _init_zero_copy(self, config: Optional[Any] = None) -> None:
+    def _init_zero_copy(self, config: Any = None) -> None:
         """Initialize zero-copy GPU tensor transfer engine."""
         self._zero_copy_engine = None
         if config is None:
@@ -680,7 +675,7 @@ class Coordinator:
         self._zero_copy_engine = ZeroCopyTransferEngine()
         logger.info("Zero-copy transfer engine initialized")
 
-    def _init_adaptive_precision(self, config: Optional[Any] = None) -> None:
+    def _init_adaptive_precision(self, config: Any = None) -> None:
         """Initialize adaptive precision pipeline."""
         self._adaptive_precision = None
         if config is None:
@@ -693,7 +688,7 @@ class Coordinator:
         self._adaptive_precision = AdaptivePrecisionEngine(calibration_samples=cal_samples)
         logger.info("Adaptive precision engine initialized")
 
-    def _init_predictive_cache(self, config: Optional[Any] = None) -> None:
+    def _init_predictive_cache(self, config: Any = None) -> None:
         """Initialize predictive KV cache management."""
         self._predictive_cache = None
         if config is None:
@@ -718,7 +713,7 @@ class Coordinator:
         self._predictive_cache.start_background_compression(compress_int)
         logger.info(f"Predictive cache initialized (GPU={gpu_mb}MB, CPU={cpu_mb}MB)")
 
-    def _init_moe(self, moe_config: Optional[MoESettings]) -> None:
+    def _init_moe(self, moe_config: MoESettings | None) -> None:
         """Initialize MoE subsystem."""
         if moe_config and moe_config.enabled:
             from distllm.core.expert_registry import ExpertRegistry
@@ -744,19 +739,19 @@ class Coordinator:
             )
         return self._multi_model.register_model(name, path, total_layers)
 
-    def list_models(self) -> List[str]:
+    def list_models(self) -> list[str]:
         """List all registered model names."""
         if self._multi_model is None:
             return [self.model_name]
         return self._multi_model.list_models()
 
-    def get_model_name(self, requested: Optional[str] = None) -> str:
+    def get_model_name(self, requested: str | None = None) -> str:
         """Resolve model name: requested > registry default > self.model_name."""
         if self._multi_model is None:
             return self.model_name
         return self._multi_model.get_model_name(requested)
 
-    def warm_cache(self, prompts: List[str]) -> int:
+    def warm_cache(self, prompts: list[str]) -> int:
         """Warm caches by running prompts through the pipeline."""
         warmer = CacheWarmer()
         return warmer.warm(prompts, self)
@@ -780,7 +775,7 @@ class Coordinator:
             except Exception:
                 logger.debug("Gossip round error (non-fatal)", exc_info=True)
 
-    def register_expert_on_node(self, node_id: str, expert_ids: List[int], layer_idx: int = 0):
+    def register_expert_on_node(self, node_id: str, expert_ids: list[int], layer_idx: int = 0):
         """Register experts on a node in the expert registry."""
         if self._expert_registry is None:
             return
@@ -820,14 +815,14 @@ class Coordinator:
 
     # -- Node Registration (delegated to NodeRegistrar) --
 
-    def auto_setup(self, nodes_config: List[Dict]) -> None:
+    def auto_setup(self, nodes_config: list[dict]) -> None:
         """Automatically partition model and assign layers to nodes."""
         model_info, total_layers = self._node_registrar.auto_setup(nodes_config)
         self.model_info = model_info
         self.total_layers = total_layers
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
 
-    def manual_register(self, node_id: str, host: str, port: int, start_layer: int, end_layer: int, total_layers: Optional[int] = None, role: NodeRole = NodeRole.AUTO, expert_ids: Optional[List[int]] = None, cluster_id: str = "default"):
+    def manual_register(self, node_id: str, host: str, port: int, start_layer: int, end_layer: int, total_layers: int | None = None, role: NodeRole = NodeRole.AUTO, expert_ids: list[int] | None = None, cluster_id: str = "default"):
         """Manually register a node."""
         self._node_registrar.manual_register(
             node_id=node_id,
@@ -879,7 +874,7 @@ class Coordinator:
 
     # -- Generation --
 
-    def generate(self, prompt: str, max_new_tokens: int = 128, temperature: float = 0.7, top_p: float = 0.9, top_k: int = 0, request_id: Optional[str] = None) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 128, temperature: float = 0.7, top_p: float = 0.9, top_k: int = 0, request_id: str | None = None) -> str:
         """Generate text using distributed pipeline parallelism.
 
         Args:
@@ -923,11 +918,20 @@ class Coordinator:
                 generated_ids[:, :prompt_len] = input_ids
                 gen_pos = prompt_len
 
-                node_kv_caches: Dict[str, Optional[List]] = {
+                node_kv_caches: dict[str, list | None] = {
                     nid: None for nid in self.node_order
                 }
 
                 prefill_start = time.monotonic()
+
+                # Predictive cache: observe request patterns & pre-warm
+                predictive_cache = self._predictive_cache
+                if predictive_cache is not None:
+                    token_ids = input_ids[0].tolist()
+                    predictions = predictive_cache.observe_request(token_ids)
+                    for pred in predictions:
+                        if pred.should_prefetch and pred.confidence > 0.3:
+                            self._cache_mgr.lookup_prefix(list(pred.prefix_tokens))
 
                 # Check if speculative decoding is available and enabled
                 active_method = self._spec_decoder.get_active_method(self.draft_model) if self._spec_decoder else None
@@ -968,10 +972,24 @@ class Coordinator:
                         if draft_tokens and is_debug_mode():
                             req_log.debug(f"Draft tokens: {draft_tokens}")
 
-                    logits = self._pipeline.run_pipeline(
-                        step_input, node_kv_caches, request_id=request_id,
-                        draft_tokens=draft_tokens if use_speculative else None,
-                    )
+                    # Zero-copy: wrap input tensor for GPU-direct transfer
+                    zc_engine = self._zero_copy_engine
+                    zc_input = step_input
+                    if zc_engine is not None and step_input.is_cuda and self.node_order:
+                        for nid in self.node_order:
+                            zc_engine.send(nid, step_input, peer_is_local=False, tag=f"input_{request_id}")
+
+                    hybrid_executor = self._hybrid_parallel_executor
+                    if hybrid_executor is not None:
+                        logits = hybrid_executor.execute(
+                            zc_input, node_kv_caches, request_id=request_id,
+                            draft_tokens=draft_tokens if use_speculative else None,
+                        )
+                    else:
+                        logits = self._pipeline.run_pipeline(
+                            zc_input, node_kv_caches, request_id=request_id,
+                            draft_tokens=draft_tokens if use_speculative else None,
+                        )
 
                     if use_speculative and active_method == "medusa":
                         # Medusa: generate draft tokens from target logits
@@ -1079,14 +1097,14 @@ class Coordinator:
     def generate_async(
         self,
         prompt: str,
-        request_id: Optional[str] = None,
+        request_id: str | None = None,
         max_new_tokens: int = 128,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 0,
-        schema: Optional[dict] = None,
+        schema: dict | None = None,
         priority: int = 2,
-        adapter_id: Optional[str] = None,
+        adapter_id: str | None = None,
     ) -> str:
         """Add a request to the batch scheduler (non-blocking)."""
         if self.scheduler is None:
@@ -1246,7 +1264,7 @@ class Coordinator:
 
     def _run_distributed_pipeline_batch(self, batch: ScheduledBatch) -> None:
         """Run a batch through the distributed pipeline with persistent KV caches."""
-        next_tokens: List[torch.Tensor] = []
+        next_tokens: list[torch.Tensor] = []
 
         for seq_idx, seq in enumerate(batch.sequences):
             if batch.is_prefill[seq_idx]:
@@ -1262,7 +1280,7 @@ class Coordinator:
                 if seq.request_id in self._batch_kv_caches:
                     node_kv_caches = self._batch_kv_caches[seq.request_id]
                 else:
-                    node_kv_caches: Dict[str, Optional[List]] = {
+                    node_kv_caches: dict[str, list | None] = {
                         nid: None for nid in self.node_order
                     }
 
@@ -1302,6 +1320,7 @@ class Coordinator:
         self._apply_flash_attention()
         self._apply_rope_scaling()
         self._wire_paged_attention()
+        self._apply_adaptive_precision()
 
     def _apply_flash_attention(self):
         """Patch the loaded model's attention layers to use FlashAttention-2."""
@@ -1356,6 +1375,22 @@ class Coordinator:
         """Load a smaller draft model for speculative decoding."""
         self._model_mgr.load_draft_model(self)
 
+    def _apply_adaptive_precision(self):
+        """Profile and apply per-layer adaptive precision after model load."""
+        engine = getattr(self, '_adaptive_precision', None)
+        if engine is None or self.local_partitioner is None:
+            return
+        model = self.local_partitioner.full_model
+        if model is None:
+            return
+        try:
+            sample_input = torch.randint(0, 100, (1, 64), device=next(model.parameters()).device)
+            engine.profile_model(model, sample_input)
+            converted = engine.apply_precision(model)
+            logger.info(f"Adaptive precision: profiled & converted {converted} layers")
+        except Exception as e:
+            logger.warning(f"Adaptive precision profiling failed: {e}")
+
     # -- Health Checks (delegated to HealthChecker) --
 
     def health_check(self) -> dict:
@@ -1370,7 +1405,7 @@ class Coordinator:
 
     # -- Server Lifecycle --
 
-    def start(self, blocking: bool = True, on_stop: Optional[Callable] = None):
+    def start(self, blocking: bool = True, on_stop: Callable | None = None):
         """Start the coordinator gRPC server."""
         if self.tokenizer is None:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
@@ -1552,7 +1587,7 @@ class Coordinator:
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 0,
-        request_id: Optional[str] = None,
+        request_id: str | None = None,
     ) -> str:
         """Properly async text generation.
 
@@ -1587,7 +1622,7 @@ class Coordinator:
                 generated_ids[:, :prompt_len] = input_ids
                 gen_pos = prompt_len
 
-                node_kv_caches: Dict[str, Optional[List]] = {
+                node_kv_caches: dict[str, list | None] = {
                     nid: None for nid in self.node_order
                 }
 
@@ -1597,6 +1632,15 @@ class Coordinator:
                     and self._spec_decoder.is_enabled
                     and active_method in ("draft_model", "medusa", "ngram")
                 )
+
+                # Predictive cache: observe request patterns & pre-warm
+                predictive_cache = self._predictive_cache
+                if predictive_cache is not None:
+                    token_ids = input_ids[0].tolist()
+                    predictions = predictive_cache.observe_request(token_ids)
+                    for pred in predictions:
+                        if pred.should_prefetch and pred.confidence > 0.3:
+                            self._cache_mgr.lookup_prefix(list(pred.prefix_tokens))
 
                 prefill_start = time.monotonic()
                 ttft_recorded = None
@@ -1620,10 +1664,18 @@ class Coordinator:
                                 None, step_input, generated_ids=generated_list,
                             )
 
-                    logits = await self._pipeline.run_pipeline_async(
-                        step_input, node_kv_caches, step_request_id,
-                        draft_tokens=draft_tokens if use_speculative else None,
-                    )
+                    hybrid_executor = self._hybrid_parallel_executor
+                    if hybrid_executor is not None:
+                        logits = await asyncio.to_thread(
+                            hybrid_executor.execute,
+                            step_input, node_kv_caches, step_request_id,
+                            draft_tokens if use_speculative else None,
+                        )
+                    else:
+                        logits = await self._pipeline.run_pipeline_async(
+                            step_input, node_kv_caches, step_request_id,
+                            draft_tokens=draft_tokens if use_speculative else None,
+                        )
 
                     if use_speculative and active_method == "medusa":
                         draft_tokens, _ = await asyncio.to_thread(

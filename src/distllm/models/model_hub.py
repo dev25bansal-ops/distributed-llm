@@ -5,8 +5,6 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
-
 from loguru import logger
 
 try:
@@ -38,12 +36,12 @@ class ModelInfo:
     """Metadata about a model from HuggingFace."""
     model_id: str
     size_bytes: int = 0
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     pipeline_tag: str = ""
     downloads: int = 0
     likes: int = 0
     last_modified: str = ""
-    revisions: List[str] = field(default_factory=lambda: ["main"])
+    revisions: list[str] = field(default_factory=lambda: ["main"])
 
 
 @dataclass
@@ -67,7 +65,7 @@ class ModelHub:
 
     def __init__(
         self,
-        cache_dir: Optional[str] = None,
+        cache_dir: str | None = None,
         max_retries: int = 3,
         download_timeout_s: int = 300,
     ):
@@ -85,9 +83,9 @@ class ModelHub:
     def download(
         self,
         model_name: str,
-        revision: Optional[str] = None,
-        token: Optional[str] = None,
-        allow_patterns: Optional[List[str]] = None,
+        revision: str | None = None,
+        token: str | None = None,
+        allow_patterns: list[str] | None = None,
         progress_callback=None,
     ) -> str:
         """Download a model from HuggingFace to the local cache.
@@ -153,7 +151,7 @@ class ModelHub:
     def is_available(
         self,
         model_name: str,
-        revision: Optional[str] = None,
+        revision: str | None = None,
     ) -> bool:
         """Check if a model is available in the local cache."""
         revision = revision or "main"
@@ -163,9 +161,9 @@ class ModelHub:
     def resolve(
         self,
         model_name: str,
-        revision: Optional[str] = None,
+        revision: str | None = None,
         offline_mode: bool = False,
-        token: Optional[str] = None,
+        token: str | None = None,
     ) -> str:
         """Resolve a model name to a local path, downloading if necessary.
 
@@ -197,7 +195,7 @@ class ModelHub:
 
         return self.download(model_name, revision=revision, token=token)
 
-    def list_cached(self) -> List[CachedModel]:
+    def list_cached(self) -> list[CachedModel]:
         """List all models in the local cache."""
         models = []
         if not self.cache_dir.exists():
@@ -222,7 +220,7 @@ class ModelHub:
                     ))
         return models
 
-    def remove(self, model_name: str, revision: Optional[str] = None) -> bool:
+    def remove(self, model_name: str, revision: str | None = None) -> bool:
         """Remove a cached model (and all revisions if revision is None).
 
         Returns:
@@ -249,7 +247,7 @@ class ModelHub:
             logger.info(f"Removed {model_name} from cache")
             return True
 
-    def get_info(self, model_name: str, token: Optional[str] = None) -> Optional[ModelInfo]:
+    def get_info(self, model_name: str, token: str | None = None) -> ModelInfo | None:
         """Fetch model metadata from HuggingFace API."""
         if not HAS_HF_HUB:
             raise ModelHubError("huggingface-hub is not installed")
@@ -275,11 +273,11 @@ class ModelHub:
 
     def warm_cache(
         self,
-        model_names: List[str],
-        revision: Optional[str] = None,
-        token: Optional[str] = None,
+        model_names: list[str],
+        revision: str | None = None,
+        token: str | None = None,
         max_concurrent: int = 2,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Pre-download multiple models.
 
         Returns:

@@ -1,7 +1,5 @@
 """LoRA adapter management routes: GET/POST /v1/adapters."""
 
-from typing import Optional, List, Dict
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -14,11 +12,11 @@ router = APIRouter(tags=["adapters"])
 
 class AdapterLoadRequest(BaseModel):
     action: str = Field(..., description="Action: 'load', 'set', 'list', 'warmup', 'unload', 'rank'")
-    id: Optional[str] = None
-    path: Optional[str] = None
-    adapters: Optional[Dict[str, str]] = None  # For warmup: {id: path}
-    rank: Optional[int] = None  # For load/rank: priority rank
-    tenant_id: Optional[str] = None  # For load: tenant identifier
+    id: str | None = None
+    path: str | None = None
+    adapters: dict[str, str] | None = None  # For warmup: {id: path}
+    rank: int | None = None  # For load/rank: priority rank
+    tenant_id: str | None = None  # For load: tenant identifier
 
 
 class AdapterInfo(BaseModel):
@@ -31,10 +29,10 @@ class AdapterInfo(BaseModel):
 
 
 class AdapterListResponse(BaseModel):
-    active: Optional[str] = None
-    adapters: List[str] = []
-    stats: Dict = {}
-    ranking: Optional[List[Dict]] = None
+    active: str | None = None
+    adapters: list[str] = []
+    stats: dict = {}
+    ranking: list[dict] | None = None
 
 
 def _check_adapter_enabled():

@@ -9,7 +9,7 @@ Extends the existing MultiModelManager with:
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable
 
 import torch
 from loguru import logger
@@ -37,8 +37,8 @@ class ModelMemoryBudget:
 
     def __init__(self, total_gpu_memory_gb: float = 0.0):
         self.total_gpu_memory_gb = total_gpu_memory_gb
-        self._budgets: Dict[str, float] = {}  # model_name -> budget_gb
-        self._usage: Dict[str, float] = {}  # model_name -> current_usage_gb
+        self._budgets: dict[str, float] = {}  # model_name -> budget_gb
+        self._usage: dict[str, float] = {}  # model_name -> current_usage_gb
         self._lock = threading.Lock()
 
     def set_budget(self, model_name: str, budget_gb: float) -> None:
@@ -46,7 +46,7 @@ class ModelMemoryBudget:
         with self._lock:
             self._budgets[model_name] = budget_gb
 
-    def get_budget(self, model_name: str) -> Optional[float]:
+    def get_budget(self, model_name: str) -> float | None:
         return self._budgets.get(model_name)
 
     def update_usage(self, model_name: str, usage_gb: float) -> None:
@@ -79,7 +79,7 @@ class ModelMemoryBudget:
             self._usage.pop(model_name, None)
             self._budgets.pop(model_name, None)
 
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         with self._lock:
             return {
                 "total_gpu_memory_gb": self.total_gpu_memory_gb,
@@ -100,18 +100,18 @@ class ModelHotSwapManager:
 
     def __init__(
         self,
-        model_registry: Optional[ModelRegistry] = None,
+        model_registry: ModelRegistry | None = None,
         total_gpu_memory_gb: float = 0.0,
         max_models: int = 4,
-        on_load_model: Optional[Callable] = None,
-        on_unload_model: Optional[Callable] = None,
+        on_load_model: Callable | None = None,
+        on_unload_model: Callable | None = None,
     ):
         self.registry = model_registry or ModelRegistry(max_models=max_models)
         self.memory_budget = ModelMemoryBudget(total_gpu_memory_gb=total_gpu_memory_gb)
         self._max_models = max_models
 
         # Loaded models: name -> ModelInstance
-        self._loaded: Dict[str, ModelInstance] = {}
+        self._loaded: dict[str, ModelInstance] = {}
         self._lock = threading.RLock()
 
         # Callbacks for actual model loading/unloading
@@ -245,7 +245,7 @@ class ModelHotSwapManager:
         self.unload_model(name)
         return self.registry.remove(name)
 
-    def get_model(self, name: str) -> Optional[ModelInstance]:
+    def get_model(self, name: str) -> ModelInstance | None:
         """Get a loaded model instance."""
         instance = self._loaded.get(name)
         if instance:
@@ -253,7 +253,7 @@ class ModelHotSwapManager:
             instance.request_count += 1
         return instance
 
-    def list_loaded_models(self) -> List[Dict]:
+    def list_loaded_models(self) -> list[dict]:
         """List all currently loaded models with their stats."""
         with self._lock:
             return [
@@ -295,7 +295,7 @@ class ModelHotSwapManager:
     def get_total_memory_usage(self) -> float:
         return self.memory_budget.total_allocated_gb()
 
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         with self._lock:
             return {
                 "loaded_models": len(self._loaded),

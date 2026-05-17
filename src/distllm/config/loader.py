@@ -11,7 +11,6 @@ import os
 import warnings
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 import yaml
 
@@ -207,8 +206,8 @@ def apply_cli_overrides(data: dict, cli_args: dict) -> dict:
 
 
 def load_config(
-    config_path: Optional[str] = None,
-    cli_args: Optional[dict] = None,
+    config_path: str | None = None,
+    cli_args: dict | None = None,
 ) -> DistLLMSettings:
     """Load configuration with full precedence: env > CLI > YAML > defaults.
 

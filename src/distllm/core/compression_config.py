@@ -6,7 +6,6 @@ model compression during loading.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 from distllm.errors import ConfigValidationError
 
@@ -28,7 +27,7 @@ class CompressionConfig:
     enabled: bool = False
     target_bits: int = 8
     pruning_ratio: float = 0.0
-    distillation_teacher: Optional[str] = None
+    distillation_teacher: str | None = None
     calibration_samples: int = 128
     pruning_targets: list[str] = field(default_factory=lambda: ["q_proj", "v_proj"])
     quant_method: str = "awq"

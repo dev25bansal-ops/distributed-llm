@@ -13,7 +13,7 @@ import os
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 
@@ -46,10 +46,10 @@ class CudaIPCManager:
     """
 
     def __init__(self):
-        self._handles: Dict[str, Tuple[torch.Tensor, Any]] = {}
+        self._handles: dict[str, tuple[torch.Tensor, Any]] = {}
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def export_tensor(self, key: str, tensor: torch.Tensor) -> Optional[bytes]:
+    def export_tensor(self, key: str, tensor: torch.Tensor) -> bytes | None:
         """Export a GPU tensor for IPC access by another process on the same node.
 
         Returns serialized IPC handle bytes, or None if not on CUDA.
@@ -61,7 +61,7 @@ class CudaIPCManager:
         self._handles[key] = (tensor, ipc_handle)
         return ipc_handle
 
-    def import_tensor(self, key: str, ipc_handle: bytes, shape: Tuple[int, ...], dtype: torch.dtype) -> Optional[torch.Tensor]:
+    def import_tensor(self, key: str, ipc_handle: bytes, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor | None:
         """Import a GPU tensor via IPC handle from another process on the same node."""
         try:
             tensor = torch.zeros(shape, dtype=dtype, device=self._device)
@@ -87,7 +87,7 @@ class RDMAManager:
 
     def __init__(self):
         self._available = self._check_rdma_available()
-        self._registered_memory: Dict[str, torch.Tensor] = {}
+        self._registered_memory: dict[str, torch.Tensor] = {}
 
     def _check_rdma_available(self) -> bool:
         ib = os.environ.get("DISTLLM_INFINIBAND", "").lower()
@@ -124,7 +124,7 @@ class RDMAManager:
             logger.error(f"RDMA send failed to {peer}: {e}")
             return False
 
-    def recv_rdma(self, peer: str, shape: Tuple[int, ...], dtype: torch.dtype) -> Optional[torch.Tensor]:
+    def recv_rdma(self, peer: str, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor | None:
         if not self._available:
             return None
         try:
@@ -145,8 +145,8 @@ class ZeroCopyTransferEngine:
     def __init__(self):
         self.cuda_ipc = CudaIPCManager()
         self.rdma = RDMAManager()
-        self._nccl_transport: Optional[Any] = None
-        self._stats: List[TransferStats] = []
+        self._nccl_transport: Any | None = None
+        self._stats: list[TransferStats] = []
         try:
             from distllm.core.nccl_transport import NCCLTransport
             self._nccl_transport = NCCLTransport()
@@ -202,14 +202,14 @@ class ZeroCopyTransferEngine:
     def recv(
         self,
         peer: str,
-        shape: Tuple[int, ...],
+        shape: tuple[int, ...],
         dtype: torch.dtype,
         peer_is_local: bool = False,
         tag: str = "",
-    ) -> Tuple[Optional[torch.Tensor], TransferStats]:
+    ) -> tuple[torch.Tensor | None, TransferStats]:
         backend = self._select_backend(peer_is_local, torch.zeros(1, dtype=dtype))
         start = time.monotonic()
-        result: Optional[torch.Tensor] = None
+        result: torch.Tensor | None = None
         success = False
 
         try:
@@ -237,13 +237,13 @@ class ZeroCopyTransferEngine:
         self._stats.append(stats)
         return result, stats
 
-    def get_stats(self) -> List[TransferStats]:
+    def get_stats(self) -> list[TransferStats]:
         return list(self._stats)
 
-    def get_aggregate_stats(self) -> Dict[str, Any]:
+    def get_aggregate_stats(self) -> dict[str, Any]:
         if not self._stats:
             return {}
-        by_backend: Dict[str, List[float]] = {}
+        by_backend: dict[str, list[float]] = {}
         for s in self._stats:
             by_backend.setdefault(s.backend.value, []).append(s.latency_ms)
         return {

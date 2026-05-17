@@ -21,7 +21,7 @@ Supported architectures:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 
 @dataclass
@@ -31,11 +31,11 @@ class AttributeMapping:
     Maps logical component names to the actual attribute names
     used by this architecture in HuggingFace.
     """
-    base_model: List[str] = field(default_factory=lambda: ["model", "transformer", "encoder"])
-    embedding: List[str] = field(default_factory=lambda: ["embed_tokens", "wte", "word_embeddings"])
-    layers: List[str] = field(default_factory=lambda: ["layers", "block", "h"])
-    final_norm: List[str] = field(default_factory=lambda: ["norm", "final_layer_norm", "ln_f"])
-    lm_head: List[str] = field(default_factory=lambda: ["lm_head", "embed_out"])
+    base_model: list[str] = field(default_factory=lambda: ["model", "transformer", "encoder"])
+    embedding: list[str] = field(default_factory=lambda: ["embed_tokens", "wte", "word_embeddings"])
+    layers: list[str] = field(default_factory=lambda: ["layers", "block", "h"])
+    final_norm: list[str] = field(default_factory=lambda: ["norm", "final_layer_norm", "ln_f"])
+    lm_head: list[str] = field(default_factory=lambda: ["lm_head", "embed_out"])
 
     # Attention projection names for FlashAttention patching
     attn_q: str = "q_proj"
@@ -61,7 +61,7 @@ class AttentionConfig:
     """Attention-specific configuration."""
     attention_type: str = "sdpa"       # sdpa, flash_attn, mla, sliding_window
     use_qkv_parallel: bool = False     # Parallel QKV (Falcon style)
-    soft_cap: Optional[float] = None   # Attention logit soft-capping (Gemma 2)
+    soft_cap: float | None = None   # Attention logit soft-capping (Gemma 2)
     sliding_window_size: int = 0       # Sliding window attention (Mistral, Gemma 2)
     use_gqa: bool = True               # Grouped-query attention
     kv_compression_ratio: int = 0      # MLA KV compression (DeepSeek)
@@ -74,7 +74,7 @@ class RoPEScalingDefaults:
     scaling_type: str = "linear"       # linear, ntk, yarn, dynamic_ntk
     max_position_embeddings: int = 4096
     original_max_position_embeddings: int = 4096
-    rope_theta: Optional[float] = None # Override for rope_theta if different from base
+    rope_theta: float | None = None # Override for rope_theta if different from base
 
 
 @dataclass
@@ -82,7 +82,7 @@ class ArchitectureInfo:
     """Complete specification for a supported model architecture."""
     name: str
     model_type: str                      # HuggingFace config.model_type
-    model_type_aliases: List[str] = field(default_factory=list)
+    model_type_aliases: list[str] = field(default_factory=list)
     description: str = ""
     min_vram_gb: float = 0.0
     recommended_gpus: str = ""
@@ -111,7 +111,7 @@ class ArchitectureInfo:
 # Architecture Registry
 # ---------------------------------------------------------------------------
 
-ARCHITECTURE_REGISTRY: Dict[str, ArchitectureInfo] = {}
+ARCHITECTURE_REGISTRY: dict[str, ArchitectureInfo] = {}
 
 
 def register(info: ArchitectureInfo) -> None:
@@ -121,12 +121,12 @@ def register(info: ArchitectureInfo) -> None:
         ARCHITECTURE_REGISTRY[alias] = info
 
 
-def lookup(model_type: str) -> Optional[ArchitectureInfo]:
+def lookup(model_type: str) -> ArchitectureInfo | None:
     """Look up architecture info by model_type string."""
     return ARCHITECTURE_REGISTRY.get(model_type)
 
 
-def lookup_by_model_name(model_name: str) -> Optional[ArchitectureInfo]:
+def lookup_by_model_name(model_name: str) -> ArchitectureInfo | None:
     """Look up architecture info by a HuggingFace model name/path.
 
     Checks the lowercase model name against allowlist-based detection.
@@ -141,9 +141,9 @@ def lookup_by_model_name(model_name: str) -> Optional[ArchitectureInfo]:
     return None
 
 
-def get_trusted_models() -> Set[str]:
+def get_trusted_models() -> set[str]:
     """Return the set of model families that require trust_remote_code."""
-    trusted: Set[str] = set()
+    trusted: set[str] = set()
     for info in ARCHITECTURE_REGISTRY.values():
         if info.trust_remote_code:
             trusted.add(info.model_type)
@@ -445,7 +445,7 @@ def get_architecture_info(model_type: str, model_name: str = "") -> Architecture
     )
 
 
-def list_supported_architectures() -> List[Dict[str, Any]]:
+def list_supported_architectures() -> list[dict[str, Any]]:
     """Return a human-readable list of supported architectures."""
     result = []
     for info in ARCHITECTURE_REGISTRY.values():

@@ -6,7 +6,6 @@ the appropriate coordinator using sticky session routing.
 
 import hashlib
 import time
-from typing import Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -17,7 +16,7 @@ from distllm.router.service import RouterService, compute_session_key
 
 router = APIRouter()
 
-_router_service: Optional[RouterService] = None
+_router_service: RouterService | None = None
 
 
 def set_router_service(service: RouterService) -> None:

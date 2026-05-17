@@ -11,7 +11,6 @@ import os
 import time
 import json
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.responses import HTMLResponse
@@ -24,8 +23,8 @@ from distllm.dashboard.ws_handler import manager, metrics_broadcaster
 dashboard_app = FastAPI(title="DistLLM Dashboard", version="0.4.0")
 
 # Global coordinator reference (set by main())
-coordinator: Optional[object] = None
-monitor: Optional[object] = None
+coordinator: object | None = None
+monitor: object | None = None
 _broadcast_task = None
 
 

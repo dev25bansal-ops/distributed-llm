@@ -5,7 +5,6 @@ for sticky sessions, with health-aware failover.
 """
 
 import hashlib
-from typing import Optional
 
 from loguru import logger
 
@@ -21,7 +20,7 @@ class RouterService:
         self._discovery = CoordinatorDiscovery()
         self._discovery.on_change(self._on_coordinator_change)
 
-    async def start(self, mode: str = "static", config: Optional[dict] = None) -> None:
+    async def start(self, mode: str = "static", config: dict | None = None) -> None:
         """Start the router with the given discovery mode."""
         config = config or {}
         await self._discovery.start(config)
@@ -31,7 +30,7 @@ class RouterService:
         await self._discovery.stop()
         logger.info("RouterService stopped")
 
-    def get_coordinator(self, session_key: str) -> Optional[CoordinatorInfo]:
+    def get_coordinator(self, session_key: str) -> CoordinatorInfo | None:
         """Get the coordinator for a session key.
 
         Uses consistent hashing for sticky routing, with fallback
@@ -65,7 +64,7 @@ class RouterService:
             logger.info(f"Coordinator {node_id} removed from routing ring")
 
 
-def compute_session_key(request_data: dict, client_host: Optional[str] = None) -> str:
+def compute_session_key(request_data: dict, client_host: str | None = None) -> str:
     """Compute a sticky session key from request data.
 
     Uses user identifier, client host, or content hash as fallback.

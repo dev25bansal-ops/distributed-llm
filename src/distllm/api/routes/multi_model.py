@@ -1,7 +1,5 @@
 """Multi-model hot-swap routes: POST/DELETE /v1/models/{model_id}/load."""
 
-from typing import Optional
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 

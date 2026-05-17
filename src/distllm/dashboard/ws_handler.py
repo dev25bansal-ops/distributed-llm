@@ -5,7 +5,6 @@ Broadcasts node health, metrics, and request stats to connected clients.
 
 import asyncio
 import json
-from typing import Set
 
 from fastapi import WebSocket, WebSocketDisconnect
 from loguru import logger
@@ -15,7 +14,7 @@ class ConnectionManager:
     """Manages WebSocket connections and broadcasts."""
 
     def __init__(self):
-        self.active_connections: Set[WebSocket] = set()
+        self.active_connections: set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()

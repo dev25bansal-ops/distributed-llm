@@ -1,7 +1,6 @@
 """Resilience scoring for chaos engineering results."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

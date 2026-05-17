@@ -18,7 +18,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -50,12 +50,12 @@ class StrategyScore:
 class PipelineStage:
     method: CompressionMethod
     order: int
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class CompressionPlan:
-    stages: List[PipelineStage] = field(default_factory=list)
+    stages: list[PipelineStage] = field(default_factory=list)
     target_hardware: HardwareClass = HardwareClass.DATA_CENTER
     expected_speedup: float = 1.0
     expected_quality_loss: float = 0.0
@@ -167,7 +167,7 @@ class WQLinear(nn.Module):
         return packed
 
     @staticmethod
-    def unpack_int4(qweight: torch.Tensor, shape: Tuple[int, int]) -> torch.Tensor:
+    def unpack_int4(qweight: torch.Tensor, shape: tuple[int, int]) -> torch.Tensor:
         """Unpack INT4 values back to int8 tensor of given shape."""
         n_elems = shape[0] * shape[1]
         n_words = qweight.numel()
@@ -196,19 +196,23 @@ class WQLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.use_awq:
-            x = x * self.act_scales
-        w_unpacked = self.unpack_int4(self.qweight, (self.out_features, self.in_features)).to(x.dtype)
-        w = w_unpacked * self.scales[:, 0:1] if self.num_groups == 1 else self._dequantize(w_unpacked)
-        out = torch.nn.functional.linear(x, w.to(x.dtype), self.bias)
-        return out
+            x = x * self.act_scales.to(x.dtype)
+        w_unpacked = self.unpack_int4(self.qweight, (self.out_features, self.in_features))
+        if self.num_groups > 1:
+            w = self._dequantize(w_unpacked)
+        else:
+            w = w_unpacked.float() * self.scales[:, 0:1]
+        w = w.to(x.dtype)
+        bias = self.bias.to(x.dtype) if self.bias is not None else None
+        return torch.nn.functional.linear(x, w, bias)
 
     def _dequantize(self, w_int: torch.Tensor) -> torch.Tensor:
         w_fp = w_int.float()
         for g in range(self.num_groups):
             g_start = g * self.group_size
             g_end = min(g_start + self.group_size, self.in_features)
-            w_fp[:, g_start:g_end] = w_fp[:, g_start:g_end] * self.scales[:, g:g+1]
-        return w_fp.to(torch.float16)
+            w_fp[:, g_start:g_end] = w_fp[:, g_start:g_end] * self.scales[:, g:g+1].float()
+        return w_fp
 
 
 class AWQQuantizer:
@@ -217,8 +221,8 @@ class AWQQuantizer:
     def __init__(self, group_size: int = 128):
         self.group_size = group_size
 
-    def _get_act_scales(self, model: nn.Module, calib_inputs: List[torch.Tensor],
-                        module_names: List[str]) -> Dict[str, torch.Tensor]:
+    def _get_act_scales(self, model: nn.Module, calib_inputs: list[torch.Tensor],
+                        module_names: list[str]) -> dict[str, torch.Tensor]:
         """Collect activation scales for targeted modules."""
         act_scales = {}
         hooks = []
@@ -246,9 +250,8 @@ class AWQQuantizer:
             h.remove()
         return act_scales
 
-    def quantize_model(self, model: nn.Module, calib_inputs: Optional[List[torch.Tensor]] = None,
-                       target_modules: Optional[List[str]] = None) -> nn.Module:
-        """Quantize linear layers to INT4 using AWQ calibration."""
+    def quantize_model(self, model: nn.Module, calib_inputs: list[torch.Tensor] | None = None,
+                       target_modules: list[str] | None = None) -> nn.Module:
         if target_modules is None:
             target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                               "gate_proj", "up_proj", "down_proj"]
@@ -265,6 +268,12 @@ class AWQQuantizer:
             if not any(t in name for t in target_modules):
                 continue
             replacements.append((name, mod))
+
+        # Fallback: quantize ALL linear layers if no name-pattern targets matched
+        if not replacements:
+            for name, mod in model.named_modules():
+                if isinstance(mod, nn.Linear) and mod.weight.dim() == 2:
+                    replacements.append((name, mod))
 
         for name, mod in replacements:
             wq = WQLinear(mod.in_features, mod.out_features,
@@ -312,8 +321,8 @@ class GPTQQuantizer:
         self.damp_percent = damp_percent
 
     def quantize_model(self, model: nn.Module,
-                       calib_inputs: List[torch.Tensor],
-                       target_modules: Optional[List[str]] = None) -> nn.Module:
+                       calib_inputs: list[torch.Tensor],
+                       target_modules: list[str] | None = None) -> nn.Module:
         if target_modules is None:
             target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                               "gate_proj", "up_proj", "down_proj"]
@@ -322,6 +331,11 @@ class GPTQQuantizer:
         for name, mod in model.named_modules():
             if isinstance(mod, nn.Linear) and any(t in name for t in target_modules):
                 replacements.append((name, mod))
+
+        if not replacements:
+            for name, mod in model.named_modules():
+                if isinstance(mod, nn.Linear) and mod.weight.dim() == 2:
+                    replacements.append((name, mod))
 
         device = next(model.parameters()).device
         handles = []
@@ -427,10 +441,10 @@ class GPTQQuantizer:
 # ---------------------------------------------------------------------------
 
 class StrategySelector:
-    def __init__(self, hw_profiler: Optional[HardwareProfiler] = None):
+    def __init__(self, hw_profiler: HardwareProfiler | None = None):
         self._hw = hw_profiler or HardwareProfiler()
 
-    def score_all_strategies(self, model: nn.Module, model_params_billions: float = 0.0) -> List[StrategyScore]:
+    def score_all_strategies(self, model: nn.Module, model_params_billions: float = 0.0) -> list[StrategyScore]:
         hw_class = self._hw.classify()
         vram_gb = self._hw.get_vram_gb()
         free_gb = self._hw.get_free_vram_gb()
@@ -588,7 +602,7 @@ class CalibrationDataLoader:
         self.n_samples = n_samples
         self.seq_length = seq_length
 
-    def generate(self) -> List[torch.Tensor]:
+    def generate(self) -> list[torch.Tensor]:
         texts = self._get_calibration_texts()
         encoded = []
         for text in texts[:self.n_samples]:
@@ -597,7 +611,7 @@ class CalibrationDataLoader:
             encoded.append(tokens)
         return encoded
 
-    def _get_calibration_texts(self) -> List[str]:
+    def _get_calibration_texts(self) -> list[str]:
         texts = []
         try:
             from datasets import load_dataset
@@ -614,7 +628,7 @@ class CalibrationDataLoader:
             texts.extend(self._generate_synthetic_texts(self.n_samples - len(texts)))
         return texts[:self.n_samples]
 
-    def _generate_synthetic_texts(self, count: int) -> List[str]:
+    def _generate_synthetic_texts(self, count: int) -> list[str]:
         patterns = [
             "The quick brown fox jumps over the lazy dog.",
             "Machine learning is a subset of artificial intelligence.",
@@ -724,7 +738,7 @@ class StructuredPruner:
         logger.info(f"Structured pruning: replaced {len(replacements)} modules")
         return model
 
-    def _find_paired_groups(self, layers: Dict[str, nn.Module]) -> List[Tuple]:
+    def _find_paired_groups(self, layers: dict[str, nn.Module]) -> list[Tuple]:
         """Find (q_proj, [k_proj, v_proj], o_proj, gate_proj, up_proj, down_proj) groups."""
         qkv_groups = {}
         ffn_groups = {}
@@ -776,8 +790,8 @@ class StructuredPruner:
             keep[start:end] = False
         return keep
 
-    def _slice_linear(self, mod: nn.Linear, out_keep: Optional[torch.Tensor] = None,
-                      in_keep: Optional[torch.Tensor] = None) -> nn.Linear:
+    def _slice_linear(self, mod: nn.Linear, out_keep: torch.Tensor | None = None,
+                      in_keep: torch.Tensor | None = None) -> nn.Linear:
         w = mod.weight.data
         b = mod.bias.data if mod.bias is not None else None
 
@@ -972,7 +986,7 @@ class CompressionPipeline:
         logger.info("Distillation complete")
         return model
 
-    def _get_calib_inputs(self, model, tokenizer) -> List[torch.Tensor]:
+    def _get_calib_inputs(self, model, tokenizer) -> list[torch.Tensor]:
         try:
             loader = CalibrationDataLoader(tokenizer, n_samples=min(32, self.config.calibration_samples))
             return loader.generate()

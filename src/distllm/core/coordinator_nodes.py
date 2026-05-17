@@ -4,7 +4,6 @@ Handles node registration, auto-setup, and expert registration.
 Extracted from the Coordinator class.
 """
 
-from typing import Dict, List, Optional
 
 from loguru import logger
 from transformers import AutoTokenizer
@@ -29,7 +28,7 @@ class NodeRegistrar:
         self,
         pipeline,
         model_name: str,
-        trust_remote_code: Optional[bool] = None,
+        trust_remote_code: bool | None = None,
         expert_registry=None,
         federation_manager=None,
     ):
@@ -39,7 +38,7 @@ class NodeRegistrar:
         self.expert_registry = expert_registry
         self.federation_manager = federation_manager
 
-    def auto_setup(self, nodes_config: List[Dict]) -> None:
+    def auto_setup(self, nodes_config: list[dict]) -> None:
         """Automatically partition model and assign layers to nodes.
 
         Args:
@@ -79,9 +78,9 @@ class NodeRegistrar:
         port: int,
         start_layer: int,
         end_layer: int,
-        total_layers: Optional[int] = None,
+        total_layers: int | None = None,
         role: NodeRole = NodeRole.AUTO,
-        expert_ids: Optional[List[int]] = None,
+        expert_ids: list[int] | None = None,
         cluster_id: str = "default",
     ) -> None:
         """Manually register a node.
@@ -123,7 +122,7 @@ class NodeRegistrar:
         logger.info(f"Registered {node_id}: layers {start_layer}-{end_layer}")
 
     def register_expert_on_node(
-        self, node_id: str, expert_ids: List[int], layer_idx: int = 0
+        self, node_id: str, expert_ids: list[int], layer_idx: int = 0
     ) -> None:
         """Register experts on a node in the expert registry.
 

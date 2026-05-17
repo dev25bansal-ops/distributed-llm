@@ -6,7 +6,6 @@ delimiter "__" (e.g., DISTLLM__MODEL__NAME).
 """
 
 from enum import Enum
-from typing import Any, List, Optional, Dict
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -129,9 +128,9 @@ class TLSSettings(BaseModel):
     """TLS/Security configuration."""
     enabled: bool = False
     cert_dir: str = "certs"
-    cert_file: Optional[str] = None
-    key_file: Optional[str] = None
-    ca_cert_file: Optional[str] = None
+    cert_file: str | None = None
+    key_file: str | None = None
+    ca_cert_file: str | None = None
 
 
 class BatchingSettings(BaseModel):
@@ -293,7 +292,7 @@ class PrioritySettings(BaseModel):
 
 class MultiModelSettings(BaseModel):
     """Multi-model serving configuration."""
-    models: Dict[str, str] = Field(default_factory=dict)  # name -> path
+    models: dict[str, str] = Field(default_factory=dict)  # name -> path
     default_model: str = ""
     max_models: int = 4
 
@@ -314,7 +313,7 @@ class TensorParallelSettings(BaseModel):
 class LoRASettings(BaseModel):
     """LoRA multi-adapter configuration."""
     enabled: bool = False
-    adapters: Dict[str, str] = Field(default_factory=dict)
+    adapters: dict[str, str] = Field(default_factory=dict)
 
 
 class MoESettings(BaseModel):
@@ -338,9 +337,9 @@ class CompressionSettings(BaseModel):
     method: str = "none"
     target_bits: int = 8
     pruning_ratio: float = 0.0
-    distillation_teacher: Optional[str] = None
+    distillation_teacher: str | None = None
     calibration_samples: int = 128
-    pruning_targets: List[str] = ["q_proj", "v_proj"]
+    pruning_targets: list[str] = ["q_proj", "v_proj"]
 
     @field_validator("target_bits")
     @classmethod
@@ -361,7 +360,7 @@ class AlertingSettings(BaseModel):
     """Prometheus alerting rules configuration."""
     enabled: bool = False
     prometheus_url: str = "http://localhost:9090"
-    rule_file: Optional[str] = None
+    rule_file: str | None = None
 
     @field_validator("prometheus_url")
     @classmethod
@@ -374,7 +373,7 @@ class AlertingSettings(BaseModel):
 class ChaosSettings(BaseModel):
     """Chaos engineering fault injection configuration."""
     enabled: bool = False
-    allowed_scenarios: List[str] = Field(default_factory=lambda: ["kill_node", "add_latency", "drop_message", "corrupt_data"])
+    allowed_scenarios: list[str] = Field(default_factory=lambda: ["kill_node", "add_latency", "drop_message", "corrupt_data"])
     max_latency_ms: int = 5000
 
     @field_validator("max_latency_ms")
@@ -397,7 +396,7 @@ class CanarySettings(BaseModel):
     stable_version: str = "stable"
     canary_version: str = "canary"
     rollback_threshold: float = 0.05
-    stages: List[RolloutStageModel] = Field(default_factory=lambda: [
+    stages: list[RolloutStageModel] = Field(default_factory=lambda: [
         RolloutStageModel(weight_pct=5, analysis_duration_s=300),
         RolloutStageModel(weight_pct=25, analysis_duration_s=600),
         RolloutStageModel(weight_pct=50, analysis_duration_s=600),
@@ -414,7 +413,7 @@ class CanarySettings(BaseModel):
 
     @field_validator("stages")
     @classmethod
-    def validate_stages(cls, v: List[RolloutStageModel]) -> List[RolloutStageModel]:
+    def validate_stages(cls, v: list[RolloutStageModel]) -> list[RolloutStageModel]:
         if not v:
             raise ValueError("stages must not be empty")
         for stage in v:
@@ -448,7 +447,7 @@ class RateLimitSettings(BaseModel):
     """API rate limiting configuration."""
     enabled: bool = False
     default_rpm: float = 60.0
-    endpoint_limits: Dict[str, float] = Field(default_factory=lambda: {
+    endpoint_limits: dict[str, float] = Field(default_factory=lambda: {
         "/v1/chat/completions": 30.0,
         "/v1/completions": 30.0,
         "/health": 120.0,
@@ -467,10 +466,10 @@ class RateLimitSettings(BaseModel):
 class ModelHubSettings(BaseModel):
     """HuggingFace model hub integration configuration."""
     enabled: bool = True
-    cache_dir: Optional[str] = None
+    cache_dir: str | None = None
     max_cache_size_gb: float = 50.0
     offline_mode: bool = False
-    hf_token: Optional[str] = None
+    hf_token: str | None = None
     download_timeout_s: int = 300
 
     @field_validator("max_cache_size_gb")
@@ -491,7 +490,7 @@ class ModelHubSettings(BaseModel):
 class PromptTemplateSettings(BaseModel):
     """Prompt template engine configuration."""
     template: str = "auto"
-    custom_template_path: Optional[str] = None
+    custom_template_path: str | None = None
 
     @field_validator("template")
     @classmethod
@@ -527,11 +526,11 @@ class VersionSettings(BaseModel):
 class PluginSettings(BaseModel):
     """Plugin system configuration."""
     enabled: bool = False
-    plugins: List[Dict[str, Any]] = Field(default_factory=list)
+    plugins: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("plugins")
     @classmethod
-    def validate_plugins(cls, v: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def validate_plugins(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for item in v:
             if isinstance(item, dict) and "module" in item:
                 if "." not in item["module"]:
@@ -591,7 +590,7 @@ class DistLLMSettings(BaseSettings):
 
     model: ModelSettings = Field(default_factory=ModelSettings)
     coordinator: CoordinatorSettings = Field(default_factory=CoordinatorSettings)
-    nodes: List[NodeSettings] = Field(default_factory=list)
+    nodes: list[NodeSettings] = Field(default_factory=list)
     generation: GenerationSettings = Field(default_factory=GenerationSettings)
     network: NetworkSettings = Field(default_factory=NetworkSettings)
     tls: TLSSettings = Field(default_factory=TLSSettings)

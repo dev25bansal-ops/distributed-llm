@@ -1,7 +1,6 @@
 """Model versioning, A/B testing, and deployment management routes."""
 
 import time
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -15,7 +14,7 @@ router = APIRouter(tags=["versions"])
 class VersionCreateRequest(BaseModel):
     version_id: str = Field(..., description="Version identifier (e.g., 'v1.2.0')")
     model_path: str = Field(..., description="Path or HuggingFace ID for the model")
-    metadata: Optional[dict] = Field(default=None, description="Optional metadata tags")
+    metadata: dict | None = Field(default=None, description="Optional metadata tags")
 
 
 class VersionInfo(BaseModel):
@@ -24,7 +23,7 @@ class VersionInfo(BaseModel):
     model_path: str
     status: str
     created_at: float
-    promoted_at: Optional[float] = None
+    promoted_at: float | None = None
     traffic_weight: float
 
 
@@ -39,7 +38,7 @@ class VersionStats(BaseModel):
     p99_latency_ms: float
     avg_prompt_tokens: float
     avg_completion_tokens: float
-    feedback_avg: Optional[float] = None
+    feedback_avg: float | None = None
 
 
 class ComparisonResult(BaseModel):
@@ -56,8 +55,8 @@ class ComparisonResult(BaseModel):
     p99_latency_b: float
     recommendation: str
     reason: str
-    mann_whitney_p: Optional[float] = None
-    t_p_value: Optional[float] = None
+    mann_whitney_p: float | None = None
+    t_p_value: float | None = None
 
 
 class ShadowComparison(BaseModel):

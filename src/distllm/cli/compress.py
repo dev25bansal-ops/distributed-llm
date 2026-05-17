@@ -6,7 +6,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import torch
 from loguru import logger
@@ -27,7 +26,7 @@ def run_compress(
     model_name: str,
     target: str,
     output_dir: str,
-    tokenizer_name: Optional[str],
+    tokenizer_name: str | None,
     prune_ratio: float,
     calibration_samples: int,
     method: str,

@@ -1,7 +1,7 @@
 """Type definitions for the DistLLM SDK."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Iterator, AsyncIterator
+from typing import Any
 from pydantic import BaseModel, Field
 
 
@@ -26,51 +26,51 @@ class ChatMessage:
 @dataclass
 class ChatChoice:
     index: int
-    message: Optional[ChatMessage] = None
-    delta: Optional[str] = None
-    finish_reason: Optional[str] = None
+    message: ChatMessage | None = None
+    delta: str | None = None
+    finish_reason: str | None = None
 
 
 @dataclass
 class ChatCompletionResponse:
     id: str
     model: str
-    choices: List[ChatChoice]
+    choices: list[ChatChoice]
     created: int = 0
     object: str = "chat.completion"
-    usage: Optional[UsageInfo] = None
-    generation_time: Optional[float] = None
+    usage: UsageInfo | None = None
+    generation_time: float | None = None
 
 
 @dataclass
 class CompletionChoice:
     index: int
     text: str = ""
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
 
 @dataclass
 class CompletionResponse:
     id: str
     model: str
-    choices: List[CompletionChoice]
+    choices: list[CompletionChoice]
     created: int = 0
     object: str = "text_completion"
-    usage: Optional[UsageInfo] = None
-    generation_time: Optional[float] = None
+    usage: UsageInfo | None = None
+    generation_time: float | None = None
 
 
 @dataclass
 class EmbeddingObject:
     index: int
-    embedding: List[float]
+    embedding: list[float]
 
 
 @dataclass
 class EmbeddingResponse:
     model: str
-    data: List[EmbeddingObject]
-    usage: Optional[UsageInfo] = None
+    data: list[EmbeddingObject]
+    usage: UsageInfo | None = None
 
 
 @dataclass
@@ -83,7 +83,7 @@ class ModelInfo:
 
 @dataclass
 class ModelList:
-    data: List[ModelInfo]
+    data: list[ModelInfo]
     object: str = "list"
 
 
@@ -95,15 +95,15 @@ class BatchJob:
     status: str  # validating, in_progress, finalizing, completed, failed, cancelled
     input_file_id: str
     created_at: int
-    completed_at: Optional[int] = None
-    output_file_id: Optional[str] = None
-    error_file_id: Optional[str] = None
-    request_counts: Optional[Dict[str, int]] = None
+    completed_at: int | None = None
+    output_file_id: str | None = None
+    error_file_id: str | None = None
+    request_counts: dict[str, int] | None = None
 
 
 @dataclass
 class BatchList:
-    data: List[BatchJob]
+    data: list[BatchJob]
 
 
 # --- Audio types ---
@@ -111,9 +111,9 @@ class BatchList:
 @dataclass
 class TranscriptionResponse:
     text: str
-    language: Optional[str] = None
-    duration: Optional[float] = None
-    words: Optional[List[Dict[str, Any]]] = None
+    language: str | None = None
+    duration: float | None = None
+    words: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -126,15 +126,15 @@ class SpeechResponse:
 
 @dataclass
 class ImageObject:
-    url: Optional[str] = None
-    b64_json: Optional[str] = None
-    revised_prompt: Optional[str] = None
+    url: str | None = None
+    b64_json: str | None = None
+    revised_prompt: str | None = None
 
 
 @dataclass
 class ImageGenerationResponse:
     created: int
-    data: List[ImageObject]
+    data: list[ImageObject]
 
 
 # --- Moderation types ---
@@ -142,15 +142,15 @@ class ImageGenerationResponse:
 @dataclass
 class ModerationResult:
     flagged: bool
-    categories: Dict[str, bool]
-    category_scores: Dict[str, float]
+    categories: dict[str, bool]
+    category_scores: dict[str, float]
 
 
 @dataclass
 class ModerationResponse:
     id: str
     model: str
-    results: List[ModerationResult]
+    results: list[ModerationResult]
 
 
 # --- File types ---
@@ -173,9 +173,9 @@ class FineTuningJob:
     model: str
     training_file: str
     created_at: int
-    finished_at: Optional[int] = None
-    result_file: Optional[str] = None
-    error: Optional[str] = None
+    finished_at: int | None = None
+    result_file: str | None = None
+    error: str | None = None
 
 
 # --- Usage tracking ---
@@ -198,7 +198,7 @@ class ClientStats:
     total_completion_tokens: int = 0
     total_latency: float = 0.0
     errors: int = 0
-    call_log: List[CallStats] = field(default_factory=list)
+    call_log: list[CallStats] = field(default_factory=list)
 
     @property
     def tokens_per_second(self) -> float:

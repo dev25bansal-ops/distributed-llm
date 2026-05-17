@@ -4,7 +4,6 @@ Extends the existing K8s operator CRD with canary-specific fields.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -15,7 +14,7 @@ class CanarySpec:
     canary_weight: int = 0
     analysis_duration_s: int = 300
     rollback_threshold: float = 0.05
-    stages: List[Dict] = field(default_factory=lambda: [
+    stages: list[dict] = field(default_factory=lambda: [
         {"weight_pct": 5, "analysis_duration_s": 300},
         {"weight_pct": 25, "analysis_duration_s": 600},
         {"weight_pct": 50, "analysis_duration_s": 600},

@@ -3,7 +3,6 @@
 import httpx
 from rich.console import Console
 from rich.table import Table
-from typing import Optional
 
 console = Console()
 
@@ -57,7 +56,7 @@ def _cluster_status(host: str, port: int):
         console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
 
 
-def _cluster_scale(host: str, port: int, nodes: int, gpu_type: Optional[str] = None):
+def _cluster_scale(host: str, port: int, nodes: int, gpu_type: str | None = None):
     """Scale cluster to target node count."""
     try:
         with _get_client(host, port) as client:

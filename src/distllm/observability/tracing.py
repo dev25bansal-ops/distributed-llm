@@ -1,7 +1,5 @@
 """OpenTelemetry tracing setup for distributed LLM."""
 
-from typing import Optional, List
-
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
@@ -47,8 +45,8 @@ def _get_sampler(
 
 def setup_tracing(
     service_name: str = "distllm",
-    endpoint: Optional[str] = None,
-    exporters: Optional[List[SpanExporter]] = None,
+    endpoint: str | None = None,
+    exporters: list[SpanExporter] | None = None,
     sampling_strategy: str = "head",
     sampling_ratio: float = 1.0,
 ) -> trace.TracerProvider:
@@ -99,7 +97,7 @@ def inject_request_id(metadata: list, request_id: str) -> list:
     return metadata
 
 
-def extract_request_id(metadata: list) -> Optional[str]:
+def extract_request_id(metadata: list) -> str | None:
     """Extract x-request-id from gRPC metadata.
 
     Args:

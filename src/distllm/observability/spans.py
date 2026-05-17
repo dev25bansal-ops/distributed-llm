@@ -5,7 +5,6 @@ plus helpers for recording TTFT (time-to-first-token) events.
 """
 
 from contextlib import contextmanager, asynccontextmanager
-from typing import Optional
 
 from opentelemetry import trace
 

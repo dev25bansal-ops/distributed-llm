@@ -7,7 +7,6 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
@@ -28,12 +27,12 @@ class FileObject(BaseModel):
     filename: str
     purpose: str
     status: str = "uploaded"
-    status_details: Optional[str] = None
+    status_details: str | None = None
 
 
 class FileListResponse(BaseModel):
     object: str = "list"
-    data: List[FileObject]
+    data: list[FileObject]
 
 
 class FileDeleteResponse(BaseModel):
@@ -63,8 +62,11 @@ async def create_file(
             detail=f"Invalid purpose: {purpose}. Must be one of: {', '.join(sorted(valid_purposes))}",
         )
 
-    # Read file content
+    # Validate file size (max 512MB)
+    MAX_FILE_SIZE = 512 * 1024 * 1024
     content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 512MB)")
     filename = file.filename or f"upload_{uuid.uuid4().hex[:8]}"
 
     # Validate file size (100 MB limit)
@@ -96,7 +98,7 @@ async def create_file(
 
 
 @router.get("/v1/files", response_model=FileListResponse)
-async def list_files(purpose: Optional[str] = None, limit: int = 100):
+async def list_files(purpose: str | None = None, limit: int = 100):
     """List all uploaded files."""
     files = list(_files.values())
 
@@ -200,7 +202,7 @@ def _get_storage_path(file_id: str, filename: str) -> Path:
     return base / f"{file_id}_{filename}"
 
 
-def get_file_path(file_id: str) -> Optional[Path]:
+def get_file_path(file_id: str) -> Path | None:
     """Get the storage path for a file by its ID.
 
     Args:

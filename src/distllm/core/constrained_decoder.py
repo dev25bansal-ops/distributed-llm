@@ -12,7 +12,7 @@ Inspired by outlines, guidance, and xgrammar approaches.
 import re
 import json
 import string
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any
 from dataclasses import dataclass, field
 
 import torch
@@ -31,13 +31,13 @@ class TokenIndex:
     """
 
     def __init__(self):
-        self._token_to_bytes: Dict[int, bytes] = {}
-        self._token_to_str: Dict[int, str] = {}
-        self._eos_token_id: Optional[int] = None
+        self._token_to_bytes: dict[int, bytes] = {}
+        self._token_to_str: dict[int, str] = {}
+        self._eos_token_id: int | None = None
         self._vocab_size: int = 0
 
     @classmethod
-    def build(cls, tokenizer, vocab_size: Optional[int] = None) -> "TokenIndex":
+    def build(cls, tokenizer, vocab_size: int | None = None) -> "TokenIndex":
         """Build the token index from a tokenizer.
 
         Uses tokenizer.get_vocab() for efficiency if available,
@@ -82,7 +82,7 @@ class TokenIndex:
         """Get the string representation of a token."""
         return self._token_to_str.get(token_id, '')
 
-    def get_token_ids_for_prefix(self, prefix: bytes) -> List[int]:
+    def get_token_ids_for_prefix(self, prefix: bytes) -> list[int]:
         """Get all token IDs whose byte representation starts with prefix.
 
         Used for FSM state transitions: find tokens that continue the
@@ -98,7 +98,7 @@ class TokenIndex:
         return []
 
     @property
-    def eos_token_id(self) -> Optional[int]:
+    def eos_token_id(self) -> int | None:
         return self._eos_token_id
 
     @property
@@ -116,9 +116,9 @@ class FSMState:
     state_id: int
     name: str
     # Set of (byte_value, next_state_id) transitions
-    transitions: Dict[int, int] = field(default_factory=dict)
+    transitions: dict[int, int] = field(default_factory=dict)
     # Set of allowed byte ranges: (min_byte, max_byte)
-    byte_ranges: List[Tuple[int, int]] = field(default_factory=list)
+    byte_ranges: list[tuple[int, int]] = field(default_factory=list)
     # Whether this state is an accepting (terminal) state
     is_accepting: bool = False
 
@@ -175,17 +175,17 @@ class JSONSchemaFSM:
     _BYTE_DOT = 0x2E  # .
     _BYTE_ESCAPED = {0x22, 0x5C, 0x2F, 0x62, 0x66, 0x6E, 0x72, 0x74}  # " \ / b f n r t
 
-    def __init__(self, schema: Optional[dict] = None):
+    def __init__(self, schema: dict | None = None):
         self.schema = schema
         self._state = self.STATE_START
-        self._stack: List[Tuple[int, str]] = []  # (state, context_type: 'object'|'array')
+        self._stack: list[tuple[int, str]] = []  # (state, context_type: 'object'|'array')
         self._in_string = False
         self._escape_next = False
         self._in_literal = ""  # Current literal being built (true/false/null)
         self._in_number = False
         self._number_stage = 0  # 0=sign, 1=int, 2=frac, 3=exp
 
-    def get_allowed_bytes(self) -> Set[int]:
+    def get_allowed_bytes(self) -> set[int]:
         """Get the set of bytes allowed in the current FSM state.
 
         Returns:
@@ -252,7 +252,7 @@ class JSONSchemaFSM:
 
         return allowed
 
-    def _get_literal_next_byte(self) -> Optional[int]:
+    def _get_literal_next_byte(self) -> int | None:
         """Get the next expected byte for the current literal."""
         literals = {
             "t": b"true",
@@ -267,7 +267,7 @@ class JSONSchemaFSM:
             return full[pos]
         return None
 
-    def _get_number_allowed(self) -> Set[int]:
+    def _get_number_allowed(self) -> set[int]:
         """Get allowed bytes for the current number parsing stage."""
         if self._number_stage == 0:  # Sign
             return self._BYTE_DIGIT | {self._BYTE_MINUS}
@@ -454,7 +454,7 @@ class RegexFSM:
         self._compiled = re.compile(pattern)
         self._generated = ""
 
-    def get_allowed_bytes(self) -> Set[int]:
+    def get_allowed_bytes(self) -> set[int]:
         """Get bytes that would keep the generated string matching the regex.
 
         Tests each printable ASCII byte to see if appending it keeps
@@ -522,13 +522,13 @@ class ConstrainedConstraint:
         self,
         fsm,
         token_index: TokenIndex,
-        schema: Optional[dict] = None,
+        schema: dict | None = None,
     ):
         self._fsm = fsm
         self._token_index = token_index
         self._schema = schema
         self._generated = ""
-        self._allowed_cache: Optional[Set[int]] = None
+        self._allowed_cache: set[int] | None = None
 
     def get_logits_mask(self, vocab_size: int, tokenizer=None) -> torch.Tensor:
         """Return a boolean mask: True for allowed token IDs, False for blocked.
@@ -609,7 +609,7 @@ class SchemaConstrainedDecoder:
         constraint.update(tokenizer.decode([next_token]))
     """
 
-    _token_index_cache: Dict[int, TokenIndex] = {}
+    _token_index_cache: dict[int, TokenIndex] = {}
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
@@ -623,7 +623,7 @@ class SchemaConstrainedDecoder:
             cls._token_index_cache[tok_id] = TokenIndex.build(tokenizer)
         return cls._token_index_cache[tok_id]
 
-    def json_schema(self, schema: Optional[dict] = None) -> ConstrainedConstraint:
+    def json_schema(self, schema: dict | None = None) -> ConstrainedConstraint:
         """Create a JSON schema-constrained constraint.
 
         Args:
@@ -648,19 +648,32 @@ class SchemaConstrainedDecoder:
         return ConstrainedConstraint(fsm, self._token_index)
 
     def grammar(self, grammar: str) -> ConstrainedConstraint:
-        """Create a grammar-constrained constraint.
+        """Create a grammar-constrained constraint using GBNF format.
 
-        Currently supports a simple EBNF-like grammar subset.
-        For full grammar support, use a dedicated parser like lark.
+        GBNF is the grammar format used by llama.cpp for structured generation.
+        Supports: literals, character classes, alternation, repetition, optional.
+
+        Example grammar:
+            root ::= "(" expr ")"
+            expr ::= term (("+" | "-") term)*
+            term ::= [0-9]+
 
         Args:
-            grammar: Grammar string.
+            grammar: GBNF grammar string.
 
         Returns:
-            ConstrainedConstraint.
+            ConstrainedConstraint with GBNF FSM.
         """
-        # Convert grammar to regex approximation
-        # This is simplified; production would use a proper grammar parser
+        try:
+            from distllm.core.grammar_decoder import GBNFFSM
+            fsm = GBNFFSM(grammar)
+            return ConstrainedConstraint(fsm, self._token_index)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"GBNF compilation failed: {e}, falling back to regex"
+            )
+
         pattern = self._grammar_to_regex(grammar)
         fsm = RegexFSM(pattern)
         return ConstrainedConstraint(fsm, self._token_index)
@@ -711,9 +724,9 @@ class JSONSchemaConstraint(SchemaConstrainedDecoder):
         constraint.update(token_str)
     """
 
-    def __init__(self, schema: Optional[dict] = None):
+    def __init__(self, schema: dict | None = None):
         self._schema = schema
-        self._constraint: Optional[ConstrainedConstraint] = None
+        self._constraint: ConstrainedConstraint | None = None
         self._tokenizer = None
 
     def get_logits_mask(self, vocab_size: int, tokenizer) -> torch.Tensor:

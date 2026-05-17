@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 from loguru import logger
@@ -37,7 +37,7 @@ class LayerInfo:
 class DeviceAssignment:
     device_id: int
     device_name: str
-    layers: List[LayerInfo] = field(default_factory=list)
+    layers: list[LayerInfo] = field(default_factory=list)
     total_memory_bytes: int = 0
     total_flops: int = 0
 
@@ -48,9 +48,9 @@ class DeviceAssignment:
 
 @dataclass
 class PartitionPlan:
-    assignments: List[DeviceAssignment] = field(default_factory=list)
-    tp_groups: List[List[int]] = field(default_factory=list)
-    pp_stages: List[List[int]] = field(default_factory=list)
+    assignments: list[DeviceAssignment] = field(default_factory=list)
+    tp_groups: list[list[int]] = field(default_factory=list)
+    pp_stages: list[list[int]] = field(default_factory=list)
     estimated_throughput: float = 0.0
 
     def summary(self) -> str:
@@ -113,7 +113,7 @@ class AutoPartitioner:
             return self._vocab * self._hidden * bytes_per_param
         return 0
 
-    def _build_layers(self) -> List[LayerInfo]:
+    def _build_layers(self) -> list[LayerInfo]:
         layers = []
         lid = 0
         for i in range(self._num_layers):
@@ -185,9 +185,9 @@ class AutoPartitioner:
         logger.info(f"Partitioned {len(layers)} layers across {num_devices} devices: {plan.summary()}")
         return plan
 
-    def _build_tp_groups(self, gpus: List[GPUInfo]) -> List[List[int]]:
+    def _build_tp_groups(self, gpus: list[GPUInfo]) -> list[list[int]]:
         """Build TP groups based on NVLink topology detection."""
-        groups: List[List[int]] = []
+        groups: list[list[int]] = []
         if len(gpus) <= 2:
             groups.append(list(range(len(gpus))))
             return groups
@@ -206,7 +206,7 @@ class AutoPartitioner:
                     groups.append([i])
         return groups
 
-    def get_memory_report(self) -> Dict[str, Any]:
+    def get_memory_report(self) -> dict[str, Any]:
         gpus = self._profiler.enumerate_gpus()
         layers = self._build_layers()
         total_layer_mem = sum(l.memory_bytes for l in layers)

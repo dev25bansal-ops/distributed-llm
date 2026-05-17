@@ -4,7 +4,6 @@ import os
 import time
 import threading
 from pathlib import Path
-from typing import Dict, Optional
 
 import torch
 from loguru import logger
@@ -23,7 +22,7 @@ class CachePersistenceManager:
         self._settings = settings
         self._storage_path = Path(settings.storage_path)
         self._lock = threading.Lock()
-        self._dirty_caches: Dict[str, bool] = {}
+        self._dirty_caches: dict[str, bool] = {}
         if settings.enabled:
             self._storage_path.mkdir(parents=True, exist_ok=True)
 
@@ -62,7 +61,7 @@ class CachePersistenceManager:
             return True
         return False
 
-    def cleanup(self, max_age_hours: Optional[float] = None) -> int:
+    def cleanup(self, max_age_hours: float | None = None) -> int:
         """Remove cache files older than max_age_hours."""
         max_age = max_age_hours or self._settings.ttl_hours
         cutoff = time.time() - (max_age * 3600)

@@ -5,7 +5,6 @@ Extracted from the Coordinator class.
 """
 
 import threading
-from typing import Dict
 
 
 class MetricsManager:
@@ -17,7 +16,7 @@ class MetricsManager:
     """
 
     def __init__(self):
-        self._metrics: Dict[str, float] = {
+        self._metrics: dict[str, float] = {
             "total_requests": 0,
             "total_tokens_generated": 0,
             "total_generation_time": 0.0,
@@ -42,7 +41,7 @@ class MetricsManager:
             else:
                 self._metrics[metric_name] = value
 
-    def get(self) -> Dict[str, float]:
+    def get(self) -> dict[str, float]:
         """Get a copy of current metrics (thread-safe).
 
         Returns:
@@ -51,7 +50,7 @@ class MetricsManager:
         with self._metrics_lock:
             return dict(self._metrics)
 
-    def get_prometheus(self) -> Dict[str, float]:
+    def get_prometheus(self) -> dict[str, float]:
         """Get current metrics in Prometheus-compatible format (thread-safe).
 
         Returns:

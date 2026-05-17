@@ -17,7 +17,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 from loguru import logger
@@ -57,8 +57,8 @@ class MoEAllToAll:
         self,
         num_experts: int = 8,
         num_nodes: int = 1,
-        experts_per_node: Optional[List[int]] = None,
-        transport_fn: Optional[Callable] = None,
+        experts_per_node: list[int] | None = None,
+        transport_fn: Callable | None = None,
         capacity_factor: float = 1.0,
         top_k: int = 2,
     ):
@@ -87,7 +87,7 @@ class MoEAllToAll:
 
         self._stats = AllToAllStats()
         self._lock = threading.Lock()
-        self._expert_to_node: Dict[int, int] = {}
+        self._expert_to_node: dict[int, int] = {}
         for node_id, experts in enumerate(self._experts_per_node):
             for e in experts:
                 self._expert_to_node[e] = node_id
@@ -101,7 +101,7 @@ class MoEAllToAll:
         hidden_states: torch.Tensor,
         expert_indices: torch.Tensor,
         routing_weights: torch.Tensor,
-    ) -> Dict[int, Dict[str, torch.Tensor]]:
+    ) -> dict[int, dict[str, torch.Tensor]]:
         """Dispatch tokens to their assigned expert nodes.
 
         Args:
@@ -117,9 +117,9 @@ class MoEAllToAll:
         num_tokens = hidden_states.shape[0]
 
         # Build per-node token lists
-        node_tokens: Dict[int, List[int]] = {n: [] for n in range(self._num_nodes)}
-        node_weights: Dict[int, List[float]] = {n: [] for n in range(self._num_nodes)}
-        token_map: Dict[int, List[int]] = {n: [] for n in range(self._num_nodes)}
+        node_tokens: dict[int, list[int]] = {n: [] for n in range(self._num_nodes)}
+        node_weights: dict[int, list[float]] = {n: [] for n in range(self._num_nodes)}
+        token_map: dict[int, list[int]] = {n: [] for n in range(self._num_nodes)}
 
         for token_idx in range(num_tokens):
             for k in range(self._top_k):
@@ -131,7 +131,7 @@ class MoEAllToAll:
                 token_map[node_id].append(token_idx)
 
         # Apply capacity factor (drop excess tokens)
-        dispatched: Dict[int, Dict[str, torch.Tensor]] = {}
+        dispatched: dict[int, dict[str, torch.Tensor]] = {}
         for node_id in range(self._num_nodes):
             tids = node_tokens[node_id]
             if not tids:
@@ -176,8 +176,8 @@ class MoEAllToAll:
 
     def gather(
         self,
-        dispatched: Dict[int, Dict[str, torch.Tensor]],
-        expert_outputs: Dict[int, torch.Tensor],
+        dispatched: dict[int, dict[str, torch.Tensor]],
+        expert_outputs: dict[int, torch.Tensor],
         num_tokens: int,
         hidden_dim: int,
         device: str = "cuda",
@@ -248,7 +248,7 @@ class MoEAllToAll:
         loss = self._num_experts * (fraction_per_expert * prob_per_expert).sum()
         return loss
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "total_dispatches": self._stats.total_dispatches,

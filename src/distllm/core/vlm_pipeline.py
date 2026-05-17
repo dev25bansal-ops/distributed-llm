@@ -6,8 +6,6 @@ Handles image encoding via vision tower and projection to LLM embedding space.
 
 import base64
 import io
-from typing import Dict, List, Optional, Tuple, Union
-
 import torch
 from loguru import logger
 from PIL import Image
@@ -17,7 +15,7 @@ from PIL import Image
 class ImageContent:
     """Represents an image in chat messages (url or base64)."""
 
-    def __init__(self, url: Optional[str] = None, base64_data: Optional[str] = None):
+    def __init__(self, url: str | None = None, base64_data: str | None = None):
         self.url = url
         self.base64_data = base64_data
 
@@ -113,7 +111,7 @@ class VisionTower:
 
     def encode_images(
         self,
-        images: Union[List[Image.Image], torch.Tensor],
+        images: list[Image.Image] | torch.Tensor,
     ) -> torch.Tensor:
         """Encode images into visual features.
 
@@ -169,7 +167,7 @@ class VisionTower:
         return self.projector(visual_features)
 
     @property
-    def vision_dim(self) -> Optional[int]:
+    def vision_dim(self) -> int | None:
         if self.vision_model is None:
             return None
         return getattr(self.vision_model.config, "hidden_size", None)
@@ -193,13 +191,13 @@ class VLMPipeline:
 
     def __init__(
         self,
-        vision_model_name: Optional[str] = None,
+        vision_model_name: str | None = None,
         llm_hidden_size: int = 4096,
         device: str = "auto",
         dtype: str = "float16",
         trust_remote_code: bool = False,
     ):
-        self.vision_tower: Optional[VisionTower] = None
+        self.vision_tower: VisionTower | None = None
         self.llm_hidden_size = llm_hidden_size
         self.device = device
         self.dtype = dtype
@@ -223,8 +221,8 @@ class VLMPipeline:
 
     def parse_messages(
         self,
-        messages: List[dict],
-    ) -> Tuple[str, List[ImageContent]]:
+        messages: list[dict],
+    ) -> tuple[str, list[ImageContent]]:
         """Parse OpenAI-format chat messages, extracting text and images.
 
         Args:
@@ -260,8 +258,8 @@ class VLMPipeline:
 
     def encode_images_to_embeddings(
         self,
-        images: List[ImageContent],
-    ) -> Optional[torch.Tensor]:
+        images: list[ImageContent],
+    ) -> torch.Tensor | None:
         """Encode images into LLM embedding space.
 
         Args:
@@ -286,8 +284,8 @@ class VLMPipeline:
     def build_prompt_with_images(
         self,
         text_prompt: str,
-        image_embeddings: Optional[torch.Tensor],
-    ) -> Tuple[str, Optional[torch.Tensor]]:
+        image_embeddings: torch.Tensor | None,
+    ) -> tuple[str, torch.Tensor | None]:
         """Build the final prompt, noting where image embeddings should be inserted.
 
         For systems that can prepend image tokens to the embedding stream,
@@ -311,7 +309,7 @@ class VLMPipeline:
 
     def is_multimodal_message(
         self,
-        messages: List[dict],
+        messages: list[dict],
     ) -> bool:
         """Check if messages contain any image content."""
         for msg in messages:

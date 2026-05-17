@@ -4,7 +4,6 @@ import time
 import json
 import os
 from pathlib import Path
-from typing import Optional
 import httpx
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
@@ -141,7 +140,7 @@ def run_benchmark_compare(
     port: int,
     num_prompts: int,
     max_tokens: int,
-    baseline_path: Optional[str],
+    baseline_path: str | None,
     save_baseline: bool,
     console: Console,
 ):

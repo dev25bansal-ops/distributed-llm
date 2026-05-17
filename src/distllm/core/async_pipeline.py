@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 from loguru import logger
@@ -70,10 +70,10 @@ class CudaStreamManager:
 
     def __init__(self, device: str = "cuda", comm_priority: int = -1):
         self._device = device
-        self._compute: Optional[torch.cuda.Stream] = None
-        self._send: Optional[torch.cuda.Stream] = None
-        self._recv: Optional[torch.cuda.Stream] = None
-        self._allreduce: Optional[torch.cuda.Stream] = None
+        self._compute: torch.cuda.Stream | None = None
+        self._send: torch.cuda.Stream | None = None
+        self._recv: torch.cuda.Stream | None = None
+        self._allreduce: torch.cuda.Stream | None = None
         self._comm_priority = comm_priority
 
     def initialize(self) -> None:
@@ -120,9 +120,9 @@ class AsyncPipelineStage:
         self,
         stage_id: int,
         forward_fn: Callable,
-        send_fn: Optional[Callable] = None,
-        recv_fn: Optional[Callable] = None,
-        config: Optional[AsyncPipelineConfig] = None,
+        send_fn: Callable | None = None,
+        recv_fn: Callable | None = None,
+        config: AsyncPipelineConfig | None = None,
         device: str = "cuda",
     ):
         self._stage_id = stage_id
@@ -209,9 +209,9 @@ class AsyncPipelineEngine:
         print(engine.summary())
     """
 
-    def __init__(self, config: Optional[AsyncPipelineConfig] = None):
+    def __init__(self, config: AsyncPipelineConfig | None = None):
         self._config = config or AsyncPipelineConfig()
-        self._stages: List[AsyncPipelineStage] = []
+        self._stages: list[AsyncPipelineStage] = []
         self._lock = threading.Lock()
         self._total_forward_calls = 0
 
@@ -275,7 +275,7 @@ class AsyncPipelineEngine:
         total = sum(s.stats.total_ms for s in self._stages)
         return (compute - sum(s.stats.idle_ms for s in self._stages)) / max(compute, 1) * 100.0
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {
             "num_stages": len(self._stages),
             "schedule": self._config.schedule.value,

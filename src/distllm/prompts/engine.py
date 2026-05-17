@@ -4,7 +4,7 @@ Supports built-in templates (ChatML, Llama-2/3, Mistral, etc.),
 tokenizer.apply_chat_template() fallback, and custom template registration.
 """
 
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 from loguru import logger
 
@@ -28,16 +28,16 @@ class TemplateEngine:
         self,
         template: str = "auto",
         tokenizer=None,
-        custom_templates: Optional[Dict[str, Callable]] = None,
+        custom_templates: dict[str, Callable] | None = None,
     ):
         self._template_name = template
         self._tokenizer = tokenizer
-        self._custom_templates: Dict[str, Callable] = custom_templates or {}
+        self._custom_templates: dict[str, Callable] = custom_templates or {}
 
     def apply(
         self,
-        messages: List[Dict[str, str]],
-        template_name: Optional[str] = None,
+        messages: list[dict[str, str]],
+        template_name: str | None = None,
         add_generation_prompt: bool = True,
     ) -> str:
         """Format messages into a prompt string.
@@ -95,7 +95,7 @@ class TemplateEngine:
         self._custom_templates[name] = template_func
         logger.info(f"Registered custom template: {name}")
 
-    def list_templates(self) -> List[str]:
+    def list_templates(self) -> list[str]:
         """List all available template names."""
         return list(set(list(BUILTIN_TEMPLATES.keys()) + list(self._custom_templates.keys())))
 
@@ -114,6 +114,6 @@ class TemplateEngine:
         return name or ""
 
     @staticmethod
-    def _fallback_format(messages: List[Dict[str, str]]) -> str:
+    def _fallback_format(messages: list[dict[str, str]]) -> str:
         """Naive fallback: role: content join."""
         return "\n".join(f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in messages)

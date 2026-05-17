@@ -6,7 +6,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable
 
 from loguru import logger
 
@@ -25,13 +25,13 @@ class VersionMetrics:
     """Tracking metrics for a model version."""
     total_requests: int = 0
     total_errors: int = 0
-    latencies: List[float] = field(default_factory=list)
-    prompt_tokens: List[int] = field(default_factory=list)
-    completion_tokens: List[int] = field(default_factory=list)
+    latencies: list[float] = field(default_factory=list)
+    prompt_tokens: list[int] = field(default_factory=list)
+    completion_tokens: list[int] = field(default_factory=list)
     # Shadow mode: stores outputs for comparison without returning
-    shadow_outputs: List[dict] = field(default_factory=list)
+    shadow_outputs: list[dict] = field(default_factory=list)
     # A/B test: stores user feedback scores
-    feedback_scores: List[float] = field(default_factory=list)
+    feedback_scores: list[float] = field(default_factory=list)
 
     @property
     def error_rate(self) -> float:
@@ -72,17 +72,17 @@ class ModelVersion:
     model_path: str
     status: VersionStatus = VersionStatus.ACTIVE
     created_at: float = field(default_factory=time.time)
-    promoted_at: Optional[float] = None
+    promoted_at: float | None = None
     traffic_weight: float = 100.0  # 0-100
     metrics: VersionMetrics = field(default_factory=VersionMetrics)
-    metadata: Dict[str, str] = field(default_factory=dict)  # Tags, commit hash, etc.
+    metadata: dict[str, str] = field(default_factory=dict)  # Tags, commit hash, etc.
 
 
 class StatisticalAnalyzer:
     """Statistical tests for comparing model versions."""
 
     @staticmethod
-    def mann_whitney_u(sample_a: List[float], sample_b: List[float]) -> Tuple[float, float]:
+    def mann_whitney_u(sample_a: list[float], sample_b: list[float]) -> tuple[float, float]:
         """Mann-Whitney U test for comparing two independent samples.
 
         Non-parametric alternative to t-test. Tests whether one sample
@@ -130,7 +130,7 @@ class StatisticalAnalyzer:
         return (u, p_value)
 
     @staticmethod
-    def t_test_ind(sample_a: List[float], sample_b: List[float]) -> Tuple[float, float]:
+    def t_test_ind(sample_a: list[float], sample_b: list[float]) -> tuple[float, float]:
         """Independent two-sample t-test (Welch's, unequal variances).
 
         Returns:
@@ -167,7 +167,7 @@ class StatisticalAnalyzer:
         metrics_b: VersionMetrics,
         significance_level: float = 0.05,
         min_samples: int = 30,
-    ) -> Dict:
+    ) -> dict:
         """Compare two versions using statistical tests.
 
         Returns:
@@ -271,18 +271,18 @@ class VersionManager:
         significance_level: float = 0.05,
     ):
         self.max_versions = max_versions
-        self.versions: Dict[str, Dict[str, ModelVersion]] = {}  # model_id -> {version_id -> Version}
+        self.versions: dict[str, dict[str, ModelVersion]] = {}  # model_id -> {version_id -> Version}
         self.analyzer = StatisticalAnalyzer()
 
         # Shadow mode
         self.shadow_enabled = shadow_enabled
         self.shadow_pct = shadow_pct
-        self._shadow_log: List[dict] = []
+        self._shadow_log: list[dict] = []
 
         # Blue-green
         self.blue_green_enabled = blue_green_enabled
-        self._blue_version: Optional[str] = None
-        self._green_version: Optional[str] = None
+        self._blue_version: str | None = None
+        self._green_version: str | None = None
         self._active_color: str = "blue"
 
         # A/B testing
@@ -301,7 +301,7 @@ class VersionManager:
         model_id: str,
         version_id: str,
         model_path: str,
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> ModelVersion:
         """Register a new model version."""
         if model_id not in self.versions:
@@ -324,10 +324,10 @@ class VersionManager:
         logger.info(f"[VersionManager] Registered {model_id}/{version_id}")
         return version
 
-    def get_version(self, model_id: str, version_id: str) -> Optional[ModelVersion]:
+    def get_version(self, model_id: str, version_id: str) -> ModelVersion | None:
         return self.versions.get(model_id, {}).get(version_id)
 
-    def list_versions(self, model_id: str) -> List[ModelVersion]:
+    def list_versions(self, model_id: str) -> list[ModelVersion]:
         return list(self.versions.get(model_id, {}).values())
 
     def delete_version(self, model_id: str, version_id: str) -> bool:
@@ -378,7 +378,7 @@ class VersionManager:
         if shadow_v:
             shadow_v.metrics.shadow_outputs.append({"output": shadow_output, "latency": latency_shadow})
 
-    def get_shadow_comparisons(self, model_id: str, limit: int = 100) -> List[dict]:
+    def get_shadow_comparisons(self, model_id: str, limit: int = 100) -> list[dict]:
         """Get recent shadow comparison results."""
         entries = [e for e in self._shadow_log if e["model_id"] == model_id]
         return entries[-limit:]
@@ -466,7 +466,7 @@ class VersionManager:
         was_error: bool = False,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        feedback_score: Optional[float] = None,
+        feedback_score: float | None = None,
     ) -> None:
         """Record a request's metrics for the given version."""
         version = self.get_version(model_id, version_id)
@@ -491,7 +491,7 @@ class VersionManager:
         model_id: str,
         stable_version_id: str,
         candidate_version_id: str,
-    ) -> Dict:
+    ) -> dict:
         """Evaluate whether candidate should replace stable based on metrics."""
         stable = self.get_version(model_id, stable_version_id)
         candidate = self.get_version(model_id, candidate_version_id)
@@ -530,7 +530,7 @@ class VersionManager:
 
     # -- Stats summary --
 
-    def get_version_stats(self, model_id: str, version_id: str) -> Optional[Dict]:
+    def get_version_stats(self, model_id: str, version_id: str) -> dict | None:
         """Get comprehensive stats for a version."""
         version = self.get_version(model_id, version_id)
         if version is None:

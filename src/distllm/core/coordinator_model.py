@@ -4,8 +4,6 @@ Handles model loading, draft model loading, and local generation.
 Extracted from the Coordinator class.
 """
 
-from typing import Optional
-
 import torch
 from loguru import logger
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -28,7 +26,7 @@ class ModelManager:
         self,
         model_name: str,
         dtype: str = "float16",
-        trust_remote_code: Optional[bool] = None,
+        trust_remote_code: bool | None = None,
         quantization_config=None,
     ):
         self.model_name = model_name

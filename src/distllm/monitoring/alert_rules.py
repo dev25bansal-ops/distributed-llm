@@ -1,8 +1,6 @@
 """Prometheus alerting and recording rule definitions."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-
 import yaml
 
 
@@ -12,8 +10,8 @@ class AlertRule:
     alert: str
     expr: str
     for_duration: str  # e.g., "1m", "5m"
-    labels: Dict[str, str] = field(default_factory=dict)
-    annotations: Dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -49,7 +47,7 @@ class RecordingRule:
     """A Prometheus recording rule for pre-computed metrics."""
     record: str
     expr: str
-    labels: Dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         result = {"record": self.record, "expr": self.expr}
@@ -62,8 +60,8 @@ class RecordingRule:
 class RuleGroup:
     """A group of alerting or recording rules."""
     name: str
-    interval: Optional[str] = None
-    rules: List = field(default_factory=list)  # AlertRule or RecordingRule
+    interval: str | None = None
+    rules: list = field(default_factory=list)  # AlertRule or RecordingRule
 
     def to_dict(self) -> dict:
         result = {"name": self.name, "rules": [r.to_dict() for r in self.rules]}
@@ -72,7 +70,7 @@ class RuleGroup:
         return result
 
 
-def get_default_alerts() -> List[AlertRule]:
+def get_default_alerts() -> list[AlertRule]:
     """Return the default set of alerting rules."""
     return [
         AlertRule(
@@ -190,7 +188,7 @@ def get_default_alerts() -> List[AlertRule]:
     ]
 
 
-def get_default_recording_rules() -> List[RecordingRule]:
+def get_default_recording_rules() -> list[RecordingRule]:
     """Return the default set of recording rules."""
     return [
         RecordingRule(
@@ -225,7 +223,7 @@ def get_default_recording_rules() -> List[RecordingRule]:
     ]
 
 
-def rules_to_yaml(alerts: List[AlertRule], recording: List[RecordingRule]) -> str:
+def rules_to_yaml(alerts: list[AlertRule], recording: list[RecordingRule]) -> str:
     """Serialize alert and recording rules to Prometheus YAML format."""
     groups = []
     if recording:

@@ -1,9 +1,7 @@
 """Built-in chat template functions for common model families."""
 
-from typing import List, Dict
 
-
-def chatml_template(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
+def chatml_template(messages: list[dict[str, str]], add_generation_prompt: bool = True) -> str:
     """ChatML format: <|im_start|>role\ncontent<|im_end|>"""
     parts = []
     for msg in messages:
@@ -15,7 +13,7 @@ def chatml_template(messages: List[Dict[str, str]], add_generation_prompt: bool 
     return "\n".join(parts)
 
 
-def llama2_template(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
+def llama2_template(messages: list[dict[str, str]], add_generation_prompt: bool = True) -> str:
     """Llama-2 format: <s>[INST] <<SYS>>...<</SYS>> ... [/INST]"""
     parts = ["<s>"]
     system_content = ""
@@ -37,7 +35,7 @@ def llama2_template(messages: List[Dict[str, str]], add_generation_prompt: bool 
     return "".join(parts)
 
 
-def llama3_template(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
+def llama3_template(messages: list[dict[str, str]], add_generation_prompt: bool = True) -> str:
     """Llama-3 format: <|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>"""
     parts = []
     for msg in messages:
@@ -49,7 +47,7 @@ def llama3_template(messages: List[Dict[str, str]], add_generation_prompt: bool 
     return "".join(parts)
 
 
-def mistral_template(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
+def mistral_template(messages: list[dict[str, str]], add_generation_prompt: bool = True) -> str:
     """Mistral format: <s>[INST] ... [/INST]"""
     parts = ["<s>"]
     for msg in messages:
@@ -66,7 +64,7 @@ def mistral_template(messages: List[Dict[str, str]], add_generation_prompt: bool
     return "".join(parts)
 
 
-def zephyr_template(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
+def zephyr_template(messages: list[dict[str, str]], add_generation_prompt: bool = True) -> str:
     """Zephyr format: <|system|>\n...<|user|>\n...<|assistant|>\n..."""
     parts = []
     for msg in messages:
@@ -78,7 +76,7 @@ def zephyr_template(messages: List[Dict[str, str]], add_generation_prompt: bool 
     return "\n".join(parts) + "\n"
 
 
-def alpaca_template(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
+def alpaca_template(messages: list[dict[str, str]], add_generation_prompt: bool = True) -> str:
     """Alpaca format: ### Instruction:\n...\n\n### Response:\n..."""
     parts = []
     for msg in messages:

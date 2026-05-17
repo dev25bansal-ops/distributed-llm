@@ -3,7 +3,7 @@
 import time
 import sys
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 # Default memory budget: 512 MiB
@@ -33,7 +33,7 @@ class PrefixCache:
         max_entries: int = 0,
         min_prefix_len: int = 16,
         memory_budget_bytes: int = _DEFAULT_MEMORY_BUDGET_BYTES,
-        paged_attention_mgr: Optional[object] = None,
+        paged_attention_mgr: object | None = None,
     ):
         self.min_prefix_len = min_prefix_len
         self._paged_attention_mgr = paged_attention_mgr
@@ -78,7 +78,7 @@ class PrefixCache:
             entry_bytes = self._estimate_entry_memory(entry.get("kv_data", {}))
             self._total_memory_bytes = max(0, self._total_memory_bytes - entry_bytes)
 
-    def lookup(self, token_ids: List[int]) -> Tuple[int, Optional[dict]]:
+    def lookup(self, token_ids: list[int]) -> tuple[int, dict | None]:
         """Find the longest cached prefix.
 
         Uses incremental polynomial hash: computes hash(token_ids[:length])
@@ -117,7 +117,7 @@ class PrefixCache:
         self._misses += 1
         return 0, None
 
-    def store(self, token_ids: List[int], kv_data: dict) -> None:
+    def store(self, token_ids: list[int], kv_data: dict) -> None:
         """Cache a prefix's KV data.
 
         Args:
@@ -151,7 +151,7 @@ class PrefixCache:
         self._total_memory_bytes += entry_bytes
         self._evict_until_fit(0)
 
-    def evict(self, token_ids: List[int]) -> bool:
+    def evict(self, token_ids: list[int]) -> bool:
         """Remove a specific prefix from the cache.
 
         Returns True if the entry was found and removed.

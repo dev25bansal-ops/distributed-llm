@@ -5,7 +5,7 @@ tracks health state, and triggers failover callbacks on state transitions.
 """
 
 import asyncio
-from typing import Callable, Dict, Optional
+from typing import Callable
 
 from loguru import logger
 
@@ -34,8 +34,8 @@ class HealthCheckService:
         self._probe_interval = probe_interval
         self._probe_timeout = probe_timeout
         self._running = False
-        self._get_client: Optional[Callable[[str], object]] = None
-        self._task: Optional[asyncio.Task] = None
+        self._get_client: Callable[[str], object] | None = None
+        self._task: asyncio.Task | None = None
 
     def on_state_change(
         self, callback: Callable[[str, NodeState, NodeState], None]
@@ -57,10 +57,10 @@ class HealthCheckService:
         """Remove a node from monitoring."""
         self._store.remove(node_id)
 
-    def get_node(self, node_id: str) -> Optional[HealthRecord]:
+    def get_node(self, node_id: str) -> HealthRecord | None:
         return self._store.get(node_id)
 
-    def get_all(self) -> Dict[str, HealthRecord]:
+    def get_all(self) -> dict[str, HealthRecord]:
         return self._store.get_all()
 
     def healthy_nodes(self) -> list[str]:

@@ -2,7 +2,6 @@
 
 import time
 from collections import defaultdict, OrderedDict
-from typing import Dict, List, Optional, Tuple
 
 
 class TokenBucket:
@@ -63,7 +62,7 @@ class RateLimiter:
     def __init__(
         self,
         default_rpm: float = 60.0,
-        endpoint_limits: Optional[Dict[str, float]] = None,
+        endpoint_limits: dict[str, float] | None = None,
         burst_multiplier: float = 1.5,
         max_clients: int = 10000,
     ):
@@ -71,7 +70,7 @@ class RateLimiter:
         self.endpoint_limits = endpoint_limits or {}
         self.burst_multiplier = burst_multiplier
         self.max_clients = max_clients  # Security: Prevent unbounded memory growth
-        self._buckets: Dict[str, Dict[str, TokenBucket]] = defaultdict(dict)
+        self._buckets: dict[str, dict[str, TokenBucket]] = defaultdict(dict)
         self._access_order: OrderedDict[str, bool] = OrderedDict()
 
     def _get_bucket(self, client_id: str, endpoint: str) -> TokenBucket:
@@ -106,7 +105,7 @@ class RateLimiter:
         self._access_order.move_to_end(client_id)
         return bucket.consume()
 
-    def get_limits(self, client_id: str, endpoint: str) -> Tuple[int, int, float]:
+    def get_limits(self, client_id: str, endpoint: str) -> tuple[int, int, float]:
         """Get rate limit info for headers.
 
         Returns:

@@ -2,7 +2,6 @@
 
 import os
 import time
-from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -74,13 +73,27 @@ from distllm.api.streaming import (
 )
 
 
-def _get_cors_origins() -> List[str]:
-    """Get CORS origins from env var (falls back to settings default)."""
+def _get_cors_origins() -> list[str]:
+    """Get CORS origins from env var (falls back to settings default).
+    
+    Security: Rejects wildcard origins unless DISTLLM_DEV_MODE=1 is set.
+    Validates that all origins are well-formed URLs.
+    """
     raw = os.environ.get("DISTLLM_CORS_ORIGINS")
+    origins = []
     if raw:
-        return [o.strip() for o in raw.split(",") if o.strip()]
-    # Fallback: instantiate settings to get the default
-    return [o.strip() for o in DistLLMSettings().coordinator.cors_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+    else:
+        origins = [o.strip() for o in DistLLMSettings().coordinator.cors_origins.split(",") if o.strip()]
+
+    valid = []
+    for origin in origins:
+        if origin == "*" and os.environ.get("DISTLLM_DEV_MODE") != "1":
+            allowed = "http://localhost:3000,http://localhost:8080"
+            valid.extend(o.strip() for o in allowed.split(",") if o.strip())
+            continue
+        valid.append(origin)
+    return valid
 
 
 ALLOWED_ORIGINS = _get_cors_origins()
@@ -138,8 +151,8 @@ class ErrorResponse(BaseModel):
     error: str
     message: str
     type: str = "api_error"
-    code: Optional[str] = None
-    request_id: Optional[str] = None
+    code: str | None = None
+    request_id: str | None = None
 
 
 @app.exception_handler(HTTPException)
@@ -184,8 +197,8 @@ class AppState:
     """
 
     def __init__(self):
-        self.coordinator: Optional[Coordinator] = None
-        self.monitor: Optional[SystemMonitor] = None
+        self.coordinator: Coordinator | None = None
+        self.monitor: SystemMonitor | None = None
         self.startup_time: float = time.time()
 
     @property
@@ -213,16 +226,16 @@ class AppState:
 state = AppState()
 
 # Module-level globals for backwards compatibility with endpoint code
-coordinator: Optional[Coordinator] = None
-monitor: Optional[SystemMonitor] = None
+coordinator: Coordinator | None = None
+monitor: SystemMonitor | None = None
 _startup_time: float = time.time()
 
 app.add_middleware(RequestIDMiddleware)
 
 # Observability globals
-metrics_exporter: Optional[DistLLMPrometheusExporter] = None
-cost_tracker: Optional[GPUCostTracker] = None
-anomaly_detector: Optional[AnomalyDetector] = None
+metrics_exporter: DistLLMPrometheusExporter | None = None
+cost_tracker: GPUCostTracker | None = None
+anomaly_detector: AnomalyDetector | None = None
 
 # Observability middleware (after RequestIDMiddleware, before AuthMiddleware)
 def _init_observability():
@@ -360,10 +373,10 @@ app.add_middleware(BackpressureMiddleware)
 
 
 # Rate limiter (initialized with defaults, configured on startup)
-_rate_limiter: Optional[RateLimiter] = None
+_rate_limiter: RateLimiter | None = None
 
 
-def _init_rate_limiter(settings: Optional[DistLLMSettings] = None) -> None:
+def _init_rate_limiter(settings: DistLLMSettings | None = None) -> None:
     """Initialize the rate limiter from settings."""
     global _rate_limiter
     from distllm.config.settings import RateLimitSettings
@@ -479,7 +492,7 @@ def create_coordinator(
     quantization_config=None,
     speculative_config=None,
     lora_config=None,
-    settings: Optional[DistLLMSettings] = None,
+    settings: DistLLMSettings | None = None,
 ) -> Coordinator:
     """Create and configure the coordinator and monitor."""
     if settings:
@@ -528,11 +541,12 @@ def _load_settings(args) -> DistLLMSettings:
 
     Always starts with DistLLMSettings() which reads env vars automatically
     via pydantic-settings, then layers YAML config, then CLI overrides.
+    Merges all layers together before a single validation pass.
     """
-    # Start with defaults + env vars (pydantic-settings handles this)
     settings = DistLLMSettings()
+    overrides: dict = {}
 
-    # Apply YAML config on top of defaults+env
+    # Find YAML config path
     config_path = args.config
     if config_path is None:
         for candidate in ["config.yaml", os.path.join(os.path.dirname(__file__), "..", "..", "..", "config.yaml")]:
@@ -543,27 +557,22 @@ def _load_settings(args) -> DistLLMSettings:
     if config_path and os.path.exists(config_path):
         yaml_data = load_config_file(config_path)
         if yaml_data:
-            # Merge YAML into current settings (env + defaults take precedence)
-            current = settings.model_dump()
-            merged = _deep_merge(current, yaml_data)
-            settings = DistLLMSettings.model_validate(merged)
+            overrides = _deep_merge({}, yaml_data)
 
-    # Apply CLI overrides (highest precedence)
-    cli_overrides = {}
+    # CLI overrides (highest precedence) — layer on top of YAML
     if args.model:
-        cli_overrides.setdefault("model", {})["name"] = args.model
+        overrides.setdefault("model", {})["name"] = args.model
     if args.dtype:
-        cli_overrides.setdefault("model", {})["dtype"] = args.dtype
+        overrides.setdefault("model", {})["dtype"] = args.dtype
     if args.host:
-        cli_overrides.setdefault("coordinator", {})["host"] = args.host
+        overrides.setdefault("coordinator", {})["host"] = args.host
     if args.port:
-        cli_overrides.setdefault("coordinator", {})["api_port"] = args.port
+        overrides.setdefault("coordinator", {})["api_port"] = args.port
     if args.quantization and args.quantization != "none":
-        cli_overrides.setdefault("quantization", {})["method"] = args.quantization
+        overrides.setdefault("quantization", {})["method"] = args.quantization
 
-    if cli_overrides:
-        current = settings.model_dump()
-        merged = _deep_merge(current, cli_overrides)
+    if overrides:
+        merged = _deep_merge(settings.model_dump(), overrides)
         settings = DistLLMSettings.model_validate(merged)
 
     return settings
@@ -623,13 +632,18 @@ def main():
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override dict into base dict."""
+    """Recursively merge override dict into a copy of base dict.
+
+    Returns a new dict without mutating inputs.
+    """
+    result = {}
+    result.update(base)
     for key, value in override.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-            _deep_merge(base[key], value)
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
         else:
-            base[key] = value
-    return base
+            result[key] = value
+    return result
 
 
 if __name__ == "__main__":

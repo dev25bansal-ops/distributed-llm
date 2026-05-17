@@ -5,7 +5,7 @@ Extracted from the Coordinator class.
 """
 
 import concurrent.futures
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import grpc
 import torch
@@ -50,18 +50,22 @@ class PipelineOrchestrator:
 
     def __init__(
         self,
-        resource_mgr: Optional[ResourceManager] = None,
+        resource_mgr: ResourceManager | None = None,
         total_layers: int = 0,
+        max_workers: int | None = None,
     ):
-        self.nodes: Dict[str, NodeRegistration] = {}
-        self.node_order: List[str] = []
-        self.prefill_nodes: Dict[str, NodeRegistration] = {}
-        self.decode_nodes: Dict[str, NodeRegistration] = {}
+        self.nodes: dict[str, NodeRegistration] = {}
+        self.node_order: list[str] = []
+        self.prefill_nodes: dict[str, NodeRegistration] = {}
+        self.decode_nodes: dict[str, NodeRegistration] = {}
         self.total_layers = total_layers
         self.resource_mgr = resource_mgr or ResourceManager()
-        self._latency_tracker: Optional[LatencyTracker] = None
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._latency_tracker: LatencyTracker | None = None
+        self._max_workers = max_workers or 4
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers)
         self.enable_overlap: bool = False
+        # Track last KV length sent per (node_id, request_id) for delta-only gRPC
+        self._node_kv_sent_lens: dict[tuple[str, str], int] = {}
 
     def set_latency_tracker(self, tracker: LatencyTracker) -> None:
         """Set the latency tracker for rebalancer integration."""
@@ -78,8 +82,8 @@ class PipelineOrchestrator:
         max_retries: int = 3,
         retry_delay: float = 1.0,
         use_tls: bool = True,
-        ca_cert: Optional[str] = None,
-        expert_ids: Optional[List[int]] = None,
+        ca_cert: str | None = None,
+        expert_ids: list[int] | None = None,
         cluster_id: str = "default",
     ) -> None:
         """Register a new node in the pipeline.
@@ -126,9 +130,14 @@ class PipelineOrchestrator:
         elif role == NodeRole.DECODE:
             self.decode_nodes[node_id] = registration
 
+        # Auto-scale thread pool to match node count
+        target_workers = max(self._max_workers, min(32, len(self.nodes) * 2))
+        if target_workers != self._executor._max_workers:
+            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=target_workers)
+
         logger.info(f"Registered {node_id}: layers {start_layer}-{end_layer}")
 
-    def group_nodes_into_stages(self, num_stages: Optional[int] = None) -> List[List[str]]:
+    def group_nodes_into_stages(self, num_stages: int | None = None) -> list[list[str]]:
         """Group nodes into hierarchical stages to reduce pipeline depth.
 
         Nodes within a stage can run in parallel (tensor/data parallel),
@@ -148,7 +157,7 @@ class PipelineOrchestrator:
 
         n = len(self.node_order)
         target = num_stages or max(1, int(n ** 0.5))
-        stages: List[List[str]] = [[] for _ in range(target)]
+        stages: list[list[str]] = [[] for _ in range(target)]
 
         # Assign nodes to stages in round-robin by layer position
         # This keeps each stage's layer range contiguous
@@ -213,11 +222,11 @@ class PipelineOrchestrator:
         is_last_node: bool,
         seq_len: int,
         batch_size: int,
-        current_hidden: Optional[torch.Tensor],
-        past_kv: Optional[List],
+        current_hidden: torch.Tensor | None,
+        past_kv: list | None,
         request_id: str,
-        draft_tokens: Optional[List[int]],
-        input_ids: Optional[torch.Tensor] = None,
+        draft_tokens: list[int] | None,
+        input_ids: torch.Tensor | None = None,
     ) -> ForwardPassRequest:
         cached_len = 0
         if past_kv is not None and len(past_kv) > 0:
@@ -239,8 +248,15 @@ class PipelineOrchestrator:
         request.position_ids.CopyFrom(tensor_to_proto(node_position_ids))
         if past_kv is not None:
             cache = KVCache()
-            cache.set_all(past_kv)
-            request.kv_cache.CopyFrom(kv_cache_to_proto(cache))
+            kv_key = (node_id, request_id)
+            prev_len = self._node_kv_sent_lens.get(kv_key, 0)
+            current_len = past_kv[0][0].shape[-2] if len(past_kv) > 0 else 0
+            if current_len > prev_len:
+                delta_kv = [(k.narrow(-2, prev_len, current_len - prev_len).contiguous(),
+                             v.narrow(-2, prev_len, current_len - prev_len).contiguous()) for k, v in past_kv]
+                cache.set_all(delta_kv)
+                request.kv_cache.CopyFrom(kv_cache_to_proto(cache))
+                self._node_kv_sent_lens[kv_key] = current_len
         if is_last_node and draft_tokens:
             request.draft_tokens.extend(draft_tokens)
         return request
@@ -250,7 +266,7 @@ class PipelineOrchestrator:
         response: Any,
         node_id: str,
         node: Any,
-        node_kv_caches: Dict[str, Optional[List]],
+        node_kv_caches: dict[str, list | None],
     ) -> torch.Tensor:
         if not response.success:
             self.resource_mgr.record_failure(node_id)
@@ -286,7 +302,7 @@ class PipelineOrchestrator:
             node_kv_caches[node_id] = new_cache.cache
         return current_hidden
 
-    def _find_fallback_node(self, failed_node_id: str, failed_node) -> Optional[Tuple[str, Any]]:
+    def _find_fallback_node(self, failed_node_id: str, failed_node) -> tuple[str, Any] | None:
         """Find a healthy fallback node that can handle the same layer range."""
         for nid, node in self.nodes.items():
             if nid == failed_node_id:
@@ -305,9 +321,9 @@ class PipelineOrchestrator:
     def run_pipeline(
         self,
         input_ids: torch.Tensor,
-        node_kv_caches: Dict[str, Optional[List]],
+        node_kv_caches: dict[str, list | None],
         request_id: str,
-        draft_tokens: Optional[List[int]] = None,
+        draft_tokens: list[int] | None = None,
     ) -> torch.Tensor:
         """Run input through all nodes via gRPC.
 
@@ -398,9 +414,9 @@ class PipelineOrchestrator:
     async def run_pipeline_async(
         self,
         input_ids: torch.Tensor,
-        node_kv_caches: Dict[str, Optional[List]],
+        node_kv_caches: dict[str, list | None],
         request_id: str,
-        draft_tokens: Optional[List[int]] = None,
+        draft_tokens: list[int] | None = None,
     ) -> torch.Tensor:
         """Run input through all nodes via async gRPC.
 
@@ -427,7 +443,7 @@ class PipelineOrchestrator:
         total_nodes = len(self.node_order)
 
         if is_debug_mode():
-            logger.debug(f"[pipeline] Starting pipeline: input_ids shape={input_ids.shape}, batch_size={batch_size}, seq_len={seq_len}")
+            logger.debug(f"[pipeline] Starting async pipeline: input_ids shape={input_ids.shape}, batch_size={batch_size}, seq_len={seq_len}")
 
         for i, node_id in enumerate(self.node_order):
             node = self.nodes[node_id]
@@ -497,9 +513,9 @@ class PipelineOrchestrator:
     def run_pipeline_overlap(
         self,
         input_ids: torch.Tensor,
-        node_kv_caches: Dict[str, Optional[List]],
+        node_kv_caches: dict[str, list | None],
         request_id: str,
-        draft_tokens: Optional[List[int]] = None,
+        draft_tokens: list[int] | None = None,
     ) -> torch.Tensor:
         """Run pipeline with compute/communication overlap."""
         seq_len = input_ids.shape[1]

@@ -3,7 +3,6 @@
 import typer
 from rich.console import Console
 from rich.table import Table
-from typing import Optional
 
 app = typer.Typer(
     name="distllm",
@@ -40,12 +39,12 @@ def setup(
 def run(
     model: str = typer.Option(..., "--model", "-m", help="Model name or path"),
     local: bool = typer.Option(False, "--local", "-l", help="Run in single-node local mode"),
-    config: Optional[str] = typer.Option(None, "--config", "-c", help="Config file path"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
     dtype: str = typer.Option("float16", "--dtype", help="Data type (float16, float32, bfloat16)",),
     max_tokens: int = typer.Option(256, "--max-tokens", help="Max tokens to generate"),
     temperature: float = typer.Option(0.7, "--temperature", help="Sampling temperature"),
-    prompt: Optional[str] = typer.Option(None, "--prompt", help="Single prompt (non-interactive)"),
+    prompt: str | None = typer.Option(None, "--prompt", help="Single prompt (non-interactive)"),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode with tensor shape logging"),
 ):
     """Run the distributed LLM system."""
@@ -146,7 +145,7 @@ def cluster_scale(
     nodes: int = typer.Argument(..., help="Target number of nodes"),
     host: str = typer.Option("localhost", "--host", help="API server host"),
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
-    gpu_type: Optional[str] = typer.Option(None, "--gpu-type", help="Filter by GPU type"),
+    gpu_type: str | None = typer.Option(None, "--gpu-type", help="Filter by GPU type"),
 ):
     """Scale cluster to target node count."""
     from distllm.cli.cluster import _cluster_scale
@@ -227,9 +226,9 @@ def logs_stream(
     host: str = typer.Option("localhost", "--host", help="API server host"),
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
     lines: int = typer.Option(50, "--lines", "-n", help="Number of log lines"),
-    level: Optional[str] = typer.Option(None, "--level", "-l", help="Filter by log level"),
-    component: Optional[str] = typer.Option(None, "--component", "-c", help="Filter by component"),
-    search: Optional[str] = typer.Option(None, "--search", "-s", help="Search text in logs"),
+    level: str | None = typer.Option(None, "--level", "-l", help="Filter by log level"),
+    component: str | None = typer.Option(None, "--component", "-c", help="Filter by component"),
+    search: str | None = typer.Option(None, "--search", "-s", help="Search text in logs"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
 ):
     """Stream or fetch logs from the server."""
@@ -242,7 +241,7 @@ def compress(
     model: str = typer.Option(..., "--model", "-m", help="Model name or HuggingFace path"),
     target: str = typer.Option("int4", "--target", "-t", help="Target precision (int4, int8, int4-awq, int4-gptq)"),
     output: str = typer.Option("./compressed", "--output", "-o", help="Output directory for compressed model"),
-    tokenizer: Optional[str] = typer.Option(None, "--tokenizer", help="Tokenizer name/path (defaults to model)"),
+    tokenizer: str | None = typer.Option(None, "--tokenizer", help="Tokenizer name/path (defaults to model)"),
     prune_ratio: float = typer.Option(0.0, "--prune", "-p", help="Structured pruning ratio (0.0-1.0)"),
     calibration_samples: int = typer.Option(128, "--calibration-samples", help="Calibration samples for PTQ"),
     method: str = typer.Option("awq", "--method", help="Quantization method (awq, gptq)"),
@@ -293,7 +292,7 @@ def benchmark_compare(
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
     prompts: int = typer.Option(5, "--prompts", help="Number of test prompts"),
     max_tokens: int = typer.Option(50, "--max-tokens", help="Max tokens per prompt"),
-    baseline: Optional[str] = typer.Option(None, "--baseline", "-b", help="Path to baseline JSON file"),
+    baseline: str | None = typer.Option(None, "--baseline", "-b", help="Path to baseline JSON file"),
     save_baseline: bool = typer.Option(False, "--save-baseline", help="Save current results as baseline"),
 ):
     """Compare current benchmark against a saved baseline."""
@@ -438,7 +437,7 @@ def api(
 def client(
     model: str = typer.Option("roneneldan/TinyStories-1M", "--model", "-m", help="Model name"),
     chat_mode: bool = typer.Option(False, "--chat", help="Interactive chat mode"),
-    prompt: Optional[str] = typer.Option(None, "--prompt", help="Single prompt"),
+    prompt: str | None = typer.Option(None, "--prompt", help="Single prompt"),
     health: bool = typer.Option(False, "--health", help="Show node health"),
     max_tokens: int = typer.Option(128, "--max-tokens", help="Max tokens"),
     temperature: float = typer.Option(0.7, "--temperature", help="Sampling temperature"),
@@ -536,7 +535,7 @@ def tp(
 def dashboard(
     host: str = typer.Option("0.0.0.0", "--host", help="Dashboard host"),
     port: int = typer.Option(8500, "--port", "-p", help="Dashboard port"),
-    api_url: Optional[str] = typer.Option(None, "--api-url", help="DistLLM API server URL"),
+    api_url: str | None = typer.Option(None, "--api-url", help="DistLLM API server URL"),
 ):
     """Start the web monitoring dashboard."""
     from distllm.dashboard.app import dashboard_app

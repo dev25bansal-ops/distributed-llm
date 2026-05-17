@@ -3,7 +3,7 @@
 import time
 import random
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -14,7 +14,7 @@ class ChaosEvent:
     event_type: str
     node_id: str
     timestamp: float
-    params: Dict[str, Any]
+    params: dict[str, Any]
     result: str  # "success" | "failed" | "recovered"
     duration_s: float = 0.0
 
@@ -33,15 +33,15 @@ class ChaosInjector:
         self.resource_manager = resource_manager
         self.max_latency_ms = max_latency_ms
         self._events: list[ChaosEvent] = []
-        self._latency_delays: Dict[str, float] = {}  # node_id -> delay_ms
-        self._drop_patterns: Dict[str, str] = {}  # node_id -> pattern
-        self._corruption_rates: Dict[str, float] = {}  # node_id -> rate
+        self._latency_delays: dict[str, float] = {}  # node_id -> delay_ms
+        self._drop_patterns: dict[str, str] = {}  # node_id -> pattern
+        self._corruption_rates: dict[str, float] = {}  # node_id -> rate
 
     @property
     def events(self) -> list[ChaosEvent]:
         return list(self._events)
 
-    def _record_event(self, event_type: str, node_id: str, params: Dict[str, Any], result: str, duration_s: float = 0.0):
+    def _record_event(self, event_type: str, node_id: str, params: dict[str, Any], result: str, duration_s: float = 0.0):
         self._events.append(ChaosEvent(
             event_type=event_type,
             node_id=node_id,

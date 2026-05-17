@@ -2,7 +2,7 @@
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -11,7 +11,7 @@ from loguru import logger
 class ChaosStep:
     """A single step in a chaos scenario."""
     action: str  # "kill_node", "add_latency", "drop_message", "corrupt_data"
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     delay_after: float = 0.0  # seconds to wait after executing this step
 
 
@@ -19,7 +19,7 @@ class ChaosStep:
 class ChaosScenario:
     """A complete chaos scenario with ordered steps."""
     name: str
-    steps: List[ChaosStep] = field(default_factory=list)
+    steps: list[ChaosStep] = field(default_factory=list)
     expected_recovery_time_s: float = 30.0
     max_acceptable_error_rate: float = 0.05
     description: str = ""
@@ -35,7 +35,7 @@ class ScenarioResult:
     actual_recovery_time_s: float
     actual_error_rate: float
     resilience_score: float = 0.0
-    events: List = field(default_factory=list)
+    events: list = field(default_factory=list)
 
 
 class ScenarioRunner:
@@ -43,16 +43,16 @@ class ScenarioRunner:
 
     def __init__(self, injector):
         self.injector = injector
-        self._results: List[ScenarioResult] = []
+        self._results: list[ScenarioResult] = []
 
     @property
-    def results(self) -> List[ScenarioResult]:
+    def results(self) -> list[ScenarioResult]:
         return list(self._results)
 
     def run_scenario(
         self,
         scenario: ChaosScenario,
-        monitor_callback: Optional[Callable] = None,
+        monitor_callback: Callable | None = None,
     ) -> ScenarioResult:
         """Execute a chaos scenario step by step.
 

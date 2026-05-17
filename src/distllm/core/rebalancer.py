@@ -10,7 +10,7 @@ import statistics
 import time
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable
 
 from loguru import logger
 
@@ -47,24 +47,24 @@ class Rebalancer:
         self,
         latency_tracker: LatencyTracker,
         settings: RebalancerSettings,
-        on_reassign: Optional[Callable] = None,
+        on_reassign: Callable | None = None,
     ):
         self._tracker = latency_tracker
         self._settings = settings
         self._last_rebalance_time: float = 0.0
-        self._current_partition: List[Tuple[str, int, int]] = []
+        self._current_partition: list[tuple[str, int, int]] = []
         self._lock = threading.Lock()
         self._on_reassign = on_reassign
 
         # Grace period tracking
-        self._straggler_history: Dict[str, int] = {}  # node_id -> consecutive detections
+        self._straggler_history: dict[str, int] = {}  # node_id -> consecutive detections
         self._grace_period_steps: int = getattr(settings, 'grace_period_steps', 3)
 
         # Auto-mitigation state
         self._auto_mitigate_enabled: bool = getattr(settings, 'auto_mitigate', False)
-        self._batch_size_adjustments: Dict[str, int] = {}
+        self._batch_size_adjustments: dict[str, int] = {}
 
-    def detect_stragglers(self, threshold: Optional[float] = None) -> List[str]:
+    def detect_stragglers(self, threshold: float | None = None) -> list[str]:
         """Return nodes with avg latency > threshold * median latency."""
         threshold = threshold or self._settings.straggler_threshold
         all_avg = self._tracker.get_all_avg()
@@ -95,8 +95,8 @@ class Rebalancer:
     def compute_new_partition(
         self,
         total_layers: int,
-        node_latencies: Dict[str, float],
-    ) -> List[PartitionRecommendation]:
+        node_latencies: dict[str, float],
+    ) -> list[PartitionRecommendation]:
         """Redistribute layers proportional to inverse latency.
 
         Faster nodes (lower latency) get more layers.
@@ -128,7 +128,7 @@ class Rebalancer:
 
         return recommendations
 
-    def compute_mitigation_actions(self, stragglers: List[str]) -> List[StragglerAction]:
+    def compute_mitigation_actions(self, stragglers: list[str]) -> list[StragglerAction]:
         """Compute mitigation actions for detected stragglers.
 
         Each straggler gets one of:
@@ -183,7 +183,7 @@ class Rebalancer:
 
         return actions
 
-    def apply_mitigation_actions(self, actions: List[StragglerAction]) -> None:
+    def apply_mitigation_actions(self, actions: list[StragglerAction]) -> None:
         """Apply mitigation actions to the pipeline.
 
         For auto-migration: calls the on_reassign callback if configured.
@@ -210,7 +210,7 @@ class Rebalancer:
         """Reset batch size adjustment for a node (node recovered)."""
         self._batch_size_adjustments.pop(node_id, None)
 
-    def should_rebalance(self) -> Tuple[bool, str]:
+    def should_rebalance(self) -> tuple[bool, str]:
         """Check if rebalancing is warranted.
 
         Returns (should_rebalance, reason).
@@ -247,7 +247,7 @@ class Rebalancer:
         with self._lock:
             self._last_rebalance_time = time.time()
 
-    def set_current_partition(self, partition: List[Tuple[str, int, int]]) -> None:
+    def set_current_partition(self, partition: list[tuple[str, int, int]]) -> None:
         """Store the current partition for reference."""
         with self._lock:
             self._current_partition = partition

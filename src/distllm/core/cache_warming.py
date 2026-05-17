@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from typing import List
 
 from loguru import logger
 
@@ -10,7 +9,7 @@ from loguru import logger
 class CacheWarmer:
     """Pre-populates KV caches by running prompts through the pipeline."""
 
-    def warm(self, prompts: List[str], coordinator) -> int:
+    def warm(self, prompts: list[str], coordinator) -> int:
         """Run prompts through the pipeline to populate caches.
 
         Args:

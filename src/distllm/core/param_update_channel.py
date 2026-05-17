@@ -5,7 +5,6 @@ Provides thread-safe parameter updates during streaming generation.
 
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 
 @dataclass
@@ -35,10 +34,10 @@ class ParamUpdateChannel:
     """
 
     def __init__(self):
-        self.channels: Dict[str, GenerationParams] = {}
+        self.channels: dict[str, GenerationParams] = {}
         self._lock = threading.Lock()
 
-    def register(self, request_id: str, params: Optional[GenerationParams] = None) -> None:
+    def register(self, request_id: str, params: GenerationParams | None = None) -> None:
         """Register a new request with optional initial params.
 
         Args:
@@ -48,7 +47,7 @@ class ParamUpdateChannel:
         with self._lock:
             self.channels[request_id] = params or GenerationParams()
 
-    def update(self, request_id: str, **kwargs) -> Optional[GenerationParams]:
+    def update(self, request_id: str, **kwargs) -> GenerationParams | None:
         """Update params for a request. Only provided fields are changed.
 
         Args:
@@ -70,7 +69,7 @@ class ParamUpdateChannel:
                 params.top_k = kwargs["top_k"]
             return params
 
-    def get(self, request_id: str) -> Optional[GenerationParams]:
+    def get(self, request_id: str) -> GenerationParams | None:
         """Get current params for a request.
 
         Args:

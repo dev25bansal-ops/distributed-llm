@@ -16,7 +16,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 import torch
 
@@ -36,7 +36,7 @@ class CacheTier:
 @dataclass
 class PrefixPattern:
     """Learned pattern for prefix reuse."""
-    prefix_tokens: Tuple[int, ...]
+    prefix_tokens: tuple[int, ...]
     frequency: int = 0
     last_seen: float = 0.0
     avg_match_length: float = 0.0
@@ -47,7 +47,7 @@ class PrefixPattern:
 @dataclass
 class CachePrediction:
     """Prediction for a cache operation."""
-    prefix_tokens: Tuple[int, ...]
+    prefix_tokens: tuple[int, ...]
     predicted_matches: int = 0  # Number of predicted future matches
     confidence: float = 0.0
     should_prefetch: bool = False
@@ -65,12 +65,12 @@ class PatternLearner:
         self.max_patterns = max_patterns
         self.min_prefix_len = min_prefix_len
         self.decay_seconds = decay_hours * 3600
-        self._patterns: Dict[Tuple[int, ...], PrefixPattern] = {}
+        self._patterns: dict[tuple[int, ...], PrefixPattern] = {}
         self._recent_prefixes: deque = deque(maxlen=1000)
-        self._token_frequencies: Dict[int, int] = defaultdict(int)
+        self._token_frequencies: dict[int, int] = defaultdict(int)
         self._lock = threading.Lock()
 
-    def observe(self, token_ids: List[int]) -> None:
+    def observe(self, token_ids: list[int]) -> None:
         """Record a request's token IDs for pattern learning."""
         if len(token_ids) < self.min_prefix_len:
             return
@@ -112,7 +112,7 @@ class PatternLearner:
             freq_norm = min(1.0, pattern.frequency / max(f for f in [p.frequency for p in self._patterns.values()] + [1]))
             pattern.score = 0.6 * recency + 0.4 * freq_norm
 
-    def predict(self, token_ids: List[int]) -> List[CachePrediction]:
+    def predict(self, token_ids: list[int]) -> list[CachePrediction]:
         """Predict which prefixes are likely to be reused given current input."""
         predictions = []
         with self._lock:
@@ -129,7 +129,7 @@ class PatternLearner:
                     ))
         return predictions
 
-    def _compute_match_len(self, prefix: Tuple[int, ...], tokens: List[int]) -> int:
+    def _compute_match_len(self, prefix: tuple[int, ...], tokens: list[int]) -> int:
         if len(tokens) < self.min_prefix_len:
             return 0
         for i in range(min(len(prefix), len(tokens))):
@@ -137,7 +137,7 @@ class PatternLearner:
                 return i
         return min(len(prefix), len(tokens))
 
-    def top_patterns(self, n: int = 20) -> List[PrefixPattern]:
+    def top_patterns(self, n: int = 20) -> list[PrefixPattern]:
         with self._lock:
             self._score_all()
             return [p for _, p in sorted(self._patterns.items(), key=lambda x: x[1].score, reverse=True)[:n]]
@@ -186,7 +186,7 @@ class PredictiveCacheManager:
         }
         self._lock = threading.Lock()
 
-    def observe_request(self, token_ids: List[int]) -> List[CachePrediction]:
+    def observe_request(self, token_ids: list[int]) -> list[CachePrediction]:
         """Record a request and return prefetch predictions."""
         predictions = self.learner.predict(token_ids)
         self.learner.observe(token_ids)
@@ -195,7 +195,7 @@ class PredictiveCacheManager:
             self._start_prefetch(to_prefetch)
         return predictions
 
-    def _start_prefetch(self, predictions: List[CachePrediction]) -> None:
+    def _start_prefetch(self, predictions: list[CachePrediction]) -> None:
         for pred in predictions:
             self._stats["prefetches"] += 1
             if self._gpu_cache is not None and pred.target_tier == "gpu":
@@ -206,7 +206,7 @@ class PredictiveCacheManager:
                 except Exception:
                     pass
 
-    def lookup(self, token_ids: List[int]) -> Tuple[int, Any]:
+    def lookup(self, token_ids: list[int]) -> tuple[int, Any]:
         """Look up prefix in tiered cache. Returns (match_len, kv_data)."""
         tiers = [("gpu", self._gpu_cache), ("cpu", self._cpu_cache), ("disk", self._disk_cache)]
         for tier_name, cache in tiers:
@@ -233,7 +233,7 @@ class PredictiveCacheManager:
             except Exception:
                 pass
 
-    def store(self, token_ids: List[int], kv_data: Any, tier: str = "gpu") -> bool:
+    def store(self, token_ids: list[int], kv_data: Any, tier: str = "gpu") -> bool:
         cache = {"gpu": self._gpu_cache, "cpu": self._cpu_cache, "disk": self._disk_cache}.get(tier)
         if cache is None:
             return False
@@ -245,7 +245,7 @@ class PredictiveCacheManager:
             logger.debug(f"Failed to store in {tier} cache: {e}")
         return False
 
-    def get_cold_prefixes(self) -> List[Tuple[int, ...]]:
+    def get_cold_prefixes(self) -> list[tuple[int, ...]]:
         """Return prefixes that should be evicted to disk based on low score."""
         cold = []
         for pattern in self.learner.top_patterns(100):
@@ -273,7 +273,7 @@ class PredictiveCacheManager:
         return count
 
     @property
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         return dict(self._stats)
 
     def hit_rate(self) -> float:

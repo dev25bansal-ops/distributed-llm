@@ -6,7 +6,7 @@ Extracted from the Coordinator class.
 
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -22,8 +22,8 @@ class RequestTracker:
     """
 
     def __init__(self):
-        self._results: Dict[str, str] = {}
-        self._events: Dict[str, threading.Event] = {}
+        self._results: dict[str, str] = {}
+        self._events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._shutting_down = False
 
@@ -94,8 +94,8 @@ class RequestTracker:
 
     def complete_batch_requests(
         self,
-        scheduler_active: Dict[str, Any],
-        scheduler_pending: List[Any],
+        scheduler_active: dict[str, Any],
+        scheduler_pending: list[Any],
         tokenizer,
     ) -> None:
         """Mark completed requests from scheduler and signal events.
@@ -182,7 +182,7 @@ class ServerLifecycle:
         coordinator_service_cls,
         grpc_server_cls,
         blocking: bool = True,
-        on_stop: Optional[Callable] = None,
+        on_stop: Callable | None = None,
     ) -> None:
         """Start the coordinator gRPC server.
 
@@ -349,7 +349,7 @@ class ServerLifecycle:
 
         logger.info("Graceful shutdown complete")
 
-    async def stop_async(self, nodes: Dict[str, Any] = None) -> None:
+    async def stop_async(self, nodes: dict[str, Any] | None = None) -> None:
         """Stop the coordinator with graceful shutdown (async).
 
         Args:

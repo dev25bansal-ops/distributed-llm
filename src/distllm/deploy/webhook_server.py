@@ -5,7 +5,7 @@ Runs as a FastAPI server behind a ValidatingWebhookConfiguration.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
@@ -21,13 +21,13 @@ ALLOWED_RESOURCES = {"distributedllmclusters", "nodepools"}
 class AdmissionReviewRequest(BaseModel):
     apiVersion: str
     kind: str
-    request: Dict[str, Any]
+    request: dict[str, Any]
 
 
 class AdmissionReviewResponse(BaseModel):
     apiVersion: str
     kind: str
-    response: Dict[str, Any]
+    response: dict[str, Any]
 
 
 def _validate_crd_compatibility(old_spec: dict, new_spec: dict) -> tuple[bool, str]:

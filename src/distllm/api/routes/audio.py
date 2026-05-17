@@ -9,7 +9,6 @@ import os
 import tempfile
 import time
 import uuid
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
@@ -28,8 +27,8 @@ class VerboseTranscriptionResponse(BaseModel):
     language: str = "en"
     duration: float = 0.0
     text: str
-    words: Optional[List[dict]] = None
-    segments: Optional[List[dict]] = None
+    words: list[dict] | None = None
+    segments: list[dict] | None = None
 
 
 class TTSRequest(BaseModel):
@@ -44,11 +43,11 @@ class TTSRequest(BaseModel):
 async def create_transcription(
     file: UploadFile = File(...),
     model: str = Form(default="whisper-1"),
-    language: Optional[str] = Form(default=None),
-    prompt: Optional[str] = Form(default=None),
+    language: str | None = Form(default=None),
+    prompt: str | None = Form(default=None),
     response_format: str = Form(default="json"),
     temperature: float = Form(default=0.0),
-    timestamp_granularities: Optional[str] = Form(default=None),
+    timestamp_granularities: str | None = Form(default=None),
 ):
     """Transcribe audio to text.
 
@@ -147,8 +146,8 @@ async def create_speech(body: TTSRequest):
 
 async def _transcribe_audio(
     audio_data: bytes,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
+    language: str | None = None,
+    prompt: str | None = None,
     temperature: float = 0.0,
 ) -> str:
     """Transcribe audio using available model.
@@ -259,7 +258,7 @@ def _estimate_duration(audio_data: bytes) -> float:
     return len(audio_data) / 10240.0
 
 
-def _generate_word_timestamps(text: str) -> List[dict]:
+def _generate_word_timestamps(text: str) -> list[dict]:
     """Generate approximate word-level timestamps."""
     words = text.split()
     duration = len(words) * 0.3  # ~300ms per word

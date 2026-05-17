@@ -10,7 +10,6 @@ import time
 import uuid
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional
 from enum import Enum
 
 import asyncio
@@ -22,9 +21,9 @@ from ..api_state import g
 router = APIRouter(tags=["batch"])
 
 # In-memory batch storage (production: database)
-_batches: Dict[str, dict] = {}
-_batch_results: Dict[str, List[dict]] = {}
-_batch_tasks: Dict[str, asyncio.Task] = {}
+_batches: dict[str, dict] = {}
+_batch_results: dict[str, list[dict]] = {}
+_batch_tasks: dict[str, asyncio.Task] = {}
 
 
 class BatchStatus(str, Enum):
@@ -41,36 +40,36 @@ class BatchRequest(BaseModel):
     input_file_id: str = Field(..., description="ID of uploaded JSONL file with requests")
     endpoint: str = Field(..., description="API endpoint: /v1/chat/completions or /v1/completions")
     completion_window: str = Field(default="24h", description="Max processing time: 1h, 8h, 24h")
-    metadata: Optional[dict] = Field(default=None, description="Optional metadata")
+    metadata: dict | None = Field(default=None, description="Optional metadata")
 
 
 class BatchResponse(BaseModel):
     id: str
     object: str = "batch"
     endpoint: str
-    errors: Optional[dict] = None
+    errors: dict | None = None
     input_file_id: str
     completion_window: str
     status: str
-    output_file_id: Optional[str] = None
-    error_file_id: Optional[str] = None
+    output_file_id: str | None = None
+    error_file_id: str | None = None
     created_at: int
-    in_progress_at: Optional[int] = None
-    expires_at: Optional[int] = None
-    finalizing_at: Optional[int] = None
-    completed_at: Optional[int] = None
-    failed_at: Optional[int] = None
-    expired_at: Optional[int] = None
-    cancelled_at: Optional[int] = None
+    in_progress_at: int | None = None
+    expires_at: int | None = None
+    finalizing_at: int | None = None
+    completed_at: int | None = None
+    failed_at: int | None = None
+    expired_at: int | None = None
+    cancelled_at: int | None = None
     request_counts: dict = Field(default_factory=lambda: {"total": 0, "completed": 0, "failed": 0})
-    metadata: Optional[dict] = None
+    metadata: dict | None = None
 
 
 class BatchListResponse(BaseModel):
     object: str = "list"
-    data: List[BatchResponse]
-    first_id: Optional[str] = None
-    last_id: Optional[str] = None
+    data: list[BatchResponse]
+    first_id: str | None = None
+    last_id: str | None = None
     has_more: bool = False
 
 
@@ -132,7 +131,7 @@ async def get_batch(batch_id: str):
 
 
 @router.get("/v1/batches", response_model=BatchListResponse)
-async def list_batches(limit: int = 20, after: Optional[str] = None):
+async def list_batches(limit: int = 20, after: str | None = None):
     """List all batches."""
     batches = list(_batches.values())
 
@@ -342,13 +341,13 @@ def _get_base_dir() -> Path:
     return base
 
 
-def _get_file_path(file_id: str) -> Optional[Path]:
+def _get_file_path(file_id: str) -> Path | None:
     """Get the path for an uploaded file."""
     base = _get_base_dir()
     return base / f"{file_id}.jsonl"
 
 
-def _store_results(file_id: str, results: List[dict]) -> None:
+def _store_results(file_id: str, results: list[dict]) -> None:
     """Store batch results to disk."""
     base = _get_base_dir()
     base.mkdir(parents=True, exist_ok=True)

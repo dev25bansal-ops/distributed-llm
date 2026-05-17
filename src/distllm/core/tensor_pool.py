@@ -5,7 +5,6 @@ of reusable buffers sized for common batch shapes.
 """
 
 import torch
-from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
 
@@ -26,12 +25,12 @@ class TensorPool:
         self.max_buffers = max_buffers
         self.growth_factor = growth_factor
         # Buckets: (device, dtype) -> list of (shape, tensor)
-        self._pools: Dict[Tuple[str, torch.dtype], List[Tuple[Tuple[int, ...], torch.Tensor]]] = defaultdict(list)
+        self._pools: dict[tuple[str, torch.dtype], list[tuple[tuple[int, ...], torch.Tensor]]] = defaultdict(list)
         self._total_buffers = 0
 
     def get_buffer(
         self,
-        shape: Tuple[int, ...],
+        shape: tuple[int, ...],
         dtype: torch.dtype = torch.long,
         device: str = "cpu",
     ) -> torch.Tensor:
@@ -96,10 +95,10 @@ class GPUMemoryPool:
     def __init__(self, total_gb: float = 8.0, block_size_mb: float = 16.0):
         self.total_bytes = int(total_gb * 1024 * 1024 * 1024)
         self.block_bytes = int(block_size_mb * 1024 * 1024)
-        self._blocks: List[torch.Tensor] = []
-        self._free_blocks: List[torch.Tensor] = []
-        self._allocated: Dict[int, torch.Tensor] = {}
-        self._device: Optional[str] = None
+        self._blocks: list[torch.Tensor] = []
+        self._free_blocks: list[torch.Tensor] = []
+        self._allocated: dict[int, torch.Tensor] = {}
+        self._device: str | None = None
 
     def _init_device(self, device: str) -> None:
         """Initialize the memory pool on the given device."""
@@ -117,10 +116,10 @@ class GPUMemoryPool:
 
     def allocate(
         self,
-        shape: Tuple[int, ...],
+        shape: tuple[int, ...],
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """Allocate a tensor from the pool.
 
         Returns None if insufficient memory.

@@ -1,19 +1,17 @@
 """Alertmanager routing configuration generator."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-
 import yaml
 
 
 @dataclass
 class RouteConfig:
     """A single routing rule in alertmanager."""
-    match: Dict[str, str] = field(default_factory=dict)
-    match_re: Dict[str, str] = field(default_factory=dict)
+    match: dict[str, str] = field(default_factory=dict)
+    match_re: dict[str, str] = field(default_factory=dict)
     receiver: str = "default"
     continue_: bool = False
-    group_by: List[str] = field(default_factory=lambda: ["alertname", "node_id"])
+    group_by: list[str] = field(default_factory=lambda: ["alertname", "node_id"])
     group_wait: str = "30s"
     group_interval: str = "5m"
     repeat_interval: str = "4h"
@@ -36,9 +34,9 @@ class RouteConfig:
 class ReceiverConfig:
     """A notification receiver in alertmanager."""
     name: str
-    email_configs: List[Dict] = field(default_factory=list)
-    slack_configs: List[Dict] = field(default_factory=list)
-    webhook_configs: List[Dict] = field(default_factory=list)
+    email_configs: list[dict] = field(default_factory=list)
+    slack_configs: list[dict] = field(default_factory=list)
+    webhook_configs: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         result = {"name": self.name}
@@ -57,7 +55,7 @@ def generate_alertmanager_config(
     smtp_from: str = "alertmanager@distllm.local",
     slack_webhook_url: str = "",
     webhook_url: str = "",
-    email_recipients: Optional[List[str]] = None,
+    email_recipients: list[str] | None = None,
 ) -> str:
     """Generate an alertmanager YAML configuration.
 

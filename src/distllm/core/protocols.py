@@ -5,7 +5,7 @@ coordinator and other components depend on abstractions rather than
 concrete implementations, enabling testability and flexibility.
 """
 
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 
@@ -32,9 +32,9 @@ class INodeClient(Protocol):
 @runtime_checkable
 class ITokenizer(Protocol):
     """Interface for a tokenizer compatible with HuggingFace tokenizers."""
-    eos_token_id: Optional[int]
-    bos_token_id: Optional[int]
-    pad_token_id: Optional[int]
+    eos_token_id: int | None
+    bos_token_id: int | None
+    pad_token_id: int | None
     vocab_size: int
 
     def encode(self, text: str, **kwargs: Any) -> Any:
@@ -50,8 +50,8 @@ class ITokenizer(Protocol):
 class IModelPartitioner(Protocol):
     """Interface for a model partitioner that loads and runs model layers."""
     full_model: Any
-    tokenizer: Optional[ITokenizer]
-    embed_input: Optional[Any]
+    tokenizer: ITokenizer | None
+    embed_input: Any | None
     is_last_node: bool
 
     def load_full_model(self) -> None:
@@ -65,9 +65,9 @@ class IModelPartitioner(Protocol):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: list | None = None,
     ) -> tuple:
         """Forward pass through loaded layers."""
         ...
@@ -81,11 +81,11 @@ class IModelPartitioner(Protocol):
 class ICacheBackend(Protocol):
     """Interface for a prefix cache backend."""
 
-    def lookup(self, tokens: List[int]) -> tuple:
+    def lookup(self, tokens: list[int]) -> tuple:
         """Lookup tokens in the cache. Returns (prefix_len, entry)."""
         ...
 
-    def store(self, tokens: List[int], entry: Any) -> None:
+    def store(self, tokens: list[int], entry: Any) -> None:
         """Store tokens and associated entry in the cache."""
         ...
 
@@ -98,7 +98,7 @@ class ICacheBackend(Protocol):
 class IMetricsExporter(Protocol):
     """Interface for a Prometheus-style metrics exporter."""
 
-    def record(self, name: str, value: float, labels: Optional[Dict[str, str]] = None) -> None:
+    def record(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         """Record a metric value."""
         ...
 
@@ -115,7 +115,7 @@ class INodeFactory(Protocol):
         max_retries: int = 3,
         retry_delay: float = 1.0,
         use_tls: bool = True,
-        ca_cert: Optional[str] = None,
+        ca_cert: str | None = None,
     ) -> INodeClient:
         """Create a new node client."""
         ...
@@ -137,11 +137,11 @@ class IResourceManager(Protocol):
         """Record a node failure."""
         ...
 
-    def health_check_all(self, nodes: Dict[str, Any]) -> dict:
+    def health_check_all(self, nodes: dict[str, Any]) -> dict:
         """Check health of all registered nodes."""
         ...
 
-    def close_all(self, nodes: Dict[str, Any]) -> None:
+    def close_all(self, nodes: dict[str, Any]) -> None:
         """Close all node connections."""
         ...
 
@@ -150,11 +150,11 @@ class IResourceManager(Protocol):
 class ICacheManager(Protocol):
     """Interface for cache management (prefix cache, KV cache)."""
 
-    def lookup_prefix(self, tokens: List[int]) -> int:
+    def lookup_prefix(self, tokens: list[int]) -> int:
         """Lookup prefix match length for tokens."""
         ...
 
-    def maybe_chunk(self, tokens: List[int]) -> Any:
+    def maybe_chunk(self, tokens: list[int]) -> Any:
         """Apply chunked prefill if enabled."""
         ...
 
@@ -186,12 +186,12 @@ class IPipelineOrchestrator(Protocol):
     """Interface for distributed pipeline orchestration."""
 
     @property
-    def nodes(self) -> Dict[str, Any]:
+    def nodes(self) -> dict[str, Any]:
         """Registered nodes."""
         ...
 
     @property
-    def node_order(self) -> List[str]:
+    def node_order(self) -> list[str]:
         """Ordered list of node IDs."""
         ...
 
@@ -206,7 +206,7 @@ class IPipelineOrchestrator(Protocol):
     def run_pipeline(
         self,
         input_ids: torch.Tensor,
-        node_kv_caches: Dict[str, Optional[List]],
+        node_kv_caches: dict[str, list | None],
         request_id: str,
     ) -> torch.Tensor:
         """Run input through all nodes via gRPC."""

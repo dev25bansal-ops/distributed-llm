@@ -7,7 +7,7 @@ O(n) memory instead of O(n²).
 Gracefully falls back to standard attention when flash-attn is unavailable.
 """
 
-from typing import Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -48,9 +48,9 @@ class FlashAttentionWrapper:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor | None = None,
         dropout_p: float = 0.0,
-        softmax_scale: Optional[float] = None,
+        softmax_scale: float | None = None,
     ) -> torch.Tensor:
         """Compute attention with flash kernel or SDPA fallback.
 
@@ -79,7 +79,7 @@ class FlashAttentionWrapper:
         k: torch.Tensor,
         v: torch.Tensor,
         dropout_p: float,
-        softmax_scale: Optional[float],
+        softmax_scale: float | None,
     ) -> torch.Tensor:
         """Run flash-attn fused kernel."""
         out = self._flash_attn_fn(
@@ -97,9 +97,9 @@ class FlashAttentionWrapper:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attention_mask: Optional[torch.Tensor],
+        attention_mask: torch.Tensor | None,
         dropout_p: float,
-        softmax_scale: Optional[float],
+        softmax_scale: float | None,
         was_transposed: bool,
     ) -> torch.Tensor:
         """Fallback to PyTorch scaled_dot_product_attention."""
@@ -141,7 +141,7 @@ class FlashAttentionWrapper:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool]:
         """Ensure tensors are in [batch, seq_len, num_heads, head_dim] format.
 
         Returns:
@@ -193,7 +193,7 @@ def apply_flash_attention_to_model(model: torch.nn.Module) -> int:
     return patched
 
 
-def _get_qkv_projections(module: torch.nn.Module) -> Optional[Tuple[Any, Any, Any, Any]]:
+def _get_qkv_projections(module: torch.nn.Module) -> tuple[Any, Any, Any, Any] | None:
     """Get Q, K, V, O projection layers from an attention module.
 
     Supports standard (q_proj, k_proj, v_proj, o_proj) and

@@ -1,7 +1,6 @@
 """Kubernetes Operator CRDs for distributed-llm."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -42,7 +41,7 @@ class NodePoolSpec:
 @dataclass
 class HPASpec:
     enabled: bool = False
-    target_tps: Optional[int] = None
+    target_tps: int | None = None
     min_replicas: int = 1
     max_replicas: int = 10
     metric: str = "tokens_per_second"  # or "queue_depth"
@@ -53,11 +52,11 @@ class DistributedLLMClusterSpec:
     """Top-level CRD for a distributed LLM cluster deployment."""
     model: ModelSpec
     coordinator: CoordinatorSpec = field(default_factory=CoordinatorSpec)
-    node_pools: List[NodePoolSpec] = field(default_factory=list)
+    node_pools: list[NodePoolSpec] = field(default_factory=list)
     tls_enabled: bool = False
-    api_key_secret: Optional[str] = None
+    api_key_secret: str | None = None
     hpa: HPASpec = field(default_factory=HPASpec)
-    labels: Dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
     namespace: str = "default"
 
 

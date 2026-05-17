@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from concurrent import futures
 from loguru import logger
-from typing import Optional, Callable, List, Tuple
+from typing import Callable
 from collections import defaultdict
 
 from distllm.communication.node_pb2 import (
@@ -87,7 +87,7 @@ def _build_forward_response(
     request_id: str,
     output: torch.Tensor,
     new_past_kv,
-    draft_tokens: Optional[list] = None,
+    draft_tokens: list | None = None,
 ) -> ForwardPassResponse:
     """Build a ForwardPassResponse from model output.
 
@@ -101,15 +101,11 @@ def _build_forward_response(
     )
 
     # Handle speculative decoding: verify draft tokens
-    if draft_tokens:
-        if output.dim() == 3:
-            num_positions = min(len(draft_tokens), output.shape[1])
-            for i in range(num_positions):
-                token_at_pos = torch.argmax(output[:, i, :], dim=-1).item()
-                response.verified_tokens.append(token_at_pos)
-        elif output.dim() == 2:
-            token = torch.argmax(output, dim=-1).item()
-            response.verified_tokens.append(token)
+    if draft_tokens and output.dim() == 3:
+        num_positions = min(len(draft_tokens), output.shape[1])
+        for i in range(num_positions):
+            token_at_pos = torch.argmax(output[:, i, :], dim=-1).item()
+            response.verified_tokens.append(token_at_pos)
 
     if new_past_kv:
         new_cache = KVCache()
@@ -119,7 +115,7 @@ def _build_forward_response(
     return response
 
 
-def _log_forward_debug(node_id: str, request, tensors: dict, output: Optional[torch.Tensor] = None) -> None:
+def _log_forward_debug(node_id: str, request, tensors: dict, output: torch.Tensor | None = None) -> None:
     """Log tensor shapes for debugging."""
     if not is_debug_mode():
         return
@@ -222,7 +218,7 @@ class NodeService(NodeServiceServicer):
                 error_code=ErrorCode.UNKNOWN,
             )
 
-    def _get_gpu_stats(self) -> Tuple[int, int, float, float, bool]:
+    def _get_gpu_stats(self) -> tuple[int, int, float, float, bool]:
         """Get actual GPU stats using pynvml if available.
 
         Returns:
@@ -353,7 +349,7 @@ class NodeService(NodeServiceServicer):
 class CoordinatorService(CoordinatorServiceServicer):
     """gRPC service implementation for the coordinator."""
 
-    def __init__(self, quantization_config=None, use_tls: bool = True, ca_cert: Optional[str] = None):
+    def __init__(self, quantization_config=None, use_tls: bool = True, ca_cert: str | None = None):
         self.nodes = {}
         self.node_channels = {}
         self.node_stubs = {}
@@ -566,8 +562,8 @@ class GRPCServer:
     """Manages gRPC server lifecycle."""
 
     def __init__(self, port: int, servicer, max_workers: int = 10,
-                 use_tls: bool = True, cert_file: Optional[str] = None,
-                 key_file: Optional[str] = None, ca_cert: Optional[str] = None):
+                 use_tls: bool = True, cert_file: str | None = None,
+                 key_file: str | None = None, ca_cert: str | None = None):
         self.port = port
         self.servicer = servicer
         self.max_workers = max_workers
@@ -645,7 +641,7 @@ class GRPCServer:
 class NodeClient:
     """gRPC client for communicating with worker nodes."""
 
-    def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: Optional[str] = None):
+    def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: str | None = None):
         options = [
             ('grpc.max_send_message_length', 2 * 1024 * 1024 * 1024),
             ('grpc.max_receive_message_length', 2 * 1024 * 1024 * 1024),
@@ -661,18 +657,19 @@ class NodeClient:
                 from distllm.core.tls import load_tls_channel_credentials
                 credentials = load_tls_channel_credentials(ca_cert, host)
             else:
-                # Auto-discover self-signed certs
                 import os as _os
                 auto_ca = _os.path.join("_auto_certs", "ca.crt")
                 if _os.path.exists(auto_ca):
                     from distllm.core.tls import load_tls_channel_credentials
                     credentials = load_tls_channel_credentials(auto_ca, host)
                 else:
-                    # Fallback to insecure if no certs found
-                    logger.warning(f"No CA cert found for {host}:{port}, falling back to insecure")
-                    self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)
-                    self.stub = NodeServiceStub(self.channel)
-                    return
+                    raise NodeUnreachableError(
+                        node_id="unknown", host=host, port=port,
+                        original_error=ConnectionError(
+                            f"TLS enabled but no CA cert found for {host}:{port}. "
+                            "Pass --insecure to the worker node to disable TLS."
+                        ),
+                    )
             self.channel = grpc.aio.secure_channel(f"{host}:{port}", credentials, options=options)
         else:
             self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)
@@ -742,7 +739,7 @@ class AsyncNodeService(NodeServiceServicer):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Reuse GPU stats method from sync version via module-level function
-    def _get_gpu_stats(self) -> Tuple[int, int, float, float, bool]:
+    def _get_gpu_stats(self) -> tuple[int, int, float, float, bool]:
         """Get actual GPU stats using pynvml if available."""
         # Call the same logic as sync version
         return NodeService._get_gpu_stats(self)
@@ -905,7 +902,7 @@ class AsyncNodeService(NodeServiceServicer):
 class AsyncCoordinatorService(CoordinatorServiceServicer):
     """Async gRPC service implementation for the coordinator using grpc.aio."""
 
-    def __init__(self, quantization_config=None, use_tls: bool = True, ca_cert: Optional[str] = None):
+    def __init__(self, quantization_config=None, use_tls: bool = True, ca_cert: str | None = None):
         self.nodes = {}
         self.node_channels = {}
         self.node_stubs = {}
@@ -1112,8 +1109,8 @@ class AsyncGRPCServer:
     """Manages async gRPC server lifecycle using grpc.aio."""
 
     def __init__(self, port: int, servicer, max_workers: int = 10,
-                 use_tls: bool = True, cert_file: Optional[str] = None,
-                 key_file: Optional[str] = None, ca_cert: Optional[str] = None):
+                 use_tls: bool = True, cert_file: str | None = None,
+                 key_file: str | None = None, ca_cert: str | None = None):
         self.port = port
         self.servicer = servicer
         self.max_workers = max_workers
@@ -1194,7 +1191,7 @@ class AsyncGRPCServer:
 class AsyncNodeClient:
     """Async gRPC client for communicating with worker nodes using grpc.aio."""
 
-    def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: Optional[str] = None):
+    def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: str | None = None):
         options = [
             ('grpc.max_send_message_length', 2 * 1024 * 1024 * 1024),
             ('grpc.max_receive_message_length', 2 * 1024 * 1024 * 1024),
@@ -1215,18 +1212,19 @@ class AsyncNodeClient:
                 from distllm.core.tls import load_tls_channel_credentials
                 credentials = load_tls_channel_credentials(ca_cert, host)
             else:
-                # Auto-discover self-signed certs
                 import os as _os
                 auto_ca = _os.path.join("_auto_certs", "ca.crt")
                 if _os.path.exists(auto_ca):
                     from distllm.core.tls import load_tls_channel_credentials
                     credentials = load_tls_channel_credentials(auto_ca, host)
                 else:
-                    # Fallback to insecure if no certs found
-                    logger.warning(f"No CA cert found for {host}:{port}, falling back to insecure")
-                    self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)
-                    self.stub = NodeServiceStub(self.channel)
-                    return
+                    raise NodeUnreachableError(
+                        node_id="unknown", host=host, port=port,
+                        original_error=ConnectionError(
+                            f"TLS enabled but no CA cert found for {host}:{port}. "
+                            "Pass --insecure to the worker node to disable TLS."
+                        ),
+                    )
             self.channel = grpc.aio.secure_channel(f"{host}:{port}", credentials, options=options)
         else:
             self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)

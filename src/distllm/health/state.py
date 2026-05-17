@@ -5,7 +5,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Optional
 
 
 class NodeState(Enum):
@@ -43,14 +42,14 @@ class HealthStateStore:
     """Thread-safe storage for node health records."""
 
     def __init__(self):
-        self._records: Dict[str, HealthRecord] = {}
+        self._records: dict[str, HealthRecord] = {}
         self._lock = threading.Lock()
 
-    def get(self, node_id: str) -> Optional[HealthRecord]:
+    def get(self, node_id: str) -> HealthRecord | None:
         with self._lock:
             return self._records.get(node_id)
 
-    def get_all(self) -> Dict[str, HealthRecord]:
+    def get_all(self) -> dict[str, HealthRecord]:
         with self._lock:
             return dict(self._records)
 
@@ -58,7 +57,7 @@ class HealthStateStore:
         with self._lock:
             self._records[node_id] = record
 
-    def update_state(self, node_id: str, state: NodeState) -> Optional[HealthRecord]:
+    def update_state(self, node_id: str, state: NodeState) -> HealthRecord | None:
         with self._lock:
             record = self._records.get(node_id)
             if record:

@@ -5,7 +5,6 @@ import json
 import time
 from rich.console import Console
 from rich.live import Live
-from typing import Optional
 
 console = Console()
 
@@ -15,9 +14,9 @@ def _stream_logs(
     port: int,
     follow: bool = False,
     lines: int = 50,
-    level: Optional[str] = None,
-    component: Optional[str] = None,
-    search: Optional[str] = None,
+    level: str | None = None,
+    component: str | None = None,
+    search: str | None = None,
 ):
     """Stream or fetch logs from the server."""
     params = {"lines": lines}

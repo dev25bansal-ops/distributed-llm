@@ -4,7 +4,6 @@ Tracks which nodes hold which cache entries, enabling peer-to-peer
 cache lookups across the distributed cluster.
 """
 
-from typing import Dict, List, Optional, Set
 
 
 class CacheIndex:
@@ -16,13 +15,13 @@ class CacheIndex:
 
     def __init__(self):
         # prefix_hash -> set of node_ids
-        self._index: Dict[str, Set[str]] = {}
+        self._index: dict[str, set[str]] = {}
         # prefix_hash -> entry_ref (e.g., serialized KV cache or disk path)
-        self._refs: Dict[str, str] = {}
+        self._refs: dict[str, str] = {}
         self._hits = 0
         self._misses = 0
 
-    def index_tokens(self, tokens: List[int]) -> str:
+    def index_tokens(self, tokens: list[int]) -> str:
         """Compute polynomial hash of token sequence.
 
         Uses the same polynomial rolling hash as PrefixCache for consistency.
@@ -54,7 +53,7 @@ class CacheIndex:
         self._index[prefix_hash].add(node_id)
         self._refs[prefix_hash] = entry_ref
 
-    def lookup(self, prefix_hash: str) -> Optional[str]:
+    def lookup(self, prefix_hash: str) -> str | None:
         """Find a node that holds the given cache entry.
 
         Args:
@@ -70,7 +69,7 @@ class CacheIndex:
         self._misses += 1
         return None
 
-    def lookup_all(self, prefix_hash: str) -> List[str]:
+    def lookup_all(self, prefix_hash: str) -> list[str]:
         """Find all nodes that hold the given cache entry.
 
         Args:
@@ -86,7 +85,7 @@ class CacheIndex:
         self._misses += 1
         return []
 
-    def get_ref(self, prefix_hash: str) -> Optional[str]:
+    def get_ref(self, prefix_hash: str) -> str | None:
         """Get the entry reference for a prefix hash.
 
         Args:
@@ -97,7 +96,7 @@ class CacheIndex:
         """
         return self._refs.get(prefix_hash)
 
-    def remove(self, prefix_hash: str, node_id: Optional[str] = None) -> None:
+    def remove(self, prefix_hash: str, node_id: str | None = None) -> None:
         """Evict an entry from the index.
 
         Args:
@@ -130,7 +129,7 @@ class CacheIndex:
         Returns:
             Dict with hit_count, miss_count, total_entries, unique_nodes.
         """
-        all_nodes: Set[str] = set()
+        all_nodes: set[str] = set()
         for nodes in self._index.values():
             all_nodes.update(nodes)
 

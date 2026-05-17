@@ -55,16 +55,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         api_key = os.environ.get("API_KEY")
 
-        # Allow explicit opt-out for development only
-        if os.environ.get("DISABLE_AUTH") == "1":
-            if not getattr(self, "_warned", False):
-                import logging
-                logging.getLogger("distllm.security").warning(
-                    "AUTHENTICATION DISABLED via DISABLE_AUTH=1. "
-                    "This is a security risk and should only be used in development."
+        # Allow explicit opt-out for development only.
+        # Requires BOTH DISABLE_AUTH=1 AND DISTLLM_DEV_MODE=1 to be set.
+        # When API_KEY is configured, auth is NEVER bypassed.
+        if os.environ.get("DISABLE_AUTH") == "1" and not api_key:
+            if os.environ.get("DISTLLM_DEV_MODE") == "1":
+                if not getattr(self, "_warned", False):
+                    import logging
+                    logging.getLogger("distllm.security").warning(
+                        "AUTHENTICATION DISABLED via DISABLE_AUTH=1 + DISTLLM_DEV_MODE=1. "
+                        "This is a security risk and should only be used in development."
+                    )
+                    self._warned = True
+                return await call_next(request)
+            else:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "DISABLE_AUTH requires DISTLLM_DEV_MODE=1 to be set"},
                 )
-                self._warned = True
-            return await call_next(request)
 
         if not api_key:
             return JSONResponse(

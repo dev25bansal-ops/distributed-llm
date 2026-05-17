@@ -4,8 +4,6 @@ Handles token sampling, constraint application, and generation loops.
 Extracted from the Coordinator class.
 """
 
-from typing import Optional, Any, List
-
 import torch
 
 from distllm.core.structured_output import JSONSchemaConstraint
@@ -67,7 +65,7 @@ class TokenGenerator:
     def sample_batch(
         self,
         logits: torch.Tensor,
-        sequences: List[Any],
+        sequences: list,
         tokenizer=None,
     ) -> torch.Tensor:
         """Sample next tokens for a batch, applying constraints per sequence.
@@ -100,7 +98,7 @@ class TokenGenerator:
     def apply_constraint(
         self,
         logits: torch.Tensor,
-        constraint: Optional[JSONSchemaConstraint],
+        constraint: JSONSchemaConstraint | None,
         tokenizer=None,
     ) -> torch.Tensor:
         """Apply a constraint mask to logits.

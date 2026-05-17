@@ -11,7 +11,7 @@ Integrates with tp_launcher (TP), pipeline_orchestrator (PP), and moe_orchestrat
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 
@@ -37,8 +37,8 @@ class TopologyInfo:
     has_infiniband: bool = False
     total_gpus: int = 1
     interconnect_bandwidth_gbps: float = 12.5  # default PCIe 4.0 x16
-    node_hostnames: List[str] = field(default_factory=list)
-    gpu_memory_gb: List[float] = field(default_factory=list)
+    node_hostnames: list[str] = field(default_factory=list)
+    gpu_memory_gb: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -49,9 +49,9 @@ class ParallelPlan:
     pp_num_stages: int = 1
     ep_num_experts_per_node: int = 1
     ep_replication_factor: int = 1
-    layers_per_stage: List[Tuple[int, int]] = field(default_factory=list)
-    nodes_per_stage: List[List[str]] = field(default_factory=list)
-    expert_assignment: Dict[str, List[int]] = field(default_factory=dict)
+    layers_per_stage: list[tuple[int, int]] = field(default_factory=list)
+    nodes_per_stage: list[list[str]] = field(default_factory=list)
+    expert_assignment: dict[str, list[int]] = field(default_factory=dict)
     explanation: str = ""
 
 
@@ -71,14 +71,14 @@ class HardwareProber:
                     info.gpu_memory_gb.append(props.total_memory / (1024 ** 3))
                 except Exception:
                     info.gpu_memory_gb.append(0.0)
-            try:
-                nvlink = torch.cuda.is_initialized()
-                if nvlink:
-                    info.has_nvlink = True
-            except Exception:
-                pass
             if info.gpus_per_node > 1:
-                info.has_nvlink = True
+                peer_accessible = any(
+                    torch.cuda.can_device_access_peer(i, j)
+                    for i in range(info.gpus_per_node)
+                    for j in range(info.gpus_per_node)
+                    if i != j
+                )
+                info.has_nvlink = peer_accessible
         import os
         ib = os.environ.get("DISTLLM_INFINIBAND", "").lower()
         info.has_infiniband = ib in ("1", "true", "yes")
@@ -94,9 +94,9 @@ class HardwareProber:
 class HybridParallelPlanner:
     """Selects and configures the optimal parallelism strategy."""
 
-    def __init__(self, topology: Optional[TopologyInfo] = None):
+    def __init__(self, topology: TopologyInfo | None = None):
         self.topology = topology or HardwareProber.probe()
-        self._plan: Optional[ParallelPlan] = None
+        self._plan: ParallelPlan | None = None
 
     def plan(
         self,
@@ -162,7 +162,7 @@ class HybridParallelPlanner:
         self._plan = plan
         return plan
 
-    def _distribute_layers(self, total_layers: int, stages: int) -> List[Tuple[int, int]]:
+    def _distribute_layers(self, total_layers: int, stages: int) -> list[tuple[int, int]]:
         if stages <= 0 or total_layers <= 0:
             return [(0, max(0, total_layers - 1))]
         base = total_layers // stages
@@ -176,12 +176,12 @@ class HybridParallelPlanner:
             start = end + 1
         return result
 
-    def _assign_nodes(self, stages: int) -> List[List[str]]:
+    def _assign_nodes(self, stages: int) -> list[list[str]]:
         if stages <= 1:
             return [["node_0"]]
         return [[f"node_{i}"] for i in range(stages)]
 
-    def _assign_experts(self, num_experts: int, nodes: int) -> Dict[str, List[int]]:
+    def _assign_experts(self, num_experts: int, nodes: int) -> dict[str, list[int]]:
         if nodes <= 0:
             return {}
         from distllm.core.moe_orchestrator import replicate_experts_across_nodes
@@ -199,7 +199,7 @@ class HybridParallelPlanner:
         return " | ".join(parts)
 
     @property
-    def current_plan(self) -> Optional[ParallelPlan]:
+    def current_plan(self) -> ParallelPlan | None:
         return self._plan
 
 
@@ -215,7 +215,7 @@ class HybridParallelExecutor:
     def __init__(self, plan: ParallelPlan, coordinator: Any = None):
         self._plan = plan
         self._coordinator = coordinator
-        self._tp_processes: List[Any] = []
+        self._tp_processes: list[Any] = []
 
     def launch_tp(self, model_name: str, dtype: str = "float16") -> None:
         if self._plan.tp_world_size <= 1:
@@ -237,11 +237,60 @@ class HybridParallelExecutor:
             pipeline.group_nodes_into_stages(self._plan.pp_num_stages)
         logger.info(f"Configured PP: {self._plan.pp_num_stages} stages")
 
-    def configure_ep(self, moe_orchestrator: Any, node_ids: List[str]) -> None:
+    def configure_ep(self, moe_orchestrator: Any, node_ids: list[str]) -> None:
         if not self._plan.expert_assignment:
             return
         for node_id, expert_ids in self._plan.expert_assignment.items():
             logger.info(f"EP: node {node_id} assigned experts {expert_ids}")
+
+    def execute(
+        self,
+        step_input: torch.Tensor,
+        node_kv_caches: dict,
+        request_id: str = "",
+        draft_tokens: list | None = None,
+    ) -> torch.Tensor:
+        """Execute a step through the hybrid parallelism pipeline.
+
+        Dispatches through TP → PP → EP based on the plan strategy.
+        Falls back to pipeline.run_pipeline when no TP/EP is needed.
+        """
+        strategy = self._plan.strategy if self._plan else None
+
+        # EP dispatch (all-to-all)
+        if strategy in (ParallelStrategy.EP, ParallelStrategy.TP_EP, ParallelStrategy.PP_EP, ParallelStrategy.TP_PP_EP):
+            moe = getattr(self._coordinator, '_moe_orchestrator', None)
+            if moe and hasattr(moe, 'all_to_all_dispatch'):
+                step_input = moe.all_to_all_dispatch(step_input)
+
+        # TP forward via launched workers
+        if strategy in (ParallelStrategy.TP, ParallelStrategy.TP_PP, ParallelStrategy.TP_EP, ParallelStrategy.TP_PP_EP):
+            if self._tp_processes:
+                from distllm.core.tp_launcher import tp_forward
+                step_input = tp_forward(step_input, self._tp_processes)
+
+        # PP forward via pipeline
+        pipeline = getattr(self._coordinator, '_pipeline', None)
+        if pipeline and strategy in (ParallelStrategy.PP, ParallelStrategy.TP_PP, ParallelStrategy.PP_EP, ParallelStrategy.TP_PP_EP):
+            if getattr(pipeline, 'enable_overlap', False):
+                logits = pipeline.run_pipeline_overlap(
+                    step_input, node_kv_caches, request_id=request_id,
+                    draft_tokens=draft_tokens,
+                )
+            else:
+                logits = pipeline.run_pipeline(
+                    step_input, node_kv_caches, request_id=request_id,
+                    draft_tokens=draft_tokens,
+                )
+        elif pipeline:
+            logits = pipeline.run_pipeline(
+                step_input, node_kv_caches, request_id=request_id,
+                draft_tokens=draft_tokens,
+            )
+        else:
+            raise RuntimeError("No pipeline available for hybrid parallel execution")
+
+        return logits
 
     def shutdown(self) -> None:
         for proc in self._tp_processes:

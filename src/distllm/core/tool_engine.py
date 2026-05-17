@@ -10,7 +10,7 @@ Handles:
 import json
 import re
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 from dataclasses import dataclass, field
 from loguru import logger
 
@@ -103,7 +103,7 @@ class ToolCallingEngine:
     ]
 
     def __init__(self):
-        self._tool_handlers: Dict[str, Callable] = {}
+        self._tool_handlers: dict[str, Callable] = {}
 
     def register_handler(self, name: str, handler: Callable) -> None:
         """Register a tool handler function.
@@ -114,7 +114,7 @@ class ToolCallingEngine:
         """
         self._tool_handlers[name] = handler
 
-    def parse_schemas(self, tools: List[dict]) -> List[ToolSchema]:
+    def parse_schemas(self, tools: list[dict]) -> list[ToolSchema]:
         """Parse OpenAI-style tool definitions into ToolSchema objects.
 
         Args:
@@ -135,10 +135,10 @@ class ToolCallingEngine:
 
     def build_tool_prompt(
         self,
-        schemas: List[ToolSchema],
-        messages: List[dict],
-        tool_choice: Optional[str] = None,
-    ) -> Tuple[str, List[dict]]:
+        schemas: list[ToolSchema],
+        messages: list[dict],
+        tool_choice: str | None = None,
+    ) -> tuple[str, list[dict]]:
         """Build a tool-augmented prompt from messages and tool schemas.
 
         Adds a system message describing available tools, then formats
@@ -185,7 +185,7 @@ class ToolCallingEngine:
 
         return prompt, tool_choice
 
-    def extract_tool_calls(self, generated_text: str) -> List[ToolCall]:
+    def extract_tool_calls(self, generated_text: str) -> list[ToolCall]:
         """Extract tool calls from generated text.
 
         Supports:
@@ -251,7 +251,7 @@ class ToolCallingEngine:
 
         return tool_calls
 
-    def _parse_tool_call_dict(self, data: dict) -> Optional[ToolCall]:
+    def _parse_tool_call_dict(self, data: dict) -> ToolCall | None:
         """Parse a single tool call from a dict."""
         # Handle different field naming conventions
         name = data.get("name") or data.get("function_name") or data.get("tool_name")
@@ -274,9 +274,9 @@ class ToolCallingEngine:
 
     def execute_tool_calls(
         self,
-        tool_calls: List[ToolCall],
-        handlers: Optional[Dict[str, Callable]] = None,
-    ) -> List[ToolResult]:
+        tool_calls: list[ToolCall],
+        handlers: dict[str, Callable] | None = None,
+    ) -> list[ToolResult]:
         """Execute tool calls and return results.
 
         Args:
@@ -317,11 +317,11 @@ class ToolCallingEngine:
 
     def inject_tool_results(
         self,
-        messages: List[dict],
+        messages: list[dict],
         assistant_content: str,
-        tool_calls: List[ToolCall],
-        tool_results: List[ToolResult],
-    ) -> List[dict]:
+        tool_calls: list[ToolCall],
+        tool_results: list[ToolResult],
+    ) -> list[dict]:
         """Inject tool results into the conversation for continuation.
 
         Args:
@@ -351,8 +351,8 @@ class ToolCallingEngine:
 
     def should_continue_after_tool_calls(
         self,
-        tool_calls: List[ToolCall],
-        tool_results: List[ToolResult],
+        tool_calls: list[ToolCall],
+        tool_results: list[ToolResult],
     ) -> bool:
         """Determine if generation should continue after tool calls.
 
@@ -375,9 +375,9 @@ class ToolCallingEngine:
 
     def enforce_tool_choice(
         self,
-        tool_choice: Optional[str],
-        tool_calls: List[ToolCall],
-    ) -> List[ToolCall]:
+        tool_choice: str | None,
+        tool_calls: list[ToolCall],
+    ) -> list[ToolCall]:
         """Enforce tool_choice constraint on extracted tool calls.
 
         Args:

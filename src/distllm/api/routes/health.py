@@ -1,7 +1,6 @@
 """Health, readiness, liveness, metrics, and model management routes."""
 
 import time
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -18,20 +17,20 @@ class ModelInfo(BaseModel):
     object: str = "model"
     created: int = Field(..., description="Unix timestamp of model creation")
     owned_by: str = "distributed-llm"
-    root: Optional[str] = Field(default=None, description="Root model for fine-tuned models")
+    root: str | None = Field(default=None, description="Root model for fine-tuned models")
     archived: bool = Field(default=False, description="Whether the model is archived")
 
 
 class ModelList(BaseModel):
     object: str = "list"
-    data: List[ModelInfo]
+    data: list[ModelInfo]
 
 
 class ParamUpdateRequest(BaseModel):
     """Request to update generation parameters mid-stream."""
-    temperature: Optional[float] = Field(default=None, ge=0, le=2.0, description="New sampling temperature")
-    top_p: Optional[float] = Field(default=None, ge=0, le=1.0, description="New nucleus sampling threshold")
-    top_k: Optional[int] = Field(default=None, ge=0, description="New top-k sampling value")
+    temperature: float | None = Field(default=None, ge=0, le=2.0, description="New sampling temperature")
+    top_p: float | None = Field(default=None, ge=0, le=1.0, description="New nucleus sampling threshold")
+    top_k: int | None = Field(default=None, ge=0, description="New top-k sampling value")
 
 
 @router.get("/v1/models")

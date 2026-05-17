@@ -3,7 +3,6 @@
 import httpx
 from rich.console import Console
 from rich.table import Table
-from typing import Optional
 
 console = Console()
 

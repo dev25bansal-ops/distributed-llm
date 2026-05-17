@@ -1,7 +1,6 @@
 """Rule applier — loads alerting rules and pushes them to Prometheus."""
 
 import re
-from typing import List, Optional
 
 import requests
 from loguru import logger
@@ -21,7 +20,7 @@ _PROMQL_FUNC_RE = re.compile(r'[a-z_]+\(', re.IGNORECASE)
 _UNBALANCED_PAREN_RE = re.compile(r'[^(]*\)[^(]*$')
 
 
-def validate_promql(expr: str) -> List[str]:
+def validate_promql(expr: str) -> list[str]:
     """Basic PromQL syntax validation.
 
     Returns a list of issues found (empty if expression looks valid).
@@ -51,7 +50,7 @@ class RuleApplier:
 
     def load_and_validate(
         self,
-        rule_file: Optional[str] = None,
+        rule_file: str | None = None,
         use_defaults: bool = True,
     ) -> tuple:
         """Load rules from file or use defaults.
@@ -65,8 +64,8 @@ class RuleApplier:
         """
         import yaml
 
-        alerts: List[AlertRule] = []
-        recording: List[RecordingRule] = []
+        alerts: list[AlertRule] = []
+        recording: list[RecordingRule] = []
 
         if rule_file:
             with open(rule_file, "r") as f:
@@ -114,7 +113,7 @@ class RuleApplier:
 
     def apply_rules(
         self,
-        rule_file: Optional[str] = None,
+        rule_file: str | None = None,
         use_defaults: bool = True,
     ) -> bool:
         """Load rules and push to Prometheus via HTTP API.

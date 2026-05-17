@@ -4,7 +4,6 @@ import base64
 import struct
 import time
 import uuid
-from typing import List, Optional
 
 import torch
 from fastapi import APIRouter, HTTPException
@@ -27,17 +26,17 @@ class EmbeddingRequest(BaseModel):
         }
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
-    input: List[str] = Field(..., description="Input text(s) to embed")
+    input: list[str] = Field(..., max_length=1024, description="Input text(s) to embed (max 1024 texts)")
     encoding_format: str = Field(default="float", description="Output format: 'float' or 'base64'")
-    dimensions: Optional[int] = Field(default=None, ge=1, description="Number of dimensions for the embedding")
+    dimensions: int | None = Field(default=None, ge=1, description="Number of dimensions for the embedding")
     normalize: bool = Field(default=True, description="Whether to L2-normalize embeddings")
-    user: Optional[str] = Field(default=None, description="End-user identifier")
+    user: str | None = Field(default=None, description="End-user identifier")
 
 
 class EmbeddingObject(BaseModel):
     index: int = Field(..., description="Index of the embedding in the input list")
     object: str = "embedding"
-    embedding: List[float] = Field(..., description="The embedding vector")
+    embedding: list[float] = Field(..., description="The embedding vector")
 
 
 class EmbeddingResponse(BaseModel):
@@ -45,7 +44,7 @@ class EmbeddingResponse(BaseModel):
     object: str = "list"
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str = "distributed-llm"
-    data: List[EmbeddingObject]
+    data: list[EmbeddingObject]
     usage: dict = Field(default_factory=dict)
 
 
@@ -62,8 +61,8 @@ class RerankRequest(BaseModel):
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
     query: str = Field(..., description="Query text to rank against")
-    documents: List[str] = Field(..., description="List of documents to rerank")
-    top_n: Optional[int] = Field(default=None, ge=1, description="Return top N results")
+    documents: list[str] = Field(..., description="List of documents to rerank")
+    top_n: int | None = Field(default=None, ge=1, description="Return top N results")
 
 
 class RerankResult(BaseModel):
@@ -77,11 +76,11 @@ class RerankResponse(BaseModel):
     object: str = "list"
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str = "distributed-llm"
-    results: List[RerankResult]
+    results: list[RerankResult]
     usage: dict = Field(default_factory=dict)
 
 
-def _encode_base64(values: List[float]) -> bytes:
+def _encode_base64(values: list[float]) -> bytes:
     """Encode a list of floats as base64 (32-bit float, little-endian)."""
     return base64.b64encode(struct.pack(f"{len(values)}f", *values))
 

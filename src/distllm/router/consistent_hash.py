@@ -6,7 +6,6 @@ when nodes join or leave the cluster.
 
 import hashlib
 from bisect import bisect_left
-from typing import Dict, List, Optional
 
 
 class ConsistentHashRing:
@@ -18,8 +17,8 @@ class ConsistentHashRing:
 
     def __init__(self, replicas: int = 150):
         self._replicas = replicas
-        self._ring: List[int] = []
-        self._node_map: Dict[int, str] = {}
+        self._ring: list[int] = []
+        self._node_map: dict[int, str] = {}
         self._nodes: set = set()
 
     def add_node(self, node_id: str) -> None:
@@ -41,7 +40,7 @@ class ConsistentHashRing:
             self._ring.remove(k)
             del self._node_map[k]
 
-    def get_node(self, key: str) -> Optional[str]:
+    def get_node(self, key: str) -> str | None:
         if not self._ring:
             return None
         hash_key = self._hash(key)
@@ -49,8 +48,8 @@ class ConsistentHashRing:
         return self._node_map[self._ring[idx]]
 
     def get_node_with_fallback(
-        self, key: str, healthy_nodes: Optional[set] = None
-    ) -> Optional[str]:
+        self, key: str, healthy_nodes: set | None = None
+    ) -> str | None:
         """Get node for key, walking the ring until a healthy node is found."""
         if not self._ring:
             return None

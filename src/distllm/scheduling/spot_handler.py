@@ -1,7 +1,7 @@
 """Spot instance interruption handler."""
 
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 from loguru import logger
 
@@ -19,9 +19,9 @@ class SpotHandler:
     def __init__(self, cost_tracker, drain_timeout: float = 30.0):
         self.cost_tracker = cost_tracker
         self.drain_timeout = drain_timeout
-        self._interrupted_nodes: Dict[str, float] = {}  # node_id -> timestamp
-        self._drain_callback: Optional[Callable] = None
-        self._fallback_callback: Optional[Callable] = None
+        self._interrupted_nodes: dict[str, float] = {}  # node_id -> timestamp
+        self._drain_callback: Callable | None = None
+        self._fallback_callback: Callable | None = None
 
     def set_drain_callback(self, callback: Callable) -> None:
         """Set callback to drain active requests from a node.
@@ -33,12 +33,12 @@ class SpotHandler:
     def set_fallback_callback(self, callback: Callable) -> None:
         """Set callback to route to fallback nodes.
 
-        Callback signature: fallback_callback(node_id: str) -> List[str]
+        Callback signature: fallback_callback(node_id: str) -> list[str]
         Returns list of fallback node IDs.
         """
         self._fallback_callback = callback
 
-    def handle_interruption_notice(self, node_id: str) -> List[str]:
+    def handle_interruption_notice(self, node_id: str) -> list[str]:
         """Handle a spot instance interruption notice.
 
         Args:
@@ -73,11 +73,11 @@ class SpotHandler:
         """Check if a node has received an interruption notice."""
         return node_id in self._interrupted_nodes
 
-    def get_interrupted_nodes(self) -> List[str]:
+    def get_interrupted_nodes(self) -> list[str]:
         """Get list of all interrupted nodes."""
         return list(self._interrupted_nodes.keys())
 
-    def check_interruption_metadata(self) -> Optional[str]:
+    def check_interruption_metadata(self) -> str | None:
         """Poll cloud provider metadata endpoint for interruption notices.
 
         In production, this polls the AWS instance metadata service:
@@ -98,7 +98,7 @@ class SpotHandler:
             logger.debug(f"Spot metadata check failed: {e}")
         return None
 
-    def poll_interruptions(self, node_ids: List[str]) -> Dict[str, List[str]]:
+    def poll_interruptions(self, node_ids: list[str]) -> dict[str, list[str]]:
         """Poll for interruptions across multiple spot nodes.
 
         Args:

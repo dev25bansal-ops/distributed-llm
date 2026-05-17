@@ -8,7 +8,7 @@ import io
 import os
 import time
 import uuid
-from typing import List, Optional, Literal
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -26,18 +26,18 @@ class ImageGenerationRequest(BaseModel):
     response_format: str = Field(default="url", description="Output format: url or b64_json")
     size: str = Field(default="1024x1024", description="Image size: 1024x1024, 1024x1792, 1792x1024")
     style: str = Field(default="vivid", description="Style: vivid or natural")
-    user: Optional[str] = Field(default=None, description="End-user identifier")
+    user: str | None = Field(default=None, description="End-user identifier")
 
 
 class ImageObject(BaseModel):
-    url: Optional[str] = None
-    b64_json: Optional[str] = None
-    revised_prompt: Optional[str] = None
+    url: str | None = None
+    b64_json: str | None = None
+    revised_prompt: str | None = None
 
 
 class ImageGenerationResponse(BaseModel):
     created: int
-    data: List[ImageObject]
+    data: list[ImageObject]
 
 
 @router.post("/v1/images/generations")
@@ -86,7 +86,7 @@ async def create_image(body: ImageGenerationRequest):
 class ImageEditRequest(BaseModel):
     image: str  # base64 or file path
     prompt: str
-    mask: Optional[str] = None
+    mask: str | None = None
     model: str = Field(default="distributed-llm-image")
     n: int = Field(default=1, ge=1, le=10)
     size: str = Field(default="1024x1024")
@@ -174,7 +174,7 @@ async def _generate_image(prompt: str, width: int, height: int, quality: str) ->
         return base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 100).decode()
 
 
-async def _edit_image(image: str, prompt: str, mask: Optional[str] = None) -> str:
+async def _edit_image(prompt: str, image: str, mask: str | None = None) -> str:
     """Edit an image based on a prompt."""
     # Placeholder: return original image encoded
     if image.startswith('data:'):

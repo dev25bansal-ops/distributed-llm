@@ -9,7 +9,7 @@ Provides a lightweight DI container that supports:
 No third-party DI library required.
 """
 
-from typing import Any, Callable, Dict, Optional, Type
+from typing import Any, Callable
 
 
 class Container:
@@ -26,10 +26,10 @@ class Container:
     """
 
     def __init__(self):
-        self._instances: Dict[Type, Any] = {}
-        self._factories: Dict[Type, Callable[[], Any]] = {}
+        self._instances: dict[type, Any] = {}
+        self._factories: dict[type, Callable[[], Any]] = {}
 
-    def register(self, interface: Type, instance: Any) -> "Container":
+    def register(self, interface: type, instance: Any) -> "Container":
         """Register a concrete instance for an interface.
 
         Args:
@@ -43,7 +43,7 @@ class Container:
         self._factories.pop(interface, None)
         return self
 
-    def register_factory(self, interface: Type, factory: Callable[[], Any]) -> "Container":
+    def register_factory(self, interface: type, factory: Callable[[], Any]) -> "Container":
         """Register a factory function for lazy instantiation.
 
         Args:
@@ -57,7 +57,7 @@ class Container:
         self._instances.pop(interface, None)
         return self
 
-    def resolve(self, interface: Type) -> Any:
+    def resolve(self, interface: type) -> Any:
         """Resolve an interface to its implementation.
 
         Args:
@@ -80,7 +80,7 @@ class Container:
 
         raise KeyError(f"No implementation registered for {interface.__name__}")
 
-    def resolve_optional(self, interface: Type) -> Optional[Any]:
+    def resolve_optional(self, interface: type) -> Any | None:
         """Resolve an interface, returning None if not registered.
 
         Args:
@@ -94,7 +94,7 @@ class Container:
         except KeyError:
             return None
 
-    def has(self, interface: Type) -> bool:
+    def has(self, interface: type) -> bool:
         """Check if an interface is registered."""
         return interface in self._instances or interface in self._factories
 

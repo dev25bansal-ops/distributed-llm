@@ -4,7 +4,7 @@ Handles health check orchestration and metrics export.
 Extracted from the Coordinator class.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 
 class HealthChecker:
@@ -21,7 +21,7 @@ class HealthChecker:
 
     def check_all(
         self,
-        nodes: Dict[str, Any],
+        nodes: dict[str, Any],
         node_order: list,
         check_circuit_breaker,
     ) -> dict:
@@ -60,7 +60,7 @@ class HealthChecker:
 
     async def check_all_async(
         self,
-        nodes: Dict[str, Any],
+        nodes: dict[str, Any],
         node_order: list,
         check_circuit_breaker,
     ) -> dict:

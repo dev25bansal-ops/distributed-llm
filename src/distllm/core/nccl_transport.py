@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
@@ -83,8 +83,8 @@ class NcclTransport:
         self._timeout_s = timeout_s
         self._initialized = False
         self._lock = threading.Lock()
-        self._stats: Dict[CommType, NcclTransferStats] = {}
-        self._p2p_groups: Dict[str, dist.ProcessGroup] = {}
+        self._stats: dict[CommType, NcclTransferStats] = {}
+        self._p2p_groups: dict[str, dist.ProcessGroup] = {}
 
         if auto_init:
             self.initialize()
@@ -126,7 +126,7 @@ class NcclTransport:
     # P2P Send/Recv
     # -------------------------------------------------------------------
 
-    def send(self, tensor: torch.Tensor, dst: int, tag: int = 0, async_op: bool = False) -> Optional[dist.Work]:
+    def send(self, tensor: torch.Tensor, dst: int, tag: int = 0, async_op: bool = False) -> dist.Work | None:
         """Send a tensor to a destination rank."""
         self._ensure_initialized()
         start = time.time_ns()
@@ -142,12 +142,12 @@ class NcclTransport:
 
     def recv(
         self,
-        shape: Tuple[int, ...],
+        shape: tuple[int, ...],
         dtype: torch.dtype,
         src: int,
         tag: int = 0,
         async_op: bool = False,
-        device: Optional[str] = None,
+        device: str | None = None,
     ) -> torch.Tensor:
         """Receive a tensor from a source rank."""
         self._ensure_initialized()
@@ -211,7 +211,7 @@ class NcclTransport:
             self._record_error(CommType.BROADCAST)
             raise RuntimeError(f"NCCL broadcast failed: {e}") from e
 
-    def all_gather(self, tensor: torch.Tensor, gather_list: List[torch.Tensor]) -> List[torch.Tensor]:
+    def all_gather(self, tensor: torch.Tensor, gather_list: list[torch.Tensor]) -> list[torch.Tensor]:
         self._ensure_initialized()
         start = time.time_ns()
         try:
@@ -223,7 +223,7 @@ class NcclTransport:
             self._record_error(CommType.ALL_GATHER)
             raise RuntimeError(f"NCCL all_gather failed: {e}") from e
 
-    def reduce_scatter(self, input_list: List[torch.Tensor], output: torch.Tensor, op: dist.ReduceOp = dist.ReduceOp.SUM) -> torch.Tensor:
+    def reduce_scatter(self, input_list: list[torch.Tensor], output: torch.Tensor, op: dist.ReduceOp = dist.ReduceOp.SUM) -> torch.Tensor:
         self._ensure_initialized()
         start = time.time_ns()
         try:
@@ -243,7 +243,7 @@ class NcclTransport:
     # P2P Groups
     # -------------------------------------------------------------------
 
-    def create_p2p_group(self, group_name: str, ranks: List[int]) -> dist.ProcessGroup:
+    def create_p2p_group(self, group_name: str, ranks: list[int]) -> dist.ProcessGroup:
         """Create a sub-communicator for a specific set of ranks."""
         self._ensure_initialized()
         group = dist.new_group(ranks=ranks, backend=self._backend)
@@ -257,7 +257,7 @@ class NcclTransport:
             raise ValueError(f"P2P group {group_name} not found")
         dist.send(tensor, dst=dst, tag=tag, group=group)
 
-    def p2p_group_recv(self, group_name: str, shape: Tuple[int, ...], dtype: torch.dtype, src: int, tag: int = 0) -> torch.Tensor:
+    def p2p_group_recv(self, group_name: str, shape: tuple[int, ...], dtype: torch.dtype, src: int, tag: int = 0) -> torch.Tensor:
         group = self._p2p_groups.get(group_name)
         if group is None:
             raise ValueError(f"P2P group {group_name} not found")
@@ -284,7 +284,7 @@ class NcclTransport:
         work = self.send(tensor, dst, tag, async_op=True)
         return self.AsyncOp(work) if work else None
 
-    def async_recv(self, shape: Tuple[int, ...], dtype: torch.dtype, src: int, tag: int = 0, device: Optional[str] = None) -> Tuple[torch.Tensor, AsyncOp]:
+    def async_recv(self, shape: tuple[int, ...], dtype: torch.dtype, src: int, tag: int = 0, device: str | None = None) -> tuple[torch.Tensor, AsyncOp]:
         self._ensure_initialized()
         tensor = torch.empty(shape, dtype=dtype, device=device or f"cuda:{self._rank}")
         work = dist.irecv(tensor, src=src, tag=tag)
@@ -316,7 +316,7 @@ class NcclTransport:
                 self._stats[comm_type] = NcclTransferStats(comm_type=comm_type)
             self._stats[comm_type].errors += 1
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         result = {}
         with self._lock:
             for comm_type, stat in self._stats.items():

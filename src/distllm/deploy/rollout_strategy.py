@@ -1,7 +1,7 @@
 """Rollout strategy for progressive canary deployments."""
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 
 @dataclass
@@ -39,7 +39,7 @@ class RolloutStrategy:
         RolloutStage(weight_pct=100, analysis_duration_s=300),
     ]
 
-    def __init__(self, stages: Optional[List[RolloutStage]] = None):
+    def __init__(self, stages: list[RolloutStage] | None = None):
         self.stages = stages or self.DEFAULT_STAGES
 
     def create_rollout(self, canary_version: str) -> RolloutState:
@@ -52,7 +52,7 @@ class RolloutStrategy:
             stage_start_time=time.time(),
         )
 
-    def get_next_stage(self, state: RolloutState) -> Optional[RolloutStage]:
+    def get_next_stage(self, state: RolloutState) -> RolloutStage | None:
         """Get the next rollout stage.
 
         Returns:
@@ -63,7 +63,7 @@ class RolloutStrategy:
             return None
         return self.stages[next_index]
 
-    def get_current_stage(self, state: RolloutState) -> Optional[RolloutStage]:
+    def get_current_stage(self, state: RolloutState) -> RolloutStage | None:
         """Get the current rollout stage."""
         if state.current_stage_index >= len(self.stages):
             return None
@@ -135,7 +135,7 @@ class RolloutStrategy:
         n = state.total_requests
         state.avg_latency_ms = state.avg_latency_ms + (latency_ms - state.avg_latency_ms) / n
 
-    def get_analysis(self, state: RolloutState) -> Dict:
+    def get_analysis(self, state: RolloutState) -> dict:
         """Get current analysis metrics."""
         error_rate = state.error_count / state.total_requests if state.total_requests > 0 else 0.0
         return {

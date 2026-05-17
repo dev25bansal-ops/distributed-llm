@@ -4,8 +4,6 @@ Uses AutoModel (not AutoModelForCausalLM) for proper embedding generation
 with mean-pooling, normalization, and cross-encoder reranking support.
 """
 
-from typing import List, Optional, Tuple
-
 import torch
 from loguru import logger
 from transformers import AutoModel, AutoTokenizer, AutoModelForSequenceClassification
@@ -21,8 +19,8 @@ class EmbeddingModelLoader:
 
     def __init__(
         self,
-        embedding_model: Optional[str] = None,
-        rerank_model: Optional[str] = None,
+        embedding_model: str | None = None,
+        rerank_model: str | None = None,
         device: str = "auto",
         dtype: str = "float16",
         trust_remote_code: bool = False,
@@ -37,7 +35,7 @@ class EmbeddingModelLoader:
         self.embedding_tokenizer = None
         self.rerank_model = None
         self.rerank_tokenizer = None
-        self._embedding_dimension: Optional[int] = None
+        self._embedding_dimension: int | None = None
 
     def load_embedding_model(self) -> bool:
         """Load the embedding model using AutoModel.
@@ -105,7 +103,7 @@ class EmbeddingModelLoader:
 
     def encode(
         self,
-        texts: List[str],
+        texts: list[str],
         normalize: bool = True,
         max_length: int = 512,
     ) -> torch.Tensor:
@@ -148,10 +146,10 @@ class EmbeddingModelLoader:
     def rerank(
         self,
         query: str,
-        documents: List[str],
+        documents: list[str],
         batch_size: int = 32,
         max_length: int = 512,
-    ) -> List[Tuple[int, float]]:
+    ) -> list[tuple[int, float]]:
         """Score query-document pairs using cross-encoder.
 
         Args:
@@ -196,7 +194,7 @@ class EmbeddingModelLoader:
         return scores
 
     @property
-    def embedding_dimension(self) -> Optional[int]:
+    def embedding_dimension(self) -> int | None:
         return self._embedding_dimension
 
     def _torch_dtype(self) -> torch.dtype:

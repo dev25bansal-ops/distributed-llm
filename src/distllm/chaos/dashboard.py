@@ -1,12 +1,10 @@
 """CLI dashboard for chaos engineering results."""
 
-from typing import List, Optional
-
 from distllm.chaos.injector import ChaosEvent
 from distllm.chaos.resilience import ResilienceScore
 
 
-def _render_table(headers: List[str], rows: List[List[str]], widths: Optional[List[int]] = None) -> str:
+def _render_table(headers: list[str], rows: list[list[str]], widths: list[int] | None = None) -> str:
     """Render a simple text table."""
     if widths is None:
         widths = [max(len(str(h)), max((len(str(row[i])) for row in rows), default=0)) for i, h in enumerate(headers)]
@@ -21,7 +19,7 @@ def _render_table(headers: List[str], rows: List[List[str]], widths: Optional[Li
     return "\n".join(lines)
 
 
-def render_scenario_summary(results: List, scores: List[ResilienceScore]) -> str:
+def render_scenario_summary(results: list, scores: list[ResilienceScore]) -> str:
     """Render a summary of scenario results."""
     headers = ["Scenario", "Steps", "Failed", "Duration", "Recovery", "Score", "Grade"]
     rows = []
@@ -39,7 +37,7 @@ def render_scenario_summary(results: List, scores: List[ResilienceScore]) -> str
     return _render_table(headers, rows)
 
 
-def render_events(events: List[ChaosEvent]) -> str:
+def render_events(events: list[ChaosEvent]) -> str:
     """Render a list of chaos events."""
     headers = ["Type", "Node", "Result", "Duration"]
     rows = []
@@ -53,7 +51,7 @@ def render_events(events: List[ChaosEvent]) -> str:
     return _render_table(headers, rows)
 
 
-def render_resilience_summary(scores: List[ResilienceScore]) -> str:
+def render_resilience_summary(scores: list[ResilienceScore]) -> str:
     """Render overall resilience summary."""
     if not scores:
         return "No chaos scenarios have been executed yet."

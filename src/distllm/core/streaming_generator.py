@@ -20,7 +20,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, AsyncIterator, Callable
 
 from loguru import logger
 
@@ -32,7 +32,7 @@ class StreamChunk:
     object: str = "chat.completion.chunk"
     created: int = 0
     model: str = ""
-    choices: List[Dict[str, Any]] = field(default_factory=lambda: [
+    choices: list[dict[str, Any]] = field(default_factory=lambda: [
         {
             "index": 0,
             "delta": {"role": "assistant", "content": ""},
@@ -56,7 +56,7 @@ class StreamingConfig:
     stream_chunk_size: int = 1     # Tokens per event
     include_usage: bool = False
     echo_prompt: bool = False
-    extra_headers: Dict[str, str] = field(default_factory=dict)
+    extra_headers: dict[str, str] = field(default_factory=dict)
 
 
 class StreamingGenerator:
@@ -75,14 +75,14 @@ class StreamingGenerator:
     def __init__(
         self,
         tokenizer: Any = None,
-        config: Optional[StreamingConfig] = None,
-        decode_fn: Optional[Callable] = None,
+        config: StreamingConfig | None = None,
+        decode_fn: Callable | None = None,
     ):
         self._tokenizer = tokenizer
         self._config = config or StreamingConfig()
         self._decode_fn = decode_fn or self._default_decode
 
-    def _default_decode(self, token_ids: List[int]) -> str:
+    def _default_decode(self, token_ids: list[int]) -> str:
         if self._tokenizer is None:
             return ""
         return self._tokenizer.decode(token_ids, skip_special_tokens=True)
@@ -91,7 +91,7 @@ class StreamingGenerator:
         self,
         prompt: str,
         generate_fn: Callable,
-        cancel_event: Optional[asyncio.Event] = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Generate streaming tokens from a prompt.
 
@@ -116,7 +116,7 @@ class StreamingGenerator:
                 choices=[{"index": 0, "delta": {"role": "assistant", "content": prompt}, "finish_reason": None}],
             )
 
-        token_buffer: List[int] = []
+        token_buffer: list[int] = []
         tokens_generated = 0
         first_token_time = 0.0
 

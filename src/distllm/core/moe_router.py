@@ -2,7 +2,6 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 
@@ -18,11 +17,11 @@ class MoERouter(nn.Module):
         self.num_experts = num_experts
         self.num_experts_per_tok = num_experts_per_tok
         self.gate = nn.Linear(hidden_dim, num_experts, bias=False)
-        self._expert_map: Dict[int, str] = {}  # expert_id -> node_id
+        self._expert_map: dict[int, str] = {}  # expert_id -> node_id
 
     def forward(
         self, hidden_states: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute gating scores and route tokens.
 
         Args:
@@ -41,13 +40,13 @@ class MoERouter(nn.Module):
         """Register which node holds a given expert."""
         self._expert_map[expert_id] = node_id
 
-    def get_expert_node(self, expert_id: int) -> Optional[str]:
+    def get_expert_node(self, expert_id: int) -> str | None:
         """Get the node ID that holds a given expert."""
         return self._expert_map.get(expert_id)
 
     def route_to_nodes(
         self, hidden_states: torch.Tensor
-    ) -> Dict[str, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
         """Route tokens to their expert nodes.
 
         Uses vectorized operations instead of Python loops for performance.
@@ -64,7 +63,7 @@ class MoERouter(nn.Module):
             expert_to_node[expert_id] = node_id
 
         # Vectorized: collect all (token_idx, expert_rank, node_id) tuples
-        node_groups: Dict[str, List[int]] = {}
+        node_groups: dict[str, list[int]] = {}
         for tok_idx in range(seq_len):
             for expert_rank in range(self.num_experts_per_tok):
                 expert_id = int(topk_indices[tok_idx, expert_rank].item())

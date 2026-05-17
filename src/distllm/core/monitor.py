@@ -3,7 +3,7 @@
 import os
 import time
 import atexit
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -20,7 +20,7 @@ class SystemMonitor:
     def __init__(self):
         self._has_gpu = False
         self._gpu_handle: Any = None
-        self._last_metrics: Dict[str, Any] = {}
+        self._last_metrics: dict[str, Any] = {}
         self._pynvml = None
 
         self._init_gpu()
@@ -51,11 +51,11 @@ class SystemMonitor:
     def __del__(self):
         self._shutdown_gpu()
 
-    def collect(self) -> Dict[str, Any]:
+    def collect(self) -> dict[str, Any]:
         """Collect a snapshot of current system metrics."""
         import psutil
 
-        metrics: Dict[str, Any] = {
+        metrics: dict[str, Any] = {
             "timestamp": time.time(),
             "cpu": {
                 "percent": psutil.cpu_percent(interval=0.1),
@@ -94,7 +94,7 @@ class SystemMonitor:
         self._last_metrics = metrics
         return metrics
 
-    def get_request_metrics(self, scheduler: Any) -> Dict[str, Any]:
+    def get_request_metrics(self, scheduler: Any) -> dict[str, Any]:
         """Request-level metrics from the batch scheduler.
 
         Args:
@@ -112,14 +112,14 @@ class SystemMonitor:
             ) if stats["max_batch_size"] > 0 else 0,
         }
 
-    def get_scheduler_stats(self, scheduler: BatchScheduler) -> Dict[str, Any]:
+    def get_scheduler_stats(self, scheduler: BatchScheduler) -> dict[str, Any]:
         """Combined system + scheduler stats."""
         return {
             **self.collect(),
             "scheduler": self.get_request_metrics(scheduler),
         }
 
-    def health_check(self, scheduler: BatchScheduler) -> Dict[str, Any]:
+    def health_check(self, scheduler: BatchScheduler) -> dict[str, Any]:
         """Return health status for the /health endpoint."""
         metrics = self.collect()
         gpu_ok = True

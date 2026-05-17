@@ -9,7 +9,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Deque, Dict, List, Optional
+from collections.abc import Callable
 
 
 @dataclass
@@ -18,7 +18,7 @@ class MetricBaseline:
 
     window_size: int = 60
     sigma_threshold: float = 3.0
-    _samples: Deque[float] = field(default_factory=deque)
+    _samples: deque[float] = field(default_factory=deque)
     _ema: float = 0.0
     _ema_var: float = 0.0
     _alpha: float = 0.1
@@ -71,15 +71,15 @@ class AnomalyDetector:
     """Detects anomalies in operational metrics via statistical deviation."""
 
     def __init__(self, sigma_threshold: float = 3.0):
-        self._baselines: Dict[str, MetricBaseline] = {}
+        self._baselines: dict[str, MetricBaseline] = {}
         self._sigma_threshold = sigma_threshold
-        self._callbacks: List[Callable[[AnomalyEvent], None]] = []
+        self._callbacks: list[Callable[[AnomalyEvent], None]] = []
 
     def register_metric(
         self,
         name: str,
         window_size: int = 60,
-        sigma_threshold: Optional[float] = None,
+        sigma_threshold: float | None = None,
     ):
         """Register a metric for anomaly detection."""
         self._baselines[name] = MetricBaseline(
@@ -87,7 +87,7 @@ class AnomalyDetector:
             sigma_threshold=sigma_threshold or self._sigma_threshold,
         )
 
-    def record(self, name: str, value: float) -> Optional[AnomalyEvent]:
+    def record(self, name: str, value: float) -> AnomalyEvent | None:
         """Record a metric value. Returns an AnomalyEvent if detected."""
         baseline = self._baselines.get(name)
         if baseline is None:

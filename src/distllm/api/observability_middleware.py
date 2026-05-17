@@ -6,7 +6,6 @@ FastAPI request lifecycle.
 """
 
 import time
-from typing import Optional
 
 from fastapi import Request
 from loguru import logger

@@ -7,7 +7,6 @@ for centralized log aggregation.
 
 import sys
 import json
-from typing import Optional
 from loguru import logger
 
 
@@ -30,7 +29,7 @@ def _get_otel_context() -> dict:
 def setup_logging(
     level: str = "INFO",
     json_format: bool = True,
-    loki_url: Optional[str] = None,
+    loki_url: str | None = None,
     service_name: str = "distllm",
 ) -> None:
     """Configure loguru with structured JSON logging and optional Loki sink.

@@ -4,7 +4,6 @@ Handles multi-model serving, model registry, and MoE forward pass.
 Extracted from the Coordinator class.
 """
 
-from typing import List, Optional
 
 import torch
 
@@ -24,7 +23,7 @@ class MultiModelManager:
     def __init__(
         self,
         model_name: str,
-        model_registry: Optional[ModelRegistry] = None,
+        model_registry: ModelRegistry | None = None,
         moe_orchestrator=None,
         pipeline=None,
     ):
@@ -48,7 +47,7 @@ class MultiModelManager:
             self.model_registry = ModelRegistry()
         return self.model_registry.register(name, path, total_layers)
 
-    def list_models(self) -> List[str]:
+    def list_models(self) -> list[str]:
         """List all registered model names.
 
         Returns:
@@ -58,7 +57,7 @@ class MultiModelManager:
             return [self.model_name]
         return [m.name for m in self.model_registry.list_models()]
 
-    def get_model_name(self, requested: Optional[str] = None) -> str:
+    def get_model_name(self, requested: str | None = None) -> str:
         """Resolve model name: requested > registry default > self.model_name.
 
         Args:
