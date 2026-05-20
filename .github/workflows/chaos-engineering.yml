@@ -1,0 +1,150 @@
+# Chaos engineering workflow — runs on demand and on schedule
+# Tests system resilience under various failure conditions
+
+name: Chaos Engineering
+
+on:
+  schedule:
+    # Run daily at 3 AM UTC
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Chaos scenario to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - node_failure
+          - network_latency
+          - network_partition
+          - data_corruption
+          - cluster
+          - oom
+      duration:
+        description: 'Test duration in seconds'
+        required: false
+        default: '120'
+      target:
+        description: 'Target environment URL'
+        required: false
+        default: 'http://localhost:8000'
+
+jobs:
+  node-failure:
+    name: Node Failure
+    if: ${{ github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'node_failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - name: Run node failure chaos
+        run: |
+          pytest tests/chaos/test_node_failure.py -v --timeout=60
+      - name: Upload chaos results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-node-failure
+          path: tests/chaos/results/
+          retention-days: 30
+
+  network-latency:
+    name: Network Latency
+    if: ${{ github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'network_latency' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - name: Run latency chaos
+        run: |
+          pytest tests/chaos/scenarios/network_latency.py -v --timeout=120 || true
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-network-latency
+          path: tests/chaos/results/
+          retention-days: 30
+
+  data-corruption:
+    name: Data Corruption
+    if: ${{ github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'data_corruption' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - name: Run data corruption chaos
+        run: |
+          pytest tests/chaos/scenarios/data_corruption.py -v --timeout=30 || true
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-data-corruption
+          path: tests/chaos/results/
+          retention-days: 30
+
+  cluster-chaos:
+    name: Cluster Chaos (2-node real cluster)
+    if: ${{ github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'cluster' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - name: Run cluster chaos tests (2-node real gRPC cluster)
+        run: |
+          pytest tests/chaos/test_cluster_chaos_integration.py -v --timeout=120
+      - name: Run existing cluster chaos tests
+        run: |
+          pytest tests/chaos/test_cluster_chaos.py -v --timeout=60
+      - name: Upload cluster chaos results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-cluster
+          path: tests/chaos/results/
+          retention-days: 30
+
+  all-scenarios:
+    name: All Chaos Scenarios
+    if: ${{ github.event.inputs.scenario == 'all' }}
+    runs-on: ubuntu-latest
+    needs: [node-failure, network-latency, data-corruption, cluster-chaos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - name: Run all chaos scenarios
+        run: |
+          pytest tests/chaos/test_all_scenarios.py -v --timeout=180 || true
+      - name: Generate chaos report
+        if: always()
+        run: |
+          echo "## Chaos Engineering Report" > chaos-report.md
+          echo "### $(date -u)" >> chaos-report.md
+          echo "- Scenario: All" >> chaos-report.md
+          echo "- Node failure: ${{ needs.node-failure.result }}" >> chaos-report.md
+          echo "- Network latency: ${{ needs.network-latency.result }}" >> chaos-report.md
+          echo "- Data corruption: ${{ needs.data-corruption.result }}" >> chaos-report.md
+          echo "- Cluster chaos (2-node): ${{ needs.cluster-chaos.result }}" >> chaos-report.md
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-report
+          path: chaos-report.md

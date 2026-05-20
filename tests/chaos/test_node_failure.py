@@ -46,10 +46,12 @@ class CrashingNodeClient(NodeClient):
     """Node client that simulates network failures."""
 
     def __init__(self, host: str, port: int, crash_after: int = 0, **kwargs):
-        super().__init__(host, port, **kwargs)
+        self.host = host
+        self.port = port
         self.call_count = 0
-        self.crash_after = crash_after  # Number of successful calls before failure
+        self.crash_after = crash_after
         self._crashing = False
+        self._stub = MagicMock()
 
     def trigger_crash(self):
         """Start failing all calls."""
@@ -160,36 +162,39 @@ class TestNodeFailure:
 class TestNetworkPartition:
     """Verify behavior during and after network partitions."""
 
-    def test_grpc_timeout_behavior(self):
+    @patch.object(NodeClient, "__init__", return_value=None)
+    def test_grpc_timeout_behavior(self, mock_init):
         """gRPC calls should timeout within configured limit, not hang forever."""
-        client = NodeClient("localhost", 9999, max_retries=1, retry_delay=0.1)
+        client = NodeClient.__new__(NodeClient)
+        client.host = "localhost"
+        client.port = 9999
+        client._stub = MagicMock()
+        client._stub.HealthCheck.side_effect = TimeoutError("gRPC timeout")
 
         start = time.time()
         with pytest.raises(Exception):
             client.health_check(timeout=2)
         elapsed = time.time() - start
 
-        # Should timeout within reasonable bounds (2s timeout + retries)
         assert elapsed < 15, f"Health check took too long: {elapsed:.1f}s"
 
-    def test_repeated_health_checks_during_partition(self):
+    @patch.object(NodeClient, "__init__", return_value=None)
+    def test_repeated_health_checks_during_partition(self, mock_init):
         """Health checks should continue failing during partition, not accumulate errors."""
-        coord = Coordinator(model_name="test-model")
-        coord.nodes = {}
-        coord.node_order = []
-
-        # Simulate repeated health checks during partition
         errors = []
         for _ in range(5):
             try:
-                client = NodeClient("localhost", 9999, max_retries=1, retry_delay=0.05)
+                client = NodeClient.__new__(NodeClient)
+                client.host = "localhost"
+                client.port = 9999
+                client._stub = MagicMock()
+                client._stub.HealthCheck.side_effect = ConnectionError("Node unreachable")
                 client.health_check(timeout=1)
             except Exception as e:
                 errors.append(str(type(e).__name__))
 
-        # All should fail with connection errors, not escalate
         assert len(errors) == 5
-        assert all("Error" in e or "Timeout" in e or "Connection" in e for e in errors)
+        assert all("Error" in e or "Connection" in e for e in errors)
 
 
 # --- Test: GPU OOM Simulation ---

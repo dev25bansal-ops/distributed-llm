@@ -7,8 +7,6 @@ following the OpenAI API specification.
 import io
 import os
 import tempfile
-import time
-import uuid
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
@@ -39,7 +37,17 @@ class TTSRequest(BaseModel):
     speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Playback speed")
 
 
-@router.post("/v1/audio/transcriptions")
+@router.post(
+    "/v1/audio/transcriptions",
+    summary="Create transcription",
+    description="Transcribe audio to text using Whisper or configured ASR model. Supports multiple audio formats (mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, flac) up to 25 MB. Returns transcription in json, text, srt, verbose_json, or vtt format.",
+    response_description="Transcription text in requested format",
+    responses={
+        400: {"description": "Unsupported file format or file too large (>25 MB)"},
+        501: {"description": "Transcription backend not configured"},
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_transcription(
     file: UploadFile = File(...),
     model: str = Form(default="whisper-1"),
@@ -107,7 +115,16 @@ async def create_transcription(
         return TranscriptionResponse(text=text)
 
 
-@router.post("/v1/audio/speech")
+@router.post(
+    "/v1/audio/speech",
+    summary="Create speech",
+    description="Generate spoken audio from text using the configured TTS model. Supports multiple voices (alloy, echo, fable, onyx, nova, shimmer) and output formats (mp3, opus, aac, flac, wav, pcm). Output is streamed as an audio file attachment.",
+    response_description="Generated audio file in requested format",
+    responses={
+        501: {"description": "TTS backend not configured"},
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_speech(body: TTSRequest):
     """Generate speech from text.
 
@@ -152,7 +169,7 @@ async def _transcribe_audio(
 ) -> str:
     """Transcribe audio using available model.
 
-    Attempts to use whisper model if available, falls back to placeholder.
+    Attempts to use a configured Whisper/ASR model.
     """
     coord = g.coordinator
 
@@ -165,10 +182,13 @@ async def _transcribe_audio(
         from transformers import pipeline
 
         # Save to temp file for whisper
+        tmp_name = None
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_data)
             f.flush()
+            tmp_name = f.name
 
+        try:
             transcriber = pipeline(
                 "automatic-speech-recognition",
                 model=whisper_model,
@@ -177,7 +197,7 @@ async def _transcribe_audio(
             )
 
             result = transcriber(
-                f.name,
+                tmp_name,
                 generate_kwargs={
                     "language": language,
                     "prompt": prompt,
@@ -185,9 +205,20 @@ async def _transcribe_audio(
                 } if language or prompt else {},
             )
             return result["text"]
+        finally:
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
 
-    # Fallback: return placeholder with audio metadata
-    return f"[Transcription placeholder: {len(audio_data)} bytes of audio]"
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Audio transcription backend is not configured. "
+            "Attach _whisper_model and _whisper_processor to the coordinator."
+        ),
+    )
 
 
 async def _synthesize_text(
@@ -198,7 +229,7 @@ async def _synthesize_text(
 ) -> bytes:
     """Synthesize text to audio.
 
-    Attempts to use TTS model if available, falls back to placeholder audio.
+    Attempts to use a configured TTS model.
     """
     coord = g.coordinator
 
@@ -227,29 +258,13 @@ async def _synthesize_text(
         sf.write(buffer, np.array(audio), samplerate=result.get("sampling_rate", 22050), format=format)
         return buffer.getvalue()
 
-    # Fallback: generate silent placeholder audio
-    import numpy as np
-    import struct
-
-    # Create minimal WAV file
-    sample_rate = 22050
-    duration = max(0.5, len(text) / 15.0 / speed)  # ~15 chars/sec
-    samples = int(sample_rate * duration)
-
-    # Generate simple tone as placeholder
-    freq = 440  # A4
-    t = np.linspace(0, duration, samples, False)
-    audio = np.sin(2 * np.pi * freq * t).astype(np.float32) * 0.3
-
-    buffer = io.BytesIO()
-    import wave
-    with wave.open(buffer, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes((audio * 32767).astype(np.int16).tobytes())
-
-    return buffer.getvalue()
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Text-to-speech backend is not configured. "
+            "Attach _tts_model and _tts_processor to the coordinator."
+        ),
+    )
 
 
 def _estimate_duration(audio_data: bytes) -> float:

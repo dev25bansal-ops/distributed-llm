@@ -1,0 +1,86 @@
+{{- if .Values.prometheus.rules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "distllm.fullname" . }}-alerts
+  labels:
+    {{- include "distllm.labels" . | nindent 4 }}
+    role: alert-rules
+spec:
+  groups:
+    - name: distllm-service-alerts
+      interval: 30s
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            rate(distllm_errors_total[5m]) / rate(distllm_total_requests[5m]) > {{ .Values.prometheus.rules.alerts.highErrorRate.threshold }}
+          for: {{ .Values.prometheus.rules.alerts.highErrorRate.duration }}
+          labels:
+            severity: critical
+          annotations:
+            summary: "High error rate ({{ "{{ $value | humanizePercentage }}" }})"
+            description: "Error rate exceeded {{ .Values.prometheus.rules.alerts.highErrorRate.threshold | mul 100 }}% for {{ .Values.prometheus.rules.alerts.highErrorRate.duration }}"
+
+        - alert: HighP99Latency
+          expr: |
+            histogram_quantile(0.99, rate(distllm_token_latency_bucket[5m])) > {{ .Values.prometheus.rules.alerts.highLatency.p99ThresholdMs }}
+          for: {{ .Values.prometheus.rules.alerts.highLatency.duration }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "P99 latency > {{ .Values.prometheus.rules.alerts.highLatency.p99ThresholdMs }}ms"
+
+        - alert: NodeDown
+          expr: |
+            count(distllm_node_healthy == 0) > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ "{{ $value }}" }} worker node(s) are down"
+
+        - alert: LowThroughput
+          expr: |
+            rate(distllm_tokens_per_second[5m]) < 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Throughput below 10 tok/s for 10 minutes"
+
+        - alert: CacheHitRateDrop
+          expr: |
+            rate(distllm_cache_hits_total[10m]) / (rate(distllm_cache_hits_total[10m]) + rate(distllm_cache_misses_total[10m])) < 0.3
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Cache hit rate dropped below 30%"
+
+        - alert: DegradationActive
+          expr: |
+            distllm_degradation_level > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Graceful degradation active at level {{ "{{ $value }}" }}"
+
+        - alert: GPUMemoryPressure
+          expr: |
+            (1 - distllm_gpu_memory_free / distllm_gpu_memory_total) > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU memory usage > 90%"
+
+        - alert: RateLimitViolations
+          expr: |
+            rate(distllm_rate_limited_total[5m]) > 10
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: "High rate limit violation rate ({{ "{{ $value }}" }}/s)"
+{{- end }}

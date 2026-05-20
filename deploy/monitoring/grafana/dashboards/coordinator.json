@@ -2,7 +2,7 @@
   "annotations": {"list": []},
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
+  "graphTooltip": 1,
   "id": null,
   "links": [],
   "liveNow": false,
@@ -10,72 +10,152 @@
     {
       "title": "Tokens/sec",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
       "targets": [{"expr": "distllm_tokens_per_second", "legendFormat": "tokens/s"}],
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}}
     },
     {
       "title": "Total Requests",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
       "targets": [{"expr": "distllm_requests_total", "legendFormat": "requests"}]
     },
     {
       "title": "Total Tokens Generated",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
       "targets": [{"expr": "distllm_tokens_generated_total", "legendFormat": "tokens"}]
     },
     {
       "title": "Errors",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
       "targets": [{"expr": "distllm_errors_total", "legendFormat": "errors"}],
       "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "red"}}}
     },
     {
+      "title": "Preempted Requests",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [{"expr": "distllm_preempted_requests_total", "legendFormat": "preempted"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "orange"}}}
+    },
+    {
+      "title": "Cache Hit Ratio",
+      "type": "gauge",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "targets": [{"expr": "rate(distllm_cache_hits_total[5m]) / (rate(distllm_cache_hits_total[5m]) + rate(distllm_cache_misses_total[5m]))", "legendFormat": "hit ratio"}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1, "unit": "percentunit"}}
+    },
+    {
       "title": "Token Generation Latency",
-      "type": "histogram",
+      "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
       "targets": [
         {"expr": "histogram_quantile(0.50, rate(distllm_token_generation_latency_seconds_bucket[5m]))", "legendFormat": "p50"},
         {"expr": "histogram_quantile(0.95, rate(distllm_token_generation_latency_seconds_bucket[5m]))", "legendFormat": "p95"},
         {"expr": "histogram_quantile(0.99, rate(distllm_token_generation_latency_seconds_bucket[5m]))", "legendFormat": "p99"}
-      ]
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
     },
     {
       "title": "Request Latency",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
       "targets": [
-        {"expr": "histogram_quantile(0.95, rate(distllm_request_latency_seconds_bucket[5m]))", "legendFormat": "p95"}
-      ]
+        {"expr": "histogram_quantile(0.50, rate(distllm_request_latency_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(distllm_request_latency_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, rate(distllm_request_latency_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Throughput Trend (1h)",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 12},
+      "targets": [{"expr": "rate(distllm_tokens_generated_total[1m])", "legendFormat": "tokens/min"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "title": "GPU Memory Utilization",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 12},
+      "targets": [{"expr": "distllm_gpu_memory_used_bytes / distllm_gpu_memory_total_bytes * 100", "legendFormat": "{{node}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 85, "color": "yellow"}, {"value": 92, "color": "red"}]}}}
+    },
+    {
+      "title": "Error Budget Burn Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 12},
+      "targets": [
+        {"expr": "sum(rate(distllm_errors_total[5m])) / (1 - 0.999) / sum(rate(distllm_requests_total[5m]))", "legendFormat": "5m burn rate"},
+        {"expr": "sum(rate(distllm_errors_total[1h])) / (1 - 0.999) / sum(rate(distllm_requests_total[1h]))", "legendFormat": "1h burn rate"}
+      ],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 1, "color": "yellow"}, {"value": 14.4, "color": "red"}]}}}
     },
     {
       "title": "Queue Depth",
       "type": "timeseries",
-      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 12},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 18},
       "targets": [{"expr": "distllm_coordinator_queue_depth", "legendFormat": "queue"}]
     },
     {
       "title": "Circuit Breaker State",
       "type": "stat",
-      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 12},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 18},
       "targets": [{"expr": "distllm_circuit_breaker_state", "legendFormat": "{{target_node}}"}],
-      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"text": "Closed"}, "1": {"text": "Open"}}, "type": "value"}]}}
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"text": "Closed", "color": "green"}, "1": {"text": "Open", "color": "red"}}, "type": "value"}]}}
     },
     {
       "title": "Active Requests",
       "type": "gauge",
-      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 12},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 18},
       "targets": [{"expr": "distllm_coordinator_active_requests", "legendFormat": "active"}]
+    },
+    {
+      "title": "A/B Test Traffic Split",
+      "type": "piechart",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 24},
+      "targets": [{"expr": "sum by (version) (rate(distllm_ab_requests_total[5m]))", "legendFormat": "{{version}}"}]
+    },
+    {
+      "title": "A/B Test Latency Comparison",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 24},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, rate(distllm_ab_latency_seconds_bucket{version=\"A\"}[5m]))", "legendFormat": "version A p95"},
+        {"expr": "histogram_quantile(0.95, rate(distllm_ab_latency_seconds_bucket{version=\"B\"}[5m]))", "legendFormat": "version B p95"}
+      ]
+    },
+    {
+      "title": "Compression Ratio",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 24},
+      "targets": [{"expr": "distllm_compression_original_bytes / distllm_compression_compressed_bytes", "legendFormat": "ratio"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "title": "SLA Compliance",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 30},
+      "targets": [
+        {"expr": "1 - rate(distllm_sla_violations_total[5m]) / rate(distllm_requests_total[5m])", "legendFormat": "SLA compliance %"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 0.95, "color": "yellow"}, {"value": 0.99, "color": "green"}]}}}
+    },
+    {
+      "title": "Preemption Checkpoints",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 30},
+      "targets": [{"expr": "distllm_preemption_checkpoints_active", "legendFormat": "active checkpoints"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "blue"}}}
     }
   ],
   "schemaVersion": 39,
-  "tags": ["distllm"],
+  "tags": ["distllm", "coordinator"],
   "templating": {"list": []},
   "time": {"from": "now-1h", "to": "now"},
   "title": "Distributed LLM - Coordinator",
   "uid": "distllm-coordinator",
-  "version": 1
+  "version": 2
 }

@@ -45,6 +45,7 @@ from distllm.sdk.types import (
     CallStats,
 )
 from distllm.sdk.streaming import parse_sse_stream_async, parse_sse_stream_sync
+from distllm.sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError
 
 
 @dataclass
@@ -98,6 +99,7 @@ class _BaseClient:
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         retry: RetryConfig | None = None,
         pool: PoolConfig | None = None,
+        circuit_breaker: CircuitBreakerConfig | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -105,6 +107,7 @@ class _BaseClient:
         self._retry = retry or RetryConfig()
         self._pool = pool or PoolConfig()
         self._stats = ClientStats()
+        self._circuit_breaker = CircuitBreaker(circuit_breaker) if circuit_breaker is not None else None
 
     @property
     def stats(self) -> ClientStats:
@@ -114,6 +117,11 @@ class _BaseClient:
     def reset_stats(self):
         """Reset usage statistics."""
         self._stats = ClientStats()
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker | None:
+        """Return the circuit breaker instance, if configured."""
+        return self._circuit_breaker
 
     @staticmethod
     def _build_headers(api_key: str | None) -> dict[str, str]:
@@ -734,12 +742,17 @@ class DistLLMClient(_BaseClient):
         ))
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
-        """Make an HTTP request with automatic retry."""
+        """Make an HTTP request with automatic retry and circuit breaker."""
+        if self._circuit_breaker and not self._circuit_breaker.can_execute():
+            raise CircuitBreakerError("Request rejected: circuit breaker is open")
+
         last_exc = None
         for attempt in range(self._retry.max_retries + 1):
             try:
                 response = await self._client.request(method, path, **kwargs)
                 response.raise_for_status()
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_success()
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in self._retry.retryable_status_codes and attempt < self._retry.max_retries:
@@ -747,6 +760,8 @@ class DistLLMClient(_BaseClient):
                     await self._sleep(delay)
                     last_exc = e
                     continue
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_failure()
                 raise
             except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
@@ -754,16 +769,25 @@ class DistLLMClient(_BaseClient):
                     await self._sleep(delay)
                     last_exc = e
                     continue
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_failure()
                 raise
+        if self._circuit_breaker:
+            self._circuit_breaker.record_failure()
         raise last_exc  # type: ignore[misc]
 
     async def _request_raw(self, method: str, path: str, **kwargs) -> httpx.Response:
-        """Make a raw HTTP request (for binary responses)."""
+        """Make a raw HTTP request (for binary responses) with circuit breaker."""
+        if self._circuit_breaker and not self._circuit_breaker.can_execute():
+            raise CircuitBreakerError("Request rejected: circuit breaker is open")
+
         last_exc = None
         for attempt in range(self._retry.max_retries + 1):
             try:
                 response = await self._client.request(method, path, **kwargs)
                 response.raise_for_status()
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_success()
                 return response
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
@@ -771,7 +795,11 @@ class DistLLMClient(_BaseClient):
                     await self._sleep(delay)
                     last_exc = e
                     continue
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_failure()
                 raise
+        if self._circuit_breaker:
+            self._circuit_breaker.record_failure()
         raise last_exc  # type: ignore[misc]
 
     @staticmethod
@@ -1059,12 +1087,17 @@ class DistLLMClientSync(_BaseClient):
         ))
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
-        """Make an HTTP request with automatic retry."""
+        """Make an HTTP request with automatic retry and circuit breaker."""
+        if self._circuit_breaker and not self._circuit_breaker.can_execute():
+            raise CircuitBreakerError("Request rejected: circuit breaker is open")
+
         last_exc = None
         for attempt in range(self._retry.max_retries + 1):
             try:
                 response = self._client.request(method, path, **kwargs)
                 response.raise_for_status()
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_success()
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in self._retry.retryable_status_codes and attempt < self._retry.max_retries:
@@ -1072,6 +1105,8 @@ class DistLLMClientSync(_BaseClient):
                     time.sleep(delay)
                     last_exc = e
                     continue
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_failure()
                 raise
             except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
@@ -1079,16 +1114,25 @@ class DistLLMClientSync(_BaseClient):
                     time.sleep(delay)
                     last_exc = e
                     continue
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_failure()
                 raise
+        if self._circuit_breaker:
+            self._circuit_breaker.record_failure()
         raise last_exc  # type: ignore[misc]
 
     def _request_raw(self, method: str, path: str, **kwargs) -> httpx.Response:
-        """Make a raw HTTP request (for binary responses)."""
+        """Make a raw HTTP request (for binary responses) with circuit breaker."""
+        if self._circuit_breaker and not self._circuit_breaker.can_execute():
+            raise CircuitBreakerError("Request rejected: circuit breaker is open")
+
         last_exc = None
         for attempt in range(self._retry.max_retries + 1):
             try:
                 response = self._client.request(method, path, **kwargs)
                 response.raise_for_status()
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_success()
                 return response
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
@@ -1096,5 +1140,9 @@ class DistLLMClientSync(_BaseClient):
                     time.sleep(delay)
                     last_exc = e
                     continue
+                if self._circuit_breaker:
+                    self._circuit_breaker.record_failure()
                 raise
+        if self._circuit_breaker:
+            self._circuit_breaker.record_failure()
         raise last_exc  # type: ignore[misc]

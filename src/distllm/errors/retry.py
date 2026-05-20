@@ -28,20 +28,28 @@ class RetryPolicy:
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 60.0
-    retryable: tuple = (Exception,)
+    retryable: tuple = (IOError, TimeoutError, ConnectionError, OSError)
     backoff_multiplier: float = 2.0
 
 
 def with_retry(policy: RetryPolicy):
-    """Decorator that wraps a function with retry logic and exponential backoff.
+    """Decorator that wraps a sync function with retry logic and exponential backoff.
 
     Args:
         policy: RetryPolicy configuring retry behavior.
+
+    Raises:
+        TypeError: If the decorated function is async (use with_retry_async instead).
 
     Returns:
         Decorated function with retry support.
     """
     def decorator(fn: Callable[..., T]) -> Callable[..., T]:
+        if asyncio.iscoroutinefunction(fn):
+            raise TypeError(
+                f"{fn.__name__} is async — use @with_retry_async for async functions, "
+                f"or wrap the sync call in @with_retry for blocking functions."
+            )
         def wrapper(*args, **kwargs) -> T:
             last_exception: Optional[Exception] = None
             for attempt in range(policy.max_retries + 1):

@@ -4,16 +4,23 @@ Solves memory fragmentation by allocating KV cache in fixed-size blocks
 instead of contiguous tensors. Each sequence maintains a block-table
 mapping logical block indices to physical block indices.
 
+Supports **distributed prefix sharing**: nodes advertise their page-table
+entries via a Merkle tree over the gossip protocol. On a cache miss, a
+node fetches the raw block data from a peer via gRPC block streaming.
+
 Inspired by vLLM's PagedAttention architecture.
 """
 
+import hashlib
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from loguru import logger
+
+from distllm.core.merkle_tree import MerkleTree, EMPTY_HASH
 
 
 @dataclass
@@ -85,6 +92,7 @@ class BlockPool:
         device: str = "cuda",
         swap_to_cpu: bool = False,
         max_swap_blocks: int = 0,
+        auto_expand: bool = True,
     ):
         self.block_size = block_size
         self.num_layers = num_layers
@@ -94,17 +102,23 @@ class BlockPool:
         self.device = device
         self.swap_to_cpu = swap_to_cpu
         self.max_swap_blocks = max_swap_blocks
+        self.auto_expand = auto_expand
+        self.use_fp8 = False  # FP8 KV cache mode
+
+        # Multi-pool: list of block pool tensors for dynamic resizing
+        self._pools: List[torch.Tensor] = []
+        self._pool_boundaries: List[int] = []  # Cumulative block counts per pool
+        self._initial_num_blocks = num_blocks
+        # FP8 scales: parallel storage for per-block scale factors [num_blocks, num_layers, 2]
+        self._fp8_scales: Optional[torch.Tensor] = None
 
         # GPU block pool: pre-allocate all blocks
-        self.num_blocks = num_blocks
+        self.num_blocks = 0
         self._free_blocks: List[int] = list(range(num_blocks))
         self._block_usage: Dict[int, Block] = {}
 
-        # Pre-allocate block tensors on GPU
-        # Shape: [num_blocks, num_layers, 2, num_heads, block_size, head_dim]
-        # 2 = key + value
-        self._kv_pool: Optional[torch.Tensor] = None
-        self._allocate_pool()
+        # Pre-allocate initial block pool
+        self._allocate_initial_pool(num_blocks)
 
         # CPU swap space
         self._swap_space: Dict[int, SwapEntry] = {}
@@ -114,30 +128,93 @@ class BlockPool:
         self._total_allocations = 0
         self._total_swaps = 0
         self._total_restores = 0
+        self._total_expansions = 0
 
-    def _allocate_pool(self) -> None:
-        """Pre-allocate the block pool on GPU."""
+    def _allocate_initial_pool(self, num_blocks: int) -> None:
+        """Pre-allocate the initial block pool on GPU."""
         try:
             if self.device == "cuda" and torch.cuda.is_available():
-                self._kv_pool = torch.zeros(
-                    (self.num_blocks, self.num_layers, 2, self.num_heads, self.block_size, self.head_dim),
+                pool = torch.zeros(
+                    (num_blocks, self.num_layers, 2, self.num_heads, self.block_size, self.head_dim),
                     dtype=self.dtype,
                     device=self.device,
                 )
+                self._pools.append(pool)
+                self._pool_boundaries.append(num_blocks)
+                self.num_blocks = num_blocks
                 logger.info(
-                    f"PagedAttention: allocated {self.num_blocks} blocks "
+                    f"PagedAttention: allocated {num_blocks} blocks "
                     f"({self._pool_memory_gb:.2f} GB) on {self.device}"
                 )
             else:
                 logger.warning(f"PagedAttention: device {self.device} not CUDA, using CPU pool")
-                self._kv_pool = torch.zeros(
-                    (self.num_blocks, self.num_layers, 2, self.num_heads, self.block_size, self.head_dim),
+                pool = torch.zeros(
+                    (num_blocks, self.num_layers, 2, self.num_heads, self.block_size, self.head_dim),
                     dtype=self.dtype,
                     device="cpu",
                 )
+                self._pools.append(pool)
+                self._pool_boundaries.append(num_blocks)
+                self.num_blocks = num_blocks
         except RuntimeError as e:
             logger.error(f"Failed to allocate block pool: {e}")
             raise
+
+    def _expand_pool(self, grow_by: int | None = None) -> bool:
+        """Allocate an additional block pool segment.
+
+        Args:
+            grow_by: Number of blocks to add. Defaults to max(num_blocks, 64).
+
+        Returns:
+            True if pool was expanded.
+        """
+        if not self.auto_expand:
+            return False
+
+        grow = grow_by or max(self.num_blocks, 64)
+        new_start = self.num_blocks
+
+        try:
+            if self.device == "cuda" and torch.cuda.is_available():
+                new_pool = torch.zeros(
+                    (grow, self.num_layers, 2, self.num_heads, self.block_size, self.head_dim),
+                    dtype=self.dtype,
+                    device=self.device,
+                )
+            else:
+                new_pool = torch.zeros(
+                    (grow, self.num_layers, 2, self.num_heads, self.block_size, self.head_dim),
+                    dtype=self.dtype,
+                    device="cpu",
+                )
+
+            self._pools.append(new_pool)
+            self._pool_boundaries.append(new_start + grow)
+            self._free_blocks.extend(range(new_start, new_start + grow))
+            self.num_blocks += grow
+            self._total_expansions += 1
+
+            logger.info(
+                f"PagedAttention: expanded pool by {grow} blocks "
+                f"(total: {self.num_blocks}, {self._pool_memory_gb:.2f} GB)"
+            )
+            return True
+        except RuntimeError as e:
+            logger.error(f"Failed to expand block pool: {e}")
+            return False
+
+    def _get_pool_and_offset(self, block_id: int) -> Tuple[torch.Tensor, int]:
+        """Find which pool contains this block and its local offset.
+
+        Returns:
+            (pool_tensor, local_offset)
+        """
+        for i, boundary in enumerate(self._pool_boundaries):
+            prev_boundary = self._pool_boundaries[i - 1] if i > 0 else 0
+            if prev_boundary <= block_id < boundary:
+                return self._pools[i], block_id - prev_boundary
+        raise ValueError(f"Block {block_id} not found in any pool (total: {self.num_blocks})")
 
     @property
     def _pool_memory_gb(self) -> float:
@@ -162,13 +239,18 @@ class BlockPool:
     def allocate_block(self) -> Optional[int]:
         """Allocate a free block from the pool.
 
+        Auto-expands the pool if exhausted and auto_expand is enabled.
+
         Returns:
             Physical block ID, or None if pool is exhausted.
         """
         with self._lock:
             if not self._free_blocks:
+                # Try auto-expand first
+                if self.auto_expand and self._expand_pool():
+                    pass  # New blocks added to _free_blocks
                 # Try to swap out LRU block
-                if self.swap_to_cpu:
+                elif self.swap_to_cpu:
                     swapped = self._swap_lru_block()
                     if not swapped:
                         return None
@@ -210,16 +292,23 @@ class BlockPool:
         Returns:
             (key, value) tensors of shape [num_heads, tokens, head_dim].
         """
-        if self._kv_pool is None:
-            raise RuntimeError("Block pool not allocated")
+        pool, offset = self._get_pool_and_offset(block_id)
 
-        block_data = self._kv_pool[block_id, layer_idx]  # [2, num_heads, block_size, head_dim]
+        block_data = pool[offset, layer_idx]  # [2, num_heads, block_size, head_dim]
         key = block_data[0]  # [num_heads, block_size, head_dim]
         value = block_data[1]
 
         if num_tokens is not None and num_tokens < self.block_size:
             key = key[:, :num_tokens, :]
             value = value[:, :num_tokens, :]
+
+        # Dequantize from FP8 if needed
+        if self.use_fp8 and self._fp8_scales is not None:
+            from distllm.core.fp8_engine import dequantize_kv_fp8
+            scale_k = self._fp8_scales[block_id, layer_idx, 0]
+            scale_v = self._fp8_scales[block_id, layer_idx, 1]
+            key = dequantize_kv_fp8(key, scale_k)
+            value = dequantize_kv_fp8(value, scale_v)
 
         return key, value
 
@@ -240,13 +329,39 @@ class BlockPool:
             value: Value tensor [num_heads, num_tokens, head_dim].
             offset: Starting position within the block.
         """
-        if self._kv_pool is None:
-            raise RuntimeError("Block pool not allocated")
+        pool, local_offset = self._get_pool_and_offset(block_id)
 
         num_tokens = key.shape[-2]
-        block_data = self._kv_pool[block_id, layer_idx]
-        block_data[0, :, offset : offset + num_tokens, :] = key
-        block_data[1, :, offset : offset + num_tokens, :] = value
+
+        # Quantize to FP8 if enabled
+        if self.use_fp8:
+            from distllm.core.fp8_engine import quantize_kv_fp8
+            if self._fp8_scales is None:
+                self._init_fp8_scales()
+            fp8_k, scale_k = quantize_kv_fp8(key)
+            fp8_v, scale_v = quantize_kv_fp8(value)
+            self._fp8_scales[block_id, layer_idx, 0] = scale_k
+            self._fp8_scales[block_id, layer_idx, 1] = scale_v
+            block_data = pool[local_offset, layer_idx]
+            block_data[0, :, offset : offset + num_tokens, :] = fp8_k.to(self.dtype)
+            block_data[1, :, offset : offset + num_tokens, :] = fp8_v.to(self.dtype)
+        else:
+            block_data = pool[local_offset, layer_idx]
+            block_data[0, :, offset : offset + num_tokens, :] = key
+            block_data[1, :, offset : offset + num_tokens, :] = value
+
+    def _init_fp8_scales(self) -> None:
+        """Initialize FP8 scale storage tensor."""
+        self._fp8_scales = torch.zeros(
+            (self.num_blocks, self.num_layers, 2),
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+    def enable_fp8_storage(self) -> None:
+        """Enable FP8 KV cache storage for this block pool."""
+        self.use_fp8 = True
+        self._init_fp8_scales()
 
     def _swap_lru_block(self) -> bool:
         """Swap out the least recently used block to CPU.
@@ -270,18 +385,18 @@ class BlockPool:
             return False
 
         # Copy block data to CPU
-        if self._kv_pool is not None:
-            key_data = self._kv_pool[lru_id, :, 0].cpu().clone()
-            value_data = self._kv_pool[lru_id, :, 1].cpu().clone()
+        pool, offset = self._get_pool_and_offset(lru_id)
+        key_data = pool[offset, :, 0].cpu().clone()
+        value_data = pool[offset, :, 1].cpu().clone()
 
-            self._swap_space[lru_id] = SwapEntry(
-                block_id=lru_id,
-                key_tensor=key_data,
-                value_tensor=value_data,
-                device="cpu",
-            )
-            self._total_swaps += 1
-            logger.debug(f"Swapped block {lru_id} to CPU")
+        self._swap_space[lru_id] = SwapEntry(
+            block_id=lru_id,
+            key_tensor=key_data,
+            value_tensor=value_data,
+            device="cpu",
+        )
+        self._total_swaps += 1
+        logger.debug(f"Swapped block {lru_id} to CPU")
 
         # Free the GPU block
         del self._block_usage[lru_id]
@@ -299,11 +414,11 @@ class BlockPool:
                 return False
 
             entry = self._swap_space.pop(block_id)
-            if self._kv_pool is not None:
-                self._kv_pool[block_id, :, 0, :, :, :] = entry.key_tensor.to(self.device)
-                self._kv_pool[block_id, :, 1, :, :, :] = entry.value_tensor.to(self.device)
-                self._total_restores += 1
-                logger.debug(f"Restored block {block_id} from CPU")
+            pool, offset = self._get_pool_and_offset(block_id)
+            pool[offset, :, 0, :, :, :] = entry.key_tensor.to(self.device)
+            pool[offset, :, 1, :, :, :] = entry.value_tensor.to(self.device)
+            self._total_restores += 1
+            logger.debug(f"Restored block {block_id} from CPU")
 
             self._block_usage[block_id] = Block(block_id=block_id)
             if block_id in self._free_blocks:
@@ -315,6 +430,7 @@ class BlockPool:
             "swapped_blocks": len(self._swap_space),
             "total_swaps": self._total_swaps,
             "total_restores": self._total_restores,
+            "total_expansions": self._total_expansions,
             "swap_memory_gb": self._swap_memory_gb,
         }
 
@@ -340,12 +456,45 @@ class BlockPool:
         }
 
 
+def _byte_hash(data: bytes) -> str:
+    """SHA-256 hex digest of *data*."""
+    return hashlib.sha256(data).hexdigest()
+
+
+class DistributedBlockFetcher:
+    """Callback interface for fetching remote blocks from a peer node.
+
+    Set by :meth:`PagedAttentionManager.enable_distributed` to wire up
+    the actual gRPC/HTTP transport without creating a circular import.
+    """
+
+    def __init__(self) -> None:
+        self._fetch_fn: Callable[[int, str], Tuple[torch.Tensor, torch.Tensor] | None] | None = None
+        self._node_id: str = ""
+
+    def set_transport(
+        self,
+        node_id: str,
+        fetch_fn: Callable[[int, str], Tuple[torch.Tensor, torch.Tensor] | None],
+    ) -> None:
+        self._node_id = node_id
+        self._fetch_fn = fetch_fn
+
+    def fetch(self, block_id: int, peer_node_id: str) -> Tuple[torch.Tensor, torch.Tensor] | None:
+        if self._fetch_fn is None:
+            return None
+        return self._fetch_fn(block_id, peer_node_id)
+
+
 class PagedAttentionManager:
     """Manages PagedAttention block tables for all active sequences.
 
     Each sequence gets a BlockTable mapping logical block indices to
     physical blocks in the BlockPool. When sequences complete, their
     blocks are freed back to the pool (automatic defragmentation).
+
+    Supports distributed prefix sharing via Merkle tree sync over
+    the gossip protocol (see :meth:`enable_distributed`).
     """
 
     def __init__(
@@ -375,6 +524,138 @@ class PagedAttentionManager:
         self._tables: Dict[str, BlockTable] = {}
         self._lock = threading.Lock()
 
+        # Distributed prefix sharing state
+        self._distributed_enabled: bool = False
+        self._node_id: str = ""
+        self._block_fetcher = DistributedBlockFetcher()
+        # block_hash → physical block ID (local blocks)
+        self._local_block_hashes: dict[str, int] = {}
+        # physical block ID → block hash (reverse map for Merkle update)
+        self._block_id_to_hash: dict[int, str] = {}
+        # physical block ID → peer node ID that has this block (remote)
+        self._remote_blocks: dict[int, str] = {}
+        self._merkle_tree = MerkleTree()
+
+    # ------------------------------------------------------------------
+    # Distributed prefix sharing
+    # ------------------------------------------------------------------
+
+    def enable_distributed(
+        self,
+        node_id: str,
+        fetch_fn: Callable[[int, str], Tuple[torch.Tensor, torch.Tensor] | None] | None = None,
+    ) -> None:
+        """Enable cross-node block sharing.
+
+        Once enabled, each appended block's hash is tracked in a Merkle
+        tree whose root is shared via gossip.  Blocks discovered on peers
+        are fetched on demand and cached locally.
+
+        Args:
+            node_id: This node's identifier (used in gossip advertisements).
+            fetch_fn: Optional callback to fetch a block from a peer
+                      ``(block_id, peer_node_id) → (key, value)``.
+        """
+        self._distributed_enabled = True
+        self._node_id = node_id
+        if fetch_fn is not None:
+            self._block_fetcher.set_transport(node_id, fetch_fn)
+
+    def get_merkle_root(self) -> str:
+        """Current Merkle root of local page-table block hashes."""
+        if not self._distributed_enabled:
+            return EMPTY_HASH
+        return self._merkle_tree.root
+
+    def get_page_table_hashes(self) -> List[str]:
+        """All block hashes in the local page table, ordered by physical block ID."""
+        if not self._distributed_enabled:
+            return []
+        return list(self._merkle_tree._leaves)
+
+    def get_differing_blocks(self, other_root: str) -> List[int]:
+        """Return physical block IDs whose hashes differ from *other_root*.
+
+        Args:
+            other_root: Merkle root from a peer node.
+
+        Returns:
+            List of physical block IDs to fetch from the peer.
+        """
+        if not self._distributed_enabled or other_root == EMPTY_HASH:
+            return []
+
+        other_tree = MerkleTree(list(self._merkle_tree._leaves) if self._merkle_tree.root != other_root else [])
+        # We can't reconstruct the peer's leaves — but we CAN detect if
+        # our local tree differs.  If roots match, nothing changed.
+        if self._merkle_tree.root == other_root:
+            return []
+
+        # Get differing leaf indices, map back to physical block IDs
+        diff_indices = self._merkle_tree.diff(other_tree)
+        phys_ids = []
+        block_list = list(self._block_id_to_hash.keys())
+        for idx in diff_indices:
+            if idx < len(block_list):
+                phys_ids.append(block_list[idx])
+        return phys_ids
+
+    def store_remote_block_location(self, block_hash: str, peer_node_id: str) -> bool:
+        """Record that a peer node has a block with the given hash.
+
+        Returns True if a local block query should be retried with a
+        remote fetch (i.e. the block isn't already cached locally).
+        """
+        if block_hash in self._local_block_hashes:
+            return False  # already have this block locally
+        # We don't have a physical ID yet — peer will provide it on fetch
+        return True
+
+    def fetch_block_from_peer(
+        self, block_id: int, peer_node_id: str
+    ) -> Tuple[torch.Tensor, torch.Tensor] | None:
+        """Fetch a remote block's KV data from *peer_node_id*.
+
+        Returns ``(key_tensor, value_tensor)`` or None on failure.
+        """
+        return self._block_fetcher.fetch(block_id, peer_node_id)
+
+    def _compute_block_hash(self, block_id: int) -> str:
+        """SHA-256 hash of all KV data in this block (across all layers).
+
+        The hash covers the concatenated key+value tensors for every
+        transformer layer stored in this physical block.
+        """
+        pool = self.pool
+        layer_count = pool.num_layers if hasattr(pool, 'num_layers') else 1
+        digests: list[bytes] = []
+
+        for layer_idx in range(layer_count):
+            try:
+                k, v = pool.get_kv_slice(block_id, layer_idx)
+                digests.append(k.numpy().tobytes() if hasattr(k, 'numpy') else k.cpu().numpy().tobytes())
+                digests.append(v.numpy().tobytes() if hasattr(v, 'numpy') else v.cpu().numpy().tobytes())
+            except Exception:
+                continue
+
+        return _byte_hash(b"".join(digests)) if digests else EMPTY_HASH
+
+    def _update_merkle_tree(self) -> None:
+        """Rebuild the Merkle tree from current block hashes."""
+        ordered_hashes = [
+            self._block_id_to_hash[pid]
+            for pid in sorted(self._block_id_to_hash.keys())
+        ]
+        self._merkle_tree.update(ordered_hashes)
+
+    def register_remote_block(self, block_id: int, block_hash: str, peer_node_id: str) -> None:
+        """Register a block fetched from a peer as a local cache."""
+        with self._lock:
+            self._remote_blocks[block_id] = peer_node_id
+            self._block_id_to_hash[block_id] = block_hash
+            self._local_block_hashes[block_hash] = block_id
+            self._update_merkle_tree()
+
     def create_sequence(self, request_id: str) -> BlockTable:
         """Create a new block table for a sequence.
 
@@ -393,6 +674,9 @@ class PagedAttentionManager:
     def append_tokens(self, request_id: str, num_tokens: int) -> List[int]:
         """Append tokens to a sequence, allocating new blocks as needed.
 
+        When distributed mode is enabled, each newly allocated block's
+        hash is computed and the Merkle tree is updated for gossip sync.
+
         Returns:
             List of (block_id, offset, num_tokens) tuples for the appended data.
         """
@@ -403,6 +687,7 @@ class PagedAttentionManager:
 
             allocations = []
             remaining = num_tokens
+            new_blocks: list[int] = []
 
             # Fill the last block if it has space
             if table.physical_blocks:
@@ -427,7 +712,17 @@ class PagedAttentionManager:
                 take = min(self.block_size, remaining)
                 block.num_tokens = take
                 allocations.append((block_id, 0, take))
+                new_blocks.append(block_id)
                 remaining -= take
+
+            # Update Merkle tree for each new block (distributed mode)
+            if self._distributed_enabled and new_blocks:
+                for bid in new_blocks:
+                    if bid not in self._block_id_to_hash:
+                        bh = self._compute_block_hash(bid)
+                        self._block_id_to_hash[bid] = bh
+                        self._local_block_hashes[bh] = bid
+                self._update_merkle_tree()
 
             return allocations
 
@@ -440,11 +735,21 @@ class PagedAttentionManager:
         return table.physical_blocks if table else []
 
     def free_sequence(self, request_id: str) -> None:
-        """Free all blocks for a sequence (defragmentation)."""
+        """Free all blocks for a sequence (defragmentation).
+
+        Cleans up distributed block tracking when enabled.
+        """
         with self._lock:
             table = self._tables.pop(request_id, None)
             if table:
                 self.pool.free_blocks(table.physical_blocks)
+                if self._distributed_enabled:
+                    for pid in table.physical_blocks:
+                        bh = self._block_id_to_hash.pop(pid, None)
+                        if bh:
+                            self._local_block_hashes.pop(bh, None)
+                        self._remote_blocks.pop(pid, None)
+                    self._update_merkle_tree()
 
     def free_layer_kv(
         self,
@@ -541,15 +846,16 @@ class PagedAttentionManager:
     def _swap_block_to_cpu(self, phys_id: int) -> bool:
         """Swap a single block from GPU to CPU memory."""
         pool = self.pool
-        if pool is None or pool._kv_pool is None:
+        if pool is None or not pool._pools:
             return False
 
         # Check swap space limit
         if pool.max_swap_blocks > 0 and len(pool._swap_space) >= pool.max_swap_blocks:
             return False
 
-        key_data = pool._kv_pool[phys_id, :, 0].cpu().clone()
-        value_data = pool._kv_pool[phys_id, :, 1].cpu().clone()
+        block_pool, offset = pool._get_pool_and_offset(phys_id)
+        key_data = block_pool[offset, :, 0].cpu().clone()
+        value_data = block_pool[offset, :, 1].cpu().clone()
 
         pool._swap_space[phys_id] = SwapEntry(
             block_id=phys_id,

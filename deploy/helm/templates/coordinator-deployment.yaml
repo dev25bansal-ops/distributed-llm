@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "distributed-llm.fullname" . }}-coordinator
+  name: {{ include "distllm.fullname" . }}-coordinator
   labels:
-    {{- include "distributed-llm.labels" . | nindent 4 }}
-    {{- include "distributed-llm.coordinatorLabels" . | nindent 4 }}
+    {{- include "distllm.labels" . | nindent 4 }}
+    {{- include "distllm.coordinatorLabels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.coordinator.replicas }}
   selector:
     matchLabels:
-      {{- include "distributed-llm.coordinatorLabels" . | nindent 6 }}
+      {{- include "distllm.coordinatorLabels" . | nindent 6 }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -18,16 +18,45 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "distributed-llm.coordinatorLabels" . | nindent 8 }}
+        {{- include "distllm.coordinatorLabels" . | nindent 8 }}
       annotations:
         kubectl.kubernetes.io/default-container: coordinator
     spec:
-      serviceAccountName: {{ include "distributed-llm.fullname" . }}
+      serviceAccountName: {{ include "distllm.fullname" . }}
       terminationGracePeriodSeconds: {{ .Values.updateStrategy.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "distllm.fullname" . }}-config
+        - name: warmup
+          configMap:
+            name: {{ include "distllm.fullname" . }}-warmup
+        {{- if .Values.persistence.cache.enabled }}
+        - name: cache-storage
+          persistentVolumeClaim:
+            claimName: {{ include "distllm.fullname" . }}-cache
+        {{- end }}
+        {{- if .Values.persistence.audit.enabled }}
+        - name: audit-storage
+          persistentVolumeClaim:
+            claimName: {{ include "distllm.fullname" . }}-audit
+        {{- end }}
       containers:
         - name: coordinator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
           command: ["distllm-coordinator"]
           args:
             - --model
@@ -36,6 +65,8 @@ spec:
             - {{ .Values.coordinator.grpcPort | quote }}
             - --dtype
             - {{ .Values.model.dtype | quote }}
+            - --config
+            - /etc/distllm/config.yaml
             {{- if .Values.model.trustRemoteCode }}
             - --trust-remote-code
             {{- end }}
@@ -49,6 +80,21 @@ spec:
             - name: metrics
               containerPort: {{ .Values.coordinator.metricsPort }}
               protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/distllm
+              readOnly: true
+            - name: warmup
+              mountPath: /etc/distllm/warmup
+              readOnly: true
+            {{- if .Values.persistence.cache.enabled }}
+            - name: cache-storage
+              mountPath: /var/cache/distllm
+            {{- end }}
+            {{- if .Values.persistence.audit.enabled }}
+            - name: audit-storage
+              mountPath: /var/log/distllm/audit
+            {{- end }}
           env:
             - name: DISTLLM_MODEL
               value: {{ .Values.model.name | quote }}
@@ -60,6 +106,18 @@ spec:
             - name: DISTLLM_QUANT_BITS
               value: {{ .Values.quantization.bits | quote }}
             {{- end }}
+            - name: DISTLLM_RATE_LIMIT_ENABLED
+              value: {{ .Values.rateLimiter.enabled | quote }}
+            - name: DISTLLM_AUDITOR_ENABLED
+              value: {{ .Values.requestAuditor.enabled | quote }}
+            - name: DISTLLM_PROMPT_CACHE_ENABLED
+              value: {{ .Values.promptCache.enabled | quote }}
+            - name: DISTLLM_DEGRADATION_ENABLED
+              value: {{ .Values.gracefulDegradation.enabled | quote }}
+            - name: DISTLLM_ADAPTIVE_BATCHING_ENABLED
+              value: {{ .Values.adaptiveBatching.enabled | quote }}
+            - name: DISTLLM_REDIS_URL
+              value: {{ .Values.redis.url | quote }}
           readinessProbe:
             httpGet:
               path: /health

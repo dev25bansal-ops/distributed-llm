@@ -4,10 +4,40 @@ import os
 import hmac
 import time
 import uuid
+import secrets
 from collections import defaultdict
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from distllm.api.errors import error_response
+
+
+def _get_or_generate_api_key() -> str | None:
+    """Get API_KEY from env, or generate one if not set.
+
+    If API_KEY is not set, generates a secure random key and logs it.
+    This ensures auth is never disabled by default in production.
+    """
+    api_key = os.environ.get("API_KEY")
+    if api_key:
+        # Mark explicitly configured keys without reclassifying keys that
+        # this middleware generated earlier in the same process.
+        if "API_KEY_WAS_SET" not in os.environ:
+            os.environ["API_KEY_WAS_SET"] = "1"
+        return api_key
+
+    # Generate a secure random API key if not set
+    generated_key = secrets.token_urlsafe(48)
+    os.environ["API_KEY"] = generated_key
+    os.environ["API_KEY_WAS_SET"] = "0"
+    logger.warning(
+        "API_KEY not set. Generated a secure random API key for production use.\n"
+        "Save this key and set API_KEY=<your-key> in your environment:\n"
+        f"API_KEY={generated_key}"
+    )
+    return generated_key
 
 
 class _RateLimiter:
@@ -53,32 +83,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        api_key = os.environ.get("API_KEY")
+        api_key = _get_or_generate_api_key()
 
         # Allow explicit opt-out for development only.
         # Requires BOTH DISABLE_AUTH=1 AND DISTLLM_DEV_MODE=1 to be set.
         # When API_KEY is configured, auth is NEVER bypassed.
-        if os.environ.get("DISABLE_AUTH") == "1" and not api_key:
-            if os.environ.get("DISTLLM_DEV_MODE") == "1":
-                if not getattr(self, "_warned", False):
-                    import logging
-                    logging.getLogger("distllm.security").warning(
-                        "AUTHENTICATION DISABLED via DISABLE_AUTH=1 + DISTLLM_DEV_MODE=1. "
-                        "This is a security risk and should only be used in development."
-                    )
-                    self._warned = True
-                return await call_next(request)
-            else:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "DISABLE_AUTH requires DISTLLM_DEV_MODE=1 to be set"},
+        if (
+            os.environ.get("DISABLE_AUTH") == "1"
+            and os.environ.get("DISTLLM_DEV_MODE") == "1"
+            and os.environ.get("API_KEY_WAS_SET") != "1"
+        ):
+            if not getattr(self, "_warned", False):
+                logger.warning(
+                    "AUTHENTICATION DISABLED via DISABLE_AUTH=1 + DISTLLM_DEV_MODE=1. "
+                    "This is a security risk and should only be used in development."
                 )
-
-        if not api_key:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Authentication not configured: set API_KEY environment variable"},
-            )
+                self._warned = True
+            return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
         client_ip = request.client.host if request.client else "unknown"
@@ -86,17 +107,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Check rate limit before validating
         if _rate_limiter.is_rate_limited(client_ip):
             retry_after = _rate_limiter.retry_after(client_ip)
-            return JSONResponse(
+            return error_response(
                 status_code=429,
-                content={"detail": "Too many failed authentication attempts. Try again later."},
-                headers={"Retry-After": str(retry_after)},
+                error="Too Many Requests",
+                message="Too many failed authentication attempts. Try again later.",
+                type="auth_rate_limit",
+                request_id=getattr(request.state, "request_id", None),
             )
 
         if not auth_header.startswith("Bearer ") or len(auth_header) < 8 or not hmac.compare_digest(auth_header[7:], api_key):
             _rate_limiter.record_attempt(client_ip)
-            return JSONResponse(
+            return error_response(
                 status_code=401,
-                content={"detail": "Unauthorized: invalid or missing API key"},
+                error="Unauthorized",
+                message="Unauthorized: invalid or missing API key",
+                type="auth_error",
+                request_id=getattr(request.state, "request_id", None),
             )
         return await call_next(request)
 
@@ -104,13 +130,34 @@ class AuthMiddleware(BaseHTTPMiddleware):
 class RequestIDMiddleware(BaseHTTPMiddleware):
     """Generate a unique request ID per request and propagate it.
 
-    Sets X-Request-ID on the response and stores it in request.state
-    for downstream use (e.g. gRPC metadata propagation).
+    Reads X-Request-ID, X-Request-Timeout, and X-Priority headers
+    and stores them in request.state for downstream use.
     """
+
+    def _parse_priority(self, raw: str | None) -> int:
+        if raw is None:
+            return 2
+        mapping = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+        return mapping.get(raw.strip().lower(), 2)
+
+    def _parse_timeout(self, raw: str | None) -> float | None:
+        if raw is None:
+            return None
+        try:
+            val = float(raw)
+            return val if val > 0 else None
+        except (ValueError, TypeError):
+            return None
 
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
+        request.state.request_timeout = self._parse_timeout(
+            request.headers.get("X-Request-Timeout")
+        )
+        request.state.request_priority = self._parse_priority(
+            request.headers.get("X-Priority")
+        )
 
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id

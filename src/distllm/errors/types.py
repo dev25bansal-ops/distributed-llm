@@ -61,9 +61,19 @@ class SerializationError(CommunicationError):
 class GRPCTimeoutError(CommunicationError):
     """gRPC call timed out."""
 
-    def __init__(self, node_id: str, timeout: float):
-        message = f"gRPC call to node {node_id} timed out after {timeout}s"
-        super().__init__(message, context={"node_id": node_id, "timeout": timeout})
+    def __init__(self, node_id: str, timeout: float, host: str | None = None, port: int | None = None):
+        target = f"{node_id} at {host}:{port}" if host is not None and port is not None else node_id
+        message = f"gRPC call to node {target} timed out after {timeout}s"
+        context = {"node_id": node_id, "timeout": timeout}
+        if host is not None:
+            context["host"] = host
+        if port is not None:
+            context["port"] = port
+        super().__init__(message, context=context)
+        self.node_id = node_id
+        self.timeout = timeout
+        self.host = host
+        self.port = port
 
 
 # Model errors

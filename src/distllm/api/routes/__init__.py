@@ -13,7 +13,13 @@ from .images import router as images_router
 from .moderations import router as moderations_router
 from .files import router as files_router
 from .fine_tuning import router as fine_tuning_router
-
+from .gossip import router as gossip_router
+from .optimization import router as optimization_router
+from .rag import router as rag_router
+from .agent import router as agent_router
+from .disagg import router as disagg_router
+from .pipeline import router as pipeline_router
+from .debug import router as debug_router
 __all__ = [
     "chat_router",
     "completion_router",
@@ -28,4 +34,11 @@ __all__ = [
     "moderations_router",
     "files_router",
     "fine_tuning_router",
+    "gossip_router",
+    "optimization_router",
+    "rag_router",
+    "agent_router",
+    "disagg_router",
+    "pipeline_router",
+    "debug_router",
 ]

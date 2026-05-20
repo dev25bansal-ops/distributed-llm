@@ -81,7 +81,15 @@ class PromoteRequest(BaseModel):
 
 # -- Version CRUD --
 
-@router.post("/v1/models/{model_id}/versions")
+@router.post(
+    "/v1/models/{model_id}/versions",
+    summary="Create model version",
+    description="Register a new version for an existing model. Assigns a version identifier and links it to a model path or HuggingFace ID. Useful for A/B testing, staged rollouts, and model lifecycle management.",
+    response_description="Created version metadata",
+    responses={
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def create_version(model_id: str, body: VersionCreateRequest):
     """Register a new model version."""
     coord = g.coordinator
@@ -110,7 +118,15 @@ async def create_version(model_id: str, body: VersionCreateRequest):
     )
 
 
-@router.get("/v1/models/{model_id}/versions")
+@router.get(
+    "/v1/models/{model_id}/versions",
+    summary="List model versions",
+    description="List all registered versions for a model, including status, traffic weight, and promotion metadata.",
+    response_description="List of version metadata objects",
+    responses={
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def list_versions(model_id: str):
     """List all versions for a model."""
     coord = g.coordinator
@@ -139,7 +155,16 @@ async def list_versions(model_id: str):
     }
 
 
-@router.get("/v1/models/{model_id}/versions/{version_id}")
+@router.get(
+    "/v1/models/{model_id}/versions/{version_id}",
+    summary="Get model version",
+    description="Get detailed information about a specific model version, including its status, path, creation time, promotion status, and current traffic weight.",
+    response_description="Version metadata including status and traffic weight",
+    responses={
+        404: {"description": "Version not found for the given model"},
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def get_version(model_id: str, version_id: str):
     """Get details for a specific version."""
     coord = g.coordinator
@@ -165,7 +190,16 @@ async def get_version(model_id: str, version_id: str):
     )
 
 
-@router.get("/v1/models/{model_id}/versions/{version_id}/stats")
+@router.get(
+    "/v1/models/{model_id}/versions/{version_id}/stats",
+    summary="Get version statistics",
+    description="Get comprehensive performance statistics for a model version, including request counts, error rate, latency percentiles (p50, p99), and average prompt/completion token counts.",
+    response_description="Version performance statistics",
+    responses={
+        404: {"description": "Version not found"},
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def get_version_stats(model_id: str, version_id: str):
     """Get comprehensive stats for a version."""
     coord = g.coordinator
@@ -183,7 +217,16 @@ async def get_version_stats(model_id: str, version_id: str):
     return stats
 
 
-@router.delete("/v1/models/{model_id}/versions/{version_id}")
+@router.delete(
+    "/v1/models/{model_id}/versions/{version_id}",
+    summary="Delete model version",
+    description="Unregister and delete a model version. Removes the version from the registry and its associated metadata.",
+    response_description="Deletion confirmation with model and version IDs",
+    responses={
+        404: {"description": "Version not found"},
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def delete_version(model_id: str, version_id: str):
     """Delete (unregister) a model version."""
     coord = g.coordinator
@@ -201,7 +244,16 @@ async def delete_version(model_id: str, version_id: str):
 
 # -- Promotion --
 
-@router.post("/v1/models/{model_id}/versions/{version_id}/promote")
+@router.post(
+    "/v1/models/{model_id}/versions/{version_id}/promote",
+    summary="Promote model version",
+    description="Promote a specific version to become the primary active version. All traffic is directed to the promoted version after promotion.",
+    response_description="Promotion confirmation with model and version ID",
+    responses={
+        404: {"description": "Version not found"},
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def promote_version(model_id: str, version_id: str):
     """Promote a version to primary active."""
     coord = g.coordinator
@@ -217,7 +269,16 @@ async def promote_version(model_id: str, version_id: str):
     raise HTTPException(status_code=404, detail=f"Version {version_id} not found for {model_id}")
 
 
-@router.post("/v1/models/{model_id}/versions/compare")
+@router.post(
+    "/v1/models/{model_id}/versions/compare",
+    summary="Compare model versions",
+    description="Perform a statistical comparison between two model versions (stable vs candidate). Evaluates error rates, latency distributions, and recommends promotion using Mann-Whitney U test and t-test analysis.",
+    response_description="Statistical comparison result with recommendation",
+    responses={
+        400: {"description": "Missing stable_version or candidate_version"},
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def compare_versions(model_id: str, body: dict):
     """Compare two versions statistically."""
     coord = g.coordinator
@@ -239,7 +300,15 @@ async def compare_versions(model_id: str, body: dict):
 
 # -- Shadow mode --
 
-@router.get("/v1/models/{model_id}/shadow")
+@router.get(
+    "/v1/models/{model_id}/shadow",
+    summary="Get shadow comparison results",
+    description="Retrieve recent shadow mode comparison results for A/B testing. Shows side-by-side outputs from stable and shadow versions with latency comparison.",
+    response_description="List of shadow comparison results",
+    responses={
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def get_shadow_comparisons(model_id: str, limit: int = 100):
     """Get recent shadow mode comparison results."""
     coord = g.coordinator
@@ -259,7 +328,15 @@ async def get_shadow_comparisons(model_id: str, limit: int = 100):
 
 # -- Blue-green --
 
-@router.post("/v1/models/{model_id}/blue-green/switch")
+@router.post(
+    "/v1/models/{model_id}/blue-green/switch",
+    summary="Switch blue-green deployment",
+    description="Toggle the active deployment color (blue to green or green to blue) for instant traffic switching. Enables zero-downtime deployments and rapid rollback.",
+    response_description="Switch confirmation with new active color",
+    responses={
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def switch_blue_green(model_id: str, body: BlueGreenSwitchRequest):
     """Switch active color (blue <-> green) for instant rollback."""
     coord = g.coordinator
@@ -274,7 +351,15 @@ async def switch_blue_green(model_id: str, body: BlueGreenSwitchRequest):
     return {"status": "switched", "active_color": active_color, "model_id": model_id}
 
 
-@router.post("/v1/models/{model_id}/blue-green/rollback")
+@router.post(
+    "/v1/models/{model_id}/blue-green/rollback",
+    summary="Rollback blue-green deployment",
+    description="Instant rollback to the previously inactive deployment color. Routes all traffic back to the prior active version for immediate recovery from deployment issues.",
+    response_description="Rollback confirmation with active color",
+    responses={
+        503: {"description": "No model loaded or version management not enabled"},
+    },
+)
 async def rollback_blue_green(model_id: str):
     """Instant rollback to the inactive color."""
     coord = g.coordinator

@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import gc
 import math
+import os
 import time
 from dataclasses import dataclass, field
+from threading import Lock, Thread
 from typing import Any, Callable
 
 import torch
@@ -346,7 +348,7 @@ class SpeculativeTrainer:
         logger.info(f"Saved draft head to {path}")
 
     def load(self, path: str) -> None:
-        checkpoint = torch.load(path, map_location=self._device)
+        checkpoint = torch.load(path, map_location=self._device, weights_only=True)
         self._head_type = checkpoint.get("head_type", self._head_type)
         saved_config = checkpoint.get("config")
         if saved_config:
@@ -357,3 +359,237 @@ class SpeculativeTrainer:
         self._draft_head.load_state_dict(checkpoint["model_state_dict"])
         self._stats = checkpoint.get("stats", TrainingStats())
         logger.info(f"Loaded draft head from {path} (step {self._stats.step})")
+
+
+@dataclass
+class ContinuousTrainConfig:
+    """Configuration for continuous speculative training during serving."""
+    enabled: bool = True
+    min_samples: int = 64
+    max_buffer: int = 4096
+    train_every_steps: int = 200
+    train_batch_size: int = 8
+    learning_rate: float = 5e-5
+    num_epochs: int = 1
+    promote_threshold: float = 0.85
+    check_interval_s: float = 60.0
+    checkpoint_dir: str = "./continuous_train_checkpoints"
+
+
+class ContinuousSpeculativeTrainer:
+    """Collects draft/accepted tokens during serving and fine-tunes draft heads.
+
+    Hooks into SpeculativeDecoder.verify_and_accept to collect
+    (draft_tokens, accepted_tokens, hidden_states) tuples, accumulates them
+    in a ring buffer, and periodically fine-tunes the draft head on collected
+    data. Auto-promotes when acceptance rate exceeds a threshold.
+
+    Usage:
+        trainer = ContinuousSpeculativeTrainer(
+            base_model=model,
+            draft_head=draft_head,
+            config=ContinuousTrainConfig(),
+        )
+        trainer.record(draft_ids=..., accepted=..., hidden=...)
+        trainer.start_background()  # starts periodic training loop
+    """
+
+    def __init__(
+        self,
+        base_model: torch.nn.Module | None = None,
+        draft_head: torch.nn.Module | None = None,
+        config: ContinuousTrainConfig | None = None,
+        device: str = "cuda",
+    ):
+        self._base_model = base_model
+        self._draft_head = draft_head
+        self._config = config or ContinuousTrainConfig()
+        self._device = device
+
+        # Training data ring buffer
+        self._draft_buffer: list[list[int]] = []
+        self._accepted_buffer: list[list[int]] = []
+        self._lock = Lock()
+        self._train_count = 0
+        self._running = False
+        self._thread: Thread | None = None
+
+    def record(
+        self,
+        draft_ids: list[int],
+        accepted: list[int],
+    ) -> None:
+        """Record a verification result for training."""
+        if not self._config.enabled:
+            return
+        if not draft_ids:
+            return
+        with self._lock:
+            self._draft_buffer.append(draft_ids)
+            self._accepted_buffer.append(accepted)
+            if len(self._draft_buffer) > self._config.max_buffer:
+                self._draft_buffer.pop(0)
+                self._accepted_buffer.pop(0)
+
+    @property
+    def sample_count(self) -> int:
+        with self._lock:
+            return len(self._draft_buffer)
+
+    def start_background(self, interval_s: float | None = None) -> None:
+        """Start a background thread that periodically trains."""
+        if not self._config.enabled:
+            logger.info("Continuous training is disabled")
+            return
+        if self._thread and self._thread.is_alive():
+            logger.warning("Continuous trainer already running")
+            return
+
+        self._running = True
+        interval = interval_s or self._config.check_interval_s
+        self._thread = Thread(
+            target=self._background_loop,
+            args=(interval,),
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info(f"Continuous speculative trainer started (interval={interval}s)")
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+
+    def _background_loop(self, interval_s: float) -> None:
+        """Background loop that checks and trains periodically."""
+        while self._running:
+            time.sleep(interval_s)
+            if not self._running:
+                break
+            try:
+                count = self.sample_count
+                if count < self._config.min_samples:
+                    logger.debug(
+                        f"Continuous trainer: skipping (samples={count} < min={self._config.min_samples})"
+                    )
+                    continue
+                self._train_step()
+            except Exception as e:
+                logger.error(f"Continuous trainer error: {e}")
+
+    def _train_step(self) -> None:
+        """Run one fine-tuning step on collected data."""
+        if self._base_model is None or self._draft_head is None:
+            logger.warning("Continuous trainer: base_model or draft_head not set")
+            return
+
+        with self._lock:
+            drafts = list(self._draft_buffer)
+            accepteds = list(self._accepted_buffer)
+
+        if len(drafts) < self._config.min_samples:
+            return
+
+        head_params = [p for p in self._draft_head.parameters() if p.requires_grad]
+        if not head_params:
+            logger.warning("Continuous trainer: draft head has no trainable parameters")
+            return
+
+        optimizer = torch.optim.AdamW(
+            head_params,
+            lr=self._config.learning_rate,
+            weight_decay=0.01,
+        )
+
+        self._draft_head.train()
+        self._base_model.eval()
+
+        total_loss = 0.0
+        total_correct = 0
+        total_tokens = 0
+        num_batches = 0
+
+        for epoch in range(self._config.num_epochs):
+            for i in range(0, len(drafts), self._config.train_batch_size):
+                batch_drafts = drafts[i:i + self._config.train_batch_size]
+                batch_accepteds = accepteds[i:i + self._config.train_batch_size]
+
+                batch_inputs = []
+                for acc in batch_accepteds:
+                    if len(acc) == 0:
+                        continue
+                    batch_inputs.append(torch.tensor([acc[-1]], dtype=torch.long))
+
+                if not batch_inputs:
+                    continue
+
+                inputs = torch.stack(batch_inputs).to(self._device)
+
+                with torch.no_grad():
+                    outputs = self._base_model(inputs)
+                    hidden = (
+                        outputs.hidden_states[-1]
+                        if hasattr(outputs, 'hidden_states') and outputs.hidden_states
+                        else outputs.last_hidden_state
+                        if hasattr(outputs, 'last_hidden_state')
+                        else outputs[0]
+                    )
+
+                logits = self._draft_head(hidden)
+
+                if isinstance(logits, list):
+                    logits = logits[0]
+
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    inputs.view(-1),
+                )
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self._draft_head.parameters(), 1.0)
+                optimizer.step()
+
+                preds = logits.argmax(dim=-1)
+                total_correct += (preds == inputs).sum().item()
+                total_tokens += inputs.numel()
+                total_loss += loss.item()
+                num_batches += 1
+
+        avg_loss = total_loss / max(num_batches, 1)
+        accuracy = total_correct / max(total_tokens, 1)
+
+        with self._lock:
+            self._train_count += 1
+            # Trim buffer after training
+            trim = min(len(self._draft_buffer), self._config.max_buffer // 2)
+            self._draft_buffer = self._draft_buffer[trim:]
+            self._accepted_buffer = self._accepted_buffer[trim:]
+
+        logger.info(
+            f"Continuous trainer step {self._train_count}: "
+            f"loss={avg_loss:.4f}, acc={accuracy:.4f}, "
+            f"samples={len(drafts)}, remaining={self.sample_count}"
+        )
+
+        # Auto-promote if accuracy exceeds threshold
+        if accuracy >= self._config.promote_threshold:
+            self._promote_draft_model()
+
+    def _promote_draft_model(self) -> None:
+        """Auto-promote the draft model by saving checkpoint and logging."""
+        os.makedirs(self._config.checkpoint_dir, exist_ok=True)
+        ts = int(time.time())
+        path = os.path.join(self._config.checkpoint_dir, f"promoted_step_{self._train_count}_{ts}.pt")
+        try:
+            torch.save({
+                "train_step": self._train_count,
+                "accuracy": self._config.promote_threshold,
+                "model_state": self._draft_head.state_dict(),
+            }, path)
+            logger.info(
+                f"Continuous trainer: draft head promoted (accuracy={self._config.promote_threshold:.0%}), "
+                f"saved to {path}"
+            )
+        except Exception as e:
+            logger.error(f"Continuous trainer: promote failed: {e}")

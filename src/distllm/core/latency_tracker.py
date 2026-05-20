@@ -1,65 +1,58 @@
-"""Thread-safe sliding window per-node latency tracker."""
+"""Sliding-window per-node latency tracker for straggler detection and rebalancing."""
 
-import statistics
 import threading
-from collections import defaultdict, deque
+import statistics
+from collections import deque
 
 
 class LatencyTracker:
-    """Thread-safe sliding window per-node latency tracker.
-
-    Records per-node latency measurements and provides
-    average, p95, and aggregate statistics.
-    """
+    """Tracks recent latency measurements per node using a sliding window."""
 
     def __init__(self, window_size: int = 100):
         self._window_size = window_size
-        self._measurements: dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=window_size)
-        )
         self._lock = threading.Lock()
+        self._data: dict[str, deque] = {}
 
-    def record(self, node_id: str, latency_ms: float) -> None:
-        """Record a latency measurement for a node."""
+    def _ensure_node(self, node_id: str) -> deque:
+        if node_id not in self._data:
+            self._data[node_id] = deque(maxlen=self._window_size)
+        return self._data[node_id]
+
+    def record(self, node_id: str, value: float) -> None:
         with self._lock:
-            self._measurements[node_id].append(latency_ms)
+            dq = self._ensure_node(node_id)
+            dq.append(value)
 
     def get_avg(self, node_id: str) -> float | None:
-        """Get average latency for a node."""
         with self._lock:
-            measurements = self._measurements.get(node_id)
-            if not measurements:
+            dq = self._data.get(node_id)
+            if not dq:
                 return None
-            return statistics.mean(measurements)
+            return statistics.mean(dq)
 
     def get_p95(self, node_id: str) -> float | None:
-        """Get p95 latency for a node."""
         with self._lock:
-            measurements = list(self._measurements.get(node_id, []))
-            if not measurements:
+            dq = self._data.get(node_id)
+            if not dq:
                 return None
-            measurements.sort()
-            idx = int(len(measurements) * 0.95)
-            return measurements[min(idx, len(measurements) - 1)]
+            sorted_vals = sorted(dq)
+            idx = max(0, int(len(sorted_vals) * 0.95) - 1)
+            return sorted_vals[idx]
 
     def get_all_avg(self) -> dict[str, float]:
-        """Get average latency for all nodes with data."""
         with self._lock:
-            result = {}
-            for node_id, measurements in self._measurements.items():
-                if measurements:
-                    result[node_id] = statistics.mean(measurements)
-            return result
+            return {nid: statistics.mean(dq) for nid, dq in self._data.items() if dq}
 
     def get_measurements(self, node_id: str) -> list[float]:
-        """Get all measurements for a node."""
         with self._lock:
-            return list(self._measurements.get(node_id, []))
+            dq = self._data.get(node_id)
+            if not dq:
+                return []
+            return list(dq)
 
     def reset(self, node_id: str | None = None) -> None:
-        """Reset measurements for a node or all nodes."""
         with self._lock:
-            if node_id:
-                self._measurements.pop(node_id, None)
+            if node_id is not None:
+                self._data.pop(node_id, None)
             else:
-                self._measurements.clear()
+                self._data.clear()

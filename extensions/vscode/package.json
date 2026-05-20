@@ -1,0 +1,107 @@
+{
+  "name": "distllm",
+  "displayName": "DistLLM",
+  "description": "Distributed LLM inference — cluster health in the status bar, right-click 'Send to DistLLM' for quick inference from the editor.",
+  "version": "0.4.0",
+  "publisher": "distributed-llm",
+  "license": "Apache-2.0",
+  "icon": "media/icon.svg",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dev25bansal-ops/distributed-llm.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "llm",
+    "inference",
+    "distributed",
+    "pipeline-parallel",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "distllm.sendSelection",
+        "title": "Send to DistLLM"
+      },
+      {
+        "command": "distllm.openDashboard",
+        "title": "Open DistLLM Dashboard"
+      },
+      {
+        "command": "distllm.refreshStatus",
+        "title": "Refresh DistLLM Status"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "distllm.sendSelection",
+          "group": "distllm@1",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DistLLM",
+      "properties": {
+        "distllm.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL of the DistLLM API server"
+        },
+        "distllm.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model name override (empty = auto-detect from health endpoint)"
+        },
+        "distllm.refreshInterval": {
+          "type": "number",
+          "default": 10,
+          "minimum": 2,
+          "maximum": 300,
+          "description": "Status bar refresh interval in seconds"
+        },
+        "distllm.maxTokens": {
+          "type": "number",
+          "default": 256,
+          "description": "Default max tokens for 'Send to DistLLM'"
+        },
+        "distllm.temperature": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Default temperature for generation"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npx tsc -p tsconfig.json --noEmit",
+    "compile": "npx tsc -p tsconfig.json",
+    "watch": "npx tsc -watch -p tsconfig.json",
+    "package": "npx vsce package --out distllm-vscode-0.4.0.vsix",
+    "lint": "npx tsc --noEmit"
+  },
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dev25bansal-ops/distributed-llm/issues"
+  },
+  "homepage": "https://github.com/dev25bansal-ops/distributed-llm#readme",
+  "devDependencies": {
+    "@types/vscode": "^1.120.0",
+    "typescript": "^6.0.3"
+  }
+}

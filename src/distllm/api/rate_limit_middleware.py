@@ -4,6 +4,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from distllm.api.errors import error_response
 from distllm.api.rate_limiter import RateLimiter
 
 
@@ -34,17 +35,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Check rate limit
         if not self.rate_limiter.is_allowed(client_id, endpoint):
             limit, remaining, retry_after = self.rate_limiter.get_limits(client_id, endpoint)
-            return JSONResponse(
+            return error_response(
                 status_code=429,
-                content={
-                    "error": "rate_limit_exceeded",
-                    "retry_after": round(retry_after, 1),
-                },
-                headers={
-                    "X-RateLimit-Limit": str(limit),
-                    "X-RateLimit-Remaining": "0",
-                    "Retry-After": str(int(retry_after) + 1),
-                },
+                error="rate_limit_exceeded",
+                message=f"Rate limit exceeded. Retry after {retry_after:.0f}s",
+                type="rate_limit_error",
+                request_id=getattr(request.state, "request_id", None),
+                retry_after=retry_after,
             )
 
         # Process request
@@ -58,11 +55,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return response
 
     def _get_client_id(self, request: Request) -> str:
-        """Get client identifier from API key or IP address."""
+        """Get client identifier from API key or IP address.
+
+        Returns a client ID prefixed with 'auth:' for authenticated clients,
+        allowing the rate limiter to apply different limits.
+        """
         # Try API key first
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
-            return auth_header[7:]  # Return the API key as client ID
+            token = auth_header[7:]
+            # Prefix with 'auth:' to signal authenticated client
+            return f"auth:{token}"
 
         # Fall back to IP address
         forwarded = request.headers.get("x-forwarded-for")

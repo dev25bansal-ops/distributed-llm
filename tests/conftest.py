@@ -9,6 +9,7 @@ Provides reusable fixtures for:
 """
 
 import os
+import secrets
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -147,9 +148,14 @@ def mock_coordinator_with_nodes(mock_tokenizer):
 
 
 @pytest.fixture
-def api_client(mock_coordinator):
+def api_client(mock_coordinator, monkeypatch):
     """FastAPI TestClient with mock coordinator injected."""
     from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
 
     # Inject mock coordinator
     import distllm.api.server as server_module
@@ -166,9 +172,14 @@ def api_client(mock_coordinator):
 
 
 @pytest.fixture
-def api_client_no_coordinator():
+def api_client_no_coordinator(monkeypatch):
     """FastAPI TestClient without any coordinator (unhealthy state)."""
     from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
 
     import distllm.api.server as server_module
     from distllm.api.server import app
@@ -192,7 +203,11 @@ def api_client_with_auth(mock_coordinator, monkeypatch):
 
     from distllm.api.server import app
 
-    monkeypatch.setenv("API_KEY", "test-secret-key")
+    test_api_key = secrets.token_urlsafe(32)
+    monkeypatch.delenv("DISABLE_AUTH", raising=False)
+    monkeypatch.delenv("DISTLLM_DEV_MODE", raising=False)
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    monkeypatch.setenv("API_KEY", test_api_key)
 
     import distllm.api.server as server_module
 
@@ -200,6 +215,7 @@ def api_client_with_auth(mock_coordinator, monkeypatch):
     server_module.coordinator = mock_coordinator
 
     client = TestClient(app)
+    client.test_api_key = test_api_key
     yield client
 
     server_module.coordinator = original_coordinator
@@ -220,41 +236,11 @@ def tls_cert_dir():
 def tls_certificates(tls_cert_dir):
     """Generate self-signed TLS certificates for testing.
 
-    Requires openssl to be installed.
+    Uses the project TLS generator so the fixture works on Windows without openssl.
     """
-    import subprocess
+    from distllm.core.tls import generate_self_signed_certs
 
-    cert_file = os.path.join(tls_cert_dir, "server.crt")
-    key_file = os.path.join(tls_cert_dir, "server.key")
-    ca_cert_file = os.path.join(tls_cert_dir, "ca.crt")
-
-    subprocess.run(
-        [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-keyout",
-            key_file,
-            "-out",
-            cert_file,
-            "-days",
-            "1",
-            "-nodes",
-            "-subj",
-            "/CN=test-distributed-llm/O=test/CN=localhost",
-            "-addext",
-            "subjectAltName=DNS:localhost,IP:127.0.0.1",
-        ],
-        check=True,
-        capture_output=True,
-    )
-
-    # Copy cert as CA cert (self-signed)
-    import shutil
-
-    shutil.copy2(cert_file, ca_cert_file)
+    cert_file, key_file, ca_cert_file = generate_self_signed_certs(tls_cert_dir)
 
     return {
         "cert_file": cert_file,

@@ -9,7 +9,6 @@ Uses request pattern learning to:
 Integrates with PrefixCache and RadixTreeCache for storage.
 """
 
-import logging
 import os
 import threading
 import time
@@ -19,8 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import torch
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 @dataclass
@@ -196,15 +194,77 @@ class PredictiveCacheManager:
         return predictions
 
     def _start_prefetch(self, predictions: list[CachePrediction]) -> None:
+        """Start asynchronous prefetch of predicted prefixes into GPU cache.
+
+        Uses a background thread to fetch data from lower tiers (CPU/disk)
+        and populate the GPU cache proactively.
+        """
+        if not self._running:
+            self._running = True
+            self._prefetch_thread = threading.Thread(
+                target=self._prefetch_worker, daemon=True
+            )
+            self._prefetch_thread.start()
+
+        # Add predictions to prefetch queue
         for pred in predictions:
-            self._stats["prefetches"] += 1
-            if self._gpu_cache is not None and pred.target_tier == "gpu":
-                try:
-                    kv_data = self._gpu_cache.lookup(list(pred.prefix_tokens))
-                    if kv_data and kv_data[0] > 0:
-                        self._stats["prefetch_hits"] += 1
-                except Exception:
-                    pass
+            self._prefetch_queue.put(pred)
+
+    def _prefetch_worker(self) -> None:
+        """Background thread that processes prefetch requests."""
+        import queue
+
+        while self._running:
+            try:
+                pred: CachePrediction = self._prefetch_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            try:
+                # Try to fetch from CPU cache first, then disk
+                kv_data = None
+                if self._cpu_cache is not None and hasattr(self._cpu_cache, 'lookup'):
+                    match_len, kv_data = self._cpu_cache.lookup(list(pred.prefix_tokens))
+                    if match_len > 0 and kv_data is not None:
+                        # Promote to GPU
+                        if self._gpu_cache is not None and hasattr(self._gpu_cache, 'store'):
+                            self._gpu_cache.store(list(pred.prefix_tokens)[:match_len], kv_data)
+                            with self._lock:
+                                self._stats["prefetch_hits"] += 1
+                            logger.debug(f"Prefetched prefix from CPU->GPU ({match_len} tokens)")
+                            continue
+
+                # Try disk cache
+                if kv_data is None and self._disk_cache is not None and hasattr(self._disk_cache, 'lookup'):
+                    match_len, kv_data = self._disk_cache.lookup(list(pred.prefix_tokens))
+                    if match_len > 0 and kv_data is not None:
+                        # Promote to GPU (via CPU staging)
+                        if self._gpu_cache is not None and hasattr(self._gpu_cache, 'store'):
+                            self._gpu_cache.store(list(pred.prefix_tokens)[:match_len], kv_data)
+                            with self._lock:
+                                self._stats["prefetch_hits"] += 1
+                            logger.debug(f"Prefetched prefix from Disk->GPU ({match_len} tokens)")
+            except Exception as e:
+                logger.debug(f"Prefetch failed for prefix: {e}")
+
+    def start_prefetch_service(self) -> None:
+        """Initialize the prefetch queue and start the background thread."""
+        import queue
+        self._prefetch_queue: queue.Queue[CachePrediction] = queue.Queue(maxsize=1000)
+        self._running = True
+        self._prefetch_thread = threading.Thread(
+            target=self._prefetch_worker, daemon=True
+        )
+        self._prefetch_thread.start()
+        logger.info("PredictiveCache prefetch service started")
+
+    def stop_prefetch_service(self) -> None:
+        """Stop the prefetch background thread."""
+        self._running = False
+        if self._prefetch_thread is not None:
+            self._prefetch_thread.join(timeout=5)
+            self._prefetch_thread = None
+        logger.info("PredictiveCache prefetch service stopped")
 
     def lookup(self, token_ids: list[int]) -> tuple[int, Any]:
         """Look up prefix in tiered cache. Returns (match_len, kv_data)."""

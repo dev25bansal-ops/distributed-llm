@@ -38,7 +38,7 @@ class NodeRegistration:
         end_layer: int,
         max_retries: int = 3,
         retry_delay: float = 1.0,
-        use_tls: bool = True,
+        use_tls: bool = False,
         ca_cert: str | None = None,
         role: NodeRole = NodeRole.AUTO,
         expert_ids: list[int] | None = None,
@@ -76,6 +76,13 @@ class NodeRegistration:
             ca_cert=ca_cert,
         )
 
+    def close(self) -> None:
+        """Close gRPC clients and release resources."""
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
 
 class ResourceManager:
     """Manages node lifecycle, health, and circuit breaking.
@@ -91,6 +98,8 @@ class ResourceManager:
         self.cb_config = cb_config or CircuitBreakerConfig()
         self._node_failure_counts: dict[str, int] = {}
         self._node_recovery_time: dict[str, float] = {}
+        self._draining_nodes: set[str] = set()
+        self._on_node_failure: Callable[[str], None] | None = None
         self._lock = threading.Lock()
         self._metrics: dict[str, int] = {
             "node_failures": 0,
@@ -123,8 +132,13 @@ class ResourceManager:
             self._node_recovery_time.pop(node_id, None)
 
     def record_failure(self, node_id: str) -> None:
-        """Record a node failure and set exponential backoff recovery time."""
+        """Record a node failure and set exponential backoff recovery time.
+
+        Fires the node failure callback (for self-healing) when the
+        circuit breaker opens.
+        """
         with self._lock:
+            was_below = self._node_failure_counts.get(node_id, 0) < self.cb_config.threshold
             self._node_failure_counts[node_id] = self._node_failure_counts.get(node_id, 0) + 1
             failures = self._node_failure_counts[node_id]
 
@@ -141,6 +155,40 @@ class ResourceManager:
                     f"Circuit breaker opened for {node_id} after {failures} failures, "
                     f"recovery in {backoff:.1f}s"
                 )
+                # Fire self-healing callback only on first open (not repeated)
+                if was_below and self._on_node_failure:
+                    self._draining_nodes.add(node_id)
+
+        # Fire callback outside lock to avoid deadlock
+        if was_below and failures >= self.cb_config.threshold and self._on_node_failure:
+            self._on_node_failure(node_id)
+
+    # -- Node Drain State --
+
+    def mark_node_draining(self, node_id: str) -> None:
+        """Mark a node as draining (stop sending new requests)."""
+        logger.warning(f"Marking node {node_id} as draining")
+        with self._lock:
+            self._draining_nodes.add(node_id)
+
+    def mark_node_alive(self, node_id: str) -> None:
+        """Re-mark a drained node as healthy."""
+        with self._lock:
+            self._draining_nodes.discard(node_id)
+            self._node_failure_counts.pop(node_id, None)
+            self._node_recovery_time.pop(node_id, None)
+
+    def is_node_draining(self, node_id: str) -> bool:
+        return node_id in self._draining_nodes
+
+    def get_draining_nodes(self) -> list[str]:
+        return list(self._draining_nodes)
+
+    # -- Node Failure Callback --
+
+    def set_node_failure_callback(self, callback: Callable[[str], None]) -> None:
+        """Register callback when a node is declared dead (circuit breaker open)."""
+        self._on_node_failure = callback
 
     # -- Health Checks --
 
@@ -229,36 +277,46 @@ class ResourceManager:
     # -- Connection Management --
 
     def close_all(self, nodes: dict[str, NodeRegistration]) -> None:
-        """Close all node connections."""
+        """Close all node connections in a fire-and-forget manner."""
         for node in nodes.values():
             try:
-                node.client.close()
+                node.close()
             except Exception as e:
-                logger.debug(f"Error closing node connection: {e}")
+                logger.debug(f"Error closing node {node.node_id}: {e}")
 
     async def close_all_async(self, nodes: dict[str, NodeRegistration]) -> None:
-        """Close all node connections (async)."""
+        """Close all node connections (both async and sync clients)."""
         async def close_node(node: NodeRegistration):
             try:
                 await node.async_client.close()
-            except Exception as e:
-                logger.debug(f"Error closing node connection: {e}")
+            except Exception:
+                pass
+            node.close()
 
         tasks = [close_node(node) for node in nodes.values()]
         await asyncio.gather(*tasks)
 
     # -- Metrics --
 
-    def get_metrics(self) -> dict[str, int]:
+    def get_metrics(self) -> dict:
         """Get resource manager metrics."""
-        return dict(self._metrics)
+        with self._lock:
+            m = dict(self._metrics)
+            m["draining_nodes"] = len(self._draining_nodes)
+            m["circuit_breaker_open"] = sum(
+                1 for nid in self._node_failure_counts
+                if self._node_failure_counts.get(nid, 0) >= self.cb_config.threshold
+                and self._node_recovery_time.get(nid, 0) > time.time()
+            )
+            return m
 
     def increment_metric(self, name: str, value: int = 1) -> None:
         """Increment a metric counter."""
-        if name in self._metrics:
-            self._metrics[name] += value
-        else:
-            self._metrics[name] = value
+        with self._lock:
+            if name in self._metrics:
+                self._metrics[name] += value
+            else:
+                self._metrics[name] = value
 
     # -- Chaos Engineering --
 

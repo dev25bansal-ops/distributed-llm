@@ -3,6 +3,7 @@
 OpenAI-compatible file upload endpoint for fine-tuning and RAG.
 """
 
+import json
 import os
 import time
 import uuid
@@ -10,13 +11,15 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
+from loguru import logger
 
 from ..api_state import g
+from ..persistent_store import get_data_dir, get_store
 
 router = APIRouter(tags=["files"])
 
-# In-memory file registry (production: database)
-_files: dict = {}
+# Persistent storage via SQLite
+_store = get_store()
 
 
 class FileObject(BaseModel):
@@ -41,7 +44,18 @@ class FileDeleteResponse(BaseModel):
     deleted: bool
 
 
-@router.post("/v1/files", response_model=FileObject)
+@router.post(
+    "/v1/files",
+    response_model=FileObject,
+    summary="Upload file",
+    description="Upload a file for use with fine-tuning, batch processing, or RAG. Supports purposes: fine-tune, fine-tune-results, batch, batch_results. Files up to 100 MB. JSONL validation is performed for fine-tuning uploads.",
+    response_description="Uploaded file metadata with file ID",
+    responses={
+        400: {"description": "Invalid purpose, invalid JSONL format, or empty file"},
+        413: {"description": "File too large (max 100 MB)"},
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_file(
     file: UploadFile = File(...),
     purpose: str = Form(default="fine-tune"),
@@ -62,16 +76,12 @@ async def create_file(
             detail=f"Invalid purpose: {purpose}. Must be one of: {', '.join(sorted(valid_purposes))}",
         )
 
-    # Validate file size (max 512MB)
-    MAX_FILE_SIZE = 512 * 1024 * 1024
+    # Validate file size (100 MB limit)
+    MAX_FILE_SIZE = 100 * 1024 * 1024
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 512MB)")
-    filename = file.filename or f"upload_{uuid.uuid4().hex[:8]}"
-
-    # Validate file size (100 MB limit)
-    if len(content) > 100 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large. Maximum size is 100 MB.")
+        raise HTTPException(status_code=413, detail="File too large (max 100MB)")
+    filename = _safe_filename(file.filename or f"upload_{uuid.uuid4().hex[:8]}")
 
     # For fine-tuning, validate JSONL format
     if purpose == "fine-tune":
@@ -91,62 +101,91 @@ async def create_file(
         "filename": filename,
         "purpose": purpose,
         "status": "uploaded",
+        "storage_path": str(storage_path),
     }
-    _files[file_id] = file_obj
+    _store.save_file(file_id, file_obj)
 
     return FileObject(**file_obj)
 
 
-@router.get("/v1/files", response_model=FileListResponse)
+@router.get(
+    "/v1/files",
+    response_model=FileListResponse,
+    summary="List files",
+    description="List all uploaded files with optional filtering by purpose and limit. Returns file metadata including size, purpose, and creation timestamp.",
+    response_description="List of file metadata objects",
+)
 async def list_files(purpose: str | None = None, limit: int = 100):
     """List all uploaded files."""
-    files = list(_files.values())
-
-    if purpose:
-        files = [f for f in files if f["purpose"] == purpose]
-
+    files = _store.list_files(purpose=purpose)
     files = files[:limit]
     data = [FileObject(**f) for f in files]
 
     return FileListResponse(data=data)
 
 
-@router.get("/v1/files/{file_id}", response_model=FileObject)
+@router.get(
+    "/v1/files/{file_id}",
+    response_model=FileObject,
+    summary="Get file info",
+    description="Get detailed information about an uploaded file, including its size, purpose, status, and creation timestamp.",
+    response_description="File metadata object",
+    responses={
+        404: {"description": "File not found"},
+    },
+)
 async def get_file(file_id: str):
     """Get information about a file."""
-    file_obj = _files.get(file_id)
+    file_obj = _store.get_file(file_id)
     if not file_obj:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
     return FileObject(**file_obj)
 
 
-@router.delete("/v1/files/{file_id}", response_model=FileDeleteResponse)
+@router.delete(
+    "/v1/files/{file_id}",
+    response_model=FileDeleteResponse,
+    summary="Delete file",
+    description="Delete an uploaded file by its ID. Removes the file from disk and the persistent store.",
+    response_description="Deletion confirmation with file ID",
+    responses={
+        404: {"description": "File not found"},
+    },
+)
 async def delete_file(file_id: str):
     """Delete a file."""
-    file_obj = _files.get(file_id)
+    file_obj = _store.get_file(file_id)
     if not file_obj:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
 
     # Delete from disk
-    storage_path = _get_storage_path(file_id, file_obj["filename"])
+    storage_path = _resolve_storage_path(file_id, file_obj)
     if storage_path.exists():
         storage_path.unlink()
 
-    del _files[file_id]
+    _store.delete_file(file_id)
 
     return FileDeleteResponse(id=file_id, deleted=True)
 
 
-@router.get("/v1/files/{file_id}/content")
+@router.get(
+    "/v1/files/{file_id}/content",
+    summary="Download file content",
+    description="Download the raw content of an uploaded file. Returns the file as an octet-stream attachment with the original filename.",
+    response_description="File content as binary download",
+    responses={
+        404: {"description": "File not found or content not found on disk"},
+    },
+)
 async def get_file_content(file_id: str):
     """Download a file's content."""
     from fastapi.responses import FileResponse
 
-    file_obj = _files.get(file_id)
+    file_obj = _store.get_file(file_id)
     if not file_obj:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
 
-    storage_path = _get_storage_path(file_id, file_obj["filename"])
+    storage_path = _resolve_storage_path(file_id, file_obj)
     if not storage_path.exists():
         raise HTTPException(status_code=404, detail="File content not found on disk")
 
@@ -159,8 +198,6 @@ async def get_file_content(file_id: str):
 
 def _validate_jsonl(content: bytes, filename: str) -> None:
     """Validate that content is valid JSONL format."""
-    import json
-
     try:
         text = content.decode('utf-8')
     except UnicodeDecodeError:
@@ -191,15 +228,25 @@ def _validate_jsonl(content: bytes, filename: str) -> None:
         )
 
 
+def _safe_filename(filename: str) -> str:
+    """Strip any client path components from an uploaded filename."""
+    safe = Path(filename).name.strip()
+    return safe or f"upload_{uuid.uuid4().hex[:8]}"
+
+
 def _get_storage_path(file_id: str, filename: str) -> Path:
     """Get the storage path for a file."""
-    base = Path(os.environ.get("DISTLLM_FILE_DIR", "/tmp/distllm/files"))
-    if "DISTLLM_FILE_DIR" not in os.environ:
-        warnings.warn(
-            "DISTLLM_FILE_DIR not set, defaulting to /tmp which may not persist "
-            "across container restarts. Set DISTLLM_FILE_DIR to a persistent volume path."
-        )
-    return base / f"{file_id}_{filename}"
+    base = Path(os.environ.get("DISTLLM_FILE_DIR", str(get_data_dir() / "files"))).expanduser()
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{file_id}_{_safe_filename(filename)}"
+
+
+def _resolve_storage_path(file_id: str, file_obj: dict) -> Path:
+    """Resolve a file object's durable content path."""
+    storage_path = file_obj.get("storage_path")
+    if storage_path:
+        return Path(storage_path)
+    return _get_storage_path(file_id, file_obj["filename"])
 
 
 def get_file_path(file_id: str) -> Path | None:
@@ -211,7 +258,7 @@ def get_file_path(file_id: str) -> Path | None:
     Returns:
         Path to the file, or None if the file ID is not found.
     """
-    file_obj = _files.get(file_id)
+    file_obj = _store.get_file(file_id)
     if file_obj is None:
         return None
-    return _get_storage_path(file_id, file_obj["filename"])
+    return _resolve_storage_path(file_id, file_obj)

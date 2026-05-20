@@ -1,6 +1,10 @@
-"""OpenTelemetry tracing setup for distributed LLM."""
+"""OpenTelemetry tracing setup for distributed LLM.
 
-from opentelemetry import trace
+Provides trace provider setup, W3C trace context propagation across
+distributed nodes, and request-to-trace correlation helpers.
+"""
+
+from opentelemetry import trace, context
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -10,7 +14,19 @@ from opentelemetry.sdk.trace.sampling import (
     ALWAYS_OFF,
     ParentBased,
 )
-from opentelemetry.instrumentation.grpc import GRPCInstrumentor
+try:
+    from opentelemetry.instrumentation.grpc import GRPCInstrumentor
+except ImportError:
+    GRPCInstrumentor = None  # type: ignore[misc,assignment]
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+try:
+    from opentelemetry.propagators.textmap import DictGetter
+except ImportError:
+    DictGetter = None  # type: ignore[misc,assignment]
+
+
+# W3C TraceContext propagator for cross-node trace correlation
+_tracecontext_propagator = TraceContextTextMapPropagator()
 
 
 def _get_sampler(
@@ -76,7 +92,8 @@ def setup_tracing(
         for exporter in exporters:
             provider.add_span_processor(BatchSpanProcessor(exporter))
 
-    GRPCInstrumentor().instrument()
+    if GRPCInstrumentor is not None:
+        GRPCInstrumentor().instrument()
 
     return provider
 
@@ -109,4 +126,65 @@ def extract_request_id(metadata: list) -> str | None:
     for key, value in metadata:
         if key == "x-request-id":
             return value
+    return None
+
+
+def inject_trace_context(metadata: dict | None = None) -> dict:
+    """Inject W3C trace context into outgoing gRPC metadata.
+
+    Propagates the current span's traceparent/tracestate headers
+    so that downstream nodes join the same trace.
+
+    Args:
+        metadata: Existing metadata dict to inject into.
+
+    Returns:
+        Updated metadata dict with traceparent and tracestate.
+    """
+    if metadata is None:
+        metadata = {}
+    carrier = {}
+    _tracecontext_propagator.inject(carrier)
+    for key, value in carrier.items():
+        metadata[key] = value
+    return metadata
+
+
+def extract_trace_context(metadata: dict) -> None:
+    """Extract W3C trace context from incoming gRPC metadata.
+
+    Sets the current OpenTelemetry context to the parent trace
+    so that new spans are linked to the distributed trace.
+
+    Args:
+        metadata: Incoming metadata dict with traceparent/tracestate.
+    """
+    if DictGetter is None:
+        return
+    ctx = _tracecontext_propagator.extract(DictGetter(metadata))
+    if ctx is not None:
+        context.attach(ctx)
+
+
+def get_current_trace_id() -> str | None:
+    """Get the current trace ID as a hex string.
+
+    Returns:
+        Trace ID (32 hex chars) or None if no active span.
+    """
+    span = trace.get_current_span()
+    if span is not None and span.is_recording():
+        return format(span.get_span_context().trace_id, "032x")
+    return None
+
+
+def get_current_span_id() -> str | None:
+    """Get the current span ID as a hex string.
+
+    Returns:
+        Span ID (16 hex chars) or None if no active span.
+    """
+    span = trace.get_current_span()
+    if span is not None and span.is_recording():
+        return format(span.get_span_context().span_id, "016x")
     return None

@@ -171,14 +171,10 @@ def benchmark_throughput_small(model: str, max_tokens: int, num_prompts: int) ->
         coord = Coordinator(model_name=model, dtype="float16")
         coord.load_local_model()
     except Exception as e:
-        logger.warning(f"Cannot load model '{model}': {e}; using estimated throughput")
-        model_gb = _estimate_model_size_gb(model)
-        base_tok = {2: 30000, 16: 8000, 140: 1000}.get(int(model_gb), 8000)
-        result.tokens_per_sec = float(base_tok)
-        result.samples = 0
-        result.target_value = BENCHMARK_TARGETS["throughput-small"]["target"]
-        result.target_met = result.tokens_per_sec >= result.target_value
-        return result
+        raise RuntimeError(
+            f"Benchmark 'throughput-small' requires loading model '{model}'. "
+            f"Failed: {e}. Ensure the model path is correct and GPU is available."
+        )
 
     prompts = _test_prompts()[:num_prompts]
     all_tokens = 0
@@ -215,11 +211,10 @@ def benchmark_throughput_dist(model: str, nodes: int, max_tokens: int, num_promp
         from distllm.api.client import DistLLMClient
         client = DistLLMClient(coordinator_url=f"localhost:{50050}")
     except ImportError:
-        logger.warning("DistLLMClient not available; using estimated throughput")
-        result.tokens_per_sec = _estimate_dist_throughput(model, nodes)
-        result.target_value = BENCHMARK_TARGETS["throughput-dist"]["target"]
-        result.target_met = result.tokens_per_sec >= result.target_value
-        return result
+        raise RuntimeError(
+            "Benchmark 'throughput-dist' requires DistLLMClient for distributed inference. "
+            "Ensure the distributed cluster is running and accessible."
+        )
 
     prompts = _test_prompts()[:num_prompts]
     all_tokens = 0
@@ -254,12 +249,10 @@ def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int) -> Ben
         coord = Coordinator(model_name=model, dtype="float16")
         coord.load_local_model()
     except Exception as e:
-        logger.warning(f"Cannot load model for TTFT: {e}; using estimate")
-        result.ttft_ms = 1500.0
-        result.itl_ms = 80.0
-        result.target_value = BENCHMARK_TARGETS["latency-ttft"]["target"]
-        result.target_met = result.ttft_ms < result.target_value
-        return result
+        raise RuntimeError(
+            f"Benchmark 'latency-ttft' requires loading model '{model}'. "
+            f"Failed: {e}. Ensure the model path is correct and GPU is available."
+        )
 
     prompts = _test_prompts()[:num_prompts]
     ttfts = []
@@ -321,13 +314,10 @@ def benchmark_memory_efficiency(model: str, max_tokens: int) -> BenchmarkResult:
         coord = Coordinator(model_name=model, dtype="float16")
         coord.load_local_model()
     except Exception as e:
-        logger.warning(f"Cannot load model for memory benchmark: {e}")
-        gpu_mem_mb = get_gpu_memory_total_mb()
-        est_req_per_gpu = round(gpu_mem_mb / 900)  # ~900 MB per concurrent request with overhead
-        result.concurrent_requests_per_gpu = float(est_req_per_gpu)
-        result.target_value = BENCHMARK_TARGETS["memory-efficiency"]["target"]
-        result.target_met = result.concurrent_requests_per_gpu >= result.target_value
-        return result
+        raise RuntimeError(
+            f"Benchmark 'memory-efficiency' requires loading model '{model}'. "
+            f"Failed: {e}. Ensure the model path is correct and GPU is available."
+        )
 
     prompt = "Once upon a time, " * 50
     active = 0
@@ -362,11 +352,10 @@ def benchmark_kv_cache_hit_rate(model: str, num_prompts: int) -> BenchmarkResult
         from distllm.core.prefix_cache import PrefixCache
         cache = PrefixCache(min_prefix_len=8)
     except ImportError:
-        logger.warning("PrefixCache not available; using simulated hit rate")
-        result.cache_hit_rate_pct = 55.0  # simulated
-        result.target_value = BENCHMARK_TARGETS["kv-cache-hit-rate"]["target"]
-        result.target_met = result.cache_hit_rate_pct >= result.target_value
-        return result
+        raise RuntimeError(
+            "Benchmark 'kv-cache-hit-rate' requires PrefixCache implementation. "
+            "Ensure distllm.core.prefix_cache is available."
+        )
 
     # Simulate production: N requests with shared prefix
     shared_prefix = list(range(64))
@@ -409,11 +398,10 @@ def benchmark_spec_accept_rate(num_prompts: int) -> BenchmarkResult:
     try:
         from distllm.core.speculative_decoder import SpeculativeDecoder
     except ImportError:
-        logger.warning("SpeculativeDecoder not available; using simulated rate")
-        result.acceptance_rate_pct = 72.0
-        result.acceptance_method = "ngram (simulated)"
-        result.target_met = result.acceptance_rate_pct >= 60.0
-        return result
+        raise RuntimeError(
+            "Benchmark 'spec-accept-rate' requires SpeculativeDecoder implementation. "
+            "Ensure distllm.core.speculative_decoder is available."
+        )
 
     import torch
 

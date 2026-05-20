@@ -1,85 +1,81 @@
-"""GBNF (GGML BNF) grammar parser and NFA-based position tracker.
+"""GBNF grammar parser and byte-level FSM for constrained decoding.
 
-GBNF is the grammar format used by llama.cpp for structured generation.
-Uses a position-set approach (like regex NFA simulation) to track all
-possible locations within the grammar after each byte.
-
-Grammar constructs:
-  "literal"    - Match exact string
-  [charclass]  - Match character class
-  rule_name    - Reference another rule
-  (group)      - Grouping
-  expr1 | expr2 - Alternation
-  expr*        - Zero or more
-  expr+        - One or more
-  expr?        - Optional (zero or one)
-  .            - Any single byte
+GBNF is the GGML/llama.cpp grammar format used for structured generation.
+This module parses a practical subset of GBNF and runs it as a byte-level
+finite-state machine using Brzozowski derivatives: after each emitted byte,
+the current state becomes the residual grammar that remains to be matched.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# AST Node Types
-# ---------------------------------------------------------------------------
 
 class GBNFNode:
-    pass
+    """Base class for grammar AST nodes."""
 
 
-@dataclass
+@dataclass(frozen=True)
+class EmptyNode(GBNFNode):
+    """Matches the empty string."""
+
+
+@dataclass(frozen=True)
+class NeverNode(GBNFNode):
+    """Matches no strings."""
+
+
+@dataclass(frozen=True)
 class LiteralNode(GBNFNode):
     value: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class CharClassNode(GBNFNode):
-    chars: set[int]
+    chars: frozenset[int]
 
 
+@dataclass(frozen=True)
 class AnyCharNode(GBNFNode):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class RuleRefNode(GBNFNode):
     name: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class SeqNode(GBNFNode):
-    children: list[GBNFNode] = field(default_factory=list)
+    children: tuple[GBNFNode, ...] = field(default_factory=tuple)
 
 
-@dataclass
+@dataclass(frozen=True)
 class AltNode(GBNFNode):
-    alternatives: list[GBNFNode] = field(default_factory=list)
+    alternatives: tuple[GBNFNode, ...] = field(default_factory=tuple)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepeatNode(GBNFNode):
-    child: GBNFNode | None = None
+    child: GBNFNode
 
 
-@dataclass
+@dataclass(frozen=True)
 class OneOrMoreNode(GBNFNode):
-    child: GBNFNode | None = None
+    child: GBNFNode
 
 
-@dataclass
+@dataclass(frozen=True)
 class OptionalNode(GBNFNode):
-    child: GBNFNode | None = None
+    child: GBNFNode
 
 
-# ---------------------------------------------------------------------------
-# Parser
-# ---------------------------------------------------------------------------
+EMPTY = EmptyNode()
+NEVER = NeverNode()
+
 
 class GBNFParser:
-    """Parse GBNF grammar string into AST."""
+    """Parse GBNF grammar text into AST nodes."""
 
     def __init__(self, grammar_text: str):
         self._text = grammar_text
@@ -88,25 +84,51 @@ class GBNFParser:
     def parse(self) -> dict[str, GBNFNode]:
         current_name: str | None = None
         current_expr: list[str] = []
-        for line in self._text.split('\n'):
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
+
+        for raw_line in self._text.splitlines():
+            stripped = self._strip_comment(raw_line).strip()
+            if not stripped:
                 continue
-            if '::=' in stripped:
-                if current_name is not None and current_expr:
-                    self._rules[current_name] = self._parse_expr('\n'.join(current_expr))
-                parts = stripped.split('::=', 1)
-                current_name = parts[0].strip()
-                current_expr = [parts[1].strip()]
-            else:
+
+            if "::=" in stripped:
                 if current_name is not None:
-                    current_expr.append(stripped)
-        if current_name is not None and current_expr:
-            self._rules[current_name] = self._parse_expr('\n'.join(current_expr))
+                    self._rules[current_name] = self._parse_expr(" ".join(current_expr))
+                current_name, expr = stripped.split("::=", 1)
+                current_name = current_name.strip()
+                current_expr = [expr.strip()]
+            elif current_name is not None:
+                current_expr.append(stripped)
+
+        if current_name is not None:
+            self._rules[current_name] = self._parse_expr(" ".join(current_expr))
+
         return self._rules
 
     def _parse_expr(self, text: str) -> GBNFNode:
         return _ExprParser(text).parse_expr()
+
+    @staticmethod
+    def _strip_comment(line: str) -> str:
+        in_string = False
+        bracket_depth = 0
+        escaped = False
+        for i, ch in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+            if not in_string:
+                if ch == '[':
+                    bracket_depth += 1
+                elif ch == ']':
+                    bracket_depth -= 1
+            if ch == "#" and not in_string and bracket_depth == 0:
+                return line[:i]
+        return line
 
 
 class _ExprParser:
@@ -116,347 +138,437 @@ class _ExprParser:
 
     def parse_expr(self) -> GBNFNode:
         alts = [self._parse_seq()]
-        while self._peek() == '|':
-            self._adv()
+        while True:
             self._skip()
+            if self._peek() != "|":
+                break
+            self._adv()
             alts.append(self._parse_seq())
-        return alts[0] if len(alts) == 1 else AltNode(alts)
+        return _simplify_alt(alts)
 
     def _parse_seq(self) -> GBNFNode:
-        kids: list[GBNFNode] = []
+        children: list[GBNFNode] = []
         while self._p < len(self._t):
             self._skip()
             ch = self._peek()
-            if ch is None or ch in ')|\n\r':
+            if ch is None or ch in ")|":
                 break
             atom = self._parse_atom()
             if atom is None:
-                break
-            atom = self._suffix(atom)
-            kids.append(atom)
-        return kids[0] if len(kids) == 1 else SeqNode(kids)
+                raise ValueError(f"Unexpected grammar token at offset {self._p}: {self._t[self._p:self._p + 16]!r}")
+            children.append(self._suffix(atom))
+        return _simplify_seq(children)
 
     def _parse_atom(self) -> GBNFNode | None:
         self._skip()
         ch = self._peek()
-        if ch is None or ch in ')|\n\r':
+        if ch is None or ch in ")|":
             return None
         if ch == '"':
-            return self._lit()
-        if ch == '[':
-            return self._cc()
-        if ch == '(':
+            return self._literal()
+        if ch == "[":
+            return self._char_class()
+        if ch == "(":
             self._adv()
             node = self.parse_expr()
             self._skip()
-            if self._peek() == ')':
-                self._adv()
+            if self._peek() != ")":
+                raise ValueError("Unclosed grammar group")
+            self._adv()
             return node
-        if ch == '.':
+        if ch == ".":
             self._adv()
             return AnyCharNode()
-        if ch.isalpha() or ch == '_':
+        if ch.isalpha() or ch == "_":
             return RuleRefNode(self._name())
         return None
 
     def _suffix(self, node: GBNFNode) -> GBNFNode:
+        self._skip()
         ch = self._peek()
-        if ch == '*':
+        if ch == "*":
             self._adv()
             return RepeatNode(node)
-        if ch == '+':
+        if ch == "+":
             self._adv()
             return OneOrMoreNode(node)
-        if ch == '?':
+        if ch == "?":
             self._adv()
             return OptionalNode(node)
         return node
 
-    def _lit(self) -> LiteralNode:
+    def _literal(self) -> GBNFNode:
         self._adv()
-        start = self._p
-        while self._p < len(self._t) and self._t[self._p] != '"':
-            if self._t[self._p] == '\\':
-                self._p += 1
-            self._p += 1
-        val = self._t[start:self._p]
-        if self._p < len(self._t):
+        chars: list[str] = []
+        while self._p < len(self._t):
+            ch = self._t[self._p]
             self._adv()
-        return LiteralNode(val)
-
-    def _cc(self) -> CharClassNode:
-        self._adv()
-        chars: set[int] = set()
-        while self._p < len(self._t) and self._t[self._p] != ']':
-            if (self._p + 2 < len(self._t)
-                    and self._t[self._p + 1] == '-'
-                    and self._t[self._p + 2] != ']'):
-                for c in range(ord(self._t[self._p]), ord(self._t[self._p + 2]) + 1):
-                    chars.add(c)
-                self._p += 3
+            if ch == '"':
+                literal_str = "".join(chars)
+                return self._to_byte_literal(literal_str)
+            if ch == "\\" and self._p < len(self._t):
+                chars.append(self._decode_escape())
             else:
-                chars.add(ord(self._t[self._p]))
-                self._p += 1
-        if self._p < len(self._t):
+                chars.append(ch)
+        raise ValueError("Unclosed grammar literal")
+
+    @staticmethod
+    def _to_byte_literal(text: str) -> GBNFNode:
+        """Convert a string literal to a byte-level sequence.
+
+        ASCII characters map directly. Non-ASCII multi-byte characters
+        are expanded to their UTF-8 byte sequences so the derivative
+        engine can match individual bytes (0-255).
+        """
+        if all(ord(c) < 128 for c in text):
+            return LiteralNode(text)
+        seq_nodes = []
+        for c in text:
+            encoded = c.encode('utf-8')
+            seq_nodes.extend(LiteralNode(chr(b)) for b in encoded)
+        if len(seq_nodes) == 1:
+            return seq_nodes[0]
+        return SeqNode(tuple(seq_nodes))
+
+    def _decode_escape(self) -> str:
+        single = {
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            '"': '"',
+            "\\": "\\",
+        }
+        ch = self._peek()
+        if ch is None:
+            return "\\"
+        self._adv()
+        if ch in single:
+            return single[ch]
+        if ch == "x":
+            return self._decode_hex_escape()
+        if ch == "u":
+            return self._decode_unicode_escape(4)
+        if ch == "U":
+            return self._decode_unicode_escape(8)
+        return ch
+
+    def _decode_hex_escape(self) -> str:
+        hex_str = ""
+        for _ in range(2):
+            h = self._peek()
+            if h is None or h not in "0123456789abcdefABCDEF":
+                break
+            hex_str += h
             self._adv()
-        return CharClassNode(chars)
+        if len(hex_str) == 2:
+            return chr(int(hex_str, 16))
+        return "\\x" + hex_str
+
+    def _decode_unicode_escape(self, digits: int) -> str:
+        hex_str = ""
+        for _ in range(digits):
+            h = self._peek()
+            if h is None or h not in "0123456789abcdefABCDEF":
+                break
+            hex_str += h
+            self._adv()
+        if len(hex_str) == digits:
+            return chr(int(hex_str, 16))
+        return "\\u" + hex_str if digits == 4 else "\\U" + hex_str
+
+    def _char_class(self) -> GBNFNode:
+        self._adv()
+        single_bytes: set[int] = set()
+        multi_byte_seqs: list[GBNFNode] = []
+        negate = False
+        if self._peek() == "^":
+            negate = True
+            self._adv()
+
+        while self._p < len(self._t) and self._peek() != "]":
+            ch = self._read_class_char()
+            if self._peek() == "-" and self._p + 1 < len(self._t) and self._t[self._p + 1] != "]":
+                self._adv()
+                end_ch = self._read_class_char()
+                lo, hi = sorted((ord(ch), ord(end_ch)))
+                for cp in range(lo, hi + 1):
+                    encoded = chr(cp).encode('utf-8')
+                    if len(encoded) == 1:
+                        single_bytes.add(encoded[0])
+                    else:
+                        seq_nodes = [LiteralNode(chr(b)) for b in encoded]
+                        multi_byte_seqs.append(SeqNode(tuple(seq_nodes)))
+            else:
+                encoded = ch.encode('utf-8')
+                if len(encoded) == 1:
+                    single_bytes.add(encoded[0])
+                else:
+                    seq_nodes = [LiteralNode(chr(b)) for b in encoded]
+                    multi_byte_seqs.append(SeqNode(tuple(seq_nodes)))
+
+        if self._peek() != "]":
+            raise ValueError("Unclosed grammar character class")
+        self._adv()
+
+        alternatives: list[GBNFNode] = []
+        if single_bytes:
+            if negate:
+                single_bytes = set(range(256)) - single_bytes
+            alternatives.append(CharClassNode(frozenset(single_bytes)))
+        if multi_byte_seqs:
+            if negate:
+                alternatives.append(AnyCharNode())
+            else:
+                alternatives.extend(multi_byte_seqs)
+
+        if not alternatives:
+            return CharClassNode(frozenset())
+        if len(alternatives) == 1:
+            return alternatives[0]
+        return AltNode(tuple(alternatives))
+
+    def _read_class_char(self) -> str:
+        ch = self._peek()
+        if ch is None:
+            raise ValueError("Unexpected end of character class")
+        self._adv()
+        if ch == "\\":
+            ch = self._decode_escape()
+        return ch
 
     def _name(self) -> str:
         start = self._p
-        while self._p < len(self._t) and (self._t[self._p].isalnum() or self._t[self._p] == '_'):
-            self._p += 1
+        while self._p < len(self._t):
+            ch = self._t[self._p]
+            if ch.isalnum() or ch in "_-":
+                self._p += 1
+            else:
+                break
         return self._t[start:self._p]
 
     def _skip(self) -> None:
-        while self._p < len(self._t) and self._t[self._p] in ' \t\r\n':
+        while self._p < len(self._t) and self._t[self._p] in " \t\r\n":
             self._p += 1
 
     def _peek(self) -> str | None:
         return None if self._p >= len(self._t) else self._t[self._p]
 
     def _adv(self) -> None:
-        if self._p < len(self._t):
-            self._p += 1
+        self._p += 1
 
 
-# ---------------------------------------------------------------------------
-# NFA Position-Set Tracker
-# ---------------------------------------------------------------------------
+def _simplify_seq(children: list[GBNFNode] | tuple[GBNFNode, ...]) -> GBNFNode:
+    flattened: list[GBNFNode] = []
+    for child in children:
+        child = _simplify(child)
+        if isinstance(child, NeverNode):
+            return NEVER
+        if isinstance(child, EmptyNode):
+            continue
+        if isinstance(child, SeqNode):
+            flattened.extend(child.children)
+        else:
+            flattened.append(child)
+    if not flattened:
+        return EMPTY
+    if len(flattened) == 1:
+        return flattened[0]
+    return SeqNode(tuple(flattened))
 
-class Position:
-    """A position in the grammar: which node and how far into its children."""
-    def __init__(self, node: GBNFNode, child_idx: int = 0, literal_pos: int = 0):
-        self.node = node
-        self.child_idx = child_idx
-        self.literal_pos = literal_pos
 
-    def copy(self) -> 'Position':
-        return Position(self.node, self.child_idx, self.literal_pos)
+def _simplify_alt(alternatives: list[GBNFNode] | tuple[GBNFNode, ...]) -> GBNFNode:
+    flattened: list[GBNFNode] = []
+    seen: set[str] = set()
+    for alt in alternatives:
+        alt = _simplify(alt)
+        if isinstance(alt, NeverNode):
+            continue
+        if isinstance(alt, AltNode):
+            candidates = alt.alternatives
+        else:
+            candidates = (alt,)
+        for candidate in candidates:
+            key = repr(candidate)
+            if key not in seen:
+                seen.add(key)
+                flattened.append(candidate)
+    if not flattened:
+        return NEVER
+    if len(flattened) == 1:
+        return flattened[0]
+    return AltNode(tuple(flattened))
 
-    def __hash__(self) -> int:
-        return id(self.node) ^ (self.child_idx << 16) ^ self.literal_pos
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Position):
+def _simplify(node: GBNFNode) -> GBNFNode:
+    if isinstance(node, LiteralNode) and node.value == "":
+        return EMPTY
+    if isinstance(node, SeqNode):
+        return _simplify_seq(node.children)
+    if isinstance(node, AltNode):
+        return _simplify_alt(node.alternatives)
+    if isinstance(node, RepeatNode):
+        child = _simplify(node.child)
+        if isinstance(child, (EmptyNode, NeverNode)):
+            return EMPTY
+        return RepeatNode(child)
+    if isinstance(node, OneOrMoreNode):
+        child = _simplify(node.child)
+        if isinstance(child, EmptyNode):
+            return EMPTY
+        if isinstance(child, NeverNode):
+            return NEVER
+        return OneOrMoreNode(child)
+    if isinstance(node, OptionalNode):
+        child = _simplify(node.child)
+        if isinstance(child, NeverNode):
+            return EMPTY
+        return OptionalNode(child)
+    return node
+
+
+class _DerivativeEngine:
+    def __init__(self, rules: dict[str, GBNFNode]):
+        self.rules = rules
+
+    def nullable(self, node: GBNFNode, visiting: set[str] | None = None) -> bool:
+        node = _simplify(node)
+        if isinstance(node, EmptyNode):
+            return True
+        if isinstance(node, (NeverNode, LiteralNode, CharClassNode, AnyCharNode)):
             return False
-        return (self.node is other.node
-                and self.child_idx == other.child_idx
-                and self.literal_pos == other.literal_pos)
+        if isinstance(node, SeqNode):
+            return all(self.nullable(child, visiting) for child in node.children)
+        if isinstance(node, AltNode):
+            return any(self.nullable(alt, visiting) for alt in node.alternatives)
+        if isinstance(node, RepeatNode):
+            return True
+        if isinstance(node, OneOrMoreNode):
+            return self.nullable(node.child, visiting)
+        if isinstance(node, OptionalNode):
+            return True
+        if isinstance(node, RuleRefNode):
+            if visiting is None:
+                visiting = set()
+            if node.name in visiting or node.name not in self.rules:
+                return False
+            visiting.add(node.name)
+            return self.nullable(self.rules[node.name], visiting)
+        return False
+
+    def first_bytes(self, node: GBNFNode, visiting: set[str] | None = None) -> set[int]:
+        node = _simplify(node)
+        if isinstance(node, (EmptyNode, NeverNode)):
+            return set()
+        if isinstance(node, LiteralNode):
+            return {ord(node.value[0])} if node.value else set()
+        if isinstance(node, CharClassNode):
+            return set(node.chars)
+        if isinstance(node, AnyCharNode):
+            return set(range(256))
+        if isinstance(node, AltNode):
+            allowed: set[int] = set()
+            for alt in node.alternatives:
+                allowed.update(self.first_bytes(alt, visiting))
+            return allowed
+        if isinstance(node, SeqNode):
+            allowed: set[int] = set()
+            for child in node.children:
+                allowed.update(self.first_bytes(child, visiting))
+                if not self.nullable(child):
+                    break
+            return allowed
+        if isinstance(node, (RepeatNode, OneOrMoreNode, OptionalNode)):
+            return self.first_bytes(node.child, visiting)
+        if isinstance(node, RuleRefNode):
+            if visiting is None:
+                visiting = set()
+            if node.name in visiting or node.name not in self.rules:
+                return set()
+            visiting.add(node.name)
+            return self.first_bytes(self.rules[node.name], visiting)
+        return set()
+
+    def derive(self, node: GBNFNode, byte_val: int) -> GBNFNode:
+        node = _simplify(node)
+        if isinstance(node, (EmptyNode, NeverNode)):
+            return NEVER
+        if isinstance(node, LiteralNode):
+            if node.value and ord(node.value[0]) == byte_val:
+                return LiteralNode(node.value[1:]) if len(node.value) > 1 else EMPTY
+            return NEVER
+        if isinstance(node, CharClassNode):
+            return EMPTY if byte_val in node.chars else NEVER
+        if isinstance(node, AnyCharNode):
+            return EMPTY
+        if isinstance(node, RuleRefNode):
+            target = self.rules.get(node.name)
+            return self.derive(target, byte_val) if target is not None else NEVER
+        if isinstance(node, AltNode):
+            return _simplify_alt([self.derive(alt, byte_val) for alt in node.alternatives])
+        if isinstance(node, SeqNode):
+            if not node.children:
+                return NEVER
+            first, rest = node.children[0], list(node.children[1:])
+            alternatives = [_simplify_seq([self.derive(first, byte_val), *rest])]
+            if self.nullable(first):
+                alternatives.append(self.derive(_simplify_seq(rest), byte_val))
+            return _simplify_alt(alternatives)
+        if isinstance(node, RepeatNode):
+            return _simplify_seq([self.derive(node.child, byte_val), RepeatNode(node.child)])
+        if isinstance(node, OneOrMoreNode):
+            return _simplify_seq([self.derive(node.child, byte_val), RepeatNode(node.child)])
+        if isinstance(node, OptionalNode):
+            return self.derive(node.child, byte_val)
+        return NEVER
 
 
 class GBNFFSM:
-    """NFA-based grammar FSM using position-set simulation.
-
-    Tracks a SET of current positions within the grammar. At each byte,
-    all positions attempt to advance. If any position reaches acceptance,
-    the FSM is accepting.
-    """
+    """Byte-level FSM for a parsed GBNF grammar."""
 
     def __init__(self, grammar_text: str, start_rule: str = "root"):
-        parser = GBNFParser(grammar_text)
-        self._rules = parser.parse()
+        self._rules = GBNFParser(grammar_text).parse()
+        if not self._rules:
+            raise ValueError("No rules in grammar")
         if start_rule not in self._rules:
-            if self._rules:
-                start_rule = next(iter(self._rules))
-            else:
-                raise ValueError("No rules in grammar")
-        self._start_node = self._rules[start_rule]
-        self._positions: set[Position] = set()
+            start_rule = next(iter(self._rules))
+        self._start_rule = start_rule
+        self._engine = _DerivativeEngine(self._rules)
+        self._transition_cache: dict[tuple[str, int], GBNFNode] = {}
+        self._use_dfa = False
         self.reset()
 
     def reset(self) -> None:
-        self._positions = set()
-        if isinstance(self._start_node, SeqNode):
-            self._positions.add(Position(self._start_node, 0))
-        else:
-            wrapper = SeqNode(children=[self._start_node])
-            self._positions.add(Position(wrapper, 0))
-            self._start_node = wrapper
-        self._expand_empty()
+        self._state = _simplify(self._rules[self._start_rule])
+
+    def compile_to_dfa(self) -> None:
+        """Enable cached deterministic transitions.
+
+        The DFA is built lazily to avoid eagerly exploring grammars with loops
+        or large character classes. Transitions are still deterministic and are
+        memoized per residual grammar state.
+        """
+        self._use_dfa = True
 
     def get_allowed_bytes(self) -> set[int]:
-        result: set[int] = set()
-        for pos in list(self._positions):
-            if pos.child_idx >= self._child_count(pos.node):
-                continue
-            child = self._get_child(pos)
-            self._add_first_bytes(child, result)
-        return result
+        return self._engine.first_bytes(self._state)
 
     def transition(self, byte_val: int) -> None:
-        next_positions: set[Position] = set()
-        for pos in self._positions:
-            if pos.child_idx >= self._child_count(pos.node):
-                continue
-            child = self._get_child(pos)
-            new_positions = self._advance_node(child, byte_val)
-            for np in new_positions:
-                if np is None:
-                    # Child fully consumed, advance sequence
-                    advanced = Position(pos.node, pos.child_idx + 1)
-                    next_positions.add(advanced)
-                else:
-                    next_positions.add(np)
-        self._positions = next_positions
-        self._expand_empty()
-
-    def _expand_empty(self) -> None:
-        """Expand positions that can match empty (Optionals, Repeats with 0)."""
-        changed = True
-        while changed:
-            changed = False
-            for pos in list(self._positions):
-                if pos.child_idx >= self._child_count(pos.node):
-                    continue
-                child = self._get_child(pos)
-                empty_next = self._get_empty_transitions(child)
-                for ep in empty_next:
-                    if isinstance(pos.node, SeqNode):
-                        new_pos = Position(pos.node, pos.child_idx + 1)
-                    else:
-                        new_pos = Position(pos.node, pos.child_idx + 1)
-                    if new_pos not in self._positions:
-                        self._positions.add(new_pos)
-                        changed = True
-
-    def _get_child(self, pos: Position) -> GBNFNode | None:
-        if isinstance(pos.node, SeqNode):
-            if pos.child_idx < len(pos.node.children):
-                return pos.node.children[pos.child_idx]
-        return pos.node
-
-    def _child_count(self, node: GBNFNode) -> int:
-        if isinstance(node, SeqNode):
-            return len(node.children)
-        return 1
-
-    def _add_first_bytes(self, node: GBNFNode | None, result: set[int],
-                         visited: set[str] | None = None) -> None:
-        if node is None:
+        if byte_val < 0 or byte_val > 255:
+            self._state = NEVER
             return
-        if visited is None:
-            visited = set()
 
-        if isinstance(node, LiteralNode):
-            if node.value:
-                result.add(ord(node.value[0]))
-        elif isinstance(node, CharClassNode):
-            result.update(node.chars)
-        elif isinstance(node, AnyCharNode):
-            result.update(range(256))
-        elif isinstance(node, RuleRefNode):
-            if node.name not in visited and node.name in self._rules:
-                visited.add(node.name)
-                self._add_first_bytes(self._rules[node.name], result, visited)
-        elif isinstance(node, SeqNode):
-            for child in node.children:
-                before = len(result)
-                self._add_first_bytes(child, result, visited)
-                if len(result) > before:
-                    break
-        elif isinstance(node, AltNode):
-            for alt in node.alternatives:
-                self._add_first_bytes(alt, result, visited)
-        elif isinstance(node, (RepeatNode, OneOrMoreNode, OptionalNode)):
-            if node.child is not None:
-                self._add_first_bytes(node.child, result, visited)
-
-    def _advance_node(self, node: GBNFNode | None, byte_val: int) -> list[Position | None]:
-        if node is None:
-            return [None]
-
-        if isinstance(node, LiteralNode):
-            if node.value and ord(node.value[0]) == byte_val:
-                remaining = LiteralNode(node.value[1:]) if len(node.value) > 1 else None
-                if remaining:
-                    return [Position(remaining)]
-                return [None]
-            return []
-
-        if isinstance(node, CharClassNode):
-            if byte_val in node.chars:
-                return [None]
-            return []
-
-        if isinstance(node, AnyCharNode):
-            return [None]
-
-        if isinstance(node, RuleRefNode):
-            if node.name in self._rules:
-                return self._advance_node(self._rules[node.name], byte_val)
-            return []
-
-        if isinstance(node, SeqNode):
-            if not node.children:
-                return [None]
-            child = node.children[0]
-            results = self._advance_node(child, byte_val)
-            final: list[Position | None] = []
-            for r in results:
-                if r is None:
-                    advanced = Position(node, 1)
-                    final.append(advanced)
-                else:
-                    advanced = Position(node, 0)
-                    final.append(advanced)
-            return final
-
-        if isinstance(node, AltNode):
-            for alt in node.alternatives:
-                results = self._advance_node(alt, byte_val)
-                if results:
-                    return results
-            return []
-
-        if isinstance(node, RepeatNode):
-            if node.child is not None:
-                results = self._advance_node(node.child, byte_val)
-                if results:
-                    return [Position(node)]  # stay in repeat
-            return []  # zero repetitions -> no match
-
-        if isinstance(node, OneOrMoreNode):
-            if node.child is not None:
-                results = self._advance_node(node.child, byte_val)
-                if results:
-                    return [Position(node)]  # stay in one-or-more
-            return []
-
-        if isinstance(node, OptionalNode):
-            if node.child is not None:
-                results = self._advance_node(node.child, byte_val)
-                if results:
-                    return results
-            return [None]
-
-        return []
-
-    def _get_empty_transitions(self, node: GBNFNode | None) -> list[bool]:
-        if node is None:
-            return [True]
-        if isinstance(node, OptionalNode):
-            return [True]
-        if isinstance(node, RepeatNode):
-            return [True]
-        if isinstance(node, AltNode):
-            for alt in node.alternatives:
-                if self._get_empty_transitions(alt):
-                    return [True]
-            return []
-        if isinstance(node, SeqNode):
-            if all(self._get_empty_transitions(c) for c in node.children):
-                return [True]
-            return []
-        return []
+        if self._use_dfa:
+            key = (repr(self._state), byte_val)
+            next_state = self._transition_cache.get(key)
+            if next_state is None:
+                next_state = _simplify(self._engine.derive(self._state, byte_val))
+                self._transition_cache[key] = next_state
+            self._state = next_state
+        else:
+            self._state = _simplify(self._engine.derive(self._state, byte_val))
 
     def is_accepting(self) -> bool:
-        for pos in self._positions:
-            if isinstance(pos.node, SeqNode):
-                if pos.child_idx >= len(pos.node.children):
-                    return True
-            elif pos.child_idx >= 1:
-                return True
-        return False
+        return self._engine.nullable(self._state)
 
     def can_end(self) -> bool:
         return self.is_accepting()

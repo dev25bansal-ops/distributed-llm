@@ -11,11 +11,13 @@ Inspired by outlines, guidance, and xgrammar approaches.
 
 import re
 import json
+import copy
 import string
 from typing import Any
 from dataclasses import dataclass, field
 
 import torch
+from loguru import logger
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +96,11 @@ class TokenIndex:
         Returns:
             List of matching token IDs.
         """
-        # This is precomputed during FSM building, not at runtime
-        return []
+        return [
+            token_id
+            for token_id, token_bytes in self._token_to_bytes.items()
+            if token_bytes.startswith(prefix)
+        ]
 
     @property
     def eos_token_id(self) -> int | None:
@@ -546,27 +551,27 @@ class ConstrainedConstraint:
         allowed_bytes = self._fsm.get_allowed_bytes()
         mask = torch.zeros(vocab_size, dtype=torch.bool)
 
-        # Vectorized: check all tokens at once using precomputed byte mapping
         for token_id in range(min(vocab_size, self._token_index.vocab_size)):
             token_bytes = self._token_index.get_bytes(token_id)
 
-            # Token is allowed if its first byte is in the allowed set
-            # or if it's an empty token (special tokens)
-            if len(token_bytes) == 0:
+            if len(token_bytes) > 0 and token_bytes[0] in allowed_bytes and self._token_allowed(token_bytes):
                 mask[token_id] = True
-            elif token_bytes[0] in allowed_bytes:
-                mask[token_id] = True
-            # Multi-byte tokens: allow if first byte is whitespace and FSM allows whitespace
-            elif len(token_bytes) > 1 and token_bytes[0] in (0x20, 0x0A, 0x0D, 0x09):
-                if token_bytes[0] in allowed_bytes:
-                    mask[token_id] = True
 
-        # Always allow EOS token
+        # EOS is only valid once the constraint is complete.
         eos_id = self._token_index.eos_token_id
-        if eos_id is not None and eos_id < vocab_size:
+        if eos_id is not None and eos_id < vocab_size and self._fsm.is_accepting():
             mask[eos_id] = True
 
         return mask
+
+    def _token_allowed(self, token_bytes: bytes) -> bool:
+        """Check whether a full token byte sequence keeps the FSM valid."""
+        fsm = copy.deepcopy(self._fsm)
+        for byte_val in token_bytes:
+            if byte_val not in fsm.get_allowed_bytes():
+                return False
+            fsm.transition(byte_val)
+        return True
 
     def update(self, token_str: str) -> None:
         """Advance the FSM after emitting a token.
@@ -575,8 +580,9 @@ class ConstrainedConstraint:
             token_str: The decoded token string.
         """
         self._generated += token_str
-        for ch in token_str.encode('utf-8', errors='replace'):
-            self._fsm.transition(ch)
+        token_bytes = token_str.encode('utf-8', errors='replace')
+        for b in token_bytes:
+            self._fsm.transition(b)
 
     def is_complete(self) -> bool:
         """Check if the FSM has reached an accepting state."""
@@ -647,11 +653,13 @@ class SchemaConstrainedDecoder:
         fsm = RegexFSM(pattern)
         return ConstrainedConstraint(fsm, self._token_index)
 
-    def grammar(self, grammar: str) -> ConstrainedConstraint:
+    def grammar(self, grammar: str, start_rule: str = "root") -> ConstrainedConstraint:
         """Create a grammar-constrained constraint using GBNF format.
 
         GBNF is the grammar format used by llama.cpp for structured generation.
         Supports: literals, character classes, alternation, repetition, optional.
+
+        Compiles to DFA for O(1) per-byte transitions.
 
         Example grammar:
             root ::= "(" expr ")"
@@ -660,23 +668,68 @@ class SchemaConstrainedDecoder:
 
         Args:
             grammar: GBNF grammar string.
+            start_rule: Starting rule name in the grammar.
 
         Returns:
-            ConstrainedConstraint with GBNF FSM.
+            ConstrainedConstraint with DFA-compiled GBNF FSM.
         """
         try:
             from distllm.core.grammar_decoder import GBNFFSM
-            fsm = GBNFFSM(grammar)
+            fsm = GBNFFSM(grammar, start_rule)
+            fsm.compile_to_dfa()  # O(1) per-byte transition
             return ConstrainedConstraint(fsm, self._token_index)
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 f"GBNF compilation failed: {e}, falling back to regex"
             )
 
         pattern = self._grammar_to_regex(grammar)
         fsm = RegexFSM(pattern)
         return ConstrainedConstraint(fsm, self._token_index)
+
+    @classmethod
+    def from_response_format(cls, response_format: dict, tokenizer=None) -> "ConstrainedConstraint | None":
+        """Create a constraint from OpenAI response_format dict.
+
+        Args:
+            response_format: Dict with 'type' key: "json_object", "json_schema", "grammar", "regex".
+            tokenizer: Tokenizer for constraint creation (required for non-json_object types).
+
+        Returns:
+            ConstrainedConstraint or None if no constraint needed.
+        """
+        fmt_type = response_format.get("type", "")
+
+        if fmt_type == "json_object":
+            # Simple JSON constraint
+            if tokenizer:
+                decoder = cls(tokenizer)
+                return decoder.json_schema({})
+            return None
+
+        if fmt_type == "json_schema":
+            schema = response_format.get("schema", {})
+            if tokenizer:
+                decoder = cls(tokenizer)
+                return decoder.json_schema(schema)
+            return None
+
+        if fmt_type == "grammar":
+            grammar_text = response_format.get("grammar", "")
+            start_rule = response_format.get("start_rule", "root")
+            if tokenizer and grammar_text:
+                decoder = cls(tokenizer)
+                return decoder.grammar(grammar_text, start_rule)
+            return None
+
+        if fmt_type == "regex":
+            pattern = response_format.get("pattern", "")
+            if tokenizer and pattern:
+                decoder = cls(tokenizer)
+                return decoder.regex(pattern)
+            return None
+
+        return None
 
     def pydantic(self, model) -> ConstrainedConstraint:
         """Create a Pydantic model-constrained constraint.
@@ -693,11 +746,64 @@ class SchemaConstrainedDecoder:
     def _grammar_to_regex(self, grammar: str) -> str:
         """Convert a simple EBNF grammar to a regex pattern.
 
-        This is a simplified conversion. For production, use lark or
-        a dedicated grammar compiler.
+        This fallback is used only if the byte-level GBNF FSM cannot compile.
+        It supports the same regular constructs as the built-in GBNF parser.
         """
-        # Placeholder: return a generic JSON-matching regex
-        return r'.*'
+        from distllm.core.grammar_decoder import (
+            AltNode,
+            AnyCharNode,
+            CharClassNode,
+            GBNFParser,
+            LiteralNode,
+            OptionalNode,
+            OneOrMoreNode,
+            RepeatNode,
+            RuleRefNode,
+            SeqNode,
+        )
+
+        rules = GBNFParser(grammar).parse()
+        if not rules:
+            raise ValueError("No rules in grammar")
+
+        start = rules.get("root") or next(iter(rules.values()))
+
+        def charclass(chars: set[int]) -> str:
+            pieces = []
+            for c in sorted(chars):
+                ch = chr(c)
+                pieces.append("\\" + ch if ch in r"\-]^" else ch)
+            return "[" + "".join(pieces) + "]"
+
+        def convert(node, visiting: set[str] | None = None) -> str:
+            if visiting is None:
+                visiting = set()
+            if isinstance(node, LiteralNode):
+                return re.escape(node.value)
+            if isinstance(node, CharClassNode):
+                return charclass(set(node.chars))
+            if isinstance(node, AnyCharNode):
+                return r"[\s\S]"
+            if isinstance(node, SeqNode):
+                return "".join(convert(child, visiting) for child in node.children)
+            if isinstance(node, AltNode):
+                return "(?:" + "|".join(convert(alt, visiting) for alt in node.alternatives) + ")"
+            if isinstance(node, RepeatNode):
+                return "(?:" + convert(node.child, visiting) + ")*"
+            if isinstance(node, OneOrMoreNode):
+                return "(?:" + convert(node.child, visiting) + ")+"
+            if isinstance(node, OptionalNode):
+                return "(?:" + convert(node.child, visiting) + ")?"
+            if isinstance(node, RuleRefNode):
+                if node.name in visiting or node.name not in rules:
+                    raise ValueError(f"Recursive or unknown grammar rule: {node.name}")
+                visiting.add(node.name)
+                result = convert(rules[node.name], visiting)
+                visiting.remove(node.name)
+                return result
+            return ""
+
+        return convert(start)
 
     @classmethod
     def clear_cache(cls) -> None:

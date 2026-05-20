@@ -4,13 +4,11 @@ Validates that CRD changes are backward-compatible before applying.
 Runs as a FastAPI server behind a ValidatingWebhookConfiguration.
 """
 
-import logging
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
+from loguru import logger
 from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
 
 app = FastAPI(title="DistLLM CRD Validation Webhook")
 

@@ -2,17 +2,91 @@
 
 Nodes periodically exchange cache availability advertisements
 to build a distributed index of where cache entries are located.
+
+Upgraded with CRDT semantics for eventual consistency:
+- G-Set (grow-only set) for cache entries: entries only added during merge
+- LWW-Register (last-writer-wins) for entry metadata: highest timestamp wins
+- Vector clocks for causal ordering across nodes
+- Tombstones for tracked deletions
 """
 
+import hashlib
+import hmac
+import os
 import random
+import secrets
 import time
 from dataclasses import dataclass, field
+from typing import List
 from loguru import logger
+
+
+def _serialize_for_hmac(data: dict) -> bytes:
+    """Deterministically serialize a dict for HMAC signing."""
+    import json
+    return json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+@dataclass
+class VectorClock:
+    """Vector clock for causal ordering across nodes.
+
+    Each node maintains a counter that increments on local writes.
+    The vector clock is the map of node_id -> counter value.
+    """
+    clocks: dict[str, int] = field(default_factory=dict)
+
+    def increment(self, node_id: str) -> None:
+        """Increment the clock for a specific node."""
+        self.clocks[node_id] = self.clocks.get(node_id, 0) + 1
+
+    def merge(self, other: "VectorClock") -> None:
+        """Merge with another vector clock (element-wise max)."""
+        for nid, ts in other.clocks.items():
+            self.clocks[nid] = max(self.clocks.get(nid, 0), ts)
+
+    def happens_before(self, other: "VectorClock") -> bool:
+        """Check if this clock causally happens-before another."""
+        has_less = False
+        for nid in set(list(self.clocks.keys()) + list(other.clocks.keys())):
+            self_val = self.clocks.get(nid, 0)
+            other_val = other.clocks.get(nid, 0)
+            if self_val > other_val:
+                return False
+            if self_val < other_val:
+                has_less = True
+        return has_less
+
+    def is_concurrent(self, other: "VectorClock") -> bool:
+        """Check if two clocks are concurrent (neither happens-before)."""
+        return not self.happens_before(other) and not other.happens_before(self) and self.clocks != other.clocks
+
+
+@dataclass
+class LWWRegister:
+    """Last-Writer-Wins Register for entry metadata.
+
+    When conflicting values exist, the one with the highest timestamp wins.
+    """
+    value: str = ""
+    timestamp: float = 0.0
+    writer_id: str = ""
+
+    def merge(self, other: "LWWRegister") -> None:
+        """Merge with another register using LWW semantics."""
+        if other.timestamp > self.timestamp:
+            self.value = other.value
+            self.timestamp = other.timestamp
+            self.writer_id = other.writer_id
+        elif other.timestamp == self.timestamp and other.writer_id > self.writer_id:
+            # Tie-break by writer_id (lexicographic)
+            self.value = other.value
+            self.writer_id = other.writer_id
 
 
 @dataclass
 class GossipState:
-    """Internal state for the gossip protocol."""
+    """Internal state for the gossip protocol with CRDT semantics."""
     node_id: str = ""
     known_peers: set[str] = field(default_factory=set)
     # prefix_hash -> list of (node_id, entry_ref, timestamp)
@@ -20,6 +94,21 @@ class GossipState:
     last_exchange_time: float = 0.0
     # Local cache advertisements: prefix_hash -> entry_ref
     local_entries: dict[str, str] = field(default_factory=dict)
+
+    # CRDT state
+    vector_clock: VectorClock = field(default_factory=VectorClock)
+    # LWW registers for entry metadata: prefix_hash -> LWWRegister
+    entry_metadata: dict[str, LWWRegister] = field(default_factory=dict)
+    # Tombstones for deletions: prefix_hash -> timestamp
+    tombstones: dict[str, float] = field(default_factory=dict)
+
+    # Distributed PagedAttention: block-level page table sharing
+    # block_hash -> list of node_ids that have this block
+    page_table_index: dict[str, list[str]] = field(default_factory=dict)
+    # node_id -> Merkle root hash of their page table
+    peer_merkle_roots: dict[str, str] = field(default_factory=dict)
+    # Local block hashes (for advertisement building)
+    local_block_hashes: list[str] = field(default_factory=list)
 
 
 class GossipProtocol:
@@ -33,10 +122,49 @@ class GossipProtocol:
     5. Requests missing cache entries from the peer
     """
 
-    def __init__(self, node_id: str, max_peers: int = 16, cache_ttl: float = 300.0):
+    def __init__(self, node_id: str, max_peers: int = 16, cache_ttl: float = 300.0, hmac_key: str | None = None):
         self.state = GossipState(node_id=node_id)
         self.max_peers = max_peers
         self.cache_ttl = cache_ttl
+        # HMAC key for message authentication; auto-generated if not provided
+        self._hmac_key: str = hmac_key or secrets.token_hex(32)
+
+    def sign_message(self, message: dict) -> dict:
+        """Sign a gossip message with HMAC-SHA256 for authenticity.
+
+        Args:
+            message: The message dict to sign.
+
+        Returns:
+            Copy of the message with an HMAC signature added.
+        """
+        msg = dict(message)
+        body = msg.get("_body", msg)  # sign the actual content
+        serialized = _serialize_for_hmac(body)
+        signature = hmac.new(
+            self._hmac_key.encode(), msg=serialized, digestmod=hashlib.sha256
+        ).hexdigest()
+        msg["_hmac"] = signature
+        return msg
+
+    def verify_message(self, message: dict) -> bool:
+        """Verify the HMAC signature on a gossip message.
+
+        Args:
+            message: The received message dict with '_hmac' field.
+
+        Returns:
+            True if signature is valid, False otherwise.
+        """
+        signature = message.pop("_hmac", None)
+        if signature is None:
+            return False
+        body = message.get("_body", message)
+        serialized = _serialize_for_hmac(body)
+        expected = hmac.new(
+            self._hmac_key.encode(), msg=serialized, digestmod=hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(signature, expected)
 
     def add_peer(self, peer_id: str) -> None:
         """Add a known peer to the gossip network."""
@@ -51,9 +179,28 @@ class GossipProtocol:
         self.state.known_peers.discard(peer_id)
 
     def store_local(self, prefix_hash: str, entry_ref: str) -> None:
-        """Record a local cache entry."""
-        self.state.local_entries[prefix_hash] = entry_ref
-        # Also add to cache_index with local node
+        """Record a local cache entry.
+
+        Uses CRDT semantics: increments vector clock, creates LWW register,
+        and adds to G-Set cache index.
+        """
+        # Increment vector clock for this write
+        self.state.vector_clock.increment(self.state.node_id)
+
+        # Create/update LWW register for metadata
+        now = time.time()
+        if prefix_hash not in self.state.entry_metadata:
+            self.state.entry_metadata[prefix_hash] = LWWRegister(
+                value=entry_ref, timestamp=now, writer_id=self.state.node_id
+            )
+        else:
+            reg = self.state.entry_metadata[prefix_hash]
+            if now > reg.timestamp:
+                reg.value = entry_ref
+                reg.timestamp = now
+                reg.writer_id = self.state.node_id
+
+        # G-Set: add to cache index (grow-only, no removal during merge)
         if prefix_hash not in self.state.cache_index:
             self.state.cache_index[prefix_hash] = []
         self.state.cache_index[prefix_hash] = [
@@ -62,22 +209,28 @@ class GossipProtocol:
             if nid != self.state.node_id
         ]
         self.state.cache_index[prefix_hash].append(
-            (self.state.node_id, entry_ref, time.time())
+            (self.state.node_id, entry_ref, now)
         )
 
+        self.state.local_entries[prefix_hash] = entry_ref
+
     def advertise(self) -> dict:
-        """Build a gossip advertisement.
+        """Build a gossip advertisement with CRDT state.
 
         Returns:
-            Dict with node_id, cache_prefixes, total_cache_entries, timestamp.
+            Dict with node_id, cache_prefixes, total_cache_entries, timestamp,
+            vector_clock, tombstones, and entry_metadata.
         """
         now = time.time()
         self.state.last_exchange_time = now
 
-        # Filter out expired entries
+        # Filter out expired and tombstoned entries
         cutoff = now - self.cache_ttl
         prefixes = []
-        for prefix_hash, entries in self.state.local_entries.items():
+        for prefix_hash, entry_ref in self.state.local_entries.items():
+            # Skip tombstoned entries
+            if prefix_hash in self.state.tombstones:
+                continue
             prefixes.append(prefix_hash)
 
         return {
@@ -85,13 +238,23 @@ class GossipProtocol:
             "cache_prefixes": prefixes,
             "total_cache_entries": len(prefixes),
             "timestamp": now,
+            # CRDT state
+            "vector_clock": dict(self.state.vector_clock.clocks),
+            "tombstones": dict(self.state.tombstones),
+            "entry_metadata": {
+                k: {"value": v.value, "timestamp": v.timestamp, "writer_id": v.writer_id}
+                for k, v in self.state.entry_metadata.items()
+            },
         }
 
     def process_advertisement(self, peer_ad: dict) -> list[str]:
-        """Process a peer's advertisement.
+        """Process a peer's advertisement with CRDT merge semantics.
 
-        Updates the cache index with peer's entries and returns
-        the list of prefixes that this node doesn't have.
+        Merges using:
+        1. Vector clock merge (element-wise max) for causal ordering
+        2. Tombstone merge: entries tombstoned by peer are marked locally
+        3. LWW-Register merge: highest timestamp wins for metadata
+        4. G-Set merge: peer's cache entries are added (grow-only)
 
         Args:
             peer_ad: Advertisement dict from a peer.
@@ -103,26 +266,57 @@ class GossipProtocol:
         peer_prefixes = set(peer_ad["cache_prefixes"])
         local_prefixes = set(self.state.local_entries.keys())
 
-        # Update cache index with peer's entries
+        # 1. Merge vector clocks (causal ordering)
+        if "vector_clock" in peer_ad:
+            peer_vc = VectorClock(clocks=peer_ad["vector_clock"])
+            self.state.vector_clock.merge(peer_vc)
+
+        # 2. Merge tombstones (tombstones are also G-Set: only grow)
         now = time.time()
+        if "tombstones" in peer_ad:
+            for prefix_hash, ts in peer_ad["tombstones"].items():
+                # LWW for tombstones: keep the latest tombstone timestamp
+                existing_ts = self.state.tombstones.get(prefix_hash, 0.0)
+                if ts > existing_ts:
+                    self.state.tombstones[prefix_hash] = ts
+                    # Remove from local entries if tombstoned
+                    self.state.local_entries.pop(prefix_hash, None)
+
+        # 3. Merge LWW registers for entry metadata
+        if "entry_metadata" in peer_ad:
+            for prefix_hash, meta_dict in peer_ad["entry_metadata"].items():
+                peer_reg = LWWRegister(
+                    value=meta_dict["value"],
+                    timestamp=meta_dict["timestamp"],
+                    writer_id=meta_dict["writer_id"],
+                )
+                if prefix_hash in self.state.entry_metadata:
+                    self.state.entry_metadata[prefix_hash].merge(peer_reg)
+                else:
+                    self.state.entry_metadata[prefix_hash] = peer_reg
+
+        # 4. G-Set merge: add peer's entries to cache index (grow-only)
         for prefix_hash in peer_prefixes:
+            # Skip tombstoned entries
+            if prefix_hash in self.state.tombstones:
+                continue
             if prefix_hash not in self.state.cache_index:
                 self.state.cache_index[prefix_hash] = []
-            # Update or add entry for this peer
-            self.state.cache_index[prefix_hash] = [
-                (nid, ref, ts)
-                for nid, ref, ts in self.state.cache_index[prefix_hash]
-                if nid != peer_id
-            ]
-            self.state.cache_index[prefix_hash].append(
-                (peer_id, "", now)  # ref will be filled in by GossipResponse
+            # Check if this peer's entry already exists (avoid duplicates)
+            already_known = any(
+                nid == peer_id for nid, _, _ in self.state.cache_index[prefix_hash]
             )
+            if not already_known:
+                self.state.cache_index[prefix_hash].append(
+                    (peer_id, "", now)  # ref filled in by GossipResponse
+                )
 
         # Add peer to known peers
         self.add_peer(peer_id)
 
-        # Return missing prefixes
+        # Return missing prefixes (not in local entries and not tombstoned)
         missing = peer_prefixes - local_prefixes
+        missing -= set(self.state.tombstones.keys())
         return list(missing)
 
     def build_request(self, target_node_id: str, missing_prefixes: list[str]) -> dict:
@@ -209,8 +403,53 @@ class GossipProtocol:
             return entries[0][0]
         return None
 
+    def request_cache_from_peers(self, prefix_hash: str, client: "GossipClient" | None = None) -> dict | None:
+        """Actively request a KV cache entry from all known peers.
+
+        Broadcasts to all peers in order until one returns the entry.
+        Used when local lookup and cache index miss — actively pulls
+        from the network rather than waiting for periodic gossip sync.
+
+        Args:
+            prefix_hash: Hash of the prefix to fetch.
+            client: GossipClient for network transport.
+
+        Returns:
+            KV cache entry data dict, or None if no peer has it.
+        """
+        if client is None:
+            return None
+        for peer_id in list(self.state.known_peers):
+            try:
+                result = client.fetch_kv_cache(peer_id, prefix_hash)
+                if result is not None:
+                    return result
+            except Exception:
+                continue
+        return None
+
+    def tombstone_entry(self, prefix_hash: str) -> None:
+        """Mark a cache entry as deleted using a tombstone.
+
+        Uses CRDT tombstone semantics: once tombstoned, the entry is
+        removed from local state but the tombstone persists for gossip
+        propagation to ensure eventual consistency.
+
+        Args:
+            prefix_hash: Hash of the prefix to delete.
+        """
+        now = time.time()
+        # Increment vector clock for this deletion
+        self.state.vector_clock.increment(self.state.node_id)
+        # Create tombstone (LWW: only update if newer)
+        existing_ts = self.state.tombstones.get(prefix_hash, 0.0)
+        if now > existing_ts:
+            self.state.tombstones[prefix_hash] = now
+        # Remove from local entries
+        self.state.local_entries.pop(prefix_hash, None)
+
     def cleanup_expired(self) -> int:
-        """Remove expired entries from the cache index.
+        """Remove expired entries and old tombstones from the cache index.
 
         Returns:
             Number of entries removed.
@@ -229,7 +468,130 @@ class GossipProtocol:
                 del self.state.cache_index[prefix_hash]
                 removed += 1
 
+        # Clean old tombstones (older than 2x TTL to ensure propagation)
+        tombstone_cutoff = now - (self.cache_ttl * 2)
+        for prefix_hash in list(self.state.tombstones.keys()):
+            if self.state.tombstones[prefix_hash] < tombstone_cutoff:
+                del self.state.tombstones[prefix_hash]
+                # Also clean up associated metadata
+                self.state.entry_metadata.pop(prefix_hash, None)
+
         return removed
+
+
+    # ------------------------------------------------------------------
+    # Distributed PagedAttention: page-table (block-level) sync
+    # ------------------------------------------------------------------
+
+    def store_block_hash(self, block_hash: str, node_id: str | None = None) -> None:
+        """Record a block hash in the page-table index.
+
+        Args:
+            block_hash: SHA-256 hex hash of a KV cache block.
+            node_id: Owning node (defaults to local node).
+        """
+        owner = node_id or self.state.node_id
+        self.state.vector_clock.increment(self.state.node_id)
+
+        if block_hash not in self.state.page_table_index:
+            self.state.page_table_index[block_hash] = []
+        if owner not in self.state.page_table_index[block_hash]:
+            self.state.page_table_index[block_hash].append(owner)
+
+        # Track as local block hash
+        if owner == self.state.node_id and block_hash not in self.state.local_block_hashes:
+            self.state.local_block_hashes.append(block_hash)
+
+    def store_local_block_hashes(self, block_hashes: List[str]) -> None:
+        """Batch-store local block hashes and rebuild the Merkle root."""
+        self.state.local_block_hashes = list(block_hashes)
+        self.state.vector_clock.increment(self.state.node_id)
+
+        for bh in block_hashes:
+            if bh not in self.state.page_table_index:
+                self.state.page_table_index[bh] = []
+            if self.state.node_id not in self.state.page_table_index[bh]:
+                self.state.page_table_index[bh].append(self.state.node_id)
+
+    def update_merkle_root(self, root_hash: str) -> None:
+        """Update this node's Merkle root for gossip advertisements."""
+        self.state.peer_merkle_roots[self.state.node_id] = root_hash
+
+    def build_page_advertisement(self) -> dict:
+        """Build a block-level page-table advertisement.
+
+        Includes the Merkle root and a compact list of block hashes
+        for incremental sync.
+
+        Returns:
+            Advertisement dict with merkle_root, block_count, block_hashes_sample.
+        """
+        state = self.state
+        now = time.time()
+        state.last_exchange_time = now
+
+        return {
+            "node_id": state.node_id,
+            "merkle_root": state.peer_merkle_roots.get(state.node_id, ""),
+            "block_count": len(state.local_block_hashes),
+            "block_hashes_sample": state.local_block_hashes[:100],  # cap to limit payload
+            "total_blocks_advertised": len(state.local_block_hashes),
+            "page_table_entries": len(state.page_table_index),
+            "timestamp": now,
+        }
+
+    def process_page_advertisement(self, peer_ad: dict) -> list[str]:
+        """Process a peer's page-table advertisement.
+
+        Merges block-level entries into the page-table index and returns
+        block hashes that are *missing locally* (candidates for fetch).
+
+        Args:
+            peer_ad: Page-table advertisement dict from :meth:`build_page_advertisement`.
+
+        Returns:
+            List of block hashes that this node should fetch from the peer.
+        """
+        peer_id = peer_ad["node_id"]
+        peer_merkle_root = peer_ad.get("merkle_root", "")
+
+        # Update peer's Merkle root
+        if peer_merkle_root:
+            self.state.peer_merkle_roots[peer_id] = peer_merkle_root
+
+        # Merge peer's block hashes into page-table index
+        peer_blocks = peer_ad.get("block_hashes_sample", [])
+        local_hashes = set(self.state.local_block_hashes)
+
+        missing: list[str] = []
+        for bh in peer_blocks:
+            if bh not in self.state.page_table_index:
+                self.state.page_table_index[bh] = []
+            if peer_id not in self.state.page_table_index[bh]:
+                self.state.page_table_index[bh].append(peer_id)
+
+            # Check if we don't have this block locally
+            if bh not in local_hashes and bh not in missing:
+                missing.append(bh)
+
+        self.add_peer(peer_id)
+        return missing
+
+    def lookup_block(self, block_hash: str) -> list[str]:
+        """Find which nodes have a block with the given hash.
+
+        Args:
+            block_hash: SHA-256 hex hash of the block.
+
+        Returns:
+            List of node IDs that have this block (empty if unknown).
+        """
+        return list(self.state.page_table_index.get(block_hash, []))
+
+    def remove_block_hash(self, block_hash: str) -> None:
+        """Remove a block hash from the local page table (after eviction)."""
+        self.state.local_block_hashes = [h for h in self.state.local_block_hashes if h != block_hash]
+        # Keep page_table_index entry (other nodes may still have it)
 
 
 class GossipClient:
@@ -241,17 +603,32 @@ class GossipClient:
     Uses GossipTransport for bandwidth-aware transfers.
     """
 
-    def __init__(self, peer_resolver=None, transport=None):
+    def __init__(
+        self,
+        node_id: str = "gossip-client",
+        peer_resolver=None,
+        transport=None,
+        enable_network: bool = True,
+    ):
         """Initialize the gossip client.
 
         Args:
+            node_id: Local node identifier used by the network transport.
             peer_resolver: Callable that resolves a peer_id to (host, port).
                           If None, peer resolution is not supported.
             transport: Optional GossipTransport instance. If None, uses
-                      stub mode (no actual network communication).
+                      an HTTP transport when a peer resolver is provided.
+            enable_network: If False, keep stub/no-op behavior for tests.
         """
         self._peer_resolver = peer_resolver
         self._transport = transport
+        if self._transport is None and enable_network and peer_resolver is not None:
+            from distllm.core.gossip_transport import GossipTransport
+
+            self._transport = GossipTransport(
+                node_id=node_id,
+                peer_resolver=peer_resolver,
+            )
         self._request_count = 0
         self._response_count = 0
 
@@ -338,3 +715,9 @@ class GossipClient:
             "responses_received": self._response_count,
             "transfer": transfer_stats,
         }
+
+    def close(self) -> None:
+        """Close the transport and release resources."""
+        if self._transport is not None:
+            if hasattr(self._transport, 'close'):
+                self._transport.close()

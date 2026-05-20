@@ -69,6 +69,41 @@ def dequantize_tensor(fp8_tensor: FP8Tensor) -> torch.Tensor:
     return fp8_tensor.data.to(fp8_tensor.original_dtype) * fp8_tensor.scale
 
 
+def quantize_kv_fp8(tensor: torch.Tensor, scheme: str = FP8Scheme.E4M3) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize KV cache tensor to FP8 with per-tensor scaling.
+
+    Args:
+        tensor: KV tensor of shape [num_heads, seq_len, head_dim].
+        scheme: FP8 scheme (e4m3 or e5m2).
+
+    Returns:
+        Tuple of (fp8_data, scale) where fp8_data is float8_e4m3fn.
+    """
+    if not FP8_AVAILABLE:
+        return tensor, torch.ones(1, device=tensor.device)
+
+    fp8_dtype = FP8_E4M3 if scheme == FP8Scheme.E4M3 else FP8_E5M2
+    fp8_max = 448.0 if scheme == FP8Scheme.E4M3 else 57344.0
+
+    scale = tensor.abs().max().clamp(min=1e-12) / fp8_max
+    fp8_data = (tensor / scale).to(fp8_dtype)
+    return fp8_data, scale
+
+
+def dequantize_kv_fp8(fp8_data: torch.Tensor, scale: torch.Tensor, dtype: torch.dtype = torch.float16) -> torch.Tensor:
+    """Dequantize FP8 KV cache tensor back to original dtype.
+
+    Args:
+        fp8_data: FP8 quantized data.
+        scale: Per-tensor scale factor.
+        dtype: Target dtype for dequantization.
+
+    Returns:
+        Dequantized tensor.
+    """
+    return fp8_data.to(dtype) * scale
+
+
 class FP8Linear(nn.Module):
     """FP8 linear layer with native float8 matmul.
 
@@ -103,6 +138,7 @@ class FP8Linear(nn.Module):
         self._fp8_weight: FP8Tensor | None = None
         self._weight_scale: torch.Tensor | None = None
         self._fp8_enabled = False
+        self._has_scaled_mm: bool = FP8_AVAILABLE and hasattr(torch, '_scaled_mm')
 
     def to_fp8(self) -> None:
         """Convert stored weight to FP8 format for compute."""
@@ -127,19 +163,18 @@ class FP8Linear(nn.Module):
         w = self._fp8_weight
         if self.quantize_activations:
             x_fp8 = quantize_tensor(x, self.scheme)
-            try:
+            if self._has_scaled_mm:
                 out = torch._scaled_mm(
                     x_fp8.data,
                     w.data.t(),
-                    scale_a=x_fp8.scale.reciprocal(),
-                    scale_b=w.scale.reciprocal(),
+                    scale_a=x_fp8.scale,
+                    scale_b=w.scale,
                     bias=self.bias,
                 )
                 return out.to(x.dtype)
-            except (RuntimeError, AttributeError):
-                x_fp16 = dequantize_tensor(x_fp8)
-                w_fp16 = dequantize_tensor(w)
-                return F.linear(x_fp16, w_fp16, self.bias)
+            x_fp16 = dequantize_tensor(x_fp8)
+            w_fp16 = dequantize_tensor(w)
+            return F.linear(x_fp16, w_fp16, self.bias)
         else:
             w_fp16 = dequantize_tensor(w)
             return F.linear(x, w_fp16, self.bias)
@@ -332,7 +367,8 @@ class FP8Engine:
         """
         logger.info(f"Preparing model for FP8 inference (scheme={self.scheme})")
         model = self._patcher.patch_model(model)
-        model = model.to(device=next(model.parameters()).device, dtype=torch.float16)
+        orig_dtype = next(model.parameters()).dtype
+        model = model.to(device=next(model.parameters()).device, dtype=orig_dtype)
         self._is_prepared = True
         return model
 

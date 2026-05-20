@@ -1,4 +1,5 @@
 # Default values for distributed-llm
+# Enhanced with new module configurations and infrastructure settings
 
 image:
   repository: ghcr.io/distributed-llm/coordinator
@@ -27,8 +28,14 @@ coordinator:
     limits:
       cpu: "4"
       memory: "16Gi"
+  ha:
+    enabled: false
+    replicas: 3
+    port: 50051
+    heartbeatInterval: 1s
+    electionTimeout: 3s
 
-# Worker node pools — each pool runs a range of model layers
+# Node worker pools
 nodePools:
   - name: pool-0
     startLayer: 0
@@ -59,7 +66,6 @@ nodePools:
         memory: "32Gi"
         gpu: 1
 
-# Rolling update strategy (graceful drain + cordon)
 updateStrategy:
   rollingUpdate:
     maxSurge: 0
@@ -83,7 +89,6 @@ tolerations:
     effect: "NoSchedule"
 
 nodeSelector: {}
-
 affinity: {}
 
 hpa:
@@ -110,3 +115,131 @@ serviceMonitor:
   enabled: false
   interval: 15s
   path: /metrics
+
+networkPolicy:
+  enabled: false
+
+redis:
+  url: "redis://redis:6379/0"
+
+# ==============================
+# NEW MODULE CONFIGURATIONS
+# ==============================
+
+# Request Auditor — compliance logging, PII detection
+requestAuditor:
+  enabled: false
+  maxEntries: 10000
+  enablePiiDetection: true
+  logDir: "/var/log/distllm/audit"
+
+# Prompt Caching Service
+promptCache:
+  enabled: false
+  redisUrl: "redis://redis:6379/0"
+  memoryCacheSize: 256
+  defaultTtlSeconds: 3600
+
+# Graceful Degradation — partial responses instead of 503
+gracefulDegradation:
+  enabled: true
+  lightThreshold: 0.3
+  moderateThreshold: 0.5
+  severeThreshold: 0.7
+  criticalThreshold: 0.85
+  fallbackModel: ""
+
+# Adaptive Batching Engine
+adaptiveBatching:
+  enabled: false
+  p50LatencyMs: 500
+  p99LatencyMs: 2000
+  maxBatchSize: 64
+
+# Request Fingerprinting — deduplication
+requestFingerprinting:
+  enabled: false
+  cacheSize: 10000
+  cacheTtlSeconds: 3600
+
+# Rate Limiter with Leaky Bucket
+rateLimiter:
+  enabled: true
+  defaultRate: 10.0
+  defaultBurst: 20
+  enableBackoff: true
+
+# ==============================
+# MONITORING & OBSERVABILITY
+# ==============================
+
+prometheus:
+  rules:
+    enabled: false
+    alerts:
+      highErrorRate:
+        threshold: 0.05  # 5% error rate
+        duration: 5m
+      highLatency:
+        p99ThresholdMs: 10000
+        duration: 5m
+
+grafana:
+  dashboard:
+    enabled: false
+    label: "grafana_dashboard"
+
+logging:
+  enabled: false
+  sidecarImage: "fluent/fluent-bit:2.2"
+  output: "stdout"  # stdout, elasticsearch, loki
+  elasticsearch:
+    host: ""
+    port: 9200
+  loki:
+    url: ""
+
+persistence:
+  cache:
+    enabled: false
+    storageClass: ""
+    size: 100Gi
+  audit:
+    enabled: false
+    storageClass: ""
+    size: 10Gi
+
+chaos:
+  enabled: false
+  scheduler: "daily"
+
+warmup:
+  enabled: true
+  tiers:
+    - name: hot
+      promptsFile: "config/warmup-hot.json"
+      captureCudaGraphs: true
+    - name: warm
+      promptsFile: "config/warmup-warm.json"
+  autoTrigger: true
+
+compression:
+  ci:
+    enabled: true
+    accuracyThreshold: 0.95
+    maxAccuracyDrop: 0.05
+
+rag:
+  enabled: false
+  vectorStore: faiss
+  embeddingModel: "all-MiniLM-L6-v2"
+  chunkSize: 512
+  chunkOverlap: 50
+
+apiGateway:
+  enabled: false
+  replicas: 2
+  rateLimit:
+    redisUrl: "redis://redis:6379/1"
+    defaultRPM: 60
+    defaultTPM: 10000

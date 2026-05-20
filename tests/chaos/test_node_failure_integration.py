@@ -350,10 +350,10 @@ class TestStateMachineIntegration:
         engine = FailoverEngine(recovery_threshold=3)
         record = HealthRecord(node_id="node-0", state=NodeState.DEGRADED)
 
-        # 1 success (below threshold)
+        # 1 success (below threshold of 3, stays degraded)
         state = engine.evaluate(record, success=True, latency_ms=50.0)
         assert record.consecutive_successes == 1
-        assert state == NodeState.HEALTHY  # Still recovers because latency is good
+        assert state == NodeState.DEGRADED, "Recovery requires reaching recovery_threshold"
 
     def test_dringing_state_not_probed(self):
         """DRAINING state should skip probing (tested via service logic)."""

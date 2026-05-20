@@ -2,11 +2,12 @@
 
 import time
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from distllm.api.errors import error_response_from_request
 
 
 router = APIRouter(tags=["system"])
@@ -33,7 +34,12 @@ class ParamUpdateRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=0, description="New top-k sampling value")
 
 
-@router.get("/v1/models")
+@router.get(
+    "/v1/models",
+    summary="List available models",
+    description="Return all registered and available models with metadata including model ID and creation timestamp. Returns an empty list if no coordinator is loaded.",
+    response_description="List of model identifiers and metadata",
+)
 async def list_models():
     """List available models."""
     coord = g.coordinator
@@ -51,12 +57,20 @@ async def list_models():
     )
 
 
-@router.get("/health")
-async def health_check():
+@router.get(
+    "/health",
+    summary="Health check",
+    description="Return the current health status of the service, including model name, connected nodes, per-node health, and optional monitor metrics. Returns 503 if no model is loaded.",
+    response_description="Health status with node and model information",
+    responses={
+        503: {"description": "No model loaded or coordinator not initialized"},
+    },
+)
+async def health_check(request: Request):
     """Health check endpoint."""
     coord = g.coordinator
     if coord is None:
-        return {"status": "unhealthy", "reason": "No model loaded"}
+        return error_response_from_request(503, "Service Unavailable", "No model loaded", "health_error", request)
 
     node_health = coord.health_check() if coord.nodes else {}
     health = {
@@ -73,44 +87,43 @@ async def health_check():
     return health
 
 
-@router.get("/ready")
-async def readiness_check():
+@router.get(
+    "/ready",
+    summary="Kubernetes readiness probe",
+    description="Kubernetes readiness probe. Returns 200 only when the service can accept traffic (model loaded, not shutting down, healthy nodes available). Designed for container orchestration health checks.",
+    response_description="Readiness status with 'ready' or 503 error",
+    responses={
+        503: {"description": "No model loaded, service shutting down, or no healthy nodes"},
+    },
+)
+async def readiness_check(request: Request):
     """Kubernetes readiness probe.
 
     Returns 200 only when the service can accept traffic.
     """
     coord = g.coordinator
     if coord is None:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "reason": "No model loaded"},
-        )
+        return error_response_from_request(503, "Service Unavailable", "No model loaded", "health_error", request)
 
     if getattr(coord, "_shutting_down", False):
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "reason": "Service is shutting down"},
-        )
+        return error_response_from_request(503, "Service Unavailable", "Service is shutting down", "health_error", request)
 
     # Check if at least one node is healthy (for distributed mode)
     if coord.nodes:
         node_health = coord.health_check()
         healthy_nodes = sum(1 for h in node_health.values() if h.get("healthy"))
         if healthy_nodes == 0:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "not_ready",
-                    "reason": "No healthy nodes available",
-                    "healthy_nodes": 0,
-                    "total_nodes": len(coord.nodes),
-                },
-            )
+            return error_response_from_request(503, "Service Unavailable", "No healthy nodes available", "health_error", request)
 
     return {"status": "ready"}
 
 
-@router.get("/live")
+@router.get(
+    "/live",
+    summary="Kubernetes liveness probe",
+    description="Kubernetes liveness probe. Returns 200 with uptime in seconds if the process is alive and not deadlocked. Designed for container orchestration health checks.",
+    response_description="Liveness status with uptime",
+)
 async def liveness_check():
     """Kubernetes liveness probe.
 
@@ -119,7 +132,12 @@ async def liveness_check():
     return {"status": "alive", "uptime_seconds": time.time() - g._startup_time}
 
 
-@router.get("/metrics")
+@router.get(
+    "/metrics",
+    summary="Prometheus metrics",
+    description="Expose Prometheus-compatible metrics including service status, coordinator state, scheduler stats, prefix cache performance, GPU utilization, and system health. Returns plaintext in Prometheus exposition format.",
+    response_description="Prometheus-formatted metrics text",
+)
 async def metrics():
     """Prometheus-compatible metrics endpoint."""
     coord = g.coordinator
@@ -136,7 +154,9 @@ async def metrics():
 
     # Use Prometheus exporter if available
     if coord.metrics_exporter:
-        return coord.metrics_exporter.generate_metrics()
+        coord.metrics_exporter.populate_gauges(coordinator=coord)
+        data = coord.metrics_exporter.generate_metrics()
+        return Response(content=data, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     # Fallback: dict-based text format
     m = coord.get_metrics()
@@ -192,7 +212,16 @@ async def metrics():
     return "\n".join(lines)
 
 
-@router.post("/v1/update-params/{request_id}")
+@router.post(
+    "/v1/update-params/{request_id}",
+    summary="Update generation parameters",
+    description="Dynamically update generation parameters (temperature, top_p, top_k) for an in-progress streaming request. Enables real-time steering of model output without restarting generation.",
+    response_description="Updated parameter values for the request",
+    responses={
+        404: {"description": "Request ID not found or already completed"},
+        503: {"description": "Coordinator not initialized"},
+    },
+)
 async def update_generation_params(request_id: str, params: ParamUpdateRequest):
     """Update generation parameters for an in-progress request.
 

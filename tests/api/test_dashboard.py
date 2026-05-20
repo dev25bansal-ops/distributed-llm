@@ -24,9 +24,10 @@ class TestDashboardPages:
         """V2 dashboard should have modern UI elements."""
         response = dashboard_client.get("/")
         text = response.text
-        assert "WebSocket" in text or "ws" in text  # WebSocket connection
-        assert "node-list" in text  # Node health section
-        assert "scheduler-stats" in text  # Scheduler section
+        assert "WebSocket" in text or "ws" in text, "WebSocket connection expected"
+        assert "Real-Time Dashboard" in text, "Dashboard title expected"
+        assert "node-list" in text, "Node health section expected"
+        assert "latency" in text.lower(), "Latency section expected"
 
 
 class TestDashboardAPI:

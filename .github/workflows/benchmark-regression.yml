@@ -1,0 +1,54 @@
+# Benchmark regression workflow — runs on every PR to catch performance regressions.
+# Runs pytest-benchmark tests + custom regression checks with flame graph generation.
+
+name: Benchmark Regression
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "benchmarks/**"
+      - "pyproject.toml"
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - name: Run pytest benchmarks
+        run: |
+          python -m pytest tests/benchmark/ -v --benchmark-json=benchmarks/results.json -p no:asyncio
+      - name: Run custom regression check
+        run: |
+          python benchmarks/regression_check.py \
+            --baseline benchmarks/baseline.json \
+            --current benchmarks/results.json \
+            --threshold 0.10 \
+            --flamegraph \
+            --git-aware \
+            --run
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-artifacts
+          path: |
+            benchmarks/results.json
+            benchmarks/flamegraph_*.svg
+            benchmarks/regression_report.md
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmarks/regression_report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });

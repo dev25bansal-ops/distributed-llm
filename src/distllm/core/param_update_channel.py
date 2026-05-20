@@ -15,11 +15,21 @@ class GenerationParams:
         temperature: Sampling temperature. Higher values increase randomness.
         top_p: Nucleus sampling threshold. Only tokens with cumulative probability <= top_p are considered.
         top_k: Top-k sampling. Only the top_k most likely tokens are considered. 0 means disabled.
+        include_logprobs: Whether to return log probabilities for sampled tokens.
+        top_logprobs: Number of top alternative tokens to return logprobs for (0-20).
+        logit_bias: Modify likelihood of specified tokens (token_id -> bias).
+        presence_penalty: Penalty for new tokens based on presence in generated text (-2.0 to 2.0).
+        frequency_penalty: Penalty for tokens based on frequency in generated text (-2.0 to 2.0).
     """
 
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 0
+    include_logprobs: bool = False
+    top_logprobs: int = 0
+    logit_bias: dict[int, float] = field(default_factory=dict)
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
 
 
 class ParamUpdateChannel:
@@ -67,6 +77,16 @@ class ParamUpdateChannel:
                 params.top_p = kwargs["top_p"]
             if "top_k" in kwargs:
                 params.top_k = kwargs["top_k"]
+            if "include_logprobs" in kwargs:
+                params.include_logprobs = kwargs["include_logprobs"]
+            if "top_logprobs" in kwargs:
+                params.top_logprobs = kwargs["top_logprobs"]
+            if "logit_bias" in kwargs:
+                params.logit_bias = kwargs["logit_bias"]
+            if "presence_penalty" in kwargs:
+                params.presence_penalty = kwargs["presence_penalty"]
+            if "frequency_penalty" in kwargs:
+                params.frequency_penalty = kwargs["frequency_penalty"]
             return params
 
     def get(self, request_id: str) -> GenerationParams | None:

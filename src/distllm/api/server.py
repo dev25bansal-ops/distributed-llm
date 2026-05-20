@@ -1,10 +1,12 @@
 """OpenAI-compatible REST API for distributed LLM inference."""
 
+import argparse
+import asyncio
 import os
 import time
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -14,6 +16,15 @@ from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware
 from distllm.api.rate_limiter import RateLimiter
 from distllm.api.rate_limit_middleware import RateLimitMiddleware
 from distllm.api.observability_middleware import ObservabilityMiddleware
+from distllm.dashboard.ws_handler import (
+    manager,
+    metrics_broadcaster,
+    get_collector,
+    parse_client_message,
+    stream_metrics_sse,
+    KNOWN_METRIC_CATEGORIES,
+)
+from fastapi.responses import StreamingResponse
 from distllm.core.monitor import SystemMonitor
 from distllm.config.settings import DistLLMSettings
 from distllm.config.loader import load_config_file
@@ -24,8 +35,16 @@ from distllm.observability.exporter import DistLLMPrometheusExporter
 from distllm.monitoring.anomaly_detector import AnomalyDetector
 from distllm.scheduling.cost_aware_scaler import GPUCostTracker
 from loguru import logger
+from distllm.constants import HSTS_MAX_AGE
+from distllm.core.quantization_selector import build_quantization_config
+from distllm.tenant.store import TenantStore
+from distllm.tenant.middleware import TenantMiddleware
+from distllm.tenant.rate_limiter import TenantRateLimiter
+from distllm.tenant.billing import UsageMeter
+from distllm.tenant.router import TenantModelRouter
 
 # Re-export route routers
+from distllm.api.errors import error_response, error_response_from_request
 from distllm.api.routes import (
     chat_router,
     completion_router,
@@ -40,6 +59,13 @@ from distllm.api.routes import (
     moderations_router,
     files_router,
     fine_tuning_router,
+    gossip_router,
+    optimization_router,
+    rag_router,
+    agent_router,
+    disagg_router,
+    pipeline_router,
+    debug_router,
 )
 
 # Re-export models from route modules for backward compatibility
@@ -64,7 +90,6 @@ from distllm.api.routes.health import ModelInfo, ModelList, ParamUpdateRequest
 
 # Re-export streaming helpers for backward compatibility
 from distllm.api.streaming import (
-    _sample_token,
     _stream_event,
     _stream_start_event,
     _stream_stop_event,
@@ -108,9 +133,25 @@ app = FastAPI(
     openapi_tags=[
         {"name": "chat", "description": "Chat completion endpoints with streaming support"},
         {"name": "completion", "description": "Text completion endpoints with streaming support"},
-        {"name": "models", "description": "Model listing and management"},
+        {"name": "embedding", "description": "Text embedding and document reranking for RAG pipelines"},
         {"name": "adapters", "description": "LoRA adapter management for multi-adapter inference"},
-        {"name": "system", "description": "Health checks, metrics, and system status"},
+        {"name": "system", "description": "Health checks, Kubernetes probes, metrics, and generation parameter updates"},
+        {"name": "versions", "description": "Model versioning, A/B testing, shadow deployments, and blue-green rollouts"},
+        {"name": "multi-model", "description": "Multi-model hot-swap: load, unload, and manage multiple models concurrently"},
+        {"name": "batch", "description": "Async batch processing of chat and completion requests via JSONL files"},
+        {"name": "audio", "description": "Speech-to-text transcription and text-to-speech synthesis"},
+        {"name": "images", "description": "Image generation, editing, and variation using diffusion models"},
+        {"name": "moderations", "description": "Content moderation: classify text for harmful content across multiple categories"},
+        {"name": "files", "description": "File upload and management for fine-tuning, batch processing, and RAG"},
+        {"name": "fine-tuning", "description": "Model fine-tuning job creation, monitoring, and management"},
+        {"name": "gossip", "description": "P2P gossip protocol for distributed KV cache discovery between nodes"},
+        {"name": "optimization", "description": "Self-optimizing engine: performance tuning suggestions and auto-tuning"},
+        {"name": "rag", "description": "Retrieval-Augmented Generation: document ingestion, retrieval, and prompt enrichment"},
+        {"name": "agent", "description": "ReAct agent execution: run goal-oriented agents with custom tool definitions"},
+        {"name": "disagg", "description": "Disaggregated serving: separated prefill/decode node pools for improved throughput"},
+        {"name": "pipeline", "description": "Model pipeline composition: chain multiple models in sequential workflows"},
+        {"name": "debug", "description": "Debug and replay tools: request inspection, replay, and deterministic generation"},
+        {"name": "tenants", "description": "Multi-tenant management: CRUD, usage metering, billing, and quota enforcement"},
     ],
 )
 
@@ -121,7 +162,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,  # Security: Disable credentials for CORS
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Request-Timeout", "X-Priority"],
     max_age=600,  # Cache preflight for 10 minutes
 )
 
@@ -135,8 +176,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"] = "1; mode=block"
-        from distllm.constants import HSTS_MAX_AGE
-        response.headers["Strict-Transport-Security"] = f"max-age={HSTS_MAX_AGE}; includeSubDomains"
+        # HSTS only makes sense when TLS is enabled
+        tls_enabled = os.environ.get("DISTLLM_TLS_ENABLED", "false").lower() == "true"
+        if tls_enabled:
+            response.headers["Strict-Transport-Security"] = f"max-age={HSTS_MAX_AGE}; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         return response
@@ -155,35 +198,39 @@ class ErrorResponse(BaseModel):
     request_id: str | None = None
 
 
+def _error_response(
+    status_code: int,
+    error: str,
+    message: str,
+    type: str = "api_error",
+    request: Request | None = None,
+) -> JSONResponse:
+    """Build a standardized error response."""
+    return error_response_from_request(status_code, error, message, type, request)
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Convert HTTPException to structured error response."""
-    return JSONResponse(
+    return _error_response(
         status_code=exc.status_code,
-        content=ErrorResponse(
-            error=f"HTTP {exc.status_code}",
-            message=exc.detail,
-            type="http_error",
-            request_id=getattr(request.state, "request_id", None),
-        ).model_dump(exclude_none=True),
+        error=f"HTTP {exc.status_code}",
+        message=exc.detail,
+        type="http_error",
+        request=request,
     )
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Catch-all for unhandled exceptions with structured response."""
-    import logging
-    logger = logging.getLogger("distllm.api")
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-
-    return JSONResponse(
+    return _error_response(
         status_code=500,
-        content=ErrorResponse(
-            error="Internal Server Error",
-            message="An unexpected error occurred. Please try again later.",
-            type="internal_error",
-            request_id=getattr(request.state, "request_id", None),
-        ).model_dump(exclude_none=True),
+        error="Internal Server Error",
+        message="An unexpected error occurred. Please try again later.",
+        type="internal_error",
+        request=request,
     )
 
 
@@ -230,14 +277,56 @@ coordinator: Coordinator | None = None
 monitor: SystemMonitor | None = None
 _startup_time: float = time.time()
 
-app.add_middleware(RequestIDMiddleware)
-
 # Observability globals
 metrics_exporter: DistLLMPrometheusExporter | None = None
 cost_tracker: GPUCostTracker | None = None
 anomaly_detector: AnomalyDetector | None = None
 
 # Observability middleware (after RequestIDMiddleware, before AuthMiddleware)
+# --- Tenant System ---
+
+tenant_store: TenantStore | None = None
+tenant_rate_limiter: TenantRateLimiter | None = None
+usage_meter: UsageMeter | None = None
+tenant_router: TenantModelRouter | None = None
+
+
+def _init_tenants(settings: DistLLMSettings | None = None) -> None:
+    """Initialize the multi-tenant system."""
+    global tenant_store, tenant_rate_limiter, usage_meter, tenant_router
+
+    tenant_store = TenantStore()
+    tenant_rate_limiter = TenantRateLimiter()
+    usage_meter = UsageMeter(tenant_store)
+    tenant_router = TenantModelRouter()
+
+    app.state.tenant_store = tenant_store
+    app.state.usage_meter = usage_meter
+    app.state.tenant_router = tenant_router
+
+    # Always read tenant config from settings; never from os.environ (no env injection)
+    tenant_enabled = bool(settings and getattr(settings, "tenant", None) and settings.tenant.enabled)
+
+    # Read admin API key from settings only; never write secrets to os.environ
+    admin_key = None
+    if settings and getattr(settings, "tenant", None) and settings.tenant.admin_api_key:
+        admin_key = settings.tenant.admin_api_key.get_secret_value() if hasattr(settings.tenant.admin_api_key, "get_secret_value") else str(settings.tenant.admin_api_key)
+    # Ensure no leftover env var remains (defense in depth)
+    os.environ.pop("ADMIN_API_KEY", None)
+
+    if tenant_enabled:
+        app.add_middleware(TenantMiddleware, store=tenant_store, enabled=True)
+        _init_tenant_routes()
+        logger.info("Multi-tenant system initialized with middleware")
+    else:
+        logger.info("Tenant system enabled by default")
+
+    # Seed default tenant for backward compatibility
+    if tenant_store.get_tenant("default") is None:
+        from distllm.tenant.models import TenantTier
+        tenant_store.create_tenant(name="Default", tier=TenantTier.FREE)
+
+
 def _init_observability():
     """Initialize tracing, logging, metrics exporter, cost tracker, anomaly detector."""
     global metrics_exporter, cost_tracker, anomaly_detector
@@ -284,10 +373,9 @@ def _init_observability():
 
 _init_observability()
 
-app.add_middleware(AuthMiddleware)
-
-
 # Request timeout middleware
+# NOTE: Registered BEFORE AuthMiddleware so that AuthMiddleware runs first
+# (FastAPI executes middleware in reverse order of registration).
 class TimeoutMiddleware(BaseHTTPMiddleware):
     """Cancel requests that exceed the timeout limit."""
 
@@ -302,25 +390,34 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         timeout = self.ENDPOINT_TIMEOUTS.get(
             request.url.path, self.DEFAULT_TIMEOUT
         )
+        # Per-request timeout via X-Request-Timeout header
+        per_request = getattr(request.state, "request_timeout", None)
+        if per_request is not None:
+            timeout = per_request
 
         try:
-            import asyncio
             async with asyncio.timeout(timeout):
                 response = await call_next(request)
                 return response
         except asyncio.TimeoutError:
-            return JSONResponse(
+            return _error_response(
                 status_code=504,
-                content=ErrorResponse(
-                    error="Gateway Timeout",
-                    message=f"Request exceeded {timeout:.0f}s timeout limit",
-                    type="timeout_error",
-                    request_id=getattr(request.state, "request_id", None),
-                ).model_dump(exclude_none=True),
+                error="Gateway Timeout",
+                message=f"Request exceeded {timeout:.0f}s timeout limit",
+                type="timeout_error",
+                request=request,
             )
 
 
 app.add_middleware(TimeoutMiddleware)
+
+# AuthMiddleware registered AFTER TimeoutMiddleware so it runs first (outermost)
+app.add_middleware(AuthMiddleware)
+
+# RequestIDMiddleware registered after AuthMiddleware so it runs before it
+# on incoming requests, ensuring request.state.request_id is set before any
+# middleware that reads it (e.g. AuthMiddleware error responses).
+app.add_middleware(RequestIDMiddleware)
 
 
 # Backpressure middleware
@@ -340,30 +437,24 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
                 stats = coordinator.scheduler.stats()
                 pending = stats.get("pending_requests", 0)
                 if isinstance(pending, (int, float)) and pending >= self.MAX_PENDING_REQUESTS:
-                    return JSONResponse(
+                    return _error_response(
                         status_code=503,
-                        content=ErrorResponse(
-                            error="Service Unavailable",
-                            message=f"System overloaded: {pending} pending requests",
-                            type="backpressure_error",
-                            request_id=getattr(request.state, "request_id", None),
-                        ).model_dump(exclude_none=True),
-                        headers={"Retry-After": "5"},
+                        error="Service Unavailable",
+                        message=f"System overloaded: {pending} pending requests",
+                        type="backpressure_error",
+                        request=request,
                     )
             except (AttributeError, TypeError, KeyError):
                 pass  # Scheduler stats unavailable or malformed, skip check
 
         # Check if shutting down
         if coordinator and getattr(coordinator, "_shutting_down", False):
-            return JSONResponse(
+            return _error_response(
                 status_code=503,
-                content=ErrorResponse(
-                    error="Service Unavailable",
-                    message="Service is shutting down",
-                    type="shutdown_error",
-                    request_id=getattr(request.state, "request_id", None),
-                ).model_dump(exclude_none=True),
-                headers={"Retry-After": "10"},
+                error="Service Unavailable",
+                message="Service is shutting down",
+                type="shutdown_error",
+                request=request,
             )
 
         return await call_next(request)
@@ -385,6 +476,7 @@ def _init_rate_limiter(settings: DistLLMSettings | None = None) -> None:
         default_rpm=rl_settings.default_rpm,
         endpoint_limits=rl_settings.endpoint_limits,
         burst_multiplier=rl_settings.burst_multiplier,
+        auth_rpm_multiplier=rl_settings.auth_rpm_multiplier,
     )
     app.add_middleware(
         RateLimitMiddleware,
@@ -407,6 +499,156 @@ app.include_router(images_router)
 app.include_router(moderations_router)
 app.include_router(files_router)
 app.include_router(fine_tuning_router)
+app.include_router(gossip_router)
+app.include_router(optimization_router)
+app.include_router(rag_router)
+app.include_router(agent_router)
+app.include_router(disagg_router)
+app.include_router(pipeline_router)
+app.include_router(debug_router)
+
+# --- Dashboard & WebSocket ---
+
+from pathlib import Path
+
+
+@app.websocket("/ws")
+async def dashboard_websocket(websocket: WebSocket):
+    """WebSocket endpoint for real-time dashboard metrics.
+
+    Client may send JSON commands:
+      - ``{"type":"subscribe","metrics":["latency","gpu"],"interval":2.0}``
+      - ``{"type":"ping"}``
+
+    Supported metric categories: latency, ttft, throughput, tokens_per_sec,
+    kv_cache, speculative, cost, queue_depth, active_requests, scheduler,
+    nodes, gpu, prefix_cache, spec_decoder, topology, tenants.
+    """
+    await manager.connect(websocket)
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            cmd = parse_client_message(raw)
+            cmd_type = cmd.get("type", "error")
+
+            if cmd_type == "subscribe":
+                manager.subscribe(
+                    websocket,
+                    metric_types=cmd.get("metrics"),
+                    interval=cmd.get("interval", 1.0),
+                )
+                await manager.send_to(websocket, {
+                    "type": "subscribed",
+                    "metrics": cmd.get("metrics"),
+                    "interval": cmd.get("interval", 1.0),
+                })
+            elif cmd_type == "ping":
+                await manager.send_to(websocket, {"type": "pong", "timestamp": time.time()})
+            elif cmd_type == "error":
+                await manager.send_to(websocket, {"type": "error", "detail": cmd.get("detail", "Unknown error")})
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+@app.get(
+    "/dashboard",
+    response_class=HTMLResponse,
+    summary="Dashboard page",
+    description="Serve the real-time monitoring dashboard HTML page. The dashboard displays live metrics, request throughput, latency charts, and system health via WebSocket connection.",
+    response_description="Dashboard HTML page",
+    include_in_schema=False,
+)
+async def dashboard_page():
+    """Serve the real-time dashboard HTML."""
+    html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "index.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse(content="<h1>Dashboard not found</h1>")
+
+
+@app.get(
+    "/api/metrics/collector",
+    summary="Metrics collector snapshot",
+    description="Return a snapshot of all collected metrics from the observability collector, including raw counters and gauges for instrumentation debugging.",
+    response_description="Collector metrics snapshot",
+)
+async def api_collector_metrics():
+    """Return current collector metrics snapshot."""
+    return get_collector().summary()
+
+
+@app.get(
+    "/api/metrics/stream",
+    summary="Metrics SSE stream",
+    description="Subscribe to a real-time metrics stream via Server-Sent Events. Use query parameters to filter metric categories and set update interval.",
+    response_description="Event stream of structured metrics JSON.",
+)
+async def api_metrics_stream(
+    metrics: str = "",
+    interval: float = 1.0,
+):
+    """SSE endpoint for real-time dashboard metrics.
+
+    Query parameters:
+      - ``metrics``: Comma-separated list of categories to subscribe to
+                     (omit for all). e.g. ``metrics=latency,gpu,nodes``
+      - ``interval``: Update interval in seconds (0.2-10.0, default 1.0)
+
+    Supported categories: latency, ttft, throughput, tokens_per_sec,
+    kv_cache, speculative, cost, queue_depth, active_requests, scheduler,
+    nodes, gpu, prefix_cache, spec_decoder, topology, tenants.
+    """
+    interval = max(0.2, min(interval, 10.0))
+    requested = None
+    if metrics:
+        requested = {m.strip() for m in metrics.split(",") if m.strip()}
+        unknown = requested - KNOWN_METRIC_CATEGORIES
+        if unknown:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": f"Unknown metric categories: {', '.join(sorted(unknown))}",
+                    "valid_categories": sorted(KNOWN_METRIC_CATEGORIES),
+                },
+            )
+
+    return StreamingResponse(
+        stream_metrics_sse(coordinator, requested_metrics=requested, interval=interval),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+_ws_broadcast_task = None
+
+
+def _start_ws_broadcaster():
+    """Start the WebSocket metrics broadcaster background task."""
+    global _ws_broadcast_task
+    if coordinator is not None:
+        _ws_broadcast_task = asyncio.create_task(metrics_broadcaster(coordinator))
+
+
+@app.on_event("startup")
+async def _startup_dashboard():
+    _start_ws_broadcaster()
+
+
+@app.on_event("shutdown")
+async def _shutdown_dashboard():
+    global _ws_broadcast_task
+    if _ws_broadcast_task:
+        _ws_broadcast_task.cancel()
+
+
+def _init_tenant_routes():
+    """Include tenant router lazily to avoid circular import."""
+    from distllm.api.routes.tenants import router as t_router
+    app.include_router(t_router)
 
 
 def _build_quantization_config(settings: DistLLMSettings):
@@ -416,8 +658,6 @@ def _build_quantization_config(settings: DistLLMSettings):
         return None
 
     if q.method in ("gptq", "awq", "fp8"):
-        # These use dict configs passed to model loader
-        from distllm.core.quantization_selector import build_quantization_config
         return build_quantization_config(
             q.method,
             gptq_bits=q.gptq_bits,
@@ -460,9 +700,15 @@ def _build_speculative_config(settings: DistLLMSettings):
         "draft_model": s.draft_model,
         "num_assistant_tokens": s.num_assistant_tokens,
         "min_acceptance_rate": s.min_acceptance_rate,
+        "warmup_steps": s.warmup_steps,
         "method": s.method,
         "medusa_num_heads": s.medusa_num_heads,
         "medusa_num_tokens_per_head": s.medusa_num_tokens_per_head,
+        "eagle_checkpoint": s.eagle_checkpoint,
+        "eagle_variant": s.eagle_variant,
+        "eagle_hidden_size": s.eagle_hidden_size,
+        "eagle_vocab_size": s.eagle_vocab_size,
+        "eagle_num_layers": s.eagle_num_layers,
         "ngram_min_match": s.ngram_min_match,
     }
 
@@ -524,6 +770,15 @@ def create_coordinator(
         metrics_exporter=metrics_exporter,
     )
 
+    # Initialize multi-model chat router from settings
+    if settings and settings.chat_router.enabled:
+        chat_router_settings = settings.chat_router
+        from distllm.core.chat_router import ModelRouter
+        model_router = ModelRouter(chat_router_settings)
+        # Register the hybrid model name so the chat route recognises it
+        model_router.register_hybrid_name(chat_router_settings.name)
+        coord._chat_router = model_router
+
     if local:
         coord.load_local_model()
         logger.info(f"Coordinator loaded model locally: {model_name}")
@@ -539,13 +794,12 @@ def create_coordinator(
 def _load_settings(args) -> DistLLMSettings:
     """Load settings with precedence: CLI > env > YAML > defaults.
 
-    Always starts with DistLLMSettings() which reads env vars automatically
-    via pydantic-settings, then layers YAML config, then CLI overrides.
-    Merges all layers together before a single validation pass.
+    Precedence order (lowest to highest):
+    1. Pydantic defaults (lowest)
+    2. YAML config file
+    3. Environment variables (DISTLLM_*)
+    4. CLI arguments (highest)
     """
-    settings = DistLLMSettings()
-    overrides: dict = {}
-
     # Find YAML config path
     config_path = args.config
     if config_path is None:
@@ -554,33 +808,66 @@ def _load_settings(args) -> DistLLMSettings:
                 config_path = candidate
                 break
 
+    # Step 1: Start with pydantic defaults
+    base = DistLLMSettings().model_dump()
+
+    # Step 2: Layer YAML config on top of defaults
     if config_path and os.path.exists(config_path):
         yaml_data = load_config_file(config_path)
         if yaml_data:
-            overrides = _deep_merge({}, yaml_data)
+            base = _deep_merge(base, yaml_data)
 
-    # CLI overrides (highest precedence) — layer on top of YAML
+    # Step 3: Layer environment variables on top (env > YAML)
+    # Parse DISTLLM_<KEY>=value into the top-level dict,
+    # and DISTLLM_<KEY>__<SUBKEY>=value into nested dicts
+    for env_key, env_val in os.environ.items():
+        if not env_key.startswith("DISTLLM_"):
+            continue
+        suffix = env_key[len("DISTLLM_"):]
+        if not suffix:
+            continue
+        parts = suffix.split("__")
+        target = base
+        for part in parts[:-1]:
+            key = part.lower()
+            if key not in target or not isinstance(target[key], dict):
+                target[key] = {}
+            target = target[key]
+        target[parts[-1].lower()] = _parse_env_value(env_val)
+
+    # Step 4: CLI overrides (highest precedence)
     if args.model:
-        overrides.setdefault("model", {})["name"] = args.model
+        base.setdefault("model", {})["name"] = args.model
     if args.dtype:
-        overrides.setdefault("model", {})["dtype"] = args.dtype
+        base.setdefault("model", {})["dtype"] = args.dtype
     if args.host:
-        overrides.setdefault("coordinator", {})["host"] = args.host
+        base.setdefault("coordinator", {})["host"] = args.host
     if args.port:
-        overrides.setdefault("coordinator", {})["api_port"] = args.port
+        base.setdefault("coordinator", {})["api_port"] = args.port
     if args.quantization and args.quantization != "none":
-        overrides.setdefault("quantization", {})["method"] = args.quantization
+        base.setdefault("quantization", {})["method"] = args.quantization
 
-    if overrides:
-        merged = _deep_merge(settings.model_dump(), overrides)
-        settings = DistLLMSettings.model_validate(merged)
+    return DistLLMSettings.model_validate(base)
 
-    return settings
+
+def _parse_env_value(value: str):
+    """Parse an environment variable string into an appropriate Python type."""
+    if value.lower() in ("true", "1", "yes"):
+        return True
+    if value.lower() in ("false", "0", "no"):
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
 
 
 def main():
-    import argparse
-
     parser = argparse.ArgumentParser(description="Distributed LLM REST API")
     parser.add_argument("--model", type=str, default=None, help="Model name (overrides config)")
     parser.add_argument("--host", type=str, default=None, help="Server host (overrides config)")
@@ -605,8 +892,7 @@ def main():
 
     if args.debug:
         set_debug_mode(True)
-        import logging
-        logging.getLogger("distllm.security").warning(
+        logger.warning(
             "DEBUG MODE ENABLED: Tensor shape logging is active. "
             "This may leak sensitive information about model architecture. "
             "Do not use in production."
@@ -627,8 +913,17 @@ def main():
     # Initialize rate limiter from settings
     _init_rate_limiter(settings)
 
+    # Initialize tenant system
+    _init_tenants(settings)
+
     logger.info(f"Starting API server on {settings.coordinator.host}:{settings.coordinator.api_port}")
-    uvicorn.run(app, host=settings.coordinator.host, port=settings.coordinator.api_port, log_level="info")
+
+    # Register graceful shutdown handler
+    def _shutdown() -> None:
+        logger.info("Shutdown requested, draining connections...")
+
+    app.add_event_handler("shutdown", _shutdown)
+    uvicorn.run(app, host=settings.coordinator.host, port=settings.coordinator.api_port, log_level="info", shutdown_timeout=30)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

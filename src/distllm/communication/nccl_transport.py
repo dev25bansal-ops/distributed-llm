@@ -17,6 +17,7 @@ import os
 import queue
 import threading
 import time
+from datetime import timedelta
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -145,7 +146,7 @@ class NCCLTransport:
                 backend=backend_str,
                 rank=self.rank,
                 world_size=self.world_size,
-                timeout=torch.distributed.Timedelta(seconds=self._timeout_ms // 1000),
+                timeout=timedelta(seconds=self._timeout_ms // 1000),
             )
             logger.info(f"Rank {self.rank}: initialized {backend_str} process group, size={self.world_size}")
 
@@ -464,6 +465,7 @@ class NCCLTransport:
 
     def shutdown(self) -> None:
         """Clean up transport resources."""
+        self._pending_requests.clear()
         self._executor.shutdown(wait=False)
         if self.backend in (TransportBackend.NCCL, TransportBackend.GLOO):
             import torch.distributed as dist

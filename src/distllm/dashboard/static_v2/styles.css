@@ -108,3 +108,76 @@ header h1 { font-size: 1.5rem; }
     white-space: pre-wrap;
     word-break: break-all;
 }
+
+/* Waterfall visualization */
+.waterfall {
+    margin-top: 8px;
+}
+
+.waterfall-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    padding: 4px 0;
+    margin-bottom: 4px;
+}
+
+.waterfall-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.waterfall-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+}
+
+.waterfall-row.waterfall-overdue .waterfall-label {
+    color: var(--accent-red);
+}
+
+.waterfall-label {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    min-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.waterfall-bar {
+    flex: 1;
+    height: 16px;
+    background: var(--bg-card);
+    border-radius: 2px;
+    overflow: hidden;
+    display: flex;
+}
+
+.waterfall-segment {
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.waterfall-prefill {
+    background: var(--accent-blue);
+}
+
+.waterfall-decode {
+    background: var(--accent-green);
+}
+
+.waterfall-time {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    min-width: 60px;
+    text-align: right;
+}

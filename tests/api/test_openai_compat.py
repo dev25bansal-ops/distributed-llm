@@ -9,6 +9,14 @@ from fastapi.testclient import TestClient
 from distllm.api.server import app
 
 
+@pytest.fixture(autouse=True)
+def _disable_auth(monkeypatch):
+    """Disable auth to prevent middleware ordering issues."""
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+    monkeypatch.delenv("API_KEY", raising=False)
+
+
 @pytest.fixture
 def client():
     """Create test client with mocked coordinator."""
@@ -40,6 +48,10 @@ def mock_coordinator():
     coord._param_update_channel.unregister = MagicMock()
     coord._param_update_channel.update.return_value = None
     coord.adapter_manager = None
+
+    # Prevent MagicMock from auto-creating attributes that trigger wrong code paths
+    coord._vlm_pipeline = None
+    coord._spec_decoder = None
 
     # Prevent BackpressureMiddleware from thinking service is shutting down
     # (MagicMock attributes are truthy by default)

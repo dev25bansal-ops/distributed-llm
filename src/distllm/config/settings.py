@@ -6,8 +6,9 @@ delimiter "__" (e.g., DISTLLM__MODEL__NAME).
 """
 
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +21,7 @@ class NodeRole(str, Enum):
 
 class ModelSettings(BaseModel):
     """Model configuration."""
-    name: str = "roneneldan/TinyStories-1M"
+    name: str = Field(default="", description="Model name or path. Must be explicitly set.")
     dtype: str = "float16"
     trust_remote_code: bool = False
 
@@ -52,6 +53,16 @@ class CoordinatorSettings(BaseModel):
     def validate_origins(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("cors_origins must not be empty")
+        # Validate each origin is a well-formed URL
+        for origin in v.split(","):
+            origin = origin.strip()
+            if origin == "*":
+                continue  # Wildcard handled separately in _get_cors_origins
+            if not (origin.startswith("http://") or origin.startswith("https://") or origin.startswith("chrome-extension://") or origin.startswith("moz-extension://")):
+                raise ValueError(
+                    f"CORS origin '{origin}' must be a valid URL starting with http://, https://, "
+                    f"or a browser extension scheme."
+                )
         return v
 
 
@@ -230,9 +241,14 @@ class SpeculativeSettings(BaseModel):
     num_assistant_tokens: int = 5
     min_acceptance_rate: float = 0.3
     warmup_steps: int = 10
-    method: str = "draft_model"  # "draft_model" | "medusa" | "ngram" | "auto"
+    method: str = "draft_model"  # "draft_model" | "medusa" | "eagle" | "ngram" | "auto"
     medusa_num_heads: int = 4
     medusa_num_tokens_per_head: int = 3
+    eagle_checkpoint: str = ""
+    eagle_variant: str = "eagle"
+    eagle_hidden_size: int = 4096
+    eagle_vocab_size: int = 32000
+    eagle_num_layers: int = 2
     ngram_min_match: int = 4  # Minimum n-gram match length
 
     @field_validator("num_assistant_tokens")
@@ -245,7 +261,7 @@ class SpeculativeSettings(BaseModel):
     @field_validator("method")
     @classmethod
     def validate_method(cls, v: str) -> str:
-        allowed = {"draft_model", "medusa", "ngram", "auto"}
+        allowed = {"draft_model", "medusa", "eagle", "ngram", "auto"}
         if v not in allowed:
             raise ValueError(f"method must be one of {allowed}, got '{v}'")
         return v
@@ -445,7 +461,7 @@ class CostSettings(BaseModel):
 
 class RateLimitSettings(BaseModel):
     """API rate limiting configuration."""
-    enabled: bool = False
+    enabled: bool = True
     default_rpm: float = 60.0
     endpoint_limits: dict[str, float] = Field(default_factory=lambda: {
         "/v1/chat/completions": 30.0,
@@ -454,8 +470,10 @@ class RateLimitSettings(BaseModel):
         "/metrics": 120.0,
     })
     burst_multiplier: float = 1.5
+    # Security: Separate rate limits for authenticated vs unauthenticated clients
+    auth_rpm_multiplier: float = 2.0  # Authenticated clients get higher limits
 
-    @field_validator("default_rpm", "burst_multiplier")
+    @field_validator("default_rpm", "burst_multiplier", "auth_rpm_multiplier")
     @classmethod
     def validate_positive(cls, v: float) -> float:
         if v <= 0:
@@ -469,8 +487,35 @@ class ModelHubSettings(BaseModel):
     cache_dir: str | None = None
     max_cache_size_gb: float = 50.0
     offline_mode: bool = False
-    hf_token: str | None = None
+    hf_token: SecretStr | None = Field(default=None, description="HuggingFace token. Set via DISTLLM__MODEL_HUB__HF_TOKEN env var or .env file, NOT in YAML config.")
     download_timeout_s: int = 300
+
+    @field_validator("hf_token")
+    @classmethod
+    def warn_if_plain_text(cls, v: SecretStr | None) -> SecretStr | None:
+        """Log a warning if token is set (reminds users to use env vars)."""
+        if v is not None:
+            import os
+            env_token = os.environ.get("DISTLLM__MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
+            if env_token is None:
+                import warnings
+                warnings.warn(
+                    "hf_token is set in config rather than environment variable. "
+                    "Consider using DISTLLM__MODEL_HUB__HF_TOKEN or HF_TOKEN env var to avoid "
+                    "committing secrets to config files.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        return v
+
+    @property
+    def hf_token_value(self) -> str | None:
+        """Get the actual token value. Prefer env var over config value."""
+        import os
+        env_token = os.environ.get("DISTLLM__MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
+        if env_token:
+            return env_token
+        return self.hf_token.get_secret_value() if self.hf_token else None
 
     @field_validator("max_cache_size_gb")
     @classmethod
@@ -575,6 +620,103 @@ class PredictiveCacheSettings(BaseModel):
     background_compress_interval_s: int = 300
 
 
+class SelfOptimizingSettings(BaseModel):
+    """Auto-tuning via hill-climbing optimization."""
+    enabled: bool = False
+    tune_interval_seconds: float = 60.0
+    warmup_seconds: float = 30.0
+    profile_dir: str | None = None
+
+
+class CudaGraphSettings(BaseModel):
+    """CUDA graph capture for decode acceleration."""
+    enabled: bool = False
+    batch_sizes: list[int] = [1, 2, 4, 8, 16, 32]
+
+
+class CompileSettings(BaseModel):
+    """torch.compile integration."""
+    enabled: bool = False
+    mode: str = "reduce-overhead"
+    fullgraph: bool = False
+
+
+class SloRaSettings(BaseModel):
+    """SLoRA multi-adapter serving."""
+    enabled: bool = False
+    max_adapters: int = 64
+
+
+class RAGSettings(BaseModel):
+    """RAG pipeline with FAISS."""
+    enabled: bool = False
+    dimension: int = 768
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+    index_path: str | None = None
+
+
+class AgentSettings(BaseModel):
+    """ReAct agent loop."""
+    enabled: bool = False
+    max_iterations: int = 10
+    reflection_enabled: bool = True
+
+
+class DisaggSettings(BaseModel):
+    """Disaggregated prefill/decode serving."""
+    enabled: bool = False
+    prefill_nodes: list[dict] = []
+    decode_nodes: list[dict] = []
+
+
+class RouteRuleSettings(BaseModel):
+    """A single routing rule for the multi-model chat router."""
+    name: str = Field(default="", description="Rule name for identification")
+    match_type: str = Field(default="keyword", description="Matching strategy: keyword, regex, or workload")
+    match: str = Field(default="", description="Pattern to match against the user message")
+    target_model: str = Field(default="", description="Model to route to when this rule matches")
+    priority: int = Field(default=0, ge=0, description="Rule priority (higher = evaluated first)")
+
+
+class ChatRouterSettings(BaseModel):
+    """Multi-model chat router configuration.
+
+    Allows defining compound/hybrid models that route queries to different
+    backend models based on content matching rules.
+
+    Example config (YAML):
+    .. code-block:: yaml
+
+        chat_router:
+          enabled: true
+          name: hybrid
+          default_model: llama3
+          routes:
+            - name: code-route
+              match_type: keyword
+              match: "write a function"
+              target_model: codellama
+              priority: 10
+            - name: creative-route
+              match_type: keyword
+              match: "write a story"
+              target_model: llama3
+              priority: 5
+    """
+    enabled: bool = False
+    name: str = Field(default="hybrid", description="Model name that clients use to invoke this router (e.g., 'hybrid', 'smart-router')")
+    default_model: str = Field(default="", description="Default model when no rules match")
+    routes: list[RouteRuleSettings] = Field(default_factory=list, description="Ordered routing rules")
+
+
+class TenantSettings(BaseModel):
+    """Multi-tenant SaaS configuration."""
+    enabled: bool = False
+    default_tier: str = "free"
+    admin_api_key: str | None = Field(default=None, description="Admin API key for tenant management. Set via DISTLLM__TENANT__ADMIN_API_KEY env var.")
+
+
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
@@ -614,6 +756,7 @@ class DistLLMSettings(BaseSettings):
     chaos: ChaosSettings = Field(default_factory=ChaosSettings)
     canary: CanarySettings = Field(default_factory=CanarySettings)
     cost: CostSettings = Field(default_factory=CostSettings)
+    tenant: TenantSettings = Field(default_factory=TenantSettings)
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     model_hub: ModelHubSettings = Field(default_factory=ModelHubSettings)
     prompt_template: PromptTemplateSettings = Field(default_factory=PromptTemplateSettings)
@@ -624,6 +767,30 @@ class DistLLMSettings(BaseSettings):
     zero_copy: ZeroCopySettings = Field(default_factory=ZeroCopySettings)
     adaptive_precision: AdaptivePrecisionSettings = Field(default_factory=AdaptivePrecisionSettings)
     predictive_cache: PredictiveCacheSettings = Field(default_factory=PredictiveCacheSettings)
+    self_optimizing: SelfOptimizingSettings = Field(default_factory=SelfOptimizingSettings)
+    cuda_graph: CudaGraphSettings = Field(default_factory=CudaGraphSettings)
+    compile: CompileSettings = Field(default_factory=CompileSettings)
+    slora: SloRaSettings = Field(default_factory=SloRaSettings)
+    rag: RAGSettings = Field(default_factory=RAGSettings)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
+    disagg: DisaggSettings = Field(default_factory=DisaggSettings)
+    chat_router: ChatRouterSettings = Field(default_factory=ChatRouterSettings)
+
+    @classmethod
+    def from_profile(cls, config_path: str, profile: str | None = None) -> "DistLLMSettings":
+        """Load settings from a profile-based YAML config.
+
+        Args:
+            config_path: Path to the YAML config file.
+            profile: Profile name (dev, staging, production). If None, reads
+                DISTLLM_PROFILE env var, defaults to "dev".
+
+        Returns:
+            Validated DistLLMSettings instance.
+        """
+        from distllm.config.profiles import ProfileConfig
+        merged = ProfileConfig.load(config_path, profile)
+        return cls.model_validate(merged)
 
     @classmethod
     def validate_startup(cls) -> "DistLLMSettings":

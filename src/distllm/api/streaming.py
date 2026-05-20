@@ -11,7 +11,6 @@ Supports:
 
 import asyncio
 import json
-import math
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -20,75 +19,16 @@ from typing import Any, AsyncGenerator
 import torch
 
 from .api_state import g
+from distllm.core.token_generator import TokenGenerator
+
+_token_gen: TokenGenerator | None = None
 
 
-def _sample_token(logits: torch.Tensor, temperature: float, top_p: float, top_k: int = 0) -> torch.Tensor:
-    """Sample next token from logits with temperature, top-k, and top-p filtering."""
-    if temperature > 0:
-        probs = torch.softmax(logits / temperature, dim=-1)
-        if top_k > 0:
-            top_k_indices = torch.topk(probs[0], top_k, dim=-1).indices
-            mask = torch.zeros(probs.shape[-1], dtype=torch.bool, device=probs.device)
-            mask[top_k_indices] = True
-            probs = probs.masked_fill(~mask, 0.0)
-            probs = probs / probs.sum(dim=-1, keepdim=True)
-        if top_p < 1.0:
-            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-            sorted_indices_to_remove = cumulative_probs > top_p
-            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-            sorted_indices_to_remove[..., 0] = False
-            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-            probs = probs.masked_fill(indices_to_remove, 0.0)
-            probs = probs / probs.sum(dim=-1, keepdim=True)
-        return torch.multinomial(probs, 1)
-    else:
-        return torch.argmax(logits, dim=-1, keepdim=True)
-
-
-def _compute_logprobs(
-    logits: torch.Tensor,
-    token_id: int,
-    tokenizer,
-    top_logprobs: int = 0,
-    temperature: float = 1.0,
-) -> dict[str, Any]:
-    """Compute logprobs for a sampled token.
-
-    Args:
-        logits: Raw logits [batch, vocab].
-        token_id: The sampled token ID.
-        tokenizer: Tokenizer for decoding token strings.
-        top_logprobs: Number of top alternatives to return.
-        temperature: Sampling temperature used.
-
-    Returns:
-        Dict with token logprob and top alternatives.
-    """
-    probs = torch.softmax(logits / max(temperature, 1e-6), dim=-1)
-    log_probs = torch.log(probs + 1e-10)
-
-    token_logprob = log_probs[0, token_id].item()
-    token_str = tokenizer.decode([token_id])
-
-    result = {
-        "token": token_str,
-        "logprob": token_logprob,
-        "bytes": list(token_str.encode('utf-8')) if token_str else None,
-    }
-
-    if top_logprobs > 0:
-        top_indices = torch.topk(log_probs[0], min(top_logprobs, log_probs.shape[-1])).indices
-        result["top_logprobs"] = []
-        for idx in top_indices:
-            alt_str = tokenizer.decode([idx.item()])
-            result["top_logprobs"].append({
-                "token": alt_str,
-                "logprob": log_probs[0, idx].item(),
-                "bytes": list(alt_str.encode('utf-8')) if alt_str else None,
-            })
-
-    return result
+def _get_token_gen() -> TokenGenerator:
+    global _token_gen
+    if _token_gen is None:
+        _token_gen = TokenGenerator()
+    return _token_gen
 
 
 def _stream_event(
@@ -178,16 +118,36 @@ async def _generate_tokens(
     temperature: float,
     top_p: float,
     top_k: int,
+    response_format: dict | None = None,
 ) -> AsyncGenerator[tuple, None]:
     """Core token generation loop shared by chat and completion streaming.
 
     Yields (token_text, logprob_data, ttft) tuples as they are generated.
     logprob_data is None unless logprobs are requested.
     ttft is set only on the first token yield, None thereafter.
+
+    Supports response_format for constrained/structured output via
+    SchemaConstrainedDecoder (JSONSchemaFSM-backed).
     """
     coord = g.coordinator
     if not coord:
         return
+
+    # Build constraint from response_format if provided
+    constraint = None
+    if response_format and coord.tokenizer:
+        try:
+            from distllm.core.constrained_decoder import SchemaConstrainedDecoder
+            constraint = SchemaConstrainedDecoder.from_response_format(
+                response_format, tokenizer=coord.tokenizer
+            )
+        except Exception:
+            pass
+        if constraint is None:
+            from distllm.core.structured_output import JSONSchemaConstraint
+            constraint = JSONSchemaConstraint.from_response_format(
+                response_format, tokenizer=coord.tokenizer
+            )
 
     if coord.local_partitioner:
         model = coord.local_partitioner.full_model
@@ -224,12 +184,28 @@ async def _generate_tokens(
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
 
-                next_token = _sample_token(logits, temp, tp, tk)
-                token_text = tokenizer.decode(next_token[0], skip_special_tokens=True)
+                # Apply constraint mask for structured output
+                if constraint is not None:
+                    mask = constraint.get_logits_mask(logits.shape[-1], tokenizer)
+                    logits[:, ~mask] = float('-inf')
+
+                next_token, _ = _get_token_gen().sample(logits, temperature=temp, top_p=tp, top_k=tk)
+                # sample() returns squeezed tensor; for single-token batch it's a scalar
+                if next_token.dim() == 0:
+                    next_token = next_token.unsqueeze(0).unsqueeze(0)  # -> [1, 1]
+                elif next_token.dim() == 1:
+                    next_token = next_token.unsqueeze(-1)  # -> [batch, 1]
+                token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
+
+                # Update constraint state with emitted token
+                if constraint is not None:
+                    constraint.update(token_text)
 
                 logprob_data = None
                 if include_logprobs:
-                    logprob_data = _compute_logprobs(logits, next_token[0].item(), tokenizer, top_logprobs_n, temp)
+                    logprob_data = TokenGenerator._compute_logprobs(
+                        logits, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
+                    )
 
                 ttft = None
                 if step == 0:
@@ -245,9 +221,7 @@ async def _generate_tokens(
         input_ids = tokenizer.encode(prompt, return_tensors="pt")
         generated_ids = input_ids.clone()
 
-        node_kv_caches: dict[str, list | None] = {
-            nid: None for nid in coord.node_order
-        }
+        node_kv_caches = coord._pipeline.create_node_kv_caches()
 
         prefill_start = time.monotonic()
 
@@ -274,14 +248,31 @@ async def _generate_tokens(
                 step_input, node_kv_caches, request_id,
             )
 
-            next_token = _sample_token(logits[:, -1, :], temp, tp, tk)
+            logits_slice = logits[:, -1, :]
+
+            # Apply constraint mask for structured output
+            if constraint is not None:
+                mask = constraint.get_logits_mask(logits_slice.shape[-1], tokenizer)
+                logits_slice[:, ~mask] = float('-inf')
+
+            next_token, _ = _get_token_gen().sample(logits_slice, temperature=temp, top_p=tp, top_k=tk)
+            if next_token.dim() == 0:
+                next_token = next_token.unsqueeze(0).unsqueeze(0)
+            elif next_token.dim() == 1:
+                next_token = next_token.unsqueeze(-1)
             generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0)], dim=1)
 
-            token_text = tokenizer.decode(next_token[0], skip_special_tokens=True)
+            token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
+
+            # Update constraint state with emitted token
+            if constraint is not None:
+                constraint.update(token_text)
 
             logprob_data = None
             if include_logprobs:
-                logprob_data = _compute_logprobs(logits[:, -1, :], next_token[0].item(), tokenizer, top_logprobs_n, temp)
+                logprob_data = TokenGenerator._compute_logprobs(
+                    logits_slice, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
+                )
 
             ttft = None
             if step == 0:
@@ -298,6 +289,7 @@ async def _stream_response(
     request: Any,  # ChatCompletionRequest or CompletionRequest
     object_type: str,
     request_id_prefix: str,
+    response_format: dict | None = None,
 ) -> AsyncGenerator[str, None]:
     """Unified streaming response generator for both chat and completion.
 
@@ -306,6 +298,7 @@ async def _stream_response(
     - logprobs: per-token logprobs in streaming
     - OTel generation span with TTFT tracking
     - Cost tracking completion
+    - response_format: structured output constraint (JSON schema, grammar, regex)
     """
     request_id = f"{request_id_prefix}{uuid.uuid4().hex[:12]}"
     include_usage = getattr(request, 'stream_options', None)
@@ -339,6 +332,7 @@ async def _stream_response(
         async for token_text, logprob_data, ttft in _generate_tokens(
             prompt, request_id, request.max_tokens,
             request.temperature, request.top_p, request.top_k,
+            response_format=response_format,
         ):
             completion_tokens += 1
             # Record TTFT on first token

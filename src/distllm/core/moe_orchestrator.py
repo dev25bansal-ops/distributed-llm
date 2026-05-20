@@ -365,7 +365,14 @@ class MoEOrchestrator:
                     processing_time_ms=elapsed,
                 )
             else:
-                raise NotImplementedError("ExpertForward RPC not available on this client")
+                logger.warning(
+                    f"ExpertForward RPC not available on client {node_id}. "
+                    "MoE expert routing will be skipped for this node."
+                )
+                return MoEForwardResponse(
+                    node_id=node_id, output=torch.zeros(1), success=False,
+                    error_message="ExpertForward RPC not available on this client",
+                )
         except Exception as e:
             return MoEForwardResponse(
                 node_id=request.node_id, output=torch.zeros(1),

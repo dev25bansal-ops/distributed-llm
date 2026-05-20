@@ -1,0 +1,29 @@
+name: Compression Pipeline CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/distllm/core/compression_pipeline.py'
+      - 'src/distllm/core/compression_config.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/distllm/core/compression_pipeline.py'
+
+jobs:
+  compression-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev,testing]"
+      - run: pytest tests/compression/test_compression.py -v
+      - name: Compression accuracy test
+        run: |
+          python -c "
+          from distllm.core.compression_pipeline import CompressionPipeline
+          print('Compression pipeline import OK')
+          "

@@ -8,16 +8,15 @@ Eliminates the GPU→CPU→NIC→CPU→GPU copy chain by using:
 Integrates with communication/nccl_transport.py for NCCL operations.
 """
 
-import logging
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
 import torch
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class TransferBackend(Enum):
@@ -38,6 +37,16 @@ class TransferStats:
     success: bool = True
 
 
+def _compute_stride(shape: tuple[int, ...], dtype: torch.dtype) -> tuple[int, ...]:
+    """Compute contiguous strides (in elements) for a given shape."""
+    if not shape:
+        return ()
+    strides = [1] * len(shape)
+    for i in range(len(shape) - 2, -1, -1):
+        strides[i] = strides[i + 1] * shape[i + 1]
+    return tuple(strides)
+
+
 class CudaIPCManager:
     """Manages CUDA IPC handles for intra-node GPU-to-GPU transfers.
 
@@ -53,19 +62,37 @@ class CudaIPCManager:
         """Export a GPU tensor for IPC access by another process on the same node.
 
         Returns serialized IPC handle bytes, or None if not on CUDA.
+        The handle is a (storage, offset, size, torch.cuda.UVCTensorHandle) tuple.
         """
         if not tensor.is_cuda:
             logger.warning(f"Cannot export non-CUDA tensor for IPC: {key}")
             return None
-        ipc_handle = tensor.share_ipc_()
-        self._handles[key] = (tensor, ipc_handle)
-        return ipc_handle
+        # Use torch's multiprocessing reduction to create an IPC handle
+        import torch.multiprocessing.reduction as reduction
+        storage = tensor.untyped_storage()
+        handle = reduction.reduce_storage(storage)
+        # Rebuild function and args are (function, args_tuple)
+        import pickle
+        handle_bytes = pickle.dumps(handle)
+        self._handles[key] = (tensor, handle_bytes)
+        return handle_bytes
 
     def import_tensor(self, key: str, ipc_handle: bytes, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor | None:
-        """Import a GPU tensor via IPC handle from another process on the same node."""
+        """Import a GPU tensor via IPC handle from another process on the same node.
+
+        Deserializes the storage handle and creates a tensor view over the shared memory.
+        """
         try:
-            tensor = torch.zeros(shape, dtype=dtype, device=self._device)
-            tensor.share_ipc_(ipc_handle)
+            if not torch.cuda.is_available():
+                logger.error("CUDA not available for IPC import")
+                return None
+            import pickle
+            import torch.multiprocessing.reduction as reduction
+            func, args = pickle.loads(ipc_handle)
+            storage = func(*args)
+            tensor = torch.tensor([], dtype=dtype, device=self._device).set_(
+                storage, 0, shape, _compute_stride(shape, dtype)
+            )
             self._handles[key] = (tensor, ipc_handle)
             return tensor
         except Exception as e:
@@ -94,7 +121,6 @@ class RDMAManager:
         if ib in ("1", "true", "yes"):
             return True
         try:
-            import subprocess
             result = subprocess.run(["ibstat"], capture_output=True, text=True, timeout=2)
             return result.returncode == 0
         except Exception:
@@ -257,3 +283,8 @@ class ZeroCopyTransferEngine:
 
     def shutdown(self) -> None:
         self.cuda_ipc.close_all()
+        if self._nccl_transport is not None and hasattr(self._nccl_transport, 'shutdown'):
+            try:
+                self._nccl_transport.shutdown()
+            except Exception:
+                pass

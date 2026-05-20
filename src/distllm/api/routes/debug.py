@@ -1,0 +1,146 @@
+"""Debug and replay routes: GET /v1/debug/recent, POST /v1/debug/replay."""
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from ..api_state import g
+
+router = APIRouter(tags=["debug"])
+
+
+class ReplayRequest(BaseModel):
+    request_id: str = Field(..., description="ID of the request to replay")
+
+
+class DeterministicModeRequest(BaseModel):
+    enabled: bool = Field(..., description="Enable or disable deterministic mode")
+    seed: int = Field(default=42, description="Random seed for deterministic generation")
+
+
+@router.get(
+    "/v1/debug/recent",
+    summary="Get recent requests",
+    description="Retrieve the N most recent requests stored in the replay buffer for debugging and analysis. Returns truncated prompts, timestamps, duration, model, and error information.",
+    response_description="List of recent request entries",
+    responses={
+        503: {"description": "No coordinator available or replay buffer not available"},
+    },
+)
+async def get_recent_requests(n: int = 10):
+    """Get the N most recent requests stored in the replay buffer."""
+    coord = g.coordinator
+    if coord is None:
+        raise HTTPException(status_code=503, detail="No coordinator available")
+    if not hasattr(coord, '_replay_buffer'):
+        raise HTTPException(status_code=503, detail="Replay buffer not available")
+
+    requests = coord.get_recent_requests(n)
+    return {
+        "requests": [
+            {
+                "request_id": r.request_id,
+                "prompt": r.prompt[:200] + "..." if len(r.prompt) > 200 else r.prompt,
+                "timestamp": r.timestamp,
+                "duration_ms": r.duration_ms,
+                "model": r.model,
+                "error": r.error,
+                "replay_count": r.replay_count,
+            }
+            for r in requests
+        ],
+        "total": len(requests),
+    }
+
+
+@router.get(
+    "/v1/debug/request/{request_id}",
+    summary="Get request details",
+    description="Get full details of a stored request from the replay buffer, including the complete prompt, generation parameters, response text, error info, duration, and replay count.",
+    response_description="Full request details including prompt, params, and response",
+    responses={
+        404: {"description": "Request ID not found"},
+        503: {"description": "No coordinator available"},
+    },
+)
+async def get_request_detail(request_id: str):
+    """Get full details of a stored request."""
+    coord = g.coordinator
+    if coord is None:
+        raise HTTPException(status_code=503, detail="No coordinator available")
+
+    entry = coord._replay_buffer.get(request_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+
+    return {
+        "request_id": entry.request_id,
+        "prompt": entry.prompt,
+        "params": entry.params,
+        "response": entry.response,
+        "error": entry.error,
+        "duration_ms": entry.duration_ms,
+        "timestamp": entry.timestamp,
+        "replay_count": entry.replay_count,
+        "model": entry.model,
+    }
+
+
+@router.post(
+    "/v1/debug/replay",
+    summary="Replay request",
+    description="Replay a previously stored request through the model with the same prompt and parameters. Useful for debugging non-deterministic behavior and reproducing issues.",
+    response_description="Replayed response text",
+    responses={
+        404: {"description": "Request ID not found or replay failed"},
+        503: {"description": "No coordinator available"},
+    },
+)
+async def replay_request(body: ReplayRequest):
+    """Replay a stored request through the model."""
+    coord = g.coordinator
+    if coord is None:
+        raise HTTPException(status_code=503, detail="No coordinator available")
+
+    response = coord.replay_request(body.request_id)
+    if response is None:
+        raise HTTPException(status_code=404, detail=f"Request {body.request_id} not found or replay failed")
+
+    return {"request_id": body.request_id, "response": response}
+
+
+@router.post(
+    "/v1/debug/deterministic",
+    summary="Set deterministic mode",
+    description="Enable or disable deterministic generation mode for debugging. When enabled, all generations use a fixed seed for reproducible outputs, facilitating debugging and testing.",
+    response_description="Deterministic mode status with seed",
+    responses={
+        503: {"description": "No coordinator available"},
+    },
+)
+async def set_deterministic_mode(body: DeterministicModeRequest):
+    """Enable or disable deterministic debug mode."""
+    coord = g.coordinator
+    if coord is None:
+        raise HTTPException(status_code=503, detail="No coordinator available")
+
+    coord.set_deterministic_mode(enabled=body.enabled, seed=body.seed)
+    return {"status": "enabled" if body.enabled else "disabled", "seed": body.seed}
+
+
+@router.get(
+    "/v1/debug/buffer/export",
+    summary="Export replay buffer",
+    description="Export all requests from the replay buffer for external analysis and debugging. Returns the full buffer contents as JSON for offline inspection.",
+    response_description="Complete replay buffer contents with entry count",
+    responses={
+        503: {"description": "No coordinator available"},
+    },
+)
+async def export_replay_buffer():
+    """Export all requests from the replay buffer for external debugging."""
+    coord = g.coordinator
+    if coord is None:
+        raise HTTPException(status_code=503, detail="No coordinator available")
+
+    entries = coord._replay_buffer.export()
+    return {"entries": entries, "count": len(entries)}

@@ -14,6 +14,9 @@ class JSONSchemaConstraint:
 
     This is a simplified approach — it does not validate against a full
     JSON schema, but ensures the output is valid JSON syntax.
+
+    For advanced constraint (grammar, regex, full JSON schema), use
+    SchemaConstrainedDecoder from constrained_decoder.py.
     """
 
     # Class-level cache: tokenizer id -> token_first_chars dict
@@ -28,6 +31,44 @@ class JSONSchemaConstraint:
         self._escape_next = False
         self._generated = ""
         self._token_first_chars: dict[int, str] | None = None
+
+    @classmethod
+    def from_response_format(cls, response_format: dict, tokenizer=None):
+        """Create a constraint from OpenAI response_format dict.
+
+        Supports: json_object, json_schema, grammar, regex.
+        Delegates to SchemaConstrainedDecoder for non-json_object types.
+
+        Args:
+            response_format: Dict with 'type' key.
+            tokenizer: Tokenizer for constraint creation.
+
+        Returns:
+            Constraint instance or None.
+        """
+        fmt_type = response_format.get("type", "")
+
+        if fmt_type == "json_object":
+            return cls(schema={})
+
+        if fmt_type == "json_schema":
+            schema = response_format.get("schema", {})
+            return cls(schema=schema)
+
+        # For grammar/regex, delegate to SchemaConstrainedDecoder
+        if fmt_type in ("grammar", "regex"):
+            try:
+                from distllm.core.constrained_decoder import SchemaConstrainedDecoder
+                if tokenizer:
+                    return SchemaConstrainedDecoder.from_response_format(
+                        response_format, tokenizer
+                    )
+            except Exception:
+                pass
+            # Fallback: simple JSON constraint
+            return cls(schema={})
+
+        return cls(schema=None)
 
     def _build_token_index(self, tokenizer) -> dict[int, str]:
         """Precompute the first character of every token ID.
@@ -53,8 +94,9 @@ class JSONSchemaConstraint:
     def get_logits_mask(self, vocab_size: int, tokenizer) -> torch.Tensor:
         """Return a boolean mask: True for allowed token IDs, False for blocked.
 
-        Uses a precomputed token->first_char index if available,
-        falling back to on-the-fly decode for unknown tokenizers.
+        Uses GPU-side vectorized operations instead of Python loop iteration.
+        Precomputes first characters for all tokens, then uses torch.isin
+        for O(1) mask generation.
 
         Args:
             vocab_size: Size of the tokenizer vocabulary.
@@ -64,36 +106,37 @@ class JSONSchemaConstraint:
             Boolean tensor of shape [vocab_size].
         """
         valid_chars = self._valid_next_chars()
-        mask = torch.zeros(vocab_size, dtype=torch.bool)
+        # Convert to ordinals for tensor comparison
+        valid_ords = set()
+        for ch in valid_chars:
+            valid_ords.add(ord(ch))
+        # Also allow whitespace for certain states
+        if self._state in (
+            "after_value", "after_key", "after_colon", "object_value", "array_value"
+        ):
+            for ch in ' \t\n\r':
+                valid_ords.add(ord(ch))
 
         # Build token index on first call, then reuse
         if self._token_first_chars is None:
             self._token_first_chars = self._build_token_index(tokenizer)
 
-        # Use precomputed index
-        if self._token_first_chars is not None:
-            for token_id in range(min(vocab_size, len(self._token_first_chars))):
-                first_char = self._token_first_chars.get(token_id, '')
-                if first_char in valid_chars:
-                    mask[token_id] = True
-                elif first_char.isspace() and self._state in (
-                    "after_value", "after_key", "after_colon", "object_value", "array_value"
-                ):
-                    mask[token_id] = True
-        else:
-            for token_id in range(vocab_size):
-                try:
-                    token_str = tokenizer.decode([token_id])
-                except (ValueError, IndexError):
-                    continue
-                if token_str and len(token_str) > 0:
-                    first_char = token_str[0]
-                    if first_char in valid_chars:
-                        mask[token_id] = True
-                    if first_char.isspace() and self._state in (
-                        "after_value", "after_key", "after_colon", "object_value", "array_value"
-                    ):
-                        mask[token_id] = True
+        # GPU-side: collect all token ordinals as a tensor
+        n = min(vocab_size, len(self._token_first_chars))
+        token_ids = torch.arange(n)
+        first_chars = [self._token_first_chars.get(tid, '') for tid in range(n)]
+        # Map each token to its first character ordinal (0 for empty)
+        first_ords = torch.tensor(
+            [ord(c) if c else 0 for c in first_chars], dtype=torch.long
+        )
+
+        # Create mask: token is allowed if its first char is in valid_ords
+        valid_ord_tensor = torch.tensor(list(valid_ords), dtype=torch.long)
+        # Use broadcasting: [n] vs [num_valid] -> [n, num_valid]
+        is_valid = (first_ords.unsqueeze(1) == valid_ord_tensor.unsqueeze(0)).any(dim=1)
+
+        mask = torch.zeros(vocab_size, dtype=torch.bool)
+        mask[:n] = is_valid
 
         # Always allow EOS token
         if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:

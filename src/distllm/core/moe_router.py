@@ -49,7 +49,9 @@ class MoERouter(nn.Module):
     ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
         """Route tokens to their expert nodes.
 
-        Uses vectorized operations instead of Python loops for performance.
+        Uses fully vectorized operations: no Python loops over tokens.
+        Builds a node_mask tensor and uses torch.unique + boolean indexing
+        to group tokens by destination node.
 
         Returns:
             Dict mapping node_id -> (tokens, weights) for tokens routed to that node.
@@ -57,31 +59,51 @@ class MoERouter(nn.Module):
         topk_indices, weights = self(hidden_states)
         seq_len = hidden_states.shape[0]
 
-        # Build expert_id -> node_id mapping as tensors for vectorized lookup
-        expert_to_node = {}
+        # Flatten: each token sends num_experts_per_tok assignments
+        flat_indices = topk_indices.flatten()  # [seq_len * topk]
+        flat_weights = weights.flatten()
+
+        # Build expert_id -> node_id lookup as a tensor for vectorized indexing
+        max_expert_id = max(self._expert_map.keys(), default=-1)
+        if max_expert_id < 0:
+            return {}
+
+        # Create a lookup table: expert_id -> node_id (as integer codes)
+        node_id_to_code: dict[str, int] = {}
+        code_to_node_id: dict[int, str] = {}
+        for idx, (expert_id, node_id) in enumerate(self._expert_map.items()):
+            if node_id not in node_id_to_code:
+                code = len(node_id_to_code)
+                node_id_to_code[node_id] = code
+                code_to_node_id[code] = node_id
+
+        # Map each expert to its node code; unmapped experts get -1
+        expert_to_node_code = torch.full((max_expert_id + 1,), -1, dtype=torch.long, device=hidden_states.device)
         for expert_id, node_id in self._expert_map.items():
-            expert_to_node[expert_id] = node_id
+            expert_to_node_code[expert_id] = node_id_to_code[node_id]
 
-        # Vectorized: collect all (token_idx, expert_rank, node_id) tuples
-        node_groups: dict[str, list[int]] = {}
-        for tok_idx in range(seq_len):
-            for expert_rank in range(self.num_experts_per_tok):
-                expert_id = int(topk_indices[tok_idx, expert_rank].item())
-                node_id = expert_to_node.get(expert_id)
-                if node_id is None:
-                    logger.warning(f"No node registered for expert {expert_id}")
-                    continue
-                node_groups.setdefault(node_id, []).append(tok_idx * self.num_experts_per_tok + expert_rank)
+        # Vectorized lookup: for each (token, rank) assignment, get node code
+        node_codes = expert_to_node_code[flat_indices]  # [seq_len * topk]
 
-        # Stack tensors for each node using gathered indices
+        # Filter out unmapped experts
+        valid_mask = node_codes >= 0
+        if not valid_mask.any():
+            return {}
+
+        valid_codes = node_codes[valid_mask]
+        valid_weights = flat_weights[valid_mask]
+        # Repeat hidden_states for each expert assignment
+        token_indices = torch.arange(seq_len, device=hidden_states.device).repeat_interleave(self.num_experts_per_tok)
+        valid_token_indices = token_indices[valid_mask]
+        valid_tokens = hidden_states[valid_token_indices]
+
+        # Group by node using unique
+        unique_codes, inverse_indices = torch.unique(valid_codes, return_inverse=True)
+
         result = {}
-        for node_id, flat_indices in node_groups.items():
-            flat_indices = torch.tensor(flat_indices, device=hidden_states.device)
-            token_indices = flat_indices // self.num_experts_per_tok
-            expert_ranks = flat_indices % self.num_experts_per_tok
-
-            token_tensors = hidden_states[token_indices]
-            token_weights = weights[token_indices, expert_ranks]
-            result[node_id] = (token_tensors, token_weights)
+        for i, code in enumerate(unique_codes.tolist()):
+            node_id = code_to_node_id[code]
+            mask = inverse_indices == i
+            result[node_id] = (valid_tokens[mask], valid_weights[mask])
 
         return result

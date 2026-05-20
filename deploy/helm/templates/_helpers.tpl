@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "distributed-llm.name" -}}
+{{- define "distllm.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "distributed-llm.fullname" -}}
+{{- define "distllm.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -24,16 +24,16 @@ Create a default fully qualified app name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "distributed-llm.chart" -}}
+{{- define "distllm.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "distributed-llm.labels" -}}
-helm.sh/chart: {{ include "distributed-llm.chart" . }}
-{{ include "distributed-llm.selectorLabels" . }}
+{{- define "distllm.labels" -}}
+helm.sh/chart: {{ include "distllm.chart" . }}
+{{ include "distllm.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -43,32 +43,39 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "distributed-llm.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "distributed-llm.name" . }}
+{{- define "distllm.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "distllm.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Service account name
+*/}}
+{{- define "distllm.serviceAccountName" -}}
+{{ include "distllm.fullname" . }}
 {{- end }}
 
 {{/*
 GPU resource name
 */}}
-{{- define "distributed-llm.gpuResourceName" -}}
+{{- define "distllm.gpuResourceName" -}}
 {{- default "nvidia.com/gpu" . }}
 {{- end }}
 
 {{/*
 Coordinator labels
 */}}
-{{- define "distributed-llm.coordinatorLabels" -}}
-{{ include "distributed-llm.selectorLabels" . }}
+{{- define "distllm.coordinatorLabels" -}}
+{{ include "distllm.selectorLabels" . }}
 app.distllm.io/component: coordinator
 {{- end }}
 
 {{/*
 Worker labels for a given pool
-Usage: include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool)
+Usage: include "distllm.workerLabels" (dict "root" $ "pool" $pool)
 */}}
-{{- define "distributed-llm.workerLabels" -}}
-{{ include "distributed-llm.selectorLabels" .root }}
+{{- define "distllm.workerLabels" -}}
+{{ include "distllm.selectorLabels" .root }}
 app.distllm.io/component: worker
 app.distllm.io/pool: {{ .pool.name }}
 {{- end }}

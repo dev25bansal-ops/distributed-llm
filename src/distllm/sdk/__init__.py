@@ -1,6 +1,7 @@
 """DistLLM SDK - Python client for Distributed LLM API."""
 
 from distllm.sdk.client import DistLLMClient, DistLLMClientSync, RetryConfig, PoolConfig
+from distllm.sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState
 from distllm.sdk.types import (
     ChatCompletionResponse,
     ChatMessage,
@@ -32,6 +33,11 @@ __all__ = [
     "DistLLMClientSync",
     "RetryConfig",
     "PoolConfig",
+    # Circuit breaker
+    "CircuitBreaker",
+    "CircuitBreakerConfig",
+    "CircuitBreakerError",
+    "CircuitState",
     # Chat / Completion
     "ChatCompletionResponse",
     "ChatMessage",

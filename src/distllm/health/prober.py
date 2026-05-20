@@ -18,7 +18,7 @@ async def probe_node(
     """
     start = time.perf_counter()
     try:
-        health = client.health_check()
+        health = client.health_check(timeout=timeout)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         return True, elapsed_ms, {

@@ -75,7 +75,7 @@ def get_default_alerts() -> list[AlertRule]:
     return [
         AlertRule(
             alert="NodeDown",
-            expr="distllm_node_health == -1",
+            expr="distllm_node_health == 0",
             for_duration="1m",
             labels={"severity": "critical"},
             annotations={
@@ -85,12 +85,12 @@ def get_default_alerts() -> list[AlertRule]:
         ),
         AlertRule(
             alert="NodeDegraded",
-            expr="distllm_node_health == 1",
+            expr="distllm_node_health == 0",
             for_duration="5m",
             labels={"severity": "warning"},
             annotations={
-                "summary": "Node {{ $labels.node_id }} is degraded",
-                "description": "Node {{ $labels.node_id }} has been in degraded state for more than 5 minutes.",
+                "summary": "Node {{ $labels.node_id }} is persistently degraded",
+                "description": "Node {{ $labels.node_id }} has been unhealthy for more than 5 minutes.",
             },
         ),
         AlertRule(
@@ -218,7 +218,7 @@ def get_default_recording_rules() -> list[RecordingRule]:
         ),
         RecordingRule(
             record="slo:availability_ratio:5m",
-            expr="avg(distllm_node_health == 0) / count(distllm_node_health)",
+            expr="avg(distllm_node_health)",
         ),
     ]
 

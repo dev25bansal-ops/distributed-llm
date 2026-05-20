@@ -1,7 +1,6 @@
 """Model versioning, shadow mode, A/B testing, and blue-green deployment."""
 
 import hashlib
-import logging
 import math
 import time
 from dataclasses import dataclass, field

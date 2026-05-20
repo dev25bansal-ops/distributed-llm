@@ -1,5 +1,5 @@
 apiVersion: v2
-name: distributed-llm
+name: distllm
 description: Distributed LLM Inference System - Run large language models across multiple GPU-equipped machines
 type: application
 version: 0.1.0

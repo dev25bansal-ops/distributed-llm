@@ -1,20 +1,15 @@
-"""Continuous batch scheduler for pipeline-parallel inference.
+"""Continuous batch scheduler for pipeline-parallel inference."""
 
-Supports iteration-level scheduling with:
-- Chunked prefill (interleave prefill with decode)
-- Mixed-batch prefill + decode in same iteration
-- Time-budget-aware scheduling
-- Priority-based preemption with age awareness
-"""
-
-import time
 import heapq
 import math
+import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
+
 import torch
 
-from distllm.core.tensor_pool import TensorPool
+from distllm.core.request_latency import RequestLatencyTracker
 
 
 class SequenceStatus(Enum):
@@ -24,6 +19,7 @@ class SequenceStatus(Enum):
     DECODING = "decoding"
     DONE = "done"
     FAILED = "failed"
+    PREEMPTED = "preempted"  # Temporarily removed to free resources
 
 
 @dataclass
@@ -43,6 +39,14 @@ class Sequence:
     prefix_match_len: int = 0  # Tokens served from prefix cache
     created_at: float = field(default_factory=time.time)
     adapter_id: str | None = None  # LoRA adapter ID for this request (S-LoRA style)
+    # Logprobs & OpenAI compliance
+    include_logprobs: bool = False
+    top_logprobs: int = 0
+    logit_bias: dict[int, float] = field(default_factory=dict)
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    token_counts: dict[int, int] = field(default_factory=dict)
+    max_latency_ms: float | None = None  # For frequency penalty
 
     @property
     def is_complete(self) -> bool:
@@ -70,11 +74,12 @@ class ScheduledBatch:
     """
     sequences: list[Sequence]
     input_ids: torch.Tensor       # [total_tokens] — flattened 1D, all tokens concatenated (no padding)
-    seq_starts: list[int]         # Start index in input_ids for each sequence
-    seq_lengths: list[int]        # Per-sequence total length
-    position_offsets: list[int]   # Cached KV length per sequence
-    is_prefill: list[bool]        # Whether each seq is doing prefill vs decode
-    request_ids: list[str]
+    seq_starts: list[int] = field(default_factory=list)       # Start index in input_ids for each sequence
+    seq_lengths: list[int] = field(default_factory=list)      # Per-sequence total length
+    position_offsets: list[int] = field(default_factory=list) # Cached KV length per sequence
+    is_prefill: list[bool] = field(default_factory=list)      # Whether each seq is doing prefill vs decode
+    request_ids: list[str] = field(default_factory=list)
+    attention_mask: torch.Tensor | None = None  # [1, 1, total_tokens, total_tokens] block-diagonal causal mask
     speculative_enabled: bool = False
     batch_tags: dict[str, object] = field(default_factory=dict)
     adapter_ids: list[str | None] = field(default_factory=list)
@@ -91,6 +96,39 @@ class ScheduledBatch:
     def total_tokens(self) -> int:
         """Total tokens in the flat tensor (sum of all seq lengths)."""
         return sum(self.seq_lengths) if self.seq_lengths else 0
+
+
+class DecodePressureTracker:
+    """Tracks decode queue pressure to dynamically adapt prefill/decode split.
+
+    Maintains a sliding window of per-token decode latencies and computes
+    a 0.0–1.0 pressure signal used by the Sarathi-Serve style scheduler.
+    Higher pressure → more decode slots reserved, prefill tokens throttled.
+    """
+
+    def __init__(self, window_size: int = 10, target_ms_per_token: float = 8.0):
+        self._decode_latencies: list[float] = []
+        self._window_size = window_size
+        self._target_ms = target_ms_per_token
+
+    def record_decode_step(self, batch_decode_count: int, elapsed_ms: float) -> None:
+        per_token = elapsed_ms / max(batch_decode_count, 1)
+        self._decode_latencies.append(per_token)
+        if len(self._decode_latencies) > self._window_size:
+            self._decode_latencies.pop(0)
+
+    @property
+    def pressure(self) -> float:
+        if not self._decode_latencies:
+            return 0.0
+        avg = sum(self._decode_latencies) / len(self._decode_latencies)
+        return min(1.0, avg / max(self._target_ms, 0.1))
+
+    @property
+    def avg_ms_per_token(self) -> float:
+        if not self._decode_latencies:
+            return 0.0
+        return sum(self._decode_latencies) / len(self._decode_latencies)
 
 
 @dataclass
@@ -165,7 +203,6 @@ class BatchScheduler:
         self._counter: int = 0  # Tiebreaker for FIFO within same priority
         self.active: dict[str, Sequence] = {}
         self._total_tokens: int = 0  # Incremental token count for O(1) tracking
-        self._tensor_pool = TensorPool()
         self._model_info = model_info
         self._use_length_grouping = model_info is not None
 
@@ -184,6 +221,27 @@ class BatchScheduler:
         self._avg_decode_time: float = 0.0
         self._avg_prefill_time: float = 0.0
 
+        # Latency-aware scheduling
+        self._latency_tracker = RequestLatencyTracker()
+
+        # Sarathi-Serve style adaptive pressure tracking
+        self._pressure_tracker = DecodePressureTracker()
+        self._adapt_prefill_budget = True  # toggle Sarathi-Serve adaptive control
+
+        # Preemption state
+        self._preempted: dict[str, Sequence] = {}  # request_id -> Sequence
+        self._preempted_kv_state: dict[str, dict] = {}  # request_id -> KV cache state
+        self._max_preempted: int = 4  # Max concurrent preempted sequences
+
+        self._lock = threading.Lock()
+
+        # Cache manager for radix tree prefix storage (set by coordinator)
+        self._cache_mgr = None
+
+    def set_cache_manager(self, cache_mgr) -> None:
+        """Set the cache manager for radix tree prefix storage."""
+        self._cache_mgr = cache_mgr
+
     def set_iteration_budget(self, budget: IterationBudget) -> None:
         """Override the default iteration budget."""
         self._budget = budget
@@ -200,13 +258,78 @@ class BatchScheduler:
             enable_chunked_prefill=False,
         )
 
-    def set_tensor_pool(self, pool: TensorPool) -> None:
-        """Use an external tensor pool (for shared pool across schedulers)."""
-        self._tensor_pool = pool
 
     def set_paged_attention(self, mgr: object) -> None:
         """Connect to PagedAttention manager for KV block-aware scheduling."""
         self._paged_attention_mgr = mgr
+
+    def _compute_sarathi_budget(self, budget: IterationBudget) -> IterationBudget:
+        """Sarathi-Serve style adaptive budget: reserve decode slots first.
+
+        When decode pressure is high (decode latency above target), prefill
+        tokens are throttled and more slots are reserved for running decodes.
+        When the decode pipeline is idle, more budget is allocated to prefill.
+
+        Returns a modified deep copy of the budget.
+        """
+        pressure = self._pressure_tracker.pressure
+        active_decode_count = sum(
+            1 for s in self.active.values()
+            if s.status == SequenceStatus.DECODING
+        )
+        pending_decode_count = sum(
+            1 for s in self.active.values()
+            if s.status == SequenceStatus.PREFILLING
+            and len(s.generated_tokens) > 0
+        )
+        total_decode_demand = active_decode_count + pending_decode_count
+
+        # Guarantee decode slots: at least enough for all active decoders.
+        # max_decode_tokens here represents *decode slots* (each decode = 1 token).
+        base_decode_slots = min(budget.max_batch_size, budget.max_decode_tokens)
+        guaranteed_decode = max(base_decode_slots, total_decode_demand)
+
+        if pressure > 0.7:
+            # Saturate decode slots up to batch_size under pressure
+            adjusted_decode = min(budget.max_batch_size, int(guaranteed_decode * (1.0 + pressure)))
+        elif pressure < 0.3:
+            # Relax decode slots when idle
+            adjusted_decode = max(1, int(base_decode_slots * 0.6))
+        else:
+            adjusted_decode = base_decode_slots
+
+        adjusted_decode = min(adjusted_decode, budget.max_batch_size)
+
+        # Compute remaining budget for prefill after decode reservation.
+        # Each decode consumes position_offsets tracking (≈1 token of budget).
+        total_after_decode = max(0, budget.max_total_tokens - adjusted_decode)
+
+        # Adjust prefill budget: throttle under high pressure.
+        if pressure > 0.8:
+            prefill_scale = max(0.25, 1.0 - pressure)
+        elif pressure > 0.5:
+            prefill_scale = 0.75
+        else:
+            prefill_scale = 1.0
+
+        adjusted_prefill = min(
+            int(budget.max_prefill_tokens * prefill_scale),
+            total_after_decode,
+        )
+
+        # Under severe pressure, limit batch size for stability
+        adjusted_batch = budget.max_batch_size
+        if pressure > 0.9:
+            adjusted_batch = max(adjusted_decode, int(budget.max_batch_size * 0.5))
+
+        return IterationBudget(
+            max_prefill_tokens=adjusted_prefill,
+            max_decode_tokens=adjusted_decode,
+            max_batch_size=adjusted_batch,
+            max_total_tokens=budget.max_total_tokens,
+            enable_chunked_prefill=budget.enable_chunked_prefill,
+            prefill_slack_ratio=budget.prefill_slack_ratio,
+        )
 
     def _compute_dynamic_budget(self, base_budget: int) -> int:
         """Auto-scale token budget from 32K-128K based on available GPU memory.
@@ -214,7 +337,7 @@ class BatchScheduler:
         If PagedAttention is available, uses pool utilization to adjust down
         under memory pressure. Otherwise keeps the base budget.
         """
-        budget = max(32768, min(base_budget, 131072))
+        budget = min(base_budget, 131072)
         if self._paged_attention_mgr is not None:
             pool_util = getattr(self._paged_attention_mgr, 'pool_utilization', 0.0)
             if pool_util > 0.85:
@@ -240,8 +363,10 @@ class BatchScheduler:
 
     def add(self, seq: Sequence) -> None:
         """Add a new request to the pending queue (priority-ordered)."""
-        heapq.heappush(self._pending_heap, (seq.priority, self._counter, seq))
-        self._counter += 1
+        with self._lock:
+            heapq.heappush(self._pending_heap, (seq.priority, self._counter, seq))
+            self._counter += 1
+        self._latency_tracker.register(seq.request_id, sla_ms=seq.max_latency_ms)
 
     def schedule(self) -> ScheduledBatch | None:
         """Build the next batch from active + pending sequences.
@@ -268,28 +393,42 @@ class BatchScheduler:
         return self._schedule_with_budget(budget)
 
     def _schedule_with_budget(self, budget: IterationBudget) -> ScheduledBatch | None:
-        """Build batch respecting iteration-level budget."""
+        """Build batch respecting iteration-level budget.
+
+        Uses Sarathi-Serve style adaptive budget when enabled:
+        - Reserve decode slots first based on pressure from DecodePressureTracker
+        - Fill remaining capacity with chunked prefill
+        - Co-schedule prefill chunks + decode tokens in the same batch
+        """
+        # Apply Sarathi-Serve adaptive budget if enabled
+        if self._adapt_prefill_budget:
+            budget = self._compute_sarathi_budget(budget)
+
         # 1. Evict completed sequences
         done_ids = [rid for rid, s in self.active.items() if s.is_complete]
         for rid in done_ids:
             seq = self.active.pop(rid)
             self._total_tokens -= seq.total_len
             self._chunked_prefill.pop(rid, None)
+            self._latency_tracker.complete(rid)
 
         # 2. Start with active non-complete sequences (all decode, some prefill)
         batch_seqs: list[Sequence] = []
         remaining_prefill_budget = budget.max_prefill_tokens
-        remaining_decode_budget = budget.max_decode_tokens
         remaining_total_budget = budget.max_total_tokens
         decode_seqs_added = 0
 
         # 2a. Add active sequences - decode first (always prioritized)
+        seen_ids = set()
         for seq in self.active.values():
             if decode_seqs_added >= budget.decode_slots:
                 break
-            if seq.status == SequenceStatus.DECODING or len(seq.generated_tokens) > 0:
+            if seq.request_id in seen_ids:
+                continue
+            if seq.status in (SequenceStatus.DECODING, SequenceStatus.PREFILLING) or len(seq.generated_tokens) > 0:
                 if self._check_decode_budget(budget, decode_seqs_added, remaining_total_budget):
                     batch_seqs.append(seq)
+                    seen_ids.add(seq.request_id)
                     decode_seqs_added += 1
                     remaining_total_budget -= 1
 
@@ -300,7 +439,7 @@ class BatchScheduler:
                     cinfo = self._chunked_prefill[seq.request_id]
                     if cinfo.is_complete:
                         continue
-                    chunk = min(cinfo.remaining, max_prefill_tokens := budget.max_prefill_tokens)
+                    chunk = min(cinfo.remaining, budget.max_prefill_tokens)
                     chunk = min(chunk, remaining_prefill_budget)
 
                     if seq not in batch_seqs:
@@ -314,24 +453,43 @@ class BatchScheduler:
         new_active_ids = set()
         remaining_batch_slots = budget.max_batch_size - len(batch_seqs)
 
-        # Collect pending items, sort by priority then FIFO
-        pending_items = []
-        while self._pending_heap:
-            pending_items.append(heapq.heappop(self._pending_heap))
-        pending_items.sort(key=lambda x: (x[0], x[1]))
+        # Collect pending items, sort by latency-aware priority then FIFO
+        pending_items = [heapq.heappop(self._pending_heap) for _ in range(len(self._pending_heap))]
 
-        for _pri, _cnt, candidate in pending_items:
+        # Apply latency-based priority boosting with length-aware grouping
+        batch_avg_remaining = 0
+        if self._use_length_grouping and batch_seqs:
+            batch_remaining = [s.max_new_tokens - len(s.generated_tokens) for s in batch_seqs]
+            batch_avg_remaining = sum(batch_remaining) / len(batch_remaining) if batch_remaining else 0
+
+        latency_aware_items = []
+        for pri, cnt, candidate in pending_items:
+            effective_pri = self._latency_tracker.get_latency_boost(candidate.request_id, pri)
+            if self._use_length_grouping and batch_avg_remaining > 0:
+                length_diff = abs((candidate.max_new_tokens - len(candidate.generated_tokens)) - batch_avg_remaining)
+                length_score = length_diff / (batch_avg_remaining + 1)
+                effective_pri += min(length_score * 0.1, 0.5)
+            latency_aware_items.append((effective_pri, cnt, candidate))
+        latency_aware_items.sort(key=lambda x: (x[0], x[1]))
+
+        # Collect rejected items for heap rebuild
+        rejected = []
+        for _pri, _cnt, candidate in latency_aware_items:
             if remaining_batch_slots <= 0:
-                heapq.heappush(self._pending_heap, (_pri, _cnt, candidate))
+                rejected.append((_pri, _cnt, candidate))
                 continue
             if remaining_prefill_budget <= 0 and remaining_total_budget <= 0:
-                heapq.heappush(self._pending_heap, (_pri, _cnt, candidate))
+                rejected.append((_pri, _cnt, candidate))
                 continue
 
             if candidate.request_id in self.active:
                 continue
 
             c_tokens = candidate.total_len
+            if c_tokens > remaining_total_budget:
+                rejected.append((_pri, _cnt, candidate))
+                continue
+
             if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens:
                 chunk = budget.max_prefill_tokens
             else:
@@ -343,11 +501,11 @@ class BatchScheduler:
                     chunk = min(chunk, int(remaining_total_budget * (1 - budget.prefill_slack_ratio)))
                 else:
                     if chunk > remaining_total_budget:
-                        heapq.heappush(self._pending_heap, (_pri, _cnt, candidate))
+                        rejected.append((_pri, _cnt, candidate))
                         continue
 
             if chunk > remaining_prefill_budget and remaining_total_budget - chunk < 0:
-                heapq.heappush(self._pending_heap, (_pri, _cnt, candidate))
+                rejected.append((_pri, _cnt, candidate))
                 continue
 
             if self._paged_attention_mgr is not None:
@@ -355,9 +513,8 @@ class BatchScheduler:
                 pa_pool = getattr(self._paged_attention_mgr, 'pool', None)
                 if pa_pool is not None:
                     total_blocks = getattr(pa_pool, 'total_blocks', blocks_needed + 1)
-                    free_blocks = getattr(pa_pool, 'free_blocks', total_blocks)
                     if blocks_needed > total_blocks * 0.9:
-                        heapq.heappush(self._pending_heap, (_pri, _cnt, candidate))
+                        rejected.append((_pri, _cnt, candidate))
                         continue
 
             candidate.status = SequenceStatus.PREFILLING
@@ -377,8 +534,16 @@ class BatchScheduler:
                     chunks_remaining=math.ceil(c_tokens / budget.max_prefill_tokens),
                 )
 
+        # Rebuild heap from rejected items in O(m) instead of O(m log n) per push
+        if rejected:
+            self._pending_heap = rejected
+            heapq.heapify(self._pending_heap)
         if not batch_seqs:
             return None
+
+        # 3b. Length-aware grouping: sort batch by remaining tokens to minimize padding
+        if self._use_length_grouping:
+            batch_seqs.sort(key=lambda s: s.max_new_tokens - len(s.generated_tokens))
 
         # 4. Build batch tensors with iteration-level chunking
         request_ids = []
@@ -428,6 +593,23 @@ class BatchScheduler:
 
         input_ids = torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0)
 
+        # Build block-diagonal causal attention mask for flat batched input
+        # Prevents sequences from attending to tokens from other sequences
+        attention_mask = None
+        if len(seq_lengths) > 1:
+            total = input_ids.shape[-1]
+            mask = torch.full((total, total), float('-inf'), dtype=torch.float32)
+            for start, length in zip(seq_starts, seq_lengths):
+                end = start + length
+                causal = torch.triu(
+                    torch.full((length, length), float('-inf'), dtype=torch.float32),
+                    diagonal=1,
+                )
+                mask[start:end, start:end] = causal
+                mask[start:end, :start] = float('-inf')
+                mask[start:end, end:] = float('-inf')
+            attention_mask = mask.unsqueeze(0).unsqueeze(0)
+
         # 5. Build batch tags
         batch_tags: dict[str, object] = {
             "iteration": self._iteration_count,
@@ -439,7 +621,7 @@ class BatchScheduler:
             lengths = [s.total_len for s in batch_seqs]
             avg_len = sum(lengths) / len(lengths) if lengths else 0
             batch_tags["avg_seq_len"] = avg_len
-            batch_tags["length_variance"] = sum((l - avg_len) ** 2 for l in lengths) / len(lengths) if lengths else 0
+            batch_tags["length_variance"] = sum((seq_len - avg_len) ** 2 for seq_len in lengths) / len(lengths) if lengths else 0
 
         remaining = [s.max_new_tokens - len(s.generated_tokens) for s in batch_seqs]
         batch_tags["avg_tokens_remaining"] = sum(remaining) / len(remaining) if remaining else 0
@@ -452,6 +634,7 @@ class BatchScheduler:
             position_offsets=position_offsets,
             is_prefill=is_prefill_list,
             request_ids=request_ids,
+            attention_mask=attention_mask,
             batch_tags=batch_tags,
             adapter_ids=[seq.adapter_id for seq in batch_seqs],
         )
@@ -464,36 +647,63 @@ class BatchScheduler:
             return False
         return True
 
-    def step(self, batch: ScheduledBatch, next_tokens: torch.Tensor) -> None:
+    def step(self, batch: ScheduledBatch, next_tokens: torch.Tensor, kv_caches: dict | None = None, decoded_tokens: list[str] | None = None) -> None:
         """Process sampling output, update sequences, check for completion.
 
         Args:
             batch: The batch that was just processed.
             next_tokens: [batch_size] tensor of sampled token IDs.
+            kv_caches: Optional dict mapping request_id -> KV cache data for radix tree storage.
+            decoded_tokens: Optional list of decoded token strings (for constraint updates).
         """
+        decode_start = time.monotonic()
+        decode_count = sum(1 for s in batch.sequences if s.status == SequenceStatus.DECODING)
         for i, seq in enumerate(batch.sequences):
             token = next_tokens[i].item()
             seq.generated_tokens.append(int(token))
+            self._latency_tracker.record_token(seq.request_id)
 
             # Transition from PREFILLING to DECODING after first generated token
             if seq.status == SequenceStatus.PREFILLING:
                 seq.status = SequenceStatus.DECODING
+                self._latency_tracker.record_first_token(seq.request_id)
 
             # Check constraint (structured output)
             if seq.constraint is not None:
-                seq.constraint.update(next_tokens[i])
+                if decoded_tokens is not None and i < len(decoded_tokens):
+                    seq.constraint.update(decoded_tokens[i])
+                else:
+                    seq.constraint.update(str(token))
 
             if seq.is_complete or token in seq.stop_token_ids:
                 seq.status = SequenceStatus.DONE
+                self._latency_tracker.complete(seq.request_id)
+
+                # Store completed sequence in radix tree for prefix reuse
+                if self._cache_mgr is not None and self._cache_mgr.prefix_cache is not None:
+                    all_tokens = seq.prompt_tokens + seq.generated_tokens
+                    if len(all_tokens) >= self._cache_mgr.prefix_cache.min_prefix_len:
+                        # Store KV cache data if available, otherwise store token metadata
+                        kv_data = None
+                        if kv_caches and seq.request_id in kv_caches:
+                            kv_data = kv_caches[seq.request_id]
+                        if kv_data is not None:
+                            self._cache_mgr.store_prefix(all_tokens, kv_data)
+
+        # Record decode latency for Sarathi-Serve adaptive pressure tracking
+        if decode_count > 0:
+            elapsed = (time.monotonic() - decode_start) * 1000
+            self._pressure_tracker.record_decode_step(decode_count, elapsed)
 
     def get_sequence(self, request_id: str) -> Sequence | None:
         """Get a sequence by request_id (from pending or active)."""
-        if request_id in self.active:
-            return self.active[request_id]
-        for _pri, _cnt, seq in self._pending_heap:
-            if seq.request_id == request_id:
-                return seq
-        return None
+        with self._lock:
+            if request_id in self.active:
+                return self.active[request_id]
+            for _pri, _cnt, seq in self._pending_heap:
+                if seq.request_id == request_id:
+                    return seq
+            return None
 
     @property
     def has_pending(self) -> bool:
@@ -519,40 +729,100 @@ class BatchScheduler:
         Returns:
             True if the request was found and updated.
         """
-        for i, (_pri, _cnt, seq) in enumerate(self._pending_heap):
-            if seq.request_id == request_id:
-                self._pending_heap[i] = (new_priority, _cnt, seq)
-                heapq.heapify(self._pending_heap)
-                return True
-        return False
+        with self._lock:
+            for i, (_pri, _cnt, seq) in enumerate(self._pending_heap):
+                if seq.request_id == request_id:
+                    self._pending_heap[i] = (new_priority, _cnt, seq)
+                    heapq.heapify(self._pending_heap)
+                    return True
+            return False
 
-    def preempt_lowest(self, min_priority: int = 3) -> Sequence | None:
-        """Preempt the lowest priority active sequence and re-queue it.
+    def preempt_lowest(self, min_priority: int = 3, kv_cache_state: dict | None = None) -> Sequence | None:
+        """Preempt the lowest priority active sequence and re-queue it."""
+        with self._lock:
+            if len(self._preempted) >= self._max_preempted:
+                return None
 
-        Args:
-            min_priority: Only preempt sequences with priority >= this value.
+            worst_seq = None
+            worst_pri = -1
+            for rid, seq in self.active.items():
+                if seq.priority >= min_priority and (worst_seq is None or seq.priority > worst_pri):
+                    worst_seq = seq
+                    worst_pri = seq.priority
 
-        Returns:
-            The preempted sequence, or None if no candidate found.
-        """
-        worst_seq = None
-        worst_pri = -1
-        for rid, seq in self.active.items():
-            if seq.priority >= min_priority and (worst_seq is None or seq.priority > worst_pri):
-                worst_seq = seq
-                worst_pri = seq.priority
-        if worst_seq:
-            del self.active[worst_seq.request_id]
+            if worst_seq is None:
+                return None
+
+            req_id = worst_seq.request_id
+            self._save_kv_state(req_id, kv_cache_state)
+
+            if self._paged_attention_mgr is not None:
+                try:
+                    self._paged_attention_mgr.swap_out_sequence(req_id)
+                except Exception:
+                    pass
+
+            del self.active[req_id]
             self._total_tokens -= worst_seq.total_len
             worst_seq.status = SequenceStatus.PENDING
-            heapq.heappush(self._pending_heap, (worst_seq.priority, self._counter, worst_seq))
-            self._counter += 1
-        return worst_seq
+            self._preempted[req_id] = worst_seq
+            return worst_seq
+
+    def _save_kv_state(self, request_id: str, kv_cache_state: dict | None = None) -> None:
+        """Save KV cache state for a preempted sequence."""
+        if kv_cache_state is not None and request_id in kv_cache_state:
+            self._preempted_kv_state[request_id] = {
+                "kv_cache": kv_cache_state[request_id],
+                "source": "external",
+            }
+
+    def _restore_kv_state(self, request_id: str, kv_cache_state: dict | None = None) -> bool:
+        """Restore KV cache state for a preempted sequence.
+
+        Returns:
+            True if KV state was restored.
+        """
+        saved = self._preempted_kv_state.pop(request_id, None)
+        if saved is not None and kv_cache_state is not None:
+            kv_cache_state[request_id] = saved["kv_cache"]
+            return True
+        return False
+
+    def restore_preempted(self, kv_cache_state: dict | None = None) -> list[Sequence]:
+        """Restore all preempted sequences back to active with KV state."""
+        with self._lock:
+            restored = []
+            for req_id, seq in list(self._preempted.items()):
+                self._restore_kv_state(req_id, kv_cache_state)
+
+                if self._paged_attention_mgr is not None:
+                    try:
+                        self._paged_attention_mgr.pool.restore_block(
+                            self._paged_attention_mgr.get_physical_blocks(req_id)[0]
+                        )
+                    except Exception:
+                        pass
+
+                seq.status = SequenceStatus.DECODING
+                self.active[req_id] = seq
+                self._total_tokens += seq.total_len
+                restored.append(seq)
+
+            self._preempted.clear()
+            return restored
+
+    def set_max_preempted(self, max_preempted: int) -> None:
+        """Set the maximum number of concurrently preempted sequences."""
+        self._max_preempted = max(0, max_preempted)
+
+    def get_preempted_count(self) -> int:
+        return len(self._preempted)
 
     def stats(self) -> dict:
         return {
             "active_requests": self.active_count,
             "pending_requests": self.pending_count,
+            "preempted_requests": len(self._preempted),
             "max_batch_size": self.max_batch_size,
             "max_tokens_per_batch": self.max_tokens_per_batch,
             "paged_attention": self._paged_attention_mgr is not None,
@@ -562,3 +832,8 @@ class BatchScheduler:
             "chunked_prefill_active": len(self._chunked_prefill),
             "chunked_prefill_enabled": self._enable_chunked_prefill,
         }
+
+    @property
+    def latency_tracker(self) -> RequestLatencyTracker:
+        """Return the latency tracker instance."""
+        return self._latency_tracker

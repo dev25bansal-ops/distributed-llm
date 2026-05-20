@@ -1,6 +1,7 @@
 {
   "annotations": {"list": []},
   "editable": true,
+  "graphTooltip": 1,
   "panels": [
     {
       "title": "Node Health",
@@ -10,15 +11,28 @@
       "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"text": "Unhealthy", "color": "red"}, "1": {"text": "Healthy", "color": "green"}}, "type": "value"}]}}
     },
     {
+      "title": "Nodes by Cluster",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "count by (cluster_id) (distllm_node_health)", "legendFormat": "{{cluster_id}}"}]
+    },
+    {
+      "title": "Cross-Cluster Latency",
+      "type": "heatmap",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [{"expr": "distllm_cross_cluster_latency_ms", "legendFormat": "{{src}}->{{dst}}"}]
+    },
+    {
       "title": "GPU Utilization",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
-      "targets": [{"expr": "distllm_node_gpu_utilization_percent", "legendFormat": "{{node_id}}"}]
+      "targets": [{"expr": "distllm_node_gpu_utilization_percent", "legendFormat": "{{node_id}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 85, "color": "yellow"}, {"value": 92, "color": "red"}]}}}
     },
     {
       "title": "GPU Memory",
       "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [{"expr": "distllm_node_gpu_memory_bytes / 1024 / 1024 / 1024", "legendFormat": "{{node_id}} GB"}]
     },
     {
@@ -32,12 +46,38 @@
       "type": "timeseries",
       "gridPos": {"h": 6, "w": 12, "x": 12, "y": 12},
       "targets": [{"expr": "distllm_node_latency_p99_ms", "legendFormat": "{{node_id}}"}]
+    },
+    {
+      "title": "KV Cache Utilization",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 18},
+      "targets": [{"expr": "distllm_kv_cache_blocks_used / distllm_kv_cache_blocks_total * 100", "legendFormat": "{{node_id}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent"}}
+    },
+    {
+      "title": "Pipeline Schedule Type",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 18},
+      "targets": [{"expr": "distllm_pipeline_schedule_type", "legendFormat": "{{schedule}}"}]
+    },
+    {
+      "title": "Gossip Sync Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 24},
+      "targets": [{"expr": "rate(distllm_gossip_exchange_duration_seconds_sum[5m]) / rate(distllm_gossip_exchange_duration_seconds_count[5m])", "legendFormat": "{{peer}}"}]
+    },
+    {
+      "title": "Node Throughput",
+      "type": "bargauge",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 24},
+      "targets": [{"expr": "rate(distllm_node_tokens_generated_total[5m])", "legendFormat": "{{node_id}}"}]
     }
   ],
   "schemaVersion": 39,
-  "tags": ["distllm"],
+  "tags": ["distllm", "nodes"],
+  "templating": {"list": [{"name": "cluster", "type": "query", "datasource": "Prometheus", "query": "label_values(distllm_node_health, cluster_id)", "refresh": 2, "multi": true, "includeAll": true}]},
   "time": {"from": "now-1h", "to": "now"},
   "title": "Distributed LLM - Node Pool",
   "uid": "distllm-node-pool",
-  "version": 1
+  "version": 2
 }

@@ -7,6 +7,7 @@ into harmful categories.
 import re
 import time
 
+import torch
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -72,7 +73,15 @@ _HARMFUL_PATTERNS: dict[str, list[str]] = {
 _THRESHOLD = 0.5
 
 
-@router.post("/v1/moderations")
+@router.post(
+    "/v1/moderations",
+    summary="Create moderation",
+    description="Classify text for potentially harmful content across multiple categories: sexual, hate, harassment, self-harm, violence, and their sub-categories. Returns per-category scores and binary flags. Uses a dedicated moderation model when available, with heuristic keyword matching as fallback.",
+    response_description="Moderation results with per-category scores and flags",
+    responses={
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_moderation(body: ModerationRequest):
     """Classify text for potentially harmful content.
 
@@ -102,8 +111,6 @@ async def create_moderation(body: ModerationRequest):
 
 async def _moderate_with_model(inputs: list[str], model) -> list[ModerationResult]:
     """Moderate using a trained model (e.g., fine-tuned classifier)."""
-    import torch
-
     results = []
     device = next(model.parameters()).device if hasattr(model, 'parameters') else 'cpu'
 

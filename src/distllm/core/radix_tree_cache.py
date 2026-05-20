@@ -10,6 +10,7 @@ Provides:
 """
 
 import time
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -247,51 +248,36 @@ class RadixTreeCache:
         self._memory_budget = memory_budget_bytes
         self._total_memory_bytes = 0
         self._paged_attention_mgr = paged_attention_mgr
+        self._lock = threading.Lock()
 
     def lookup(self, token_ids: List[int]) -> Tuple[int, Optional[Any]]:
-        """Find the longest cached prefix.
+        """Find the longest cached prefix."""
+        with self._lock:
+            if len(token_ids) < self.min_prefix_len:
+                self._misses += 1
+                return 0, None
 
-        Traverses the trie to find the deepest node with KV data
-        that matches a prefix of token_ids.
+            matched_len, kv_data = self._root.lookup(token_ids)
 
-        Args:
-            token_ids: Full sequence of token IDs.
+            if matched_len >= self.min_prefix_len:
+                self._hits += 1
+                return matched_len, kv_data
 
-        Returns:
-            (matched_len, kv_data) where matched_len is the number of tokens
-            that were found in the cache. Returns (0, None) on miss.
-        """
-        if len(token_ids) < self.min_prefix_len:
             self._misses += 1
             return 0, None
 
-        matched_len, kv_data = self._root.lookup(token_ids)
-
-        if matched_len >= self.min_prefix_len:
-            self._hits += 1
-            return matched_len, kv_data
-
-        self._misses += 1
-        return 0, None
-
     def store(self, token_ids: List[int], kv_data: Any) -> None:
-        """Cache a prefix's KV data.
+        """Cache a prefix's KV data."""
+        with self._lock:
+            if len(token_ids) < self.min_prefix_len:
+                return
 
-        Args:
-            token_ids: Token sequence to cache.
-            kv_data: Precomputed KV cache data (layer_idx -> (k, v) tensors).
-        """
-        if len(token_ids) < self.min_prefix_len:
-            return
+            self._root.insert(token_ids, kv_data)
 
-        self._root.insert(token_ids, kv_data)
+            entry_bytes = self._estimate_kv_memory(kv_data)
+            self._total_memory_bytes += entry_bytes
 
-        # Track memory
-        entry_bytes = self._estimate_kv_memory(kv_data)
-        self._total_memory_bytes += entry_bytes
-
-        # Evict if over capacity or memory budget
-        self._evict_until_fit()
+            self._evict_until_fit()
 
     def _estimate_kv_memory(self, kv_data: Any) -> int:
         total = 0
@@ -345,64 +331,57 @@ class RadixTreeCache:
             )
 
     def find_shared_prefix(self, token_ids: List[int]) -> int:
-        """Find how many tokens share a prefix with existing cache entries.
-
-        Useful for cross-request substring sharing: even if a full prefix
-        isn't cached, part of it might be, saving recomputation.
-
-        Args:
-            token_ids: Token sequence to check.
-
-        Returns:
-            Length of the longest shared prefix in the trie.
-        """
-        return self._root.find_shared_prefix(token_ids)
+        """Find how many tokens share a prefix with existing cache entries."""
+        with self._lock:
+            return self._root.find_shared_prefix(token_ids)
 
     def evict(self, token_ids: List[int]) -> bool:
-        """Remove a specific prefix from the cache.
+        """Remove a specific prefix from the cache."""
+        with self._lock:
+            node = self._root
+            for tok in token_ids:
+                if tok not in node.children:
+                    return False
+                node = node.children[tok]
 
-        Returns True if the entry was found and removed.
-        """
-        node = self._root
-        for tok in token_ids:
-            if tok not in node.children:
-                return False
-            node = node.children[tok]
-
-        if node.kv_data is not None:
-            node.kv_data = None
-            return True
-        return False
+            if node.kv_data is not None:
+                node.kv_data = None
+                return True
+            return False
 
     def clear(self) -> None:
         """Remove all cached entries."""
-        self._root.clear()
-        self._hits = 0
-        self._misses = 0
+        with self._lock:
+            self._root.clear()
+            self._hits = 0
+            self._misses = 0
 
     @property
     def hit_rate(self) -> float:
-        total = self._hits + self._misses
-        return self._hits / total if total > 0 else 0.0
+        with self._lock:
+            total = self._hits + self._misses
+            return self._hits / total if total > 0 else 0.0
 
     def stats(self) -> dict:
-        trie_stats = self._root.stats()
-        return {
-            "prefix_cache_entries": trie_stats["total_entries"],
-            "prefix_cache_max_entries": self.max_entries,
-            "prefix_cache_hits": self._hits,
-            "prefix_cache_misses": self._misses,
-            "prefix_cache_hit_rate": round(self.hit_rate, 4),
-            "radix_tree_nodes": trie_stats["total_nodes"],
-            "radix_tree_max_depth": trie_stats["max_depth"],
-            "prefix_cache_memory_bytes": self._total_memory_bytes,
-            "prefix_cache_memory_budget": self._memory_budget,
-            "prefix_cache_memory_util": round(
-                self._total_memory_bytes / max(self._memory_budget, 1), 4
-            ),
-            "paged_attention_attached": self._paged_attention_mgr is not None,
-        }
+        with self._lock:
+            trie_stats = self._root.stats()
+            return {
+                "prefix_cache_entries": trie_stats["total_entries"],
+                "prefix_cache_max_entries": self.max_entries,
+                "prefix_cache_hits": self._hits,
+                "prefix_cache_misses": self._misses,
+                "prefix_cache_hit_rate": round(self.hit_rate, 4),
+                "radix_tree_nodes": trie_stats["total_nodes"],
+                "radix_tree_max_depth": trie_stats["max_depth"],
+                "prefix_cache_memory_bytes": self._total_memory_bytes,
+                "prefix_cache_memory_budget": self._memory_budget,
+                "prefix_cache_memory_util": round(
+                    self._total_memory_bytes / max(self._memory_budget, 1), 4
+                ),
+                "paged_attention_attached": self._paged_attention_mgr is not None,
+            }
 
     def adjust_memory_budget(self, new_budget_bytes: int) -> None:
-        self._memory_budget = new_budget_bytes
-        self._evict_until_fit()
+        with self._lock:
+            self._memory_budget = new_budget_bytes
+            self._evict_until_fit()

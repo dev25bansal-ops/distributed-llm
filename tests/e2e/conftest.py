@@ -51,6 +51,7 @@ def e2e_coordinator():
     coord.local_partitioner.full_model = mock_model
 
     coord.list_models.return_value = ["distributed-llm"]
+    coord._shutting_down = False
 
     return coord
 

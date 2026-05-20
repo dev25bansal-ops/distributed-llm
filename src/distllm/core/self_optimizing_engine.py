@@ -16,18 +16,15 @@ Integrates with: coordinator, batch_scheduler, speculative_decoder, prefix_cache
 from __future__ import annotations
 
 import json
-import math
 import os
-import pickle
+import random
 import threading
 import time
-from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-import torch
 from loguru import logger
 
 
@@ -226,8 +223,8 @@ class ParameterTuner:
         candidate = TunableParams(**asdict(current_params))
 
         # Randomly perturb one parameter
-        r = time.time()
-        if r % 5 < 1:
+        r = random.randint(0, 4)
+        if r < 1:
             candidate.batch_size = max(1, current_params.batch_size + self._rand_delta(2))
         elif r % 5 < 2:
             candidate.kv_cache_quant_bits = self._cycle_quant_bits(current_params.kv_cache_quant_bits)
@@ -241,7 +238,7 @@ class ParameterTuner:
         return candidate
 
     def _rand_delta(self, max_delta: int) -> int:
-        return int((hash(str(time.time())) % (2 * max_delta + 1)) - max_delta)
+        return random.randint(-max_delta, max_delta)
 
     def _cycle_quant_bits(self, current: int) -> int:
         options = [16, 8, 4]
@@ -301,6 +298,7 @@ class SelfOptimizingEngine:
         tune_interval_seconds: float = 60.0,
         warmup_seconds: float = 30.0,
         exploration_noise: float = 0.1,
+        apply_params: Callable[[TunableParams], None] | None = None,
     ):
         self._model_name = model_name
         self._profile_dir = Path(profile_dir or os.path.join(
@@ -311,6 +309,7 @@ class SelfOptimizingEngine:
         self._tune_interval = tune_interval_seconds
         self._warmup_seconds = warmup_seconds
         self._exploration_noise = exploration_noise
+        self._apply_params = apply_params  # Callback to apply params to live system
 
         self._perf_model = PerformanceModel()
         self._tuner = ParameterTuner(self._perf_model)
@@ -422,6 +421,17 @@ class SelfOptimizingEngine:
 
                     self._tuner.update(candidate, estimated)
 
+                    # Apply to live system if callback is registered
+                    if is_better and self._apply_params is not None:
+                        try:
+                            self._apply_params(candidate)
+                            logger.info(
+                                f"SelfOptimizing: applied new params to live system "
+                                f"(throughput {estimated:.0f} tok/s)"
+                            )
+                        except Exception as e:
+                            logger.warning(f"SelfOptimizing: failed to apply params: {e}")
+
                     if is_better:
                         logger.info(
                             f"SelfOptimizing: iteration {iteration}, "
@@ -452,6 +462,14 @@ class SelfOptimizingEngine:
         self._tune_thread = threading.Thread(target=self._tune_loop, daemon=True)
         self._tune_thread.start()
         logger.info("SelfOptimizingEngine started")
+
+    def set_apply_callback(self, callback: Callable[[TunableParams], None]) -> None:
+        """Register a callback to apply tuned parameters to the live system.
+
+        The callback receives TunableParams and should update system configuration
+        (batch size, KV cache quantization, speculative decoding, etc.).
+        """
+        self._apply_params = callback
 
     def stop(self) -> None:
         """Stop the tuning thread and save profile."""

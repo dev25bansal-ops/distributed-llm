@@ -3,58 +3,423 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DistLLM Dashboard</title>
-    <link rel="stylesheet" href="styles.css">
+    <title>DistLLM Real-Time Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+            background: #0f172a; color: #e2e8f0; margin: 0; padding: 16px;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #1e293b;
+        }
+        header h1 { font-size: 1.4rem; color: #38bdf8; }
+        .header-right { display: flex; gap: 12px; align-items: center; }
+        #ws-status {
+            padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;
+        }
+        #ws-status.connected { background: #166534; color: #86efac; }
+        #ws-status.connecting { background: #713f12; color: #fde68a; }
+        #ws-status.disconnected { background: #7f1d1d; color: #fca5a5; }
+
+        .grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 12px; margin-bottom: 16px;
+        }
+        .card {
+            background: #1e293b; border-radius: 8px; padding: 14px; border: 1px solid #334155;
+        }
+        .card h2 { font-size: 0.85rem; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card h3 { font-size: 0.75rem; color: #64748b; margin: 8px 0 4px; text-transform: uppercase; }
+        .stat-row { display: flex; justify-content: space-between; padding: 3px 0; }
+        .stat-label { color: #94a3b8; font-size: 0.8rem; }
+        .stat-value { color: #e2e8f0; font-weight: 600; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+        .stat-value.good { color: #4ade80; }
+        .stat-value.warn { color: #facc15; }
+        .stat-value.bad { color: #f87171; }
+
+        /* Gauge */
+        .gauge { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+        .gauge-bar {
+            flex: 1; height: 8px; background: #334155; border-radius: 4px; overflow: hidden;
+        }
+        .gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+        .gauge-fill.green { background: #4ade80; }
+        .gauge-fill.yellow { background: #facc15; }
+        .gauge-fill.red { background: #f87171; }
+        .gauge-label { font-size: 0.75rem; color: #94a3b8; min-width: 70px; }
+        .gauge-value { font-size: 0.8rem; font-weight: 600; min-width: 40px; text-align: right; }
+
+        /* Nodes */
+        .node-item { padding: 6px 0; border-bottom: 1px solid #334155; }
+        .node-item:last-child { border-bottom: none; }
+        .node-header { display: flex; justify-content: space-between; align-items: center; }
+        .node-id { font-weight: 600; font-size: 0.8rem; }
+        .node-status { font-size: 0.7rem; padding: 2px 6px; border-radius: 3px; }
+        .node-status.healthy { background: #166534; color: #86efac; }
+        .node-status.unhealthy { background: #7f1d1d; color: #fca5a5; }
+
+        /* Histogram */
+        .histogram { display: flex; align-items: flex-end; gap: 2px; height: 80px; margin: 8px 0; }
+        .histogram-bar {
+            flex: 1; background: #38bdf8; border-radius: 2px 2px 0 0; min-height: 2px;
+            transition: height 0.5s; position: relative;
+        }
+        .histogram-bar:hover { opacity: 0.8; }
+        .histogram-label { font-size: 0.6rem; color: #64748b; text-align: center; margin-top: 2px; }
+
+        /* Waterfall */
+        .waterfall { margin-top: 8px; }
+        .waterfall-header { display: flex; justify-content: space-between; font-size: 0.7rem; color: #64748b; }
+        .waterfall-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+        .waterfall-label { font-size: 0.7rem; color: #94a3b8; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .waterfall-bar { flex: 1; height: 12px; background: #334155; border-radius: 3px; overflow: hidden; display: flex; }
+        .waterfall-prefill { background: #38bdf8; height: 100%; }
+        .waterfall-decode { background: #4ade80; height: 100%; }
+        .waterfall-time { font-size: 0.7rem; color: #94a3b8; min-width: 40px; text-align: right; }
+
+        /* Topology */
+        .topology { margin: 8px 0; }
+        .topology-node {
+            display: inline-flex; align-items: center; gap: 6px;
+            background: #334155; padding: 4px 10px; border-radius: 4px; margin: 3px;
+            font-size: 0.75rem;
+        }
+        .topology-node .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .topology-node .dot.healthy { background: #4ade80; }
+        .topology-node .dot.unhealthy { background: #f87171; }
+        .topology-arrow { color: #64748b; font-size: 1rem; }
+
+        .raw-data pre {
+            background: #0f172a; padding: 8px; border-radius: 4px;
+            font-size: 0.7rem; max-height: 200px; overflow: auto; color: #94a3b8;
+        }
+
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .tenant-item { padding: 4px 0; font-size: 0.8rem; display: flex; justify-content: space-between; }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>DistLLM Dashboard</h1>
-            <div class="status-badge" id="ws-status">Connecting...</div>
-        </header>
+<div class="container">
+    <header>
+        <h1>⚡ DistLLM Real-Time Dashboard</h1>
+        <div class="header-right">
+            <span id="ws-status" class="connecting">Connecting...</span>
+            <span id="clock" style="font-size:0.8rem;color:#64748b;"></span>
+        </div>
+    </header>
 
-        <div class="grid">
-            <!-- System Overview -->
-            <div class="card">
-                <h2>System Overview</h2>
-                <div class="stat-row">
-                    <span class="stat-label">Model</span>
-                    <span class="stat-value" id="model-name">--</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Nodes</span>
-                    <span class="stat-value" id="node-count">--</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Connections</span>
-                    <span class="stat-value" id="ws-connections">--</span>
-                </div>
-            </div>
+    <div class="grid">
+        <!-- System Overview -->
+        <div class="card">
+            <h2>System Overview</h2>
+            <div class="stat-row"><span class="stat-label">Model</span><span class="stat-value" id="model-name">--</span></div>
+            <div class="stat-row"><span class="stat-label">Nodes</span><span class="stat-value" id="node-count">0</span></div>
+            <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value" id="uptime">--</span></div>
+            <div class="stat-row"><span class="stat-label">WS Connections</span><span class="stat-value" id="ws-connections">0</span></div>
+            <div class="stat-row"><span class="stat-label">Pipeline Mode</span><span class="stat-value" id="pipeline-mode">--</span></div>
+        </div>
 
-            <!-- Node Health -->
-            <div class="card">
-                <h2>Node Health</h2>
-                <div id="node-list">
-                    <p class="placeholder">No nodes connected</p>
-                </div>
-            </div>
+        <!-- Latency -->
+        <div class="card">
+            <h2>Request Latency</h2>
+            <div class="stat-row"><span class="stat-label">P50</span><span class="stat-value" id="lat-p50">--</span></div>
+            <div class="stat-row"><span class="stat-label">P95</span><span class="stat-value" id="lat-p95">--</span></div>
+            <div class="stat-row"><span class="stat-label">P99</span><span class="stat-value" id="lat-p99">--</span></div>
+            <div class="stat-row"><span class="stat-label">Avg</span><span class="stat-value" id="lat-avg">--</span></div>
+            <div class="stat-row"><span class="stat-label">Avg TTFT</span><span class="stat-value" id="ttft-avg">--</span></div>
+            <div class="stat-row"><span class="stat-label">Tokens/s</span><span class="stat-value" id="tokens-per-sec">--</span></div>
+        </div>
 
-            <!-- Scheduler Stats -->
-            <div class="card">
-                <h2>Scheduler</h2>
-                <div id="scheduler-stats">
-                    <p class="placeholder">Waiting for data...</p>
-                </div>
+        <!-- Latency Histogram -->
+        <div class="card">
+            <h2>Latency Distribution</h2>
+            <div class="histogram" id="latency-histogram"></div>
+            <div class="histogram-labels" id="histogram-labels" style="display:flex;justify-content:space-between;font-size:0.6rem;color:#64748b;"></div>
+        </div>
+
+        <!-- KV Cache -->
+        <div class="card">
+            <h2>KV Cache</h2>
+            <div class="stat-row"><span class="stat-label">Hit Rate</span><span class="stat-value" id="kv-hit-rate">--</span></div>
+            <div class="stat-row"><span class="stat-label">Hits</span><span class="stat-value" id="kv-hits">0</span></div>
+            <div class="stat-row"><span class="stat-label">Misses</span><span class="stat-value" id="kv-misses">0</span></div>
+            <div class="gauge">
+                <span class="gauge-label">Hit Rate</span>
+                <div class="gauge-bar"><div class="gauge-fill green" id="kv-gauge" style="width:0%"></div></div>
+                <span class="gauge-value" id="kv-gauge-val">0%</span>
             </div>
         </div>
 
-        <!-- Raw Data -->
-        <div class="card raw-data">
-            <h2>Latest Metrics (JSON)</h2>
-            <pre id="raw-metrics">Waiting for WebSocket connection...</pre>
+        <!-- Speculative Decoding -->
+        <div class="card">
+            <h2>Speculative Decoding</h2>
+            <div class="stat-row"><span class="stat-label">Acceptance Rate</span><span class="stat-value" id="spec-rate">--</span></div>
+            <div class="stat-row"><span class="stat-label">Draft Tokens</span><span class="stat-value" id="spec-drafts">0</span></div>
+            <div class="stat-row"><span class="stat-label">Accepted</span><span class="stat-value" id="spec-accepted">0</span></div>
+            <div class="gauge">
+                <span class="gauge-label">Acceptance</span>
+                <div class="gauge-bar"><div class="gauge-fill green" id="spec-gauge" style="width:0%"></div></div>
+                <span class="gauge-value" id="spec-gauge-val">0%</span>
+            </div>
+        </div>
+
+        <!-- Cost -->
+        <div class="card">
+            <h2>Cost & Usage</h2>
+            <div class="stat-row"><span class="stat-label">Total Cost</span><span class="stat-value" id="cost-total">$0.00</span></div>
+            <div class="stat-row"><span class="stat-label">Avg Cost/Request</span><span class="stat-value" id="cost-avg">$0.00</span></div>
+            <div class="stat-row"><span class="stat-label">Active Requests</span><span class="stat-value" id="sched-active">0</span></div>
+            <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-value" id="sched-pending">0</span></div>
+            <div class="stat-row"><span class="stat-label">Completed</span><span class="stat-value" id="sched-completed">0</span></div>
+        </div>
+
+        <!-- Scheduler -->
+        <div class="card">
+            <h2>Throughput</h2>
+            <div class="stat-row"><span class="stat-label">Requests/Minute</span><span class="stat-value" id="throughput-rpm">0</span></div>
+            <div class="stat-row"><span class="stat-label">Requests/Model</span><span class="stat-value" id="requests-by-model" style="font-size:0.7rem;">--</span></div>
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <div class="two-col">
+        <!-- Node Health & GPU -->
+        <div class="card">
+            <h2>Pipeline Topology & GPU Utilization</h2>
+            <div class="topology" id="topology-container"></div>
+            <div id="node-list"></div>
+        </div>
+
+        <!-- Request Waterfall -->
+        <div class="card">
+            <h2>Request Waterfall</h2>
+            <p style="font-size:0.7rem;color:#64748b;margin-bottom:6px;">Queue → Prefill → Decode per request</p>
+            <div class="waterfall" id="waterfall-container">
+                <p style="font-size:0.8rem;color:#64748b;">Waiting for data...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tenants -->
+    <div class="card">
+        <h2>Active Tenants</h2>
+        <div id="tenant-list"><p style="font-size:0.8rem;color:#64748b;">No tenant data</p></div>
+    </div>
+
+    <!-- Raw Data -->
+    <div class="card raw-data" style="margin-top:12px;">
+        <h2>Live Metrics (JSON)</h2>
+        <pre id="raw-metrics">Waiting for WebSocket connection...</pre>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    const el = (id) => document.getElementById(id);
+    const wsStatus = el('ws-status');
+    let ws = null;
+    let reconnectTimer = null;
+    let waterfallTimer = null;
+
+    function connect() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        wsStatus.textContent = 'Connecting...';
+        wsStatus.className = 'status-badge connecting';
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+            wsStatus.textContent = 'Connected'; wsStatus.className = 'status-badge connected';
+            ws.send(JSON.stringify({
+                type: 'subscribe',
+                metrics: ['latency','ttft','throughput','kv_cache','speculative','cost','scheduler','nodes','gpu'],
+                interval: 1.0
+            }));
+        };
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'subscribed') {
+                    console.log('Subscribed to metrics:', msg.metrics);
+                    return;
+                }
+                if (msg.type === 'pong') return;
+                updateDashboard(msg);
+            }
+            catch(e) { console.error('Parse error:', e); }
+        };
+        ws.onclose = () => {
+            wsStatus.textContent = 'Disconnected'; wsStatus.className = 'status-badge disconnected';
+            reconnectTimer = setTimeout(connect, 5000);
+        };
+        ws.onerror = () => ws.close();
+    }
+
+    function fmt(v, d=0) { return typeof v === 'number' ? v.toFixed(d) : v ?? '--'; }
+    function fmtPct(v) { return typeof v === 'number' ? (v*100).toFixed(1) + '%' : '--'; }
+    function fmtMoney(v) { return typeof v === 'number' ? '$' + v.toFixed(6) : '--'; }
+    function fmtTime(ts) { if (!ts) return '--'; const s = Math.floor(ts); const m = Math.floor(s/60); const h = Math.floor(m/60); return h > 0 ? `${h}h ${m%60}m` : m > 0 ? `${m}m ${s%60}s` : `${s}s`; }
+
+    function updateDashboard(msg) {
+        if (msg.type !== 'metrics' || !msg.data) return;
+        const d = msg.data;
+        const m = d.metrics_summary || {};
+
+        // Clock
+        if (msg.timestamp) el('clock').textContent = new Date(msg.timestamp * 1000).toLocaleTimeString();
+
+        // System overview
+        el('model-name').textContent = d.model || '--';
+        el('node-count').textContent = d.nodes ?? 0;
+        el('uptime').textContent = fmtTime(d.uptime);
+        el('ws-connections').textContent = d.ws_connections ?? 'active';
+        el('pipeline-mode').textContent = d.topology?.pipeline_parallel ? 'Pipeline Parallel' : 'Single Node';
+
+        // Latency
+        const lat = m.latency || {};
+        el('lat-p50').textContent = lat.p50 ? fmt(lat.p50, 1) + 'ms' : '--';
+        el('lat-p95').textContent = lat.p95 ? fmt(lat.p95, 1) + 'ms' : '--';
+        el('lat-p99').textContent = lat.p99 ? fmt(lat.p99, 1) + 'ms' : '--';
+        el('lat-avg').textContent = lat.avg ? fmt(lat.avg, 1) + 'ms' : '--';
+        const ttft = m.ttft || {};
+        el('ttft-avg').textContent = ttft.avg ? fmt(ttft.avg, 1) + 'ms' : '--';
+        const tp = m.throughput || {};
+        el('tokens-per-sec').textContent = tp.tokens_per_sec_avg ? fmt(tp.tokens_per_sec_avg, 1) : '--';
+
+        // Latency histogram
+        if (lat.histogram) {
+            const hist = lat.histogram;
+            const labels = Object.keys(hist);
+            const values = Object.values(hist);
+            const maxVal = Math.max(...values, 1);
+            const container = el('latency-histogram');
+            const labelContainer = el('histogram-labels');
+            container.innerHTML = labels.map((l, i) => {
+                const pct = (values[i] / maxVal) * 100;
+                return `<div class="histogram-bar" style="height:${Math.max(pct, 3)}%" title="${l}ms: ${values[i]}"></div>`;
+            }).join('');
+            labelContainer.innerHTML = labels.filter((_, i) => i % Math.max(1, Math.floor(labels.length/5)) === 0).map(l => `<span>${l}ms</span>`).join('');
+        }
+
+        // KV Cache
+        const kv = m.kv_cache || {};
+        el('kv-hit-rate').textContent = fmtPct(kv.hit_rate);
+        el('kv-hits').textContent = kv.hits ?? 0;
+        el('kv-misses').textContent = kv.misses ?? 0;
+        const kvPct = (kv.hit_rate || 0) * 100;
+        el('kv-gauge').style.width = kvPct + '%';
+        el('kv-gauge-val').textContent = kvPct.toFixed(1) + '%';
+
+        // Speculative
+        const spec = m.speculative || {};
+        el('spec-rate').textContent = fmtPct(spec.acceptance_rate);
+        el('spec-drafts').textContent = spec.drafts ?? 0;
+        el('spec-accepted').textContent = spec.accepted ?? 0;
+        const specPct = (spec.acceptance_rate || 0) * 100;
+        el('spec-gauge').style.width = specPct + '%';
+        el('spec-gauge-val').textContent = specPct.toFixed(1) + '%';
+
+        // Cost
+        const cost = m.cost || {};
+        el('cost-total').textContent = fmtMoney(cost.total);
+        el('cost-avg').textContent = fmtMoney(cost.avg_per_request);
+
+        // Scheduler
+        const sched = d.scheduler || {};
+        el('sched-active').textContent = sched.active ?? 0;
+        el('sched-pending').textContent = sched.pending ?? 0;
+        el('sched-completed').textContent = sched.completed ?? 0;
+
+        // Throughput
+        el('throughput-rpm').textContent = (sched.completed || 0) + ' total';
+        const byModel = m.requests_by_model || {};
+        el('requests-by-model').textContent = Object.keys(byModel).length ? Object.entries(byModel).map(([k,v]) => `${k}: ${v}`).join(', ') : '--';
+
+        // GPU Utilization
+        const gpuData = d.gpu_utilization || {};
+        const nodes = d.nodes || {};
+        const nodeContainer = el('node-list');
+        const topoContainer = el('topology-container');
+
+        if (Object.keys(nodes).length) {
+            // Topology
+            const nodeIds = Object.keys(nodes);
+            topoContainer.innerHTML = nodeIds.map((id, i) => {
+                const info = nodes[id];
+                const healthy = info.healthy ? 'healthy' : 'unhealthy';
+                const arrow = i < nodeIds.length - 1 ? '<span class="topology-arrow"> → </span>' : '';
+                return `<span class="topology-node"><span class="dot ${healthy}"></span>${id}</span>${arrow}`;
+            }).join('');
+
+            // Node list with GPU
+            nodeContainer.innerHTML = Object.entries(nodes).map(([id, info]) => {
+                const status = info.healthy ? 'healthy' : 'unhealthy';
+                const gpu = gpuData[id] || 0;
+                const gpuClass = gpu > 80 ? 'red' : gpu > 50 ? 'yellow' : 'green';
+                return `<div class="node-item">
+                    <div class="node-header">
+                        <span class="node-id">${id}</span>
+                        <span class="node-status ${status}">${status}</span>
+                    </div>
+                    <div class="gauge">
+                        <span class="gauge-label">GPU: ${info.host}:${info.port}</span>
+                        <div class="gauge-bar"><div class="gauge-fill ${gpuClass}" style="width:${gpu}%"></div></div>
+                        <span class="gauge-value">${fmt(gpu, 1)}%</span>
+                    </div>
+                    <div style="font-size:0.7rem;color:#64748b;">Layers: ${info.layers || '--'} | Role: ${info.role || 'auto'}</div>
+                </div>`;
+            }).join('');
+        } else {
+            nodeContainer.innerHTML = '<p style="font-size:0.8rem;color:#64748b;">No nodes connected</p>';
+            topoContainer.innerHTML = '<p style="font-size:0.8rem;color:#64748b;">No topology data</p>';
+        }
+
+        // Tenants
+        const tenants = d.tenants || [];
+        const tenantList = el('tenant-list');
+        if (tenants.length) {
+            tenantList.innerHTML = tenants.map(t =>
+                `<div class="tenant-item"><span>${t.name}</span><span style="color:#94a3b8;">${t.tier} · ${t.tenant_id}</span></div>`
+            ).join('');
+        }
+
+        // Raw
+        el('raw-metrics').textContent = JSON.stringify(d, null, 2);
+    }
+
+    // Waterfall
+    function fetchWaterfall() {
+        fetch('/api/requests/waterfall?limit=30')
+            .then(r => r.json())
+            .then(data => {
+                if (!data || !data.length) return;
+                const container = el('waterfall-container');
+                const maxElapsed = Math.max(...data.map(i => i.elapsed_ms || 0), 1);
+                const rows = data.slice(0, 20).map(item => {
+                    const ttft = item.ttft_ms || 0;
+                    const elapsed = item.elapsed_ms || 0;
+                    const ttftPct = Math.min((ttft / maxElapsed) * 100, 100);
+                    const decodePct = Math.max(Math.min((elapsed / maxElapsed) * 100, 100) - ttftPct, 0);
+                    return `<div class="waterfall-row">
+                        <span class="waterfall-label" title="${item.request_id}">${(item.request_id || '???').substring(0, 10)}</span>
+                        <div class="waterfall-bar">
+                            <div class="waterfall-prefill" style="width:${ttftPct}%" title="Prefill: ${ttft.toFixed(0)}ms"></div>
+                            <div class="waterfall-decode" style="width:${decodePct}%" title="Decode: ${(elapsed - ttft).toFixed(0)}ms"></div>
+                        </div>
+                        <span class="waterfall-time">${elapsed.toFixed(0)}ms</span>
+                    </div>`;
+                }).join('');
+                container.innerHTML = `<div class="waterfall-header"><span>0ms</span><span>${maxElapsed.toFixed(0)}ms</span></div><div class="waterfall-rows">${rows}</div>`;
+            }).catch(() => {});
+    }
+
+    connect();
+    fetchWaterfall();
+    waterfallTimer = setInterval(fetchWaterfall, 3000);
+})();
+</script>
 </body>
 </html>

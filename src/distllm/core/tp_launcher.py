@@ -8,6 +8,8 @@ Uses PyTorch's tensor.parallel (distributed._tensor) for actual tensor slicing:
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
@@ -27,6 +29,14 @@ except ImportError:
         parallelize_module,
     )
     PairwiseParallel = None
+
+
+@dataclass
+class TPWorkerHandle:
+    """Runtime handle for local tensor-parallel worker servers."""
+    process_context: object
+    ports: list[int]
+    world_size: int
 
 
 def _start_tp_server(rank: int, world_size: int, model, tokenizer, device: str, port: int) -> None:
@@ -76,6 +86,49 @@ def _start_tp_server(rank: int, world_size: int, model, tokenizer, device: str, 
                 logger.error(f"TP rank {rank} ForwardPass failed: {e}")
                 context.set_code(grpc.StatusCode.INTERNAL)
                 return ForwardPassResponse(success=False)
+
+        def ForwardPassAsync(self, request, context):
+            """Async version with comm-compute overlap using AsyncTensorParallel."""
+            try:
+                from distllm.core.async_tp import AsyncTensorParallel
+
+                async_tp = AsyncTensorParallel(tp_group=dist.group.WORLD, async_op=True)
+
+                if request.input_ids:
+                    input_ids = torch.tensor([list(request.input_ids)], dtype=torch.long, device=device)
+                    with torch.no_grad():
+                        # Run model with async overlap
+                        prev_output = None
+                        for layer_module in self._get_layer_modules():
+                            hidden = layer_module(input_ids if prev_output is None else prev_output)
+                            prev_output = async_tp.forward_overlap(layer_module, input_ids if prev_output is None else prev_output, prev_output)
+                        async_tp.synchronize()
+                        logits = prev_output
+                elif request.HasField('hidden_states'):
+                    hidden = proto_to_tensor(request.hidden_states, device)
+                    with torch.no_grad():
+                        output = model(inputs_embeds=hidden, use_cache=request.use_cache)
+                        logits = output.logits
+                        dist.all_reduce(logits, op=dist.ReduceOp.SUM)
+                else:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    return ForwardPassResponse(success=False)
+
+                response = ForwardPassResponse(success=True)
+                response.output.CopyFrom(tensor_to_proto(logits))
+                return response
+            except Exception as e:
+                logger.error(f"TP rank {rank} ForwardPassAsync failed: {e}")
+                context.set_code(grpc.StatusCode.INTERNAL)
+                return ForwardPassResponse(success=False)
+
+        def _get_layer_modules(self):
+            """Extract individual layer modules from the model for async overlap."""
+            if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+                return model.model.layers
+            elif hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
+                return model.transformer.h
+            return []
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     add_NodeServiceServicer_to_server(TPServicer(), server)
@@ -170,12 +223,48 @@ def launch_tp_workers(
 
     logger.info(f"Launching {num_gpus} tensor parallel workers for {model_name}")
 
-    mp.spawn(
+    context = mp.spawn(
         _tp_worker_entry,
         args=(num_gpus, model_name, dtype, trust_remote_code, port),
         nprocs=num_gpus,
-        join=True,
+        join=False,
     )
+    return TPWorkerHandle(
+        process_context=context,
+        ports=[port + rank + 1 for rank in range(num_gpus)],
+        world_size=num_gpus,
+    )
+
+
+def tp_forward(input_tensor: torch.Tensor, tp_handles: list[TPWorkerHandle], timeout: float = 30.0) -> torch.Tensor:
+    """Fan out one forward request to all local TP ranks and return reduced logits."""
+    if not tp_handles:
+        raise RuntimeError("No tensor-parallel workers are running")
+
+    from distllm.communication.grpc_client import NodeClient
+    from distllm.communication.node_pb2 import ForwardPassRequest
+    from distllm.communication.serializers import proto_to_tensor, tensor_to_proto
+
+    handle = tp_handles[0]
+
+    def _call_rank(port: int):
+        request = ForwardPassRequest(request_id=f"tp_{port}", use_cache=False)
+        if input_tensor.dtype in (torch.int32, torch.int64, torch.long):
+            request.input_ids.extend([int(x) for x in input_tensor.flatten().tolist()])
+            request.batch_size = int(input_tensor.shape[0]) if input_tensor.dim() > 1 else 1
+            request.seq_len = int(input_tensor.shape[-1]) if input_tensor.dim() > 1 else int(input_tensor.numel())
+        else:
+            request.hidden_states.CopyFrom(tensor_to_proto(input_tensor))
+        with NodeClient("127.0.0.1", port, use_tls=False) as client:
+            return client.forward(request, timeout=timeout)
+
+    with ThreadPoolExecutor(max_workers=handle.world_size) as executor:
+        responses = list(executor.map(_call_rank, handle.ports))
+
+    first = responses[0]
+    if not first.success:
+        raise RuntimeError(first.error_message or "tensor-parallel worker failed")
+    return proto_to_tensor(first.output)
 
 
 def main():

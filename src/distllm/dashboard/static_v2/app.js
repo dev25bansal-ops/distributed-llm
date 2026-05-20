@@ -10,9 +10,11 @@
     const nodeList = document.getElementById('node-list');
     const schedulerStats = document.getElementById('scheduler-stats');
     const rawMetrics = document.getElementById('raw-metrics');
+    const waterfallContainer = document.getElementById('waterfall-container');
 
     let ws = null;
     let reconnectTimer = null;
+    let waterfallTimer = null;
 
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -89,4 +91,46 @@
 
     // Start connection when page loads
     connect();
+
+    // Fetch waterfall data periodically
+    function fetchWaterfall() {
+        fetch('/api/requests/waterfall?limit=50')
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.length > 0) {
+                    waterfallContainer.innerHTML = renderWaterfall(data);
+                }
+            })
+            .catch(() => {});
+    }
+
+    function renderWaterfall(items) {
+        const maxElapsed = Math.max(...items.map(i => i.elapsed_ms || 0), 1);
+        const rows = items.map(item => {
+            const ttft = item.ttft_ms || 0;
+            const elapsed = item.elapsed_ms || 0;
+            const ttftPct = Math.min((ttft / maxElapsed) * 100, 100);
+            const totalPct = Math.min((elapsed / maxElapsed) * 100, 100);
+            const decodePct = Math.max(totalPct - ttftPct, 0);
+
+            const statusClass = item.is_overdue ? 'waterfall-overdue' : 'waterfall-ok';
+            return `<div class="waterfall-row ${statusClass}">
+                <div class="waterfall-label" title="${item.request_id}">${item.request_id.substring(0, 12)}...</div>
+                <div class="waterfall-bar">
+                    <div class="waterfall-segment waterfall-prefill" style="width: ${ttftPct}%" title="Prefill: ${ttft.toFixed(0)}ms"></div>
+                    <div class="waterfall-segment waterfall-decode" style="width: ${decodePct}%" title="Decode: ${(elapsed - ttft).toFixed(0)}ms"></div>
+                </div>
+                <div class="waterfall-time">${elapsed.toFixed(0)}ms</div>
+            </div>`;
+        }).join('');
+
+        return `<div class="waterfall-header">
+            <span>0ms</span><span>${maxElapsed.toFixed(0)}ms</span>
+        </div>
+        <div class="waterfall-rows">${rows}</div>`;
+    }
+
+    // Start waterfall polling
+    fetchWaterfall();
+    waterfallTimer = setInterval(fetchWaterfall, 3000);
 })();

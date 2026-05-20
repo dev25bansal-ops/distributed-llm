@@ -1,13 +1,14 @@
 """Plugin system for DistLLM extensibility.
 
 Provides a hook-based plugin architecture with lifecycle management,
-entry point discovery, and built-in plugins.
+entry point discovery, built-in plugins, and marketplace support.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -31,6 +32,37 @@ class HookPoint(str, Enum):
     ON_MODEL_UNLOAD = "on_model_unload"
 
 
+# --- Plugin Context ---
+
+@dataclass
+class PluginContext:
+    """Restricted context passed to plugins.
+
+    Replaces the raw dict with a typed, documented interface.
+    """
+    config: dict[str, Any] = field(default_factory=dict)
+    hooks: Any = None  # HookRegistry reference
+    logger: Any = None  # Logger instance
+    coordinator_ref: Any = None  # Weak reference to coordinator
+    metrics: Any = None  # Metrics collector
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-like access for compatibility with existing plugins."""
+        return {
+            "config": self.config,
+            "hooks": self.hooks,
+            "logger": self.logger or logger,
+            "coordinator_ref": self.coordinator_ref,
+            "metrics": self.metrics,
+        }.get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.get(key)
+
+    def __contains__(self, key: str) -> bool:
+        return key in ("config", "hooks", "logger", "coordinator_ref", "metrics")
+
+
 # --- Plugin Protocol ---
 
 @runtime_checkable
@@ -41,17 +73,29 @@ class IPlugin(Protocol):
     version: str = "0.1.0"
     description: str = ""
 
-    def initialize(self, context: dict[str, Any]) -> None:
+    @property
+    def metadata(self) -> Any | None:
+        """Optional PluginMetadata from the marketplace system."""
+        return None
+
+    def initialize(self, context: PluginContext | dict[str, Any]) -> None:
         """Called when the plugin is loaded.
 
         Args:
-            context: Shared context dict with coordinator, config, etc.
+            context: PluginContext (preferred) or dict for backward compatibility.
         """
         ...
 
     def shutdown(self) -> None:
         """Called when the plugin is being unloaded."""
         ...
+
+    def validate_config(self, config: dict[str, Any]) -> list[str]:
+        """Validate plugin-specific configuration.
+
+        Returns a list of validation errors (empty if valid).
+        """
+        return []
 
 
 class HookRegistry:
@@ -92,21 +136,86 @@ class HookRegistry:
 class PluginManager:
     """Manages plugin lifecycle and discovery."""
 
-    def __init__(self, context: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        context: PluginContext | dict[str, Any] | None = None,
+        host_version: str = "0.1.0",
+    ) -> None:
         self.hooks = HookRegistry()
         self._plugins: dict[str, IPlugin] = {}
-        self._context = context or {}
+        self._context = context or PluginContext()
+        self._host_version = host_version
 
-    def register_plugin(self, plugin: IPlugin) -> None:
-        """Register and initialize a plugin."""
+        # Marketplace subsystems
+        self._metadata_registry: dict[str, Any] = {}
+        self._compatibility_checker: Any = None
+        self._sandbox: Any = None
+        self._telemetry: Any = None
+        self._config_validator: Any = None
+        self._installer: Any = None
+
+    def set_marketplace_subsystems(
+        self,
+        *,
+        compatibility_checker: Any = None,
+        sandbox: Any = None,
+        telemetry: Any = None,
+        config_validator: Any = None,
+        installer: Any = None,
+    ) -> None:
+        """Wire marketplace subsystems into the PluginManager."""
+        self._compatibility_checker = compatibility_checker
+        self._sandbox = sandbox
+        self._telemetry = telemetry
+        self._config_validator = config_validator
+        self._installer = installer
+
+    def register_plugin(self, plugin: IPlugin, config: dict[str, Any] | None = None) -> None:
+        """Register and initialize a plugin.
+
+        Args:
+            plugin: The plugin instance.
+            config: Optional plugin-specific configuration (validated if schema exists).
+        """
         name = plugin.name
+
+        # Validate config if schema registered
+        if config and self._config_validator:
+            errors = self._config_validator.validate_config(name, config)
+            if errors:
+                logger.error(f"Plugin '{name}' config validation failed: {errors}")
+                raise ValueError(f"Invalid plugin config: {errors}")
+
+        # Check compatibility if checker available
+        if self._compatibility_checker and hasattr(plugin, "metadata") and plugin.metadata:
+            meta = plugin.metadata
+            result = self._compatibility_checker.check_compatibility(
+                min_host_version=getattr(meta, "min_host_version", None),
+                max_host_version=getattr(meta, "max_host_version", None),
+                dependencies=getattr(meta, "dependencies", []),
+            )
+            if not result.can_load:
+                logger.error(f"Plugin '{name}' incompatible: {result.errors}")
+                raise ValueError(f"Plugin incompatible: {result.errors}")
+            for warning in result.warnings:
+                logger.warning(f"Plugin '{name}' warning: {warning}")
+
         if name in self._plugins:
             logger.warning(f"Plugin '{name}' already registered, replacing")
             self._plugins[name].shutdown()
 
         self._plugins[name] = plugin
+
+        # Merge plugin config into context if provided
+        if isinstance(self._context, PluginContext) and config:
+            self._context.config.update(config)
+
         plugin.initialize(self._context)
         logger.info(f"Plugin '{name}' v{plugin.version} loaded")
+
+        # Store metadata if available
+        if hasattr(plugin, "metadata") and plugin.metadata:
+            self._metadata_registry[name] = plugin.metadata
 
     def unregister_plugin(self, name: str) -> None:
         """Unregister and shutdown a plugin."""
@@ -117,6 +226,7 @@ class PluginManager:
                 logger.info(f"Plugin '{name}' unloaded")
             except Exception as e:
                 logger.error(f"Plugin '{name}' shutdown failed: {e}")
+        self._metadata_registry.pop(name, None)
 
     def get_plugin(self, name: str) -> IPlugin | None:
         """Get a registered plugin by name."""
@@ -132,6 +242,59 @@ class PluginManager:
             }
             for p in self._plugins.values()
         ]
+
+    def get_plugin_metadata(self, name: str) -> Any | None:
+        """Get marketplace metadata for a plugin."""
+        return self._metadata_registry.get(name)
+
+    def list_all_metadata(self) -> dict[str, Any]:
+        """Return metadata for all registered plugins."""
+        return dict(self._metadata_registry)
+
+    def check_compatibility(self, metadata: Any) -> Any:
+        """Check plugin compatibility with current host.
+
+        Returns CompatibilityResult.
+        """
+        if not self._compatibility_checker:
+            raise RuntimeError("Compatibility checker not configured")
+        return self._compatibility_checker.check_compatibility(
+            min_host_version=getattr(metadata, "min_host_version", None),
+            max_host_version=getattr(metadata, "max_host_version", None),
+            dependencies=getattr(metadata, "dependencies", []),
+        )
+
+    def install_plugin(
+        self,
+        plugin_name: str,
+        version: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> Any:
+        """Install a plugin from the marketplace.
+
+        Returns PluginInstallResult.
+        """
+        if not self._installer:
+            raise RuntimeError("Plugin installer not configured")
+        result = self._installer.install(plugin_name, version)
+        if result.success and result.metadata:
+            self._metadata_registry[plugin_name] = result.metadata
+        return result
+
+    def uninstall_plugin(self, plugin_name: str) -> bool:
+        """Uninstall a plugin from the marketplace."""
+        if not self._installer:
+            raise RuntimeError("Plugin installer not configured")
+        self.unregister_plugin(plugin_name)
+        return self._installer.uninstall(plugin_name)
+
+    def get_plugin_telemetry(self, plugin_name: str | None = None) -> Any:
+        """Get telemetry data for plugins."""
+        if not self._telemetry:
+            raise RuntimeError("Telemetry not configured")
+        if plugin_name:
+            return self._telemetry.get_plugin_stats(plugin_name)
+        return self._telemetry.get_all_stats()
 
     def discover_entry_points(self) -> list[IPlugin]:
         """Discover plugins via Python entry points."""
@@ -228,6 +391,42 @@ class PluginManager:
     def emit_hook(self, hook: str, *args: Any, **kwargs: Any) -> list[Any]:
         """Emit a hook to all registered plugins."""
         return self.hooks.emit(hook, *args, **kwargs)
+
+    async def emit_hook_sandboxed(
+        self, hook: str, *args: Any, timeout_s: float | None = None, **kwargs: Any
+    ) -> list[Any]:
+        """Emit a hook to all plugins with sandboxed execution.
+
+        Runs each callback through the PluginSandbox for timeout/memory protection.
+        """
+        if not self._sandbox:
+            return self.emit_hook(hook, *args, **kwargs)
+
+        results = []
+        for name, plugin in self._plugins.items():
+            # Find callbacks registered for this hook
+            callbacks = self.hooks._hooks.get(hook, [])
+            for callback in callbacks:
+                stats = await self._sandbox.run_hook_async(
+                    plugin_name=name,
+                    hook_name=hook,
+                    callback=callback,
+                    *args,
+                    timeout_s=timeout_s,
+                    **kwargs,
+                )
+                # Record telemetry
+                if self._telemetry:
+                    self._telemetry.record_usage(
+                        plugin_name=name,
+                        hook_name=hook,
+                        duration_ms=stats.duration_ms,
+                        success=stats.success,
+                        error=stats.error,
+                    )
+                if stats.success:
+                    results.append(None)  # Hook callbacks don't return meaningful values
+        return results
 
 
 # --- Built-in Plugins ---

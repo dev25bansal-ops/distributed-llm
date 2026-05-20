@@ -58,8 +58,10 @@ class MetricsManager:
         """
         with self._metrics_lock:
             avg_tokens_per_sec = 0.0
-            if self._metrics["total_generation_time"] > 0:
-                avg_tokens_per_sec = self._metrics["total_tokens_generated"] / self._metrics["total_generation_time"]
+            gen_time = self._metrics.get("total_generation_time", 0)
+            tokens = self._metrics.get("total_tokens_generated", 0)
+            if gen_time > 0 and tokens > 0:
+                avg_tokens_per_sec = tokens / gen_time
 
             return {
                 "distllm_requests_total": self._metrics["total_requests"],

@@ -43,7 +43,15 @@ def _check_adapter_enabled():
     return coord.adapter_manager
 
 
-@router.get("/v1/adapters")
+@router.get(
+    "/v1/adapters",
+    summary="List LoRA adapters",
+    description="List all loaded LoRA adapters with per-adapter statistics, active adapter info, and optional usage-based ranking for multi-tenant priority scheduling.",
+    response_description="Adapter list with active adapter, stats, and ranking",
+    responses={
+        503: {"description": "LoRA adapter manager not enabled"},
+    },
+)
 async def list_adapters():
     """List loaded LoRA adapters with stats and ranking."""
     adapter_mgr = _check_adapter_enabled()
@@ -72,7 +80,18 @@ async def list_adapters():
     )
 
 
-@router.post("/v1/adapters")
+@router.post(
+    "/v1/adapters",
+    summary="Manage LoRA adapters",
+    description="Perform adapter management actions: 'load' (load from path), 'set' (activate), 'list' (enumerate), 'warmup' (pre-load multiple), 'unload' (deactivate and free memory), 'rank' (update priority), 'slora_register'/'slora_unregister' (S-LoRA integration).",
+    response_description="Action-specific result with status and adapter ID",
+    responses={
+        400: {"description": "Missing required fields or unknown action"},
+        403: {"description": "Invalid adapter path (path traversal blocked)"},
+        404: {"description": "Adapter not found for unload/rank operations"},
+        503: {"description": "LoRA adapter manager or SLoRA manager not enabled"},
+    },
+)
 async def manage_adapters(request: AdapterLoadRequest):
     """Manage LoRA adapters: load, set, list, warmup, unload, rank."""
     adapter_mgr = _check_adapter_enabled()
@@ -150,5 +169,32 @@ async def manage_adapters(request: AdapterLoadRequest):
                 for a in ranked
             ],
         }
+
+    elif request.action == "slora_register":
+        """Register a LoRA adapter with the SLoRA manager."""
+        coord = g.coordinator
+        slora = getattr(coord, '_slora_manager', None) if coord else None
+        if slora is None:
+            raise HTTPException(status_code=503, detail="SLoRA manager not initialized")
+        if not request.id or not request.path:
+            raise HTTPException(status_code=400, detail="id and path required for slora_register")
+        try:
+            validate_adapter_path(request.path)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        slora.register_adapter(request.id, request.path)
+        return {"status": "registered", "id": request.id}
+
+    elif request.action == "slora_unregister":
+        """Unregister a LoRA adapter from the SLoRA manager."""
+        coord = g.coordinator
+        slora = getattr(coord, '_slora_manager', None) if coord else None
+        if slora is None:
+            raise HTTPException(status_code=503, detail="SLoRA manager not initialized")
+        if not request.id:
+            raise HTTPException(status_code=400, detail="id required for slora_unregister")
+        slora.unregister_adapter(request.id)
+        return {"status": "unregistered", "id": request.id}
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")

@@ -12,6 +12,13 @@ from distllm.api.server import app
 class TestMultiModelAPI:
     """Tests for multi-model API support."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_auth(self, monkeypatch):
+        monkeypatch.setenv("DISABLE_AUTH", "1")
+        monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+        monkeypatch.delenv("API_KEY", raising=False)
+    """Tests for multi-model API support."""
+
     def test_list_models_single_model(self):
         """Returns single model when no multi-model registry."""
         coord = MagicMock()
@@ -56,6 +63,10 @@ class TestMultiModelAPI:
         coord.list_models.return_value = ["primary", "model-a"]
         coord.generate.return_value = "test response"
         coord.scheduler = None
+        coord._vlm_pipeline = None
+        coord._spec_decoder = None
+        coord.tokenizer = MagicMock()
+        coord.tokenizer.encode.return_value = [1, 2, 3]
 
         server_module.coordinator = coord
 
@@ -76,6 +87,10 @@ class TestMultiModelAPI:
         coord.list_models.return_value = ["primary", "model-a"]
         coord.generate.return_value = "test response"
         coord.scheduler = None
+        coord._vlm_pipeline = None
+        coord._spec_decoder = None
+        coord.tokenizer = MagicMock()
+        coord.tokenizer.encode.return_value = [1, 2, 3]
 
         server_module.coordinator = coord
 

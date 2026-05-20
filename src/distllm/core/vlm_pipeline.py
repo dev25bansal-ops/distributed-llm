@@ -296,6 +296,147 @@ class VLMPipeline:
         """
         return text_prompt, image_embeddings
 
+    def count_image_tokens(self, image: Image.Image) -> int:
+        """Calculate how many LLM tokens an image will occupy.
+
+        Uses model-specific formulas:
+        - LLaVA: fixed 576 tokens per image (24x24 grid)
+        - Qwen2-VL: depends on resolution after dynamic resizing
+        - Generic: estimate from vision_dim patches
+        """
+        if self.vision_tower is None:
+            return 576  # LLaVA default
+
+        model_lower = self.vision_tower.model_name.lower()
+
+        # Qwen2-VL uses dynamic resolution
+        if "qwen2_vl" in model_lower:
+            w, h = image.size
+            # Qwen2-VL resizes to multiples of 28, min 28x28, max 1280x1280
+            factor = 28
+            w = max(factor, min(1280, (w // factor) * factor))
+            h = max(factor, min(1280, (h // factor) * factor))
+            # Patch size is 14x14, each patch = 1 token after pooling
+            patches_w = w // 14
+            patches_h = h // 14
+            return patches_w * patches_h
+
+        # LLaVA uses fixed 24x24 grid from CLIP ViT-L
+        if "llava" in model_lower:
+            return 576  # 24x24 grid
+
+        # InternVL uses dynamic grid
+        if "internvl" in model_lower:
+            w, h = image.size
+            grid = min(max(w, h) // 224, 6)
+            return grid * grid * 256  # 16x16 patches per grid cell
+
+        # Generic estimate from vision tower config
+        vision_dim = self.vision_tower.vision_dim
+        if vision_dim is not None:
+            # Assume ~1 token per 4 vision features (after pooling)
+            config = getattr(self.vision_tower.vision_model, "config", None)
+            if config and hasattr(config, "image_size") and hasattr(config, "patch_size"):
+                img_size = config.image_size
+                patch_size = config.patch_size
+                patches = (img_size // patch_size) ** 2
+                return patches
+        return 576  # fallback
+
+    def forward_to_llm(
+        self,
+        text_prompt: str,
+        image_embeddings: torch.Tensor | None,
+        llm_module,
+        tokenizer,
+        max_new_tokens: int = 256,
+        temperature: float = 0.7,
+    ) -> str:
+        """Forward combined text + image embeddings through the LLM for generation.
+
+        Args:
+            text_prompt: The text prompt string.
+            image_embeddings: Pre-computed image embedding tensor [num_tokens, hidden_dim].
+            llm_module: The LLM model with forward(embeddings=...) support.
+            tokenizer: Tokenizer for encoding text and decoding output.
+            max_new_tokens: Max tokens to generate.
+            temperature: Sampling temperature.
+
+        Returns:
+            Generated text response.
+        """
+        if image_embeddings is not None:
+            # Build input embeddings: image tokens + text tokens
+            text_tokens = tokenizer.encode(text_prompt, return_tensors="pt")
+            if hasattr(llm_module, "get_input_embeddings"):
+                text_embeds = llm_module.get_input_embeddings()(text_tokens.to(image_embeddings.device))
+                # Concatenate image embeddings before text embeddings
+                input_embeds = torch.cat([
+                    image_embeddings.unsqueeze(0),
+                    text_embeds,
+                ], dim=1)
+            else:
+                input_embeds = image_embeddings.unsqueeze(0)
+
+            # Generate using embeddings
+            if hasattr(llm_module, "generate") and "inputs_embeds" in str(
+                llm_module.generate.__code__.co_varnames
+            ):
+                outputs = llm_module.generate(
+                    inputs_embeds=input_embeds,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    do_sample=temperature > 0,
+                )
+                return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            # Fallback: try standard generate with position_ids adjustment
+            outputs = llm_module.generate(
+                input_ids=text_tokens.to(image_embeddings.device),
+                inputs_embeds=input_embeds,
+                max_new_tokens=max_new_tokens,
+            )
+            return tokenizer.decode(outputs[0], skip_special_tokens=True)
+        else:
+            # Text-only generation
+            input_ids = tokenizer.encode(text_prompt, return_tensors="pt")
+            outputs = llm_module.generate(
+                input_ids.to(next(llm_module.parameters()).device),
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=temperature > 0,
+            )
+            return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    def create_projector(
+        self,
+        vision_dim: int | None = None,
+        llm_dim: int | None = None,
+    ) -> torch.nn.Module:
+        """Create a trainable projector module.
+
+        Args:
+            vision_dim: Vision tower output dimension (auto-detected if None).
+            llm_dim: LLM hidden dimension (uses self.llm_hidden_size if None).
+
+        Returns:
+            Linear projector module.
+        """
+        if vision_dim is None:
+            if self.vision_tower is None or self.vision_tower.vision_dim is None:
+                raise ValueError("vision_dim not available. Load vision tower first.")
+            vision_dim = self.vision_tower.vision_dim
+
+        llm_dim = llm_dim or self.llm_hidden_size
+
+        # Multi-layer projector for better representation learning
+        projector = torch.nn.Sequential(
+            torch.nn.Linear(vision_dim, llm_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(llm_dim, llm_dim),
+        )
+        return projector
+
     def _get_image_token(self) -> str:
         """Get the image token placeholder for the detected model family."""
         if self.vision_tower is None:

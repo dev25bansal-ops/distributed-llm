@@ -2,12 +2,12 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "distributed-llm.fullname" . }}-coordinator
+  name: {{ include "distllm.fullname" . }}-coordinator
   labels:
-    {{- include "distributed-llm.labels" . | nindent 4 }}
+    {{- include "distllm.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.coordinator.minAvailable }}
   selector:
     matchLabels:
-      {{- include "distributed-llm.coordinatorLabels" . | nindent 6 }}
+      {{- include "distllm.coordinatorLabels" . | nindent 6 }}
 {{- end }}

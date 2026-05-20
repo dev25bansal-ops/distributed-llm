@@ -135,6 +135,39 @@ class DistLLMPrometheusExporter:
             registry=self.registry,
         )
 
+        # --- Self-healing recovery metrics ---
+        self.recovery_total = Counter(
+            "distllm_recovery_total",
+            "Total node recovery events triggered",
+            registry=self.registry,
+        )
+        self.recovery_sequences_recovered = Counter(
+            "distllm_recovery_sequences_recovered_total",
+            "Total in-flight sequences recovered from failed nodes",
+            registry=self.registry,
+        )
+        self.recovery_sequences_lost = Counter(
+            "distllm_recovery_sequences_lost_total",
+            "Total in-flight sequences lost due to node failure",
+            registry=self.registry,
+        )
+        self.recovery_duration_ms = Histogram(
+            "distllm_recovery_duration_ms",
+            "Duration of node recovery in milliseconds",
+            buckets=[10, 50, 100, 500, 1000, 5000, 10000, 30000],
+            registry=self.registry,
+        )
+        self.draining_nodes = Gauge(
+            "distllm_draining_nodes",
+            "Number of nodes currently in draining state",
+            registry=self.registry,
+        )
+        self.dead_nodes = Gauge(
+            "distllm_dead_nodes",
+            "Number of nodes marked as dead (awaiting replacement)",
+            registry=self.registry,
+        )
+
         # --- Cost tracking metrics ---
         self.cost_per_hour_total = Gauge(
             "distllm_cost_per_hour_total",
@@ -163,6 +196,30 @@ class DistLLMPrometheusExporter:
             ["model", "tenant"],
             registry=self.registry,
         )
+
+    def populate_gauges(self, coordinator=None) -> None:
+        """Populate gauge metrics from current coordinator state."""
+        if coordinator is None:
+            return
+        scheduler = getattr(coordinator, "scheduler", None)
+        if scheduler is not None:
+            self.coordinator_queue_depth.set(getattr(scheduler, "pending_count", 0))
+            self.coordinator_active_requests.set(getattr(scheduler, "active_count", 0))
+        nodes = getattr(coordinator, "nodes", {}) or {}
+        self.active_nodes.set(len(nodes))
+        for node_id in nodes:
+            cb = coordinator._check_circuit_breaker(node_id) if hasattr(coordinator, "_check_circuit_breaker") else False
+            self.circuit_breaker_state.labels(target_node=node_id).set(1 if cb else 0)
+            reg = nodes.get(node_id)
+            if reg and hasattr(reg, "health_status"):
+                self.node_health.labels(node_id=node_id, layer_range=str(getattr(reg, "layer_range", ""))).set(1 if reg.health_status else 0)
+
+        # Populate recovery metrics from the recovery manager
+        recovery = getattr(coordinator, "_recovery", None)
+        if recovery is not None:
+            rec_metrics = recovery.get_metrics()
+            self.draining_nodes.set(rec_metrics.get("draining_nodes", 0))
+            self.dead_nodes.set(rec_metrics.get("dead_nodes", 0))
 
     def generate_metrics(self) -> bytes:
         """Generate Prometheus text exposition format."""

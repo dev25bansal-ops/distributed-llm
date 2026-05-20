@@ -7,9 +7,11 @@ Features:
 - Interactive API for configuration
 """
 
+import argparse
+import asyncio
+import json
 import os
 import time
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
@@ -18,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 from loguru import logger
 
-from distllm.dashboard.ws_handler import manager, metrics_broadcaster
+from distllm.dashboard.ws_handler import manager, metrics_broadcaster, parse_client_message
 
 dashboard_app = FastAPI(title="DistLLM Dashboard", version="0.4.0")
 
@@ -33,7 +35,6 @@ async def startup_event():
     """Start the metrics broadcaster background task."""
     global coordinator, _broadcast_task
     if coordinator is not None:
-        import asyncio
         _broadcast_task = asyncio.create_task(metrics_broadcaster(coordinator))
 
 
@@ -62,12 +63,33 @@ async def dashboard():
 
 @dashboard_app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time metric streaming."""
+    """WebSocket endpoint for real-time metric streaming.
+
+    Client may send JSON commands:
+      - ``{"type":"subscribe","metrics":["latency","gpu"],"interval":2.0}``
+      - ``{"type":"ping"}``
+    """
     await manager.connect(websocket)
     try:
         while True:
-            # Keep connection alive — client doesn't need to send anything
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            cmd = parse_client_message(raw)
+            cmd_type = cmd.get("type", "error")
+            if cmd_type == "subscribe":
+                manager.subscribe(
+                    websocket,
+                    metric_types=cmd.get("metrics"),
+                    interval=cmd.get("interval", 1.0),
+                )
+                await manager.send_to(websocket, {
+                    "type": "subscribed",
+                    "metrics": cmd.get("metrics"),
+                    "interval": cmd.get("interval", 1.0),
+                })
+            elif cmd_type == "ping":
+                await manager.send_to(websocket, {"type": "pong", "timestamp": time.time()})
+            elif cmd_type == "error":
+                await manager.send_to(websocket, {"type": "error", "detail": cmd.get("detail", "Unknown error")})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
@@ -139,6 +161,28 @@ async def api_metrics():
     return coordinator.get_metrics()
 
 
+@dashboard_app.get("/api/requests/waterfall")
+async def api_waterfall(limit: int = Query(50, ge=1, le=200)):
+    """Return recent request waterfall data showing request lifecycle phases."""
+    global coordinator
+    if coordinator is None:
+        return []
+
+    try:
+        scheduler = getattr(coordinator, "scheduler", None)
+        if scheduler is None:
+            return []
+
+        tracker = getattr(scheduler, "latency_tracker", None)
+        if tracker is None:
+            return []
+
+        return tracker.get_recent_metrics(limit=limit)
+    except (AttributeError, RuntimeError) as e:
+        logger.debug(f"Waterfall data unavailable: {e}")
+        return []
+
+
 @dashboard_app.post("/api/config")
 async def api_update_config(config: dict):
     """Update runtime configuration (requires coordinator).
@@ -162,8 +206,6 @@ async def api_update_config(config: dict):
 
 def main():
     """CLI entry point for the dashboard."""
-    import argparse
-
     parser = argparse.ArgumentParser(description="DistLLM Web Dashboard")
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8500)

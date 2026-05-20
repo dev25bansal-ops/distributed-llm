@@ -46,7 +46,15 @@ def make_mock_coordinator():
 
     coord.tokenizer = MagicMock()
     coord.tokenizer.encode.side_effect = encode_fn
-    coord.tokenizer.decode.side_effect = lambda tokens, **kwargs: " ".join(f"tok-{t}" for t in (tokens if isinstance(tokens, list) else tokens.tolist()))
+    def decode_side_effect(tokens, **kwargs):
+        if isinstance(tokens, int):
+            token_list = [tokens]
+        elif isinstance(tokens, list):
+            token_list = tokens
+        else:
+            token_list = tokens.tolist()
+        return " ".join(f"tok-{t}" for t in token_list)
+    coord.tokenizer.decode.side_effect = decode_side_effect
     coord.tokenizer.eos_token_id = 0
     coord.generate.return_value = "Hello! This is a test response."
 
@@ -62,6 +70,10 @@ def make_mock_coordinator():
     coord.local_partitioner.full_model = mock_model
     coord.list_models.return_value = ["test-model"]
 
+    # Prevent MagicMock from auto-creating attributes that trigger wrong code paths
+    coord._vlm_pipeline = None
+    coord._spec_decoder = None
+
     # Prevent BackpressureMiddleware from thinking service is shutting down
     coord._shutting_down = False
 
@@ -69,9 +81,13 @@ def make_mock_coordinator():
 
 
 @pytest.fixture
-def api_client_mock():
+def api_client_mock(monkeypatch):
     """FastAPI TestClient with fully mocked coordinator."""
     coord = make_mock_coordinator()
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
 
     original = server_module.coordinator
     server_module.coordinator = coord
@@ -83,8 +99,13 @@ def api_client_mock():
 
 
 @pytest.fixture
-def api_client_no_coordinator():
+def api_client_no_coordinator(monkeypatch):
     """FastAPI TestClient without any coordinator (unhealthy state)."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+
     original = server_module.coordinator
     server_module.coordinator = None
 
@@ -94,6 +115,8 @@ def api_client_no_coordinator():
     server_module.coordinator = original
 
 
+import secrets
+
 @pytest.fixture
 def api_client_with_auth():
     """FastAPI TestClient with API_KEY auth enabled."""
@@ -102,10 +125,17 @@ def api_client_with_auth():
     original = server_module.coordinator
     server_module.coordinator = coord
 
-    os.environ["API_KEY"] = "test-secret-key"
+    # Generate a secure random test key
+    test_api_key = secrets.token_hex(32)
+    os.environ.pop("DISABLE_AUTH", None)
+    os.environ.pop("DISTLLM_DEV_MODE", None)
+    os.environ.pop("API_KEY_WAS_SET", None)
+    os.environ["API_KEY"] = test_api_key
     client = TestClient(app)
+    client.test_api_key = test_api_key
     yield client
     del os.environ["API_KEY"]
+    os.environ.pop("API_KEY_WAS_SET", None)
 
     server_module.coordinator = original
 
@@ -128,10 +158,9 @@ class TestHealthEndpoint:
 
     def test_health_without_coordinator(self, api_client_no_coordinator):
         response = api_client_no_coordinator.get("/health")
-        assert response.status_code == 200
+        assert response.status_code == 503
         data = response.json()
-        assert data["status"] == "unhealthy"
-        assert data["reason"] == "No model loaded"
+        assert data["error"] == "Service Unavailable"
 
 
 class TestMetricsEndpoint:
@@ -316,7 +345,7 @@ class TestAuthMiddleware:
     def test_request_with_valid_api_key(self, api_client_with_auth):
         response = api_client_with_auth.get(
             "/v1/models",
-            headers={"Authorization": "Bearer test-secret-key"},
+            headers={"Authorization": f"Bearer {api_client_with_auth.test_api_key}"},
         )
         assert response.status_code == 200
 
@@ -330,7 +359,7 @@ class TestAuthMiddleware:
     def test_request_without_auth_header_format(self, api_client_with_auth):
         response = api_client_with_auth.get(
             "/v1/models",
-            headers={"Authorization": "test-secret-key"},  # Missing "Bearer "
+            headers={"Authorization": api_client_with_auth.test_api_key},  # Missing "Bearer "
         )
         assert response.status_code == 401
 

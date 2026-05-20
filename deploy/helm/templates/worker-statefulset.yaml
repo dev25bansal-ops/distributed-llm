@@ -3,27 +3,39 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "distributed-llm.fullname" $ }}-worker-{{ $pool.name }}
+  name: {{ include "distllm.fullname" $ }}-worker-{{ $pool.name }}
   labels:
-    {{- include "distributed-llm.labels" $ | nindent 4 }}
-    {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 4 }}
+    {{- include "distllm.labels" $ | nindent 4 }}
+    {{- include "distllm.workerLabels" (dict "root" $ "pool" $pool) | nindent 4 }}
 spec:
-  serviceName: {{ include "distributed-llm.fullname" $ }}-worker-{{ $pool.name }}
+  serviceName: {{ include "distllm.fullname" $ }}-worker-{{ $pool.name }}
   replicas: {{ $pool.replicas }}
   podManagementPolicy: Parallel
   selector:
     matchLabels:
-      {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 6 }}
+      {{- include "distllm.workerLabels" (dict "root" $ "pool" $pool) | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "distributed-llm.workerLabels" (dict "root" $ "pool" $pool) | nindent 8 }}
+        {{- include "distllm.workerLabels" (dict "root" $ "pool" $pool) | nindent 8 }}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       terminationGracePeriodSeconds: {{ $.Values.updateStrategy.terminationGracePeriodSeconds }}
       containers:
         - name: worker
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
           command: ["distllm-node"]
           args:
             - --node-id
@@ -37,7 +49,7 @@ spec:
             - --total-layers
             - {{ $.Values.model.totalLayers | default 32 | quote }}
             - --coordinator-host
-            - {{ include "distributed-llm.fullname" $ }}-coordinator
+            - {{ include "distllm.fullname" $ }}-coordinator
             - --coordinator-port
             - {{ $.Values.coordinator.grpcPort | quote }}
           env:

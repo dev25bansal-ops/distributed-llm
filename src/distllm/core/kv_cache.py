@@ -1,8 +1,7 @@
 """KV cache management for distributed LLM inference."""
 
-from typing import Any
-
 import torch
+from loguru import logger
 
 from distllm.communication.serializers import tensor_to_proto
 
@@ -67,8 +66,11 @@ class KVCache:
         # Quantization state
         self._quantized: bool = False
         self._quant_bits: int = 8
+        self._quant_fp8: bool = False
         # Quantized segments stored as list of (qk, qv, sk, sv) per layer
         self._qsegments: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]] = []
+        # FP8 segments: list of (fp8_k, fp8_v, scale_k, scale_v) per layer
+        self._fp8_segments: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]] = []
 
     def init_cache(self, num_layers: int, batch_size: int, num_heads: int, head_dim: int, device: str = "cpu"):
         """Initialize empty KV cache for all layers."""
@@ -91,7 +93,6 @@ class KVCache:
 
     def set_all(self, cache: list[tuple[torch.Tensor, torch.Tensor]]):
         """Replace entire cache."""
-        # Explicitly clear old cache tensors to release GPU memory
         self.cache.clear()
         self.cache = cache
         self.num_layers = len(cache)
@@ -115,6 +116,8 @@ class KVCache:
         self.cache = []
         self.num_layers = 0
         self._qsegments = []
+        self._fp8_segments = []
+        self._quant_fp8 = False
 
     def memory_usage(self) -> int:
         """Get memory usage in bytes."""
@@ -128,12 +131,21 @@ class KVCache:
                     total += sv.element_size() * sv.numel()
         return total
 
-    def enable_quantization(self, bits: int = 8) -> None:
+    def enable_quantization(self, bits: int = 8, use_fp8: bool = False) -> None:
         """Enable KV cache quantization.
 
         Args:
-            bits: Target bit width (4 or 8).
+            bits: Target bit width (4 or 8). Ignored if use_fp8=True.
+            use_fp8: Use FP8 E4M3 quantization for 2x capacity vs fp16.
         """
+        if use_fp8:
+            from distllm.core.fp8_engine import FP8_AVAILABLE
+            if not FP8_AVAILABLE:
+                logger.warning("FP8 not available, falling back to int8 quantization")
+                bits = 8
+            else:
+                self._quant_fp8 = True
+                return
         if bits not in (4, 8):
             raise ValueError(f"KV cache quantization bits must be 4 or 8, got {bits}")
         self._quantized = True
@@ -149,7 +161,14 @@ class KVCache:
 
         Returns:
             Updated (key, value) tuple for the layer.
+
+        Raises:
+            IndexError: If layer_idx is out of range.
         """
+        if layer_idx < 0 or layer_idx >= len(self.cache):
+            raise IndexError(f"Layer index {layer_idx} out of range (cache has {len(self.cache)} layers)")
+        if self._quant_fp8:
+            return self._update_fp8(layer_idx, new_key, new_value)
         if self._quantized:
             return self._update_quantized(layer_idx, new_key, new_value)
 
@@ -177,8 +196,7 @@ class KVCache:
         )
 
         # Quantize new tensors only (small, O(num_new_tokens))
-        qk, sk = apply_kv_cache_quantization(new_key, None, self._quant_bits)
-        qv, sv = apply_kv_cache_quantization(None, new_value, self._quant_bits)
+        (qk, sk), (qv, sv) = apply_kv_cache_quantization(new_key, new_value, self._quant_bits)
 
         # Store quantized segment (append-only, O(1))
         while len(self._qsegments) <= layer_idx:
@@ -188,6 +206,36 @@ class KVCache:
         # Maintain dequantized cache incrementally (cat only, no dequant/requant)
         new_k = dequantize_kv_cache(qk, sk, self._quant_bits)
         new_v = dequantize_kv_cache(qv, sv, self._quant_bits)
+
+        if layer_idx >= len(self.cache):
+            self.cache.append((new_k, new_v))
+            return new_k, new_v
+
+        old_k, old_v = self.cache[layer_idx]
+        key = torch.cat([old_k, new_k], dim=-2)
+        value = torch.cat([old_v, new_v], dim=-2)
+        self.cache[layer_idx] = (key, value)
+        return key, value
+
+    def _update_fp8(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Update KV cache with FP8 quantization for 2x capacity.
+
+        Stores FP8 quantized segments with per-tensor scales.
+        """
+        from distllm.core.fp8_engine import quantize_kv_fp8, dequantize_kv_fp8
+
+        # Quantize new tensors to FP8
+        fp8_k, scale_k = quantize_kv_fp8(new_key)
+        fp8_v, scale_v = quantize_kv_fp8(new_value)
+
+        # Store FP8 segment (append-only)
+        while len(self._fp8_segments) <= layer_idx:
+            self._fp8_segments.append([])
+        self._fp8_segments[layer_idx].append((fp8_k, fp8_v, scale_k, scale_v))
+
+        # Maintain dequantized cache incrementally
+        new_k = dequantize_kv_fp8(fp8_k, scale_k)
+        new_v = dequantize_kv_fp8(fp8_v, scale_v)
 
         if layer_idx >= len(self.cache):
             self.cache.append((new_k, new_v))
@@ -239,11 +287,31 @@ class KVCache:
         if self._quantized:
             for segs in self._qsegments:
                 layer_msg = KVLayerCache()
-                for qk, qv, sk, sv in segs:
-                    pk = tensor_to_proto(qk)
-                    pk.scale.extend(sk.flatten().tolist())
-                    pv = tensor_to_proto(qv)
-                    pv.scale.extend(sv.flatten().tolist())
+                if segs:
+                    # Concatenate all appended quantized segments for this layer
+                    all_qk = torch.cat([s[0] for s in segs], dim=-2)
+                    all_qv = torch.cat([s[1] for s in segs], dim=-2)
+                    all_sk = torch.cat([s[2] for s in segs], dim=-2)
+                    all_sv = torch.cat([s[3] for s in segs], dim=-2)
+                    pk = tensor_to_proto(all_qk)
+                    pk.scale.extend(all_sk.flatten().tolist())
+                    pv = tensor_to_proto(all_qv)
+                    pv.scale.extend(all_sv.flatten().tolist())
+                    layer_msg.key_states.CopyFrom(pk)
+                    layer_msg.value_states.CopyFrom(pv)
+                layers.append(layer_msg)
+        elif self._quant_fp8:
+            for segs in self._fp8_segments:
+                layer_msg = KVLayerCache()
+                if segs:
+                    all_fp8k = torch.cat([s[0] for s in segs], dim=-2)
+                    all_fp8v = torch.cat([s[1] for s in segs], dim=-2)
+                    all_sk = torch.cat([s[2] for s in segs], dim=-2)
+                    all_sv = torch.cat([s[3] for s in segs], dim=-2)
+                    pk = tensor_to_proto(all_fp8k.to(torch.float16))
+                    pk.scale.extend(all_sk.flatten().tolist())
+                    pv = tensor_to_proto(all_fp8v.to(torch.float16))
+                    pv.scale.extend(all_sv.flatten().tolist())
                     layer_msg.key_states.CopyFrom(pk)
                     layer_msg.value_states.CopyFrom(pv)
                 layers.append(layer_msg)

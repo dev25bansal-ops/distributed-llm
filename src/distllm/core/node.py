@@ -1,13 +1,15 @@
 """Worker node for distributed LLM inference."""
 
 import argparse
+from dataclasses import dataclass
+import uuid
 
 import torch
 from loguru import logger
-import uuid
 
 from distllm.models.partitioner import ModelPartitioner
 from distllm.communication.grpc import NodeService, GRPCServer
+from distllm.config.loader import QuantizationConfig
 from distllm.config.settings import DistLLMSettings
 from distllm.communication.grpc import set_debug_mode
 
@@ -98,7 +100,9 @@ class WorkerNode:
                 position_offset = past_key_values[0][0].shape[-2]
             hidden_states = self.partitioner.embed_input(input_ids, position_offset=position_offset)
 
-        assert self.partitioner is not None, "Model not loaded"
+        if self.partitioner is None:
+            raise RuntimeError("Model not loaded. Call load_model() before starting the node.")
+
         output, new_kv = self.partitioner.forward(
             hidden_states,
             attention_mask=attention_mask,
@@ -192,13 +196,11 @@ def main():
         logger.info("Debug mode enabled: tensor shape logging active")
 
     if args.quantization_method != "none":
-        from distllm.config.loader import QuantizationConfig
         quant_config = QuantizationConfig(method=args.quantization_method)
     else:
         quant_config = None
 
     if args.compression_method != "none":
-        from dataclasses import dataclass
         @dataclass
         class SimpleCompressionConfig:
             method: str

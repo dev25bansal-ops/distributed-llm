@@ -29,7 +29,17 @@ class ModelInfo(BaseModel):
     is_loading: bool
 
 
-@router.post("/v1/models/{model_id}/load")
+@router.post(
+    "/v1/models/{model_id}/load",
+    summary="Load model",
+    description="Hot-load a model into GPU memory without restarting the server. Supports auto-detection of model layers via HuggingFace AutoConfig. If GPU memory is insufficient, the least-recently-used model is evicted automatically.",
+    response_description="Load confirmation with model ID and path",
+    responses={
+        400: {"description": "Could not auto-detect model layers"},
+        503: {"description": "No model loaded or multi-model hot-swap not enabled"},
+        507: {"description": "Insufficient memory to load model"},
+    },
+)
 async def load_model(model_id: str, body: ModelLoadRequest):
     """Hot-load a model without restarting the server.
 
@@ -76,7 +86,16 @@ async def load_model(model_id: str, body: ModelLoadRequest):
     )
 
 
-@router.post("/v1/models/{model_id}/unload")
+@router.post(
+    "/v1/models/{model_id}/unload",
+    summary="Unload model",
+    description="Unload a model from GPU memory to free resources, while keeping it registered for future reloading. Useful for memory management in multi-model deployments.",
+    response_description="Unload confirmation with model ID",
+    responses={
+        404: {"description": "Model not loaded"},
+        503: {"description": "No model loaded or multi-model hot-swap not enabled"},
+    },
+)
 async def unload_model(model_id: str):
     """Unload a model from GPU memory (keeps it registered)."""
     coord = g.coordinator
@@ -92,7 +111,16 @@ async def unload_model(model_id: str):
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not loaded")
 
 
-@router.delete("/v1/models/{model_id}")
+@router.delete(
+    "/v1/models/{model_id}",
+    summary="Remove model",
+    description="Fully remove a model from the system: unloads it from GPU memory and unregisters it from the model registry. All associated resources are freed.",
+    response_description="Removal confirmation with model ID",
+    responses={
+        404: {"description": "Model not found"},
+        503: {"description": "No model loaded or multi-model hot-swap not enabled"},
+    },
+)
 async def remove_model(model_id: str):
     """Fully remove a model (unload + unregister)."""
     coord = g.coordinator
@@ -108,7 +136,15 @@ async def remove_model(model_id: str):
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
 
 
-@router.get("/v1/models/loaded")
+@router.get(
+    "/v1/models/loaded",
+    summary="List loaded models",
+    description="List all currently loaded models with memory usage, load/unload/eviction statistics, and memory budget information.",
+    response_description="List of loaded models with memory stats",
+    responses={
+        503: {"description": "No model loaded or multi-model hot-swap not enabled"},
+    },
+)
 async def list_loaded_models():
     """List all currently loaded models with memory usage."""
     coord = g.coordinator
@@ -130,7 +166,16 @@ async def list_loaded_models():
     }
 
 
-@router.get("/v1/models/{model_id}/status")
+@router.get(
+    "/v1/models/{model_id}/status",
+    summary="Get model status",
+    description="Get detailed status of a specific model: whether it is loaded or registered, its path, memory usage, load timestamp, request count, and loading state.",
+    response_description="Model status with memory and load information",
+    responses={
+        404: {"description": "Model not found in registry"},
+        503: {"description": "No model loaded or multi-model hot-swap not enabled"},
+    },
+)
 async def get_model_status(model_id: str):
     """Get the status of a specific model (loaded, registered, memory usage)."""
     coord = g.coordinator
@@ -167,7 +212,16 @@ async def get_model_status(model_id: str):
     }
 
 
-@router.post("/v1/models/memory/budget")
+@router.post(
+    "/v1/models/memory/budget",
+    summary="Set GPU memory budget",
+    description="Set the GPU memory budget allocation for a specific model. Controls how much VRAM the model management system reserves for this model.",
+    response_description="Budget update confirmation",
+    responses={
+        400: {"description": "budget_gb must be positive"},
+        503: {"description": "No model loaded or multi-model hot-swap not enabled"},
+    },
+)
 async def set_memory_budget(model_id: str, body: dict):
     """Set the GPU memory budget for a model."""
     coord = g.coordinator

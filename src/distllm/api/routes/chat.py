@@ -1,15 +1,17 @@
 """Chat completion routes: POST /v1/chat/completions."""
 
 import asyncio
+import ipaddress
 import time
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from ..api_state import g
 from ..streaming import _stream_response
-from distllm.core.tool_engine import ToolCallingEngine, ToolCall
+from distllm.core.tool_engine import ToolCallingEngine
 
 
 router = APIRouter(tags=["chat"])
@@ -39,6 +41,29 @@ def _extract_text(content_items) -> str:
 class ImageURLContent(BaseModel):
     url: str = Field(..., description="Image URL or base64 data URI")
     detail: str | None = Field(default=None, description="Image detail level: 'auto', 'low', 'high'")
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        if v.startswith("data:"):
+            return v
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+        host = parsed.hostname
+        if not host:
+            raise ValueError("URL must have a hostname")
+        if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+            raise ValueError("Connections to localhost are not allowed")
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            if not host or host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+                raise ValueError("Connections to localhost are not allowed")
+            return v
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            raise ValueError(f"Connections to {host} are not allowed")
+        return v
 
 
 class MessageContentItem(BaseModel):
@@ -95,6 +120,7 @@ class ChatCompletionRequest(BaseModel):
     response_format: dict | None = Field(default=None, description="Response format constraint, e.g. {'type': 'json_object'}")
     adapter: str | None = Field(default=None, description="LoRA adapter ID to use for this request")
     priority: int = Field(default=2, ge=0, le=3, description="Request priority: 0=critical, 1=high, 2=normal, 3=low")
+    max_latency_ms: float | None = Field(default=None, description="SLA: maximum latency in milliseconds for this request")
     tools: list[dict] | None = Field(default=None, description="List of tools the model may call")
     tool_choice: str | None = Field(default=None, description="Controls tool calling: 'none', 'auto', or 'required'")
     functions: list[dict] | None = Field(default=None, description="Deprecated: list of functions for the model to call")
@@ -118,7 +144,16 @@ class ChatCompletionResponse(BaseModel):
     generation_time: float | None = None
 
 
-@router.post("/v1/chat/completions")
+@router.post(
+    "/v1/chat/completions",
+    summary="Create chat completion",
+    description="Generate a model response for a chat conversation. Supports multi-modal inputs (text+images), tool/function calling, streaming via SSE, LoRA adapter routing, structured output via response_format, and priority-based scheduling. OpenAI-compatible request/response format.",
+    response_description="Chat completion response with generated message and usage statistics",
+    responses={
+        400: {"description": "Model not found, adapter not found, or invalid request"},
+        503: {"description": "No model loaded or tokenizer not available"},
+    },
+)
 async def chat_completions(request: Request, body: ChatCompletionRequest):
     """Chat completions endpoint."""
     # Set observability state for middleware
@@ -129,18 +164,21 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     if coord is None:
         raise HTTPException(status_code=503, detail="No model loaded")
 
-    # Read speculative decoding headers (override config defaults)
-    spec_num_tokens = request.headers.get("x-speculative-num-tokens")
-    spec_method = request.headers.get("x-speculative-method")
-    original_num = None
-    original_method = None
-
-    if spec_num_tokens and coord._spec_decoder:
-        original_num = coord._spec_decoder.num_assistant_tokens
-        coord._spec_decoder.num_assistant_tokens = int(spec_num_tokens)
-    if spec_method and coord._spec_decoder:
-        original_method = coord._spec_decoder.method
-        coord._spec_decoder.method = spec_method
+    # Route to appropriate backend model if a hybrid/compound model is configured
+    _routed_model = None
+    chat_router = getattr(coord, "_chat_router", None)
+    if chat_router is not None and body.model in chat_router.list_hybrid_models():
+        # Resolve target model based on the last user message
+        user_messages = [m for m in body.messages if m.role == "user"]
+        last_user_msg = user_messages[-1].content if user_messages else ""
+        if isinstance(last_user_msg, list):
+            last_user_msg = " ".join(
+                item.text for item in last_user_msg if hasattr(item, "text") and item.text
+            )
+        target_model = chat_router.resolve(str(last_user_msg), available_models=coord.list_models())
+        if target_model:
+            _routed_model = target_model
+            body.model = target_model
 
     # Validate requested model against registry
     if hasattr(coord, 'list_models') and body.model not in ("distributed-llm", ""):
@@ -223,126 +261,151 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
     if body.stream:
         return StreamingResponse(
-            _stream_response(prompt, body, "chat.completion.chunk", "chatcmpl-"),
+            _stream_response(prompt, body, "chat.completion.chunk", "chatcmpl-",
+                             response_format=body.response_format),
             media_type="text/event-stream",
         )
 
     start_time = time.time()
+    request_id = ""
 
-    try:
-        # Use batch scheduler if available
-        if coord.scheduler is not None:
-            request_id = coord.generate_async(
-                prompt,
-                max_new_tokens=body.max_tokens,
-                temperature=body.temperature,
-                top_p=body.top_p,
-                schema=schema,
-                priority=body.priority,
-                adapter_id=request_adapter_id,
-            )
-            result = await asyncio.to_thread(coord.wait_for_result, request_id)
-        else:
-            result = await asyncio.to_thread(
-                coord.generate,
-                prompt,
-                body.max_tokens,
-                body.temperature,
-                body.top_p,
-            )
+    start_time = time.time()
+    request_id = ""
 
-        elapsed = time.time() - start_time
-
-        generated = result[len(prompt):] if result.startswith(prompt) else result
-
-        # Check for tool calls in generated text
-        finish_reason = "stop"
-        assistant_tool_calls = None
-        messages_list = [m.model_dump(exclude_none=True) for m in body.messages]
-
-        if tool_schemas and tool_engine.has_tool_calls(result):
-            # Extract tool calls
-            tool_calls_list = tool_engine.extract_tool_calls(result)
-
-            # Enforce tool_choice constraint
-            tool_calls_list = tool_engine.enforce_tool_choice(tool_choice_value, tool_calls_list)
-
-            if tool_calls_list:
-                # Execute tool calls
-                tool_results = tool_engine.execute_tool_calls(tool_calls_list)
-
-                # Build tool_call response
-                assistant_tool_calls = [tc.to_openai_dict() for tc in tool_calls_list]
-
-                # If we have results, continue generation with injected results
-                if tool_results and tool_engine.should_continue_after_tool_calls(tool_calls_list, tool_results):
-                    # Inject tool results into conversation
-                    new_messages = tool_engine.inject_tool_results(
-                        messages_list,
-                        result,
-                        tool_calls_list,
-                        tool_results,
-                    )
-
-                    # Build new prompt and generate final response
-                    final_prompt, _ = tool_engine.build_tool_prompt(
-                        tool_schemas,
-                        new_messages,
-                        tool_choice="none",  # Don't call tools again
-                    )
-
-                    # Second generation pass with tool results
-                    if coord.scheduler is not None:
-                        final_result = await asyncio.to_thread(
-                            coord.generate,
-                            final_prompt,
-                            body.max_tokens,
-                            body.temperature,
-                            body.top_p,
-                        )
-                    else:
-                        final_result = await asyncio.to_thread(
-                            coord.generate,
-                            final_prompt,
-                            body.max_tokens,
-                            body.temperature,
-                            body.top_p,
-                        )
-
-                    # Extract the continuation after tool results
-                    generated = final_result[len(final_prompt):] if final_result.startswith(final_prompt) else final_result
-                    finish_reason = "tool_calls"
-
-        # Compute token counts without re-encoding (prompt already tokenized in generate())
-        prompt_tokens = len(coord.tokenizer.encode(prompt))
-        completion_tokens = len(coord.tokenizer.encode(generated))
-
-        # Build response message
-        response_message = {"role": "assistant"}
-        if assistant_tool_calls:
-            response_message["tool_calls"] = assistant_tool_calls
-            response_message["content"] = None  # Tool calls replace content
-        else:
-            response_message["content"] = generated.strip()
-
-        return ChatCompletionResponse(
-            model=body.model,
-            choices=[
-                ChatChoice(
-                    message=ChatMessage(**response_message),
-                    finish_reason=finish_reason,
-                )
-            ],
-            usage={
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
-            generation_time=round(elapsed, 3),
+    # Use batch scheduler if available
+    if coord.scheduler is not None:
+        request_id = coord.generate_async(
+            prompt,
+            max_new_tokens=body.max_tokens,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            top_k=body.top_k,
+            schema=schema,
+            priority=getattr(request.state, "request_priority", body.priority),
+            adapter_id=request_adapter_id,
+            include_logprobs=bool(body.logprobs),
+            top_logprobs=body.top_logprobs or 0,
+            logit_bias={int(k): v for k, v in body.logit_bias.items()} if body.logit_bias else None,
+            presence_penalty=body.presence_penalty,
+            frequency_penalty=body.frequency_penalty,
+            response_format=body.response_format,
+            max_latency_ms=body.max_latency_ms,
+            user_id=getattr(request.state, "tenant", "default"),
         )
-    finally:
-        # Restore original speculative settings
-        if spec_num_tokens and coord._spec_decoder:
-            coord._spec_decoder.num_assistant_tokens = original_num
-        if spec_method and coord._spec_decoder:
-            coord._spec_decoder.method = original_method
+        result = await asyncio.to_thread(coord.wait_for_result, request_id)
+    else:
+        result = await asyncio.to_thread(
+            coord.generate,
+            prompt,
+            body.max_tokens,
+            body.temperature,
+            body.top_p,
+            user_id=getattr(request.state, "tenant", "default"),
+        )
+
+    elapsed = time.time() - start_time
+
+    generated = result[len(prompt):] if result.startswith(prompt) else result
+
+    # Record request in replay buffer for debugging
+    if hasattr(coord, '_replay_buffer'):
+        coord._replay_buffer.store(
+            request_id=request_id,
+            prompt=prompt,
+            params={
+                "max_new_tokens": body.max_tokens,
+                "temperature": body.temperature,
+                "top_p": body.top_p,
+                "top_k": body.top_k,
+                "priority": body.priority,
+            },
+            response=generated,
+            duration_ms=elapsed * 1000,
+            model=body.model,
+        )
+
+    # Check for tool calls in generated text
+    finish_reason = "stop"
+    assistant_tool_calls = None
+    messages_list = [m.model_dump(exclude_none=True) for m in body.messages]
+
+    if tool_schemas and tool_engine.has_tool_calls(result):
+        # Extract tool calls
+        tool_calls_list = tool_engine.extract_tool_calls(result)
+
+        # Enforce tool_choice constraint
+        tool_calls_list = tool_engine.enforce_tool_choice(tool_choice_value, tool_calls_list)
+
+        if tool_calls_list:
+            tool_results = await asyncio.to_thread(tool_engine.execute_tool_calls, tool_calls_list)
+
+            # Build tool_call response
+            assistant_tool_calls = [tc.to_openai_dict() for tc in tool_calls_list]
+
+            # If we have results, continue generation with injected results
+            if tool_results and tool_engine.should_continue_after_tool_calls(tool_calls_list, tool_results):
+                # Inject tool results into conversation
+                new_messages = tool_engine.inject_tool_results(
+                    messages_list,
+                    result,
+                    tool_calls_list,
+                    tool_results,
+                )
+
+                # Build new prompt and generate final response
+                final_prompt, _ = tool_engine.build_tool_prompt(
+                    tool_schemas,
+                    new_messages,
+                    tool_choice="none",
+                )
+
+                # Second generation pass with tool results
+                if coord.scheduler is not None:
+                    final_result = await asyncio.to_thread(
+                        coord.generate,
+                        final_prompt,
+                        body.max_tokens,
+                        body.temperature,
+                        body.top_p,
+                    )
+                else:
+                    final_result = await asyncio.to_thread(
+                        coord.generate,
+                        final_prompt,
+                        body.max_tokens,
+                        body.temperature,
+                        body.top_p,
+                    )
+
+                generated = final_result[len(final_prompt):] if final_result.startswith(final_prompt) else final_result
+                finish_reason = "tool_calls"
+
+    # Compute token counts
+    if coord.tokenizer is None:
+        raise HTTPException(status_code=503, detail="Tokenizer not loaded")
+    prompt_tokens = len(coord.tokenizer.encode(prompt))
+    completion_tokens = len(coord.tokenizer.encode(generated))
+
+    # Build response message
+    response_message = {"role": "assistant"}
+    if assistant_tool_calls:
+        response_message["tool_calls"] = assistant_tool_calls
+        response_message["content"] = None
+    else:
+        response_message["content"] = generated.strip()
+
+    return ChatCompletionResponse(
+        model=body.model,
+        choices=[
+            ChatChoice(
+                message=ChatMessage(**response_message),
+                finish_reason=finish_reason,
+            )
+        ],
+        usage={
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        generation_time=round(elapsed, 3),
+    )

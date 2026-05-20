@@ -39,6 +39,7 @@ class StreamChunk:
             "finish_reason": None,
         }
     ])
+    usage: dict[str, Any] | None = None
 
     def to_sse(self) -> str:
         return f"data: {json.dumps(asdict(self), ensure_ascii=False)}\n\n"
@@ -181,7 +182,7 @@ class StreamingGenerator:
                 created=created,
                 model=config.model,
                 choices=[{"index": 0, "delta": {}, "finish_reason": None}],
-                **{"usage": usage},
+                usage=usage,
             )
 
         yield StreamChunk.data_done()
@@ -193,6 +194,9 @@ class StreamingGenerator:
     ) -> AsyncGenerator[str, None]:
         """Simpler interface: yields just the text strings."""
         async for chunk in self.generate(prompt, generate_fn):
+            # Skip the data: [DONE] marker (returned as str)
+            if isinstance(chunk, str):
+                continue
             text = chunk.choices[0]["delta"].get("content", "")
             if text:
                 yield text

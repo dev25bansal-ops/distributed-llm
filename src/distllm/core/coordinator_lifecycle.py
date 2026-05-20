@@ -23,6 +23,7 @@ class RequestTracker:
 
     def __init__(self):
         self._results: dict[str, str] = {}
+        self._logprobs_results: dict[str, list[dict]] = {}  # request_id -> list of logprobs per token
         self._events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._shutting_down = False
@@ -123,6 +124,10 @@ class RequestTracker:
             )
             with self._lock:
                 self._results[rid] = result
+                # Store logprobs if collected
+                seq_logprobs = getattr(seq, '_collected_logprobs', None)
+                if seq_logprobs:
+                    self._logprobs_results[rid] = seq_logprobs
                 event = self._events.pop(rid, None)
                 if event:
                     event.set()
@@ -131,7 +136,20 @@ class RequestTracker:
         """Clear all request state."""
         with self._lock:
             self._results.clear()
+            self._logprobs_results.clear()
             self._events.clear()
+
+    def get_logprobs(self, request_id: str) -> list[dict] | None:
+        """Retrieve logprobs for a completed request.
+
+        Args:
+            request_id: Unique request identifier.
+
+        Returns:
+            List of logprobs dicts per token, or None if not available.
+        """
+        with self._lock:
+            return self._logprobs_results.pop(request_id, None)
 
 
 class ServerLifecycle:
@@ -164,6 +182,8 @@ class ServerLifecycle:
         self.total_layers = total_layers
         self.request_tracker = RequestTracker()
         self._server = None
+        self._stop_event = threading.Event()
+        self._background_threads: list = []
 
     @property
     def server(self):
@@ -251,6 +271,7 @@ class ServerLifecycle:
                 name="gossip-loop",
             )
             gossip_thread.start()
+            self._background_threads.append(gossip_thread)
 
         # Rebalancer loop
         if self.rebalancer and self.rebalancer._settings.enabled:
@@ -260,17 +281,14 @@ class ServerLifecycle:
                 name="rebalancer-loop",
             )
             rebalancer_thread.start()
+            self._background_threads.append(rebalancer_thread)
 
     def _gossip_loop(self, cache_mgr, interval: float = 10.0) -> None:
-        """Background daemon that runs periodic gossip rounds.
-
-        Args:
-            cache_mgr: Cache manager for sync_with_peers.
-            interval: Seconds between gossip rounds.
-        """
-        while True:
+        """Background daemon that runs periodic gossip rounds."""
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(interval):
+                break
             try:
-                time.sleep(interval)
                 if cache_mgr is not None:
                     discovered = cache_mgr.sync_with_peers()
                     if discovered > 0:
@@ -280,8 +298,10 @@ class ServerLifecycle:
 
     def _rebalancer_loop(self) -> None:
         """Background loop that checks for stragglers periodically."""
-        while True:
-            time.sleep(self.rebalancer._settings.check_interval)
+        interval = self.rebalancer._settings.check_interval
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(interval):
+                break
             if not self.rebalancer._settings.enabled:
                 continue
             should, reason = self.rebalancer.should_rebalance()
@@ -345,7 +365,13 @@ class ServerLifecycle:
         # Phase 6: Cleanup request state
         self.request_tracker.clear()
 
-        # Phase 7: Shutdown plugins if loaded (handled by Coordinator)
+        # Phase 7: Stop background threads
+        self._stop_event.set()
+        for t in self._background_threads:
+            t.join(timeout=5.0)
+        self._background_threads.clear()
+
+        # Phase 8: Shutdown plugins if loaded (handled by Coordinator)
 
         logger.info("Graceful shutdown complete")
 
@@ -388,5 +414,11 @@ class ServerLifecycle:
 
         # Phase 6: Cleanup request state
         self.request_tracker.clear()
+
+        # Phase 7: Stop background threads
+        self._stop_event.set()
+        for t in self._background_threads:
+            t.join(timeout=5.0)
+        self._background_threads.clear()
 
         logger.info("Graceful shutdown complete (async)")

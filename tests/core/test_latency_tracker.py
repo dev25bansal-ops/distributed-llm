@@ -25,8 +25,25 @@ class TestLatencyTracker:
             tracker.record("node-1", float(i))
 
         p95 = tracker.get_p95("node-1")
+        # idx = max(0, int(100 * 0.95) - 1) = max(0, 95-1) = 94, value = 94.0
+        assert p95 == 94.0
+
+    def test_get_p95_small_sample(self):
+        """P95 with fewer than 95 values."""
+        tracker = LatencyTracker(window_size=100)
+        for i in range(10):
+            tracker.record("node-1", float(i))
+
+        p95 = tracker.get_p95("node-1")
         assert p95 is not None
-        assert p95 >= 94.0  # p95 of 0..99 should be around 95
+        # idx = max(0, int(10 * 0.95) - 1) = max(0, 9-1) = 8, sorted_vals[8] = 8.0
+        assert p95 == 8.0
+
+    def test_get_p95_single_value(self):
+        """P95 with a single value."""
+        tracker = LatencyTracker()
+        tracker.record("node-1", 42.0)
+        assert tracker.get_p95("node-1") == 42.0
 
     def test_get_all_avg(self):
         """Multiple nodes, verify all averages."""
@@ -58,6 +75,7 @@ class TestLatencyTracker:
         tracker = LatencyTracker()
         assert tracker.get_avg("unknown") is None
         assert tracker.get_p95("unknown") is None
+        assert tracker.get_measurements("unknown") == []
 
     def test_thread_safety(self):
         """Concurrent records from multiple threads."""

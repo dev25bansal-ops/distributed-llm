@@ -21,7 +21,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 import torch
 from loguru import logger
@@ -56,7 +56,7 @@ class PrefillResult:
     request_id: str
     kv_cache: Any  # KV cache tensor(s) to transfer to decode pool
     prompt_len: int
-    first_token: int
+    first_token: int | None
     prefill_time_ms: float
     prefill_node_id: str
 
@@ -94,8 +94,14 @@ class PrefillPool:
         self._nodes: dict[str, PoolNode] = {}
         self._min_nodes = min_nodes
         self._max_nodes = max_nodes
-        self._pending: asyncio.Queue = asyncio.Queue()
+        self._pending: asyncio.Queue | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def _pending_queue(self) -> asyncio.Queue:
+        if self._pending is None:
+            self._pending = asyncio.Queue()
+        return self._pending
 
     async def register_node(self, node_id: str, host: str, port: int, capacity: int = 4) -> None:
         async with self._lock:
@@ -232,12 +238,24 @@ class DisaggRouter:
         token = await router.decode(result)
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        local_coordinator: Any | None = None,
+        local_model_name: str = "default",
+        local_dtype: str = "float16",
+    ):
         self.prefill_pool = PrefillPool()
         self.decode_pool = DecodePool()
         self._active_requests: dict[str, DecodeRequest] = {}
         self._kv_cache_store: dict[str, Any] = {}  # request_id -> KV cache
+        self._kv_cache_ttl: dict[str, float] = {}  # request_id -> expiry timestamp
+        self._kv_cache_ttl_secs = 300  # 5 minutes default TTL
         self._lock = asyncio.Lock()
+        self._local_coordinator = local_coordinator
+        self._local_model_name = local_model_name
+        self._local_dtype = local_dtype
+        self._local_coord_lock = asyncio.Lock()
+        self._local_infer_lock = asyncio.Lock()
 
     async def add_prefill_node(self, node_id: str, host: str, port: int, capacity: int = 4) -> None:
         await self.prefill_pool.register_node(node_id, host, port, capacity)
@@ -265,11 +283,15 @@ class DisaggRouter:
         t0 = time.time()
         try:
             result = await self._send_prefill(node, request)
-            transfer_time = time.time() - t0
+            if result is None:
+                await self.prefill_pool.release_node(node.node_id)
+                return None
 
             # Store KV cache for decode pool
             async with self._lock:
+                self._sweep_expired_kv()
                 self._kv_cache_store[request.request_id] = result.kv_cache
+                self._kv_cache_ttl[request.request_id] = time.time() + self._kv_cache_ttl_secs
 
             # Assign to decode pool
             decode_node_id = await self.decode_pool.assign_request(request.request_id)
@@ -325,50 +347,187 @@ class DisaggRouter:
         await self.decode_pool.release_request(request_id)
         async with self._lock:
             self._kv_cache_store.pop(request_id, None)
+            self._kv_cache_ttl.pop(request_id, None)
+
+    def _sweep_expired_kv(self) -> int:
+        """Remove expired entries from the KV cache store. Returns count removed."""
+        now = time.time()
+        expired = [rid for rid, expiry in self._kv_cache_ttl.items() if expiry < now]
+        for rid in expired:
+            self._kv_cache_store.pop(rid, None)
+            self._kv_cache_ttl.pop(rid, None)
+            self._active_requests.pop(rid, None)
+        return len(expired)
 
     async def _send_prefill(self, node: PoolNode, request: PrefillRequest) -> PrefillResult:
-        """Send prefill request to a worker node.
+        """Send prefill request to a worker node via gRPC.
 
-        In production, this would use gRPC to communicate with the worker.
+        In production, this connects to a remote prefill worker over gRPC.
+        For local/single-node deployment, uses the Coordinator directly.
         """
-        import copy
-        prompt_len = len(request.prompt_tokens)
-        fake_kv = {"key": torch.randn(1, 32, prompt_len, 128), "value": torch.randn(1, 32, prompt_len, 128)}
-        first_token = 42
-        return PrefillResult(
-            request_id=request.request_id,
-            kv_cache=fake_kv,
-            prompt_len=prompt_len,
-            first_token=first_token,
-            prefill_time_ms=100.0,
-            prefill_node_id=node.node_id,
-        )
+        t0 = time.time()
+        try:
+            from distllm.communication.grpc_client import NodeClient
+            client = NodeClient(node.host, node.port)
+            result = await client.prefill(prompt_tokens=request.prompt_tokens,
+                                          max_new_tokens=1,
+                                          request_id=request.request_id)
+            elapsed_ms = (time.time() - t0) * 1000
+            await client.close()
+
+            return PrefillResult(
+                request_id=request.request_id,
+                kv_cache=result.get("kv_cache"),
+                prompt_len=len(request.prompt_tokens),
+                first_token=result.get("token_id"),
+                prefill_time_ms=elapsed_ms,
+                prefill_node_id=node.node_id,
+            )
+        except ImportError:
+            logger.debug("gRPC not available, using local prefill")
+        except Exception as e:
+            logger.warning(f"gRPC prefill failed on '{node.node_id}': {e}, falling back to local")
+
+        # Local fallback using Coordinator
+        try:
+            coord = await self._get_local_coordinator()
+            prompt = coord.tokenizer.decode(request.prompt_tokens)
+            start = time.perf_counter()
+            async with self._local_infer_lock:
+                generated = await asyncio.to_thread(coord.generate, prompt, max_new_tokens=1)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+            # Extract KV cache from model
+            kv_cache = _extract_kv_cache(coord)
+            first_token_id = coord.tokenizer.encode(generated)[-1] if generated else None
+
+            return PrefillResult(
+                request_id=request.request_id,
+                kv_cache=kv_cache,
+                prompt_len=len(request.prompt_tokens),
+                first_token=first_token_id,
+                prefill_time_ms=elapsed_ms,
+                prefill_node_id=node.node_id,
+            )
+        except Exception as e:
+            logger.error(f"Local prefill fallback failed: {e}")
+            return None
 
     async def _transfer_kv_to_decode(self, result: PrefillResult, decode_node_id: str) -> None:
         """Transfer KV cache from prefill to decode node.
 
         In production, uses RDMA or NVLink for zero-copy transfer.
+        For local deployment, KV cache is already in shared memory.
         """
-        pass
+        decode_node = self.decode_pool._nodes.get(decode_node_id)
+        if decode_node is None:
+            return
+
+        try:
+            from distllm.communication.grpc_client import NodeClient
+            client = NodeClient(decode_node.host, decode_node.port)
+            await client.upload_kv_cache(
+                request_id=result.request_id,
+                kv_cache=result.kv_cache,
+            )
+            await client.close()
+            logger.debug(f"KV cache transferred to decode node '{decode_node_id}'")
+        except Exception as e:
+            logger.debug(f"KV cache transfer to '{decode_node_id}' failed (local mode): {e}")
 
     async def _send_decode(
         self, node_id: str, request_id: str, input_token: int,
         kv_cache: Any, position: int,
-    ) -> int:
-        """Send decode step to a worker node.
+    ) -> int | None:
+        """Send decode step to a worker node via gRPC or local execution.
 
-        In production, this would use gRPC.
+        Returns:
+            The next token ID, or None if decoding failed.
         """
-        import random
-        return random.randint(0, 32000)
+        decode_node = self.decode_pool._nodes.get(node_id)
+        if decode_node is None:
+            logger.warning(f"Decode node '{node_id}' not found")
+            return None
+
+        try:
+            from distllm.communication.grpc_client import NodeClient
+            client = NodeClient(decode_node.host, decode_node.port)
+            result = await client.decode_step(
+                request_id=request_id,
+                input_token=input_token,
+                position=position,
+            )
+            await client.close()
+            return result.get("token_id")
+        except ImportError:
+            logger.debug("gRPC not available, using local decode")
+        except Exception as e:
+            logger.warning(f"gRPC decode failed on '{node_id}': {e}, falling back to local")
+
+        # Local fallback
+        try:
+            coord = await self._get_local_coordinator()
+            token_str = coord.tokenizer.decode([input_token])
+            start = time.perf_counter()
+            async with self._local_infer_lock:
+                generated = await asyncio.to_thread(coord.generate, token_str, max_new_tokens=1)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.debug(f"Local decode: {elapsed_ms:.1f}ms")
+
+            return coord.tokenizer.encode(generated)[-1] if generated else None
+        except Exception as e:
+            logger.error(f"Local decode fallback failed: {e}")
+            return None
+
+    async def _get_local_coordinator(self):
+        """Return the shared local fallback coordinator, loading it once."""
+        if self._local_coordinator is not None:
+            return self._local_coordinator
+
+        async with self._local_coord_lock:
+            if self._local_coordinator is None:
+                from distllm.core.coordinator import Coordinator
+
+                coord = Coordinator(
+                    model_name=self._local_model_name,
+                    dtype=self._local_dtype,
+                )
+                await asyncio.to_thread(coord.load_local_model)
+                self._local_coordinator = coord
+        return self._local_coordinator
 
     def get_stats(self) -> dict:
+        self._sweep_expired_kv()
         return {
             "prefill": self.prefill_pool.get_stats(),
             "decode": self.decode_pool.get_stats(),
             "active_requests": len(self._active_requests),
             "kv_cached_requests": len(self._kv_cache_store),
+            "local_fallback_loaded": self._local_coordinator is not None,
         }
+
+
+def _extract_kv_cache(coord) -> list[tuple[torch.Tensor, torch.Tensor]] | None:
+    """Extract KV cache from a Coordinator's model after prefill.
+
+    Returns list of per-layer (key, value) tuples or None if extraction fails.
+    """
+    try:
+        model = coord.model
+        if model is None:
+            return None
+
+        kv_layers: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for name, module in model.named_modules():
+            if hasattr(module, "self_attn") and hasattr(module.self_attn, "past_key_value"):
+                kv = module.self_attn.past_key_value
+                if kv is not None and isinstance(kv, (list, tuple)) and len(kv) >= 2:
+                    kv_layers.append((kv[0], kv[1]))
+
+        return kv_layers if kv_layers else None
+    except Exception as e:
+        logger.debug(f"Failed to extract KV cache: {e}")
+        return None
 
 
 class DisaggOrchestrator:
@@ -409,6 +568,9 @@ class DisaggOrchestrator:
         """Execute the full prefill->decode pipeline for one request."""
         result = await self.router.prefill(request)
         if result is None:
+            return []
+
+        if result.first_token is None:
             return []
 
         generated: list[int] = [result.first_token]

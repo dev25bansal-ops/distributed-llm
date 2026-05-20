@@ -1,5 +1,6 @@
 """Model loading and partitioning for distributed LLM inference."""
 
+import gc
 import torch
 import torch.nn as nn
 import inspect
@@ -231,81 +232,22 @@ class ModelPartitioner:
         torch_dtype = DTYPE_MAP.get(self.dtype, torch.float16)
         quant_config = build_quantization_config(self.quantization_config) if self.quantization_config else None
 
-        is_first = (start_layer == 0)
-        is_last = (end_layer >= total_layers - 1)
-
+        d = torch.device(device)
         model_kwargs = {
             "config": self.config,
             "torch_dtype": torch_dtype,
-            "device_map": "meta",
             "trust_remote_code": trust,
             "low_cpu_mem_usage": True,
         }
         if quant_config is not None:
             model_kwargs["quantization_config"] = quant_config
 
-        temp_model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-
-        temp_base = None
-        for attr in ['model', 'transformer', 'encoder']:
-            if hasattr(temp_model, attr):
-                temp_base = getattr(temp_model, attr)
-                break
-        if temp_base is None:
-            temp_base = temp_model
-
-        layers_attr = None
-        for attr in ['layers', 'block', 'h']:
-            if hasattr(temp_base, attr):
-                layers_attr = attr
-                break
-
-        if layers_attr is None:
-            raise ModelLoadError(self.model_name, "Cannot find transformer layers")
-
-        device_map = {}
-        base_prefix = _get_base_prefix(temp_model)
-
-        if is_first:
-            embed_attr = _find_attr(temp_base, ['embed_tokens', 'wte', 'word_embeddings'])
-            if embed_attr is not None:
-                # Find which attribute name matched
-                for attr in ['embed_tokens', 'wte', 'word_embeddings']:
-                    if hasattr(temp_base, attr):
-                        device_map[f"{base_prefix}.{attr}"] = device
-                        break
-            for attr in ['wpe', 'embed_positions']:
-                if hasattr(temp_base, attr):
-                    device_map[f"{base_prefix}.{attr}"] = device
-                    break
-
-        for i in range(total_layers):
-            layer_device = device if start_layer <= i <= end_layer else "meta"
-            device_map[f"{base_prefix}.{layers_attr}.{i}"] = layer_device
-
-        if is_last:
-            for attr in ['norm', 'final_layer_norm', 'ln_f']:
-                if hasattr(temp_base, attr):
-                    device_map[f"{base_prefix}.{attr}"] = device
-                    break
-            device_map[f"lm_head"] = device
-
-        model_kwargs_final = {
-            "config": self.config,
-            "torch_dtype": torch_dtype,
-            "device_map": device_map,
-            "trust_remote_code": trust,
-            "low_cpu_mem_usage": True,
-        }
-        if quant_config is not None:
-            model_kwargs_final["quantization_config"] = quant_config
-
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs_final)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+        model = model.to(d)
         model.eval()
 
         self._extract_subset(model, start_layer, end_layer, total_layers, device)
-
-        del temp_model, model
+        del model
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

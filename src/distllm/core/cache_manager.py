@@ -39,7 +39,7 @@ class CacheManager:
         cache_index=None,
         gossip_protocol=None,
         gossip_client=None,
-        radix_tree_cache_enabled: bool = False,
+        radix_tree_cache_enabled: bool = True,
     ):
         self.prefix_cache: PrefixCache | None = None
         if prefix_cache_enabled:
@@ -196,6 +196,15 @@ class CacheManager:
             node_id = self.cache_index.lookup(prefix_hash)
             if node_id:
                 return node_id
+
+        # 4. Active peer query: gossip cache index missed, broadcast to all peers
+        if self.gossip_protocol is not None and self.gossip_client is not None:
+            from distllm.core.cache_index import CacheIndex
+            idx = CacheIndex()
+            prefix_hash = idx.index_tokens(tokens)
+            entry = self.gossip_protocol.request_cache_from_peers(prefix_hash, self.gossip_client)
+            if entry is not None:
+                return "peer"
 
         return None
 

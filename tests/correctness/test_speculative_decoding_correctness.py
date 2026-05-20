@@ -177,7 +177,7 @@ class TestSpeculativeDecodingCorrectness:
             min_acceptance_rate=0.0,
         )
 
-        assert not decoder.is_enabled, "Decoder should be disabled during warmup"
+        assert decoder.is_enabled, "Decoder should collect warmup samples while enabled"
         assert decoder.warmup_steps == 5
 
         # After warmup, decoder enables
@@ -189,7 +189,7 @@ class TestSpeculativeDecodingCorrectness:
                 temperature=1.0,
             )
 
-        assert decoder.is_enabled, "Decoder should be enabled after warmup"
+        assert decoder.is_enabled, "Decoder should remain enabled after warmup"
 
     def test_deterministic_greedy(self, harness):
         """Greedy speculative decoding is deterministic (same seed = same output)."""

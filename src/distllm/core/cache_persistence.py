@@ -49,7 +49,8 @@ class CachePersistenceManager:
         path = self._cache_path(request_id, model_name)
         if not path.exists():
             return None
-        return torch.load(path, weights_only=False)
+        # Security: weights_only=True prevents arbitrary code execution via pickle
+        return torch.load(path, weights_only=True)
 
     def delete(self, request_id: str, model_name: str) -> bool:
         """Delete a cache file. Returns True if deleted."""

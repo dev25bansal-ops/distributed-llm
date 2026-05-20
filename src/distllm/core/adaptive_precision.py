@@ -8,14 +8,12 @@ Automatically determines optimal precision per layer:
 Achieves 30-40% memory reduction with <0.1% quality loss.
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 import torch.nn as nn
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 @dataclass
@@ -197,11 +195,22 @@ class AdaptivePrecisionEngine:
         return plan
 
     def apply_precision(self, model: nn.Module) -> int:
+        """Apply precision plan to model.
+
+        INT8 layers: weights are quantized and stored in _q_weight buffers
+        for serialization. The module.weight remains dequantized float for
+        correct inference. To get actual inference-time memory savings,
+        use the exported _q_weight buffers with a custom INT8 kernel.
+
+        FP16/BF16 layers: weights are converted in-place.
+        """
         if self._plan is None:
             logger.warning("No precision plan available. Run profile_model() first.")
             return 0
 
         converted = 0
+        self._quantization_scales: dict[str, float] = {}
+
         for lp in self._plan.layer_precisions:
             parts = lp.layer_name.split(".")
             module = model
@@ -220,13 +229,18 @@ class AdaptivePrecisionEngine:
                     scale = weight.abs().max() / 127.0
                     if scale > 0:
                         qweight = (weight / scale).round().clamp(-128, 127).to(torch.int8)
+                        # Store quantized weight in buffer for export / INT8 kernel use
+                        module.register_buffer("_q_weight", qweight)
+                        module.register_buffer("_q_scale", torch.tensor(scale.item(), dtype=torch.float32))
+                        # Dequantize for inference (required for correct fp16 matmul)
                         module.weight.data = qweight.float() * scale
+                        self._quantization_scales[lp.layer_name] = scale.item()
                         converted += 1
                 except Exception as e:
                     logger.debug(f"INT8 conversion failed for {lp.layer_name}: {e}")
-            elif lp.recommended_dtype == torch.half:
-                if weight.dtype != torch.float16:
-                    module.weight.data = weight.half()
+            elif lp.recommended_dtype in (torch.float16, torch.bfloat16):
+                if weight.dtype not in (torch.float16, torch.bfloat16):
+                    module.weight.data = weight.to(lp.recommended_dtype)
                     converted += 1
         logger.info(f"Adaptive precision: converted {converted}/{len(self._plan.layer_precisions)} layers")
         return converted

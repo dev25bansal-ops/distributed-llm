@@ -57,6 +57,7 @@ class RateLimiter:
 
     Tracks rate limits per client (by API key or IP address).
     Includes LRU eviction to prevent unbounded memory growth.
+    Supports separate rate limits for authenticated vs unauthenticated clients.
     """
 
     def __init__(
@@ -65,16 +66,22 @@ class RateLimiter:
         endpoint_limits: dict[str, float] | None = None,
         burst_multiplier: float = 1.5,
         max_clients: int = 10000,
+        auth_rpm_multiplier: float = 2.0,
     ):
         self.default_rpm = default_rpm
         self.endpoint_limits = endpoint_limits or {}
         self.burst_multiplier = burst_multiplier
         self.max_clients = max_clients  # Security: Prevent unbounded memory growth
+        self.auth_rpm_multiplier = auth_rpm_multiplier  # Authenticated clients get higher limits
         self._buckets: dict[str, dict[str, TokenBucket]] = defaultdict(dict)
         self._access_order: OrderedDict[str, bool] = OrderedDict()
 
     def _get_bucket(self, client_id: str, endpoint: str) -> TokenBucket:
-        """Get or create a token bucket for a client+endpoint."""
+        """Get or create a token bucket for a client+endpoint.
+
+        Authenticated clients (identified by API key) get higher rate limits
+        via auth_rpm_multiplier. Unauthenticated clients (IP-based) get base limits.
+        """
         if client_id not in self._buckets:
             # Security: LRU eviction when max clients reached
             if len(self._buckets) >= self.max_clients:
@@ -84,6 +91,9 @@ class RateLimiter:
 
         if endpoint not in self._buckets[client_id]:
             rpm = self.endpoint_limits.get(endpoint, self.default_rpm)
+            # Apply auth multiplier for authenticated clients (prefixed with 'auth:')
+            if client_id.startswith("auth:"):
+                rpm *= self.auth_rpm_multiplier
             self._buckets[client_id][endpoint] = TokenBucket(
                 rate_per_minute=rpm,
                 burst_multiplier=self.burst_multiplier,
@@ -120,8 +130,7 @@ class RateLimiter:
     def reset_client(self, client_id: str) -> None:
         """Reset all rate limits for a client."""
         self._buckets.pop(client_id, None)
-        if client_id in self._access_order:
-            self._access_order.remove(client_id)
+        self._access_order.pop(client_id, None)
 
     def reset_all(self) -> None:
         """Reset all rate limits."""

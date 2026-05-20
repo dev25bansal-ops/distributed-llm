@@ -8,12 +8,14 @@ import io
 import os
 import time
 import uuid
-from typing import Literal
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..persistent_store import get_data_dir
 
 router = APIRouter(tags=["images"])
 
@@ -40,12 +42,20 @@ class ImageGenerationResponse(BaseModel):
     data: list[ImageObject]
 
 
-@router.post("/v1/images/generations")
+@router.post(
+    "/v1/images/generations",
+    summary="Generate image",
+    description="Generate images from text prompts using an available diffusion model. Supports multiple image sizes (1024x1024, 1024x1792, 1792x1024), quality levels (standard, hd), and output formats (url, b64_json).",
+    response_description="Generated image data (URLs or base64)",
+    responses={
+        501: {"description": "Image generation backend not configured"},
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_image(body: ImageGenerationRequest):
     """Generate images from text prompts.
 
-    Uses available image generation model or returns placeholder images
-    when no model is configured.
+    Uses an available image generation model.
     """
     coord = g.coordinator
     if coord is None:
@@ -70,8 +80,7 @@ async def create_image(body: ImageGenerationRequest):
                 revised_prompt=body.prompt,
             ))
         else:
-            # Return URL (placeholder - in production this would be a CDN URL)
-            image_id = f"img_{uuid.uuid4().hex[:12]}"
+            image_id = _store_image(image_data)
             images.append(ImageObject(
                 url=f"/v1/images/{image_id}",
                 revised_prompt=body.prompt,
@@ -101,7 +110,16 @@ class ImageVariationRequest(BaseModel):
     response_format: str = Field(default="url")
 
 
-@router.post("/v1/images/edits")
+@router.post(
+    "/v1/images/edits",
+    summary="Edit image",
+    description="Edit an existing image using a text prompt. Uses inpainting or img2img pipeline to apply the requested changes while preserving the original image structure.",
+    response_description="Edited image data (URLs or base64)",
+    responses={
+        501: {"description": "Image edit backend not configured"},
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_image_edit(body: ImageEditRequest):
     """Edit an existing image based on a text prompt."""
     coord = g.coordinator
@@ -109,48 +127,74 @@ async def create_image_edit(body: ImageEditRequest):
         raise HTTPException(status_code=503, detail="No model loaded")
 
     # Edit image using prompt
-    image_data = await _edit_image(body.image, body.prompt, mask=body.mask)
+    image_data = await _edit_image(body.image, body.prompt, mask=body.mask, size=body.size)
 
     images = []
     for _ in range(body.n):
         if body.response_format == "b64_json":
             images.append(ImageObject(b64_json=image_data))
         else:
-            images.append(ImageObject(url=f"/v1/images/{uuid.uuid4().hex[:12]}"))
+            image_id = _store_image(image_data)
+            images.append(ImageObject(url=f"/v1/images/{image_id}"))
 
     return ImageGenerationResponse(created=int(time.time()), data=images)
 
 
-@router.post("/v1/images/variations")
+@router.post(
+    "/v1/images/variations",
+    summary="Create image variation",
+    description="Create variations of an existing image using an img2img pipeline. Generates visually similar but distinct images based on the input.",
+    response_description="Image variation data (URLs or base64)",
+    responses={
+        501: {"description": "Image variation backend not configured"},
+        503: {"description": "No model loaded"},
+    },
+)
 async def create_image_variation(body: ImageVariationRequest):
     """Create variations of an existing image."""
     coord = g.coordinator
     if coord is None:
         raise HTTPException(status_code=503, detail="No model loaded")
 
-    image_data = await _vary_image(body.image)
+    image_data = await _vary_image(body.image, size=body.size)
 
     images = []
     for _ in range(body.n):
         if body.response_format == "b64_json":
             images.append(ImageObject(b64_json=image_data))
         else:
-            images.append(ImageObject(url=f"/v1/images/{uuid.uuid4().hex[:12]}"))
+            image_id = _store_image(image_data)
+            images.append(ImageObject(url=f"/v1/images/{image_id}"))
 
     return ImageGenerationResponse(created=int(time.time()), data=images)
+
+
+@router.get(
+    "/v1/images/{image_id}",
+    summary="Get generated image",
+    description="Retrieve a previously generated image by its ID. Returns the PNG file directly for download.",
+    response_description="PNG image file",
+    responses={
+        404: {"description": "Image not found"},
+    },
+)
+async def get_generated_image(image_id: str):
+    """Return a previously generated image."""
+    path = _image_dir() / f"{image_id}.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Image '{image_id}' not found")
+    return FileResponse(path=str(path), media_type="image/png", filename=f"{image_id}.png")
 
 
 async def _generate_image(prompt: str, width: int, height: int, quality: str) -> str:
     """Generate an image from text.
 
-    Attempts to use available diffusion model, falls back to placeholder.
+    Attempts to use an available diffusion model.
     """
     coord = g.coordinator
-    diffusion_model = getattr(coord, "_diffusion_model", None)
     diffusion_pipe = getattr(coord, "_diffusion_pipe", None)
 
     if diffusion_pipe:
-        import torch
         image = diffusion_pipe(
             prompt=prompt,
             width=width,
@@ -162,26 +206,87 @@ async def _generate_image(prompt: str, width: int, height: int, quality: str) ->
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode()
 
-    # Fallback: generate a simple colored placeholder image
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Image generation backend is not configured. "
+            "Attach _diffusion_pipe to the coordinator."
+        ),
+    )
+
+
+async def _edit_image(image: str, prompt: str, mask: str | None = None, size: str = "1024x1024") -> str:
+    """Edit an image based on a prompt."""
+    coord = g.coordinator
+    pipe = getattr(coord, "_diffusion_inpaint_pipe", None) or getattr(coord, "_diffusion_img2img_pipe", None)
+    if pipe is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Image edit backend is not configured. "
+                "Attach _diffusion_inpaint_pipe or _diffusion_img2img_pipe to the coordinator."
+            ),
+        )
+
+    init_image = _load_image(image)
+    mask_image = _load_image(mask) if mask else None
+    kwargs = {"prompt": prompt, "image": init_image}
+    if mask_image is not None:
+        kwargs["mask_image"] = mask_image
+    result = pipe(**kwargs).images[0]
+    return _encode_png(result)
+
+
+async def _vary_image(image: str, size: str = "1024x1024") -> str:
+    """Create variation of an image."""
+    coord = g.coordinator
+    pipe = getattr(coord, "_diffusion_img2img_pipe", None)
+    if pipe is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Image variation backend is not configured. "
+                "Attach _diffusion_img2img_pipe to the coordinator."
+            ),
+        )
+
+    init_image = _load_image(image)
+    result = pipe(image=init_image).images[0]
+    return _encode_png(result)
+
+
+def _image_dir() -> Path:
+    path = Path(os.environ.get("DISTLLM_IMAGE_DIR", str(get_data_dir() / "images"))).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _store_image(b64_png: str) -> str:
+    image_id = f"img_{uuid.uuid4().hex[:12]}"
+    (_image_dir() / f"{image_id}.png").write_bytes(base64.b64decode(b64_png))
+    return image_id
+
+
+def _encode_png(image) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def _load_image(image: str):
     try:
         from PIL import Image
-        img = Image.new('RGB', (width, height), color=(60, 60, 120))
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        return base64.b64encode(buffer.getvalue()).decode()
-    except ImportError:
-        # Return minimal PNG
-        return base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 100).decode()
+    except ImportError as exc:
+        raise HTTPException(status_code=501, detail="Image edit/variation requires Pillow") from exc
 
+    if image.startswith("data:"):
+        image = image.split(",", 1)[1] if "," in image else image
 
-async def _edit_image(prompt: str, image: str, mask: str | None = None) -> str:
-    """Edit an image based on a prompt."""
-    # Placeholder: return original image encoded
-    if image.startswith('data:'):
-        return image.split(',')[1] if ',' in image else image
-    return image
-
-
-async def _vary_image(image: str) -> str:
-    """Create variation of an image."""
-    return image
+    try:
+        raw = base64.b64decode(image, validate=True)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        path = Path(image)
+        if not path.exists():
+            raise HTTPException(status_code=400, detail="Image input must be base64 data or an existing file path")
+        return Image.open(path).convert("RGB")

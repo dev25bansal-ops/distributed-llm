@@ -7,6 +7,7 @@ Includes OpenTelemetry trace_id/span_id as Loki stream labels.
 
 import asyncio
 import json
+import threading
 import time
 from collections import deque
 from typing import Callable, Dict
@@ -26,6 +27,25 @@ def _get_otel_labels() -> dict[str, str]:
     except Exception:
         pass
     return {}
+
+
+_background_loop: asyncio.AbstractEventLoop | None = None
+_background_loop_lock = threading.Lock()
+
+
+def _ensure_background_loop() -> asyncio.AbstractEventLoop | None:
+    """Get or create a background event loop for async log pushes."""
+    global _background_loop
+    if _background_loop is not None and not _background_loop.is_closed():
+        return _background_loop
+    with _background_loop_lock:
+        if _background_loop is not None and not _background_loop.is_closed():
+            return _background_loop
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_forever, daemon=True, name="loki-bg-loop")
+        t.start()
+        _background_loop = loop
+        return loop
 
 
 def loki_sink(
@@ -87,11 +107,19 @@ def loki_sink(
 
     # Start the periodic flush task
     _loop_task = None
+    _loop_thread = None
+
+    def _start_background_loop() -> None:
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        new_loop.run_until_complete(_periodic_flush())
+
     try:
         loop = asyncio.get_running_loop()
         _loop_task = loop.create_task(_periodic_flush())
     except RuntimeError:
-        pass
+        _loop_thread = threading.Thread(target=_start_background_loop, daemon=True)
+        _loop_thread.start()
 
     def _sink(message) -> None:
         record = message.record
@@ -113,8 +141,10 @@ def loki_sink(
         if len(buffer) >= batch_size:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_push_batch())
             except RuntimeError:
-                pass  # No event loop yet; will flush periodically
+                loop = _ensure_background_loop()
+            if loop is not None:
+                task = loop.create_task(_push_batch())
+                task.add_done_callback(lambda t: t.exception() if t.done() and not t.cancelled() else None)
 
     return _sink

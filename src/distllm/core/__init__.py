@@ -29,6 +29,16 @@ from distllm.core.plugin import (
     HealthCheckPlugin,
     BUILTIN_PLUGINS,
 )
+from distllm.core.self_optimizing_engine import SelfOptimizingEngine, OpType, TunableParams
+from distllm.core.cuda_graph import CUDAGraphPool, GraphBuffers
+from distllm.core.compile_support import compile_model
+from distllm.core.grammar_decoder import GBNFFSM, GBNFParser
+from distllm.core.sloRa_adapter import SLoRAManager
+from distllm.core.rag_pipeline import RAGPipeline
+from distllm.core.agent_loop import AgentLoop
+from distllm.core.disagg_serving import DisaggOrchestrator, DisaggRouter
+from distllm.core.speculative_decoder import SpeculativeDecoder
+from distllm.core.drafters import NgramMatcher, MedusaHeads, EAGLEGenerator, TrainedEAGLEHeads, EAGLE2Heads
 
 __all__ = [
     "KVCache",
@@ -69,4 +79,23 @@ __all__ = [
     "MetricsPlugin",
     "HealthCheckPlugin",
     "BUILTIN_PLUGINS",
+    "SelfOptimizingEngine",
+    "OpType",
+    "TunableParams",
+    "CUDAGraphPool",
+    "GraphBuffers",
+    "compile_model",
+    "GBNFFSM",
+    "GBNFParser",
+    "SLoRAManager",
+    "RAGPipeline",
+    "AgentLoop",
+    "DisaggOrchestrator",
+    "DisaggRouter",
+    "SpeculativeDecoder",
+    "NgramMatcher",
+    "MedusaHeads",
+    "EAGLEGenerator",
+    "TrainedEAGLEHeads",
+    "EAGLE2Heads",
 ]

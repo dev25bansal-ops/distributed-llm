@@ -15,7 +15,12 @@ from distllm.health.failover import FailoverEngine
 
 
 class HealthCheckService:
-    """Orchestrates periodic health probing and state management."""
+    """Orchestrates periodic health probing and state management.
+
+    Triggers ``on_node_death`` callback when a node transitions to OFFLINE
+    after exceeding the failure threshold, so the self-healing cluster can
+    recover in-flight sequences and redistribute layers.
+    """
 
     def __init__(
         self,
@@ -36,6 +41,15 @@ class HealthCheckService:
         self._running = False
         self._get_client: Callable[[str], object] | None = None
         self._task: asyncio.Task | None = None
+        self._on_node_death: Callable[[str], None] | None = None
+
+    def on_node_death(self, callback: Callable[[str], None]) -> None:
+        """Register callback when a node is declared dead (UNHEALTHY -> OFFLINE).
+
+        The coordinator's ``NodeRecoveryManager`` subscribes to this to
+        trigger the self-healing protocol.
+        """
+        self._on_node_death = callback
 
     def on_state_change(
         self, callback: Callable[[str, NodeState, NodeState], None]
@@ -121,4 +135,10 @@ class HealthCheckService:
             logger.info(
                 f"Node {node_id} state changed: {record.state.value} -> {new_state.value}"
             )
+            old_state = record.state
             record.state = new_state
+
+            # Trigger self-healing when a node goes OFFLINE
+            if new_state == NodeState.OFFLINE and self._on_node_death:
+                logger.warning(f"Node {node_id} is OFFLINE, triggering recovery")
+                self._on_node_death(node_id)

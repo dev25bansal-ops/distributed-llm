@@ -10,6 +10,7 @@ All original constructor parameters and public methods are preserved.
 """
 
 import argparse
+import gc
 import torch
 from transformers import AutoTokenizer
 from loguru import logger
@@ -18,26 +19,17 @@ import time
 import asyncio
 import threading
 from typing import Any, Callable
-from contextvars import ContextVar
-
-# Context variable for per-request isolation of generation parameters
-_current_request_id_ctx: ContextVar[str | None] = ContextVar(
-    "current_request_id", default=None
-)
-
-from distllm.models.partitioner import ModelPartitioner, partition_model_across_nodes, get_model_info
-from distllm.communication.grpc import CoordinatorService, GRPCServer, NodeClient
-from distllm.core.kv_cache import KVCache
-from distllm.core.batch_scheduler import BatchScheduler, Sequence, SequenceStatus, ScheduledBatch
+from distllm.models.partitioner import ModelPartitioner, get_model_info
+from distllm.communication.grpc import CoordinatorService, GRPCServer
+from distllm.core.batch_scheduler import BatchScheduler, Sequence, ScheduledBatch
 from distllm.core.structured_output import JSONSchemaConstraint
-from distllm.core.chunked_prefill import ChunkState, maybe_chunk
+from distllm.core.chunked_prefill import maybe_chunk
 from distllm.config.loader import NodeRole
 from distllm.config.settings import DistLLMSettings, MultiModelSettings, MoESettings
 from distllm.communication.grpc import set_debug_mode, is_debug_mode
 from distllm.core.moe_router import MoERouter
 from distllm.core.prefix_cache import PrefixCache
 from distllm.errors.types import (
-    ConfigValidationError,
     NodeError,
     NodeUnreachableError,
     OOMError,
@@ -45,11 +37,15 @@ from distllm.errors.types import (
     BatchError,
 )
 
-from distllm.core.resource_manager import ResourceManager, CircuitBreakerConfig
+from distllm.core.resource_manager import ResourceManager
 from distllm.core.cache_manager import CacheManager
 from distllm.core.token_generator import TokenGenerator
 from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+from distllm.core.di import Container
+from distllm.core.subsystem_manager import SubsystemManager
 from distllm.core.speculative_decoder import SpeculativeDecoder
+from distllm.core.speculative_trainer import ContinuousSpeculativeTrainer, ContinuousTrainConfig
+from distllm.core.request_replay import RequestReplayBuffer, DeterministicMode, get_replay_buffer
 from distllm.core.model_registry import ModelRegistry
 from distllm.core.latency_tracker import LatencyTracker
 from distllm.core.rebalancer import Rebalancer
@@ -58,15 +54,67 @@ from distllm.core.cache_warming import CacheWarmer
 from distllm.core.coordinator_metrics import MetricsManager
 from distllm.core.coordinator_model import ModelManager
 from distllm.core.coordinator_health import HealthChecker
-from distllm.core.coordinator_lifecycle import ServerLifecycle, RequestTracker
+from distllm.core.coordinator_lifecycle import RequestTracker
 from distllm.core.coordinator_nodes import NodeRegistrar
 from distllm.core.coordinator_multi_model import MultiModelManager
+from distllm.core.coordinator_config import CoordinatorConfig
+from distllm.core.request_pipeline import RequestPipeline, _current_request_id_ctx
+from distllm.core.preemption_policy import PreemptionPolicy, GPUMemoryMonitor, SLATracker
+from distllm.core.request_auditor import RequestAuditor
+from distllm.core.prompt_caching_service import PromptCachingService
+from distllm.core.graceful_degradation import GracefulDegradation, LoadSnapshot
+from distllm.core.adaptive_batching import AdaptiveBatchingEngine
+from distllm.core.model_comparator import ModelVersionComparator
+from distllm.core.token_streaming_buffer import TokenStreamingBuffer
+from distllm.core.request_fingerprinting import RequestFingerprinter
+from distllm.core.leaky_bucket_limiter import LeakyBucketRateLimiter
+from distllm.core.node_recovery import NodeRecoveryManager, NodeRecoveryPlan, LayerRedistribution
 
 
 class Coordinator:
     """Orchestrates distributed inference across worker nodes.
 
-    This is a backward-compatible facade that delegates to 4 specialized components.
+    This is a backward-compatible facade that composes specialized components.
+    New features should be built as separate components and composed here.
+
+    Architecture — Component Map:
+    ┌─────────────────────────────────────────────────────────┐
+    │  Core Components (delegated)                            │
+    │  _resource_mgr     → node lifecycle, circuit breaker    │
+    │  _cache_mgr        → prefix cache, chunked prefill      │
+    │  _pipeline         → node topology, layer routing       │
+    │  _token_gen        → token sampling                     │
+    │  _model_mgr        → model/draft model loading          │
+    │  _health_checker   → health checks                      │
+    │  _node_registrar   → node registration, layer assign    │
+    │  _metrics_mgr      → metrics tracking                   │
+    │  _request_tracker  → request completion tracking        │
+    ├─────────────────────────────────────────────────────────┤
+    │  Extension Components (initialized on demand)           │
+    │  _multi_model      → multi-model serving                │
+    │  _moe_orchestrator → mixture of experts                 │
+    │  _spec_decoder     → speculative decoding               │
+    │  _hybrid_parallel  → TP/PP/EP parallelism              │
+    │  _zero_copy_engine → GPU-direct tensor transfer         │
+    │  _adaptive_precision → precision calibration            │
+    │  _predictive_cache → KV cache prediction                │
+    │  _cache_persistence → disk cache persistence            │
+    │  _rebalancer       → dynamic pipeline rebalancing       │
+    │  _gossip_protocol  → P2P cache gossip                   │
+    │  _version_manager  → shadow/A-B/blue-green              │
+    │  _plugin_manager   → plugin system                      │
+    │  _embedding_loader → embedding/reranking models         │
+    │  _vlm_pipeline     → vision-language models             │
+    │  _paged_attention  → paged KV cache                     │
+    │  _flash_attention  → FlashAttention wrapper             │
+    │  _federation_manager → cross-cluster federation         │
+    │  _param_update_channel → streaming param updates        │
+    │  _model_hotswap    → model hot-swap                     │
+    ├─────────────────────────────────────────────────────────┤
+    │  Public facade properties:                              │
+    │  nodes, node_order, prefill_nodes, decode_nodes,       │
+    │  prefix_cache, metrics, scheduler, tokenizer           │
+    └─────────────────────────────────────────────────────────┘
     """
 
     def __init__(
@@ -80,7 +128,7 @@ class Coordinator:
         prefix_cache_enabled: bool = False,
         prefix_cache_max_entries: int = 1024,
         prefix_cache_min_prefix_len: int = 16,
-        radix_tree_cache_enabled: bool = False,
+        radix_tree_cache_enabled: bool = True,
         chunked_prefill_enabled: bool = True,
         chunked_prefill_chunk_size: int = 512,
         quantization_config=None,
@@ -99,6 +147,20 @@ class Coordinator:
         zero_copy_config=None,
         adaptive_precision_config=None,
         predictive_cache_config=None,
+        pipeline_schedule_config=None,
+        self_optimizing_config=None,
+        cuda_graph_config=None,
+        compile_config=None,
+        slora_config=None,
+        rag_config=None,
+        agent_config=None,
+        disagg_config=None,
+        request_auditor_config=None,
+        prompt_cache_config=None,
+        graceful_degradation_config=None,
+        adaptive_batching_config=None,
+        request_fingerprinting_config=None,
+        leaky_bucket_config=None,
     ):
         self.model_name = model_name
         self.port = port
@@ -108,8 +170,60 @@ class Coordinator:
         self.metrics_exporter = metrics_exporter
         self.discovery_mode = discovery_mode
 
+        self.config = CoordinatorConfig(
+            model_name=model_name,
+            port=port,
+            dtype=dtype,
+            trust_remote_code=trust_remote_code,
+            max_batch_size=max_batch_size,
+            max_tokens_per_batch=max_tokens_per_batch,
+            max_context_length=8192,
+            prefix_cache_enabled=prefix_cache_enabled,
+            prefix_cache_max_entries=prefix_cache_max_entries,
+            prefix_cache_min_prefix_len=prefix_cache_min_prefix_len,
+            radix_tree_cache_enabled=radix_tree_cache_enabled,
+            chunked_prefill_enabled=chunked_prefill_enabled,
+            chunked_prefill_chunk_size=chunked_prefill_chunk_size,
+            quantization_config=quantization_config,
+            speculative_config=speculative_config,
+            lora_config=lora_config,
+            metrics_exporter=metrics_exporter,
+            multi_model_config=multi_model_config,
+            rebalancer_config=rebalancer_config,
+            cache_persistence_config=cache_persistence_config,
+            gossip_config=gossip_config,
+            moe_config=moe_config,
+            discovery_mode=discovery_mode,
+            embedding_config=embedding_config,
+            version_config=version_config,
+            hybrid_parallel_config=hybrid_parallel_config,
+            zero_copy_config=zero_copy_config,
+            adaptive_precision_config=adaptive_precision_config,
+            predictive_cache_config=predictive_cache_config,
+            pipeline_schedule_config=pipeline_schedule_config,
+            self_optimizing_config=self_optimizing_config,
+            cuda_graph_config=cuda_graph_config,
+            compile_config=compile_config,
+            slora_config=slora_config,
+            rag_config=rag_config,
+            agent_config=agent_config,
+            disagg_config=disagg_config,
+            request_auditor_config=request_auditor_config,
+            prompt_cache_config=prompt_cache_config,
+            graceful_degradation_config=graceful_degradation_config,
+            adaptive_batching_config=adaptive_batching_config,
+            request_fingerprinting_config=request_fingerprinting_config,
+            leaky_bucket_config=leaky_bucket_config,
+        )
+
+        # Dependency injection container and subsystem lifecycle manager
+        self._container = Container()
+        self._container.register(Container, self._container)
+        self._subsystems = SubsystemManager()
+
         # Component: ResourceManager (health, circuit breaker, lifecycle)
         self._resource_mgr = ResourceManager()
+        self._container.register(ResourceManager, self._resource_mgr)
 
         # Component: CacheManager (prefix cache, chunked prefill)
         self._cache_mgr = CacheManager(
@@ -125,11 +239,34 @@ class Coordinator:
         self._pipeline = PipelineOrchestrator(
             resource_mgr=self._resource_mgr,
         )
+        self._container.register(PipelineOrchestrator, self._pipeline)
+
+        # 1F1B / Interleaved pipeline scheduling (async micro-batch pipelining)
+        self._async_pipeline = None
+        self._pipeline_schedule_type = "sequential"  # sequential, overlap, 1f1b, interleaved
+        if pipeline_schedule_config:
+            schedule_type = getattr(pipeline_schedule_config, "schedule", "sequential")
+            if schedule_type in ("1f1b", "interleaved"):
+                from distllm.core.async_pipeline import (
+                    AsyncPipelineEngine,
+                    AsyncPipelineConfig,
+                    ScheduleType,
+                )
+                num_micro = getattr(pipeline_schedule_config, "num_micro_batches", 4)
+                num_stages = getattr(pipeline_schedule_config, "num_stages", 1)
+                async_config = AsyncPipelineConfig(
+                    schedule=ScheduleType.ONE_F_ONE_B if schedule_type == "1f1b" else ScheduleType.INTERLEAVED,
+                    num_micro_batches=num_micro,
+                    num_stages=num_stages,
+                    overlap_allreduce=getattr(pipeline_schedule_config, "overlap_allreduce", True),
+                    prefetch_next_batch=getattr(pipeline_schedule_config, "prefetch_next_batch", True),
+                )
+                self._async_pipeline = AsyncPipelineEngine(config=async_config)
+                self._pipeline_schedule_type = schedule_type
+                logger.info(f"Async pipeline scheduling enabled: {schedule_type} ({num_micro} micro-batches, {num_stages} stages)")
 
         # Health checker (delegates to resource_mgr + metrics_exporter)
         self._health_checker = HealthChecker(self._resource_mgr, self.metrics_exporter)
-
-        self._nodes_lock = threading.Lock()
 
         # Node registrar (node registration, layer assignment, expert registration)
         self._node_registrar = NodeRegistrar(
@@ -174,13 +311,34 @@ class Coordinator:
             self._spec_method = speculative_config.get("method", "draft_model")
             self._spec_decoder = SpeculativeDecoder(
                 num_assistant_tokens=self.num_assistant_tokens,
+                min_acceptance_rate=speculative_config.get("min_acceptance_rate", 0.3),
+                warmup_steps=speculative_config.get("warmup_steps", 10),
                 method=self._spec_method,
                 medusa_num_heads=speculative_config.get("medusa_num_heads", 4),
                 medusa_num_tokens_per_head=speculative_config.get("medusa_num_tokens_per_head", 3),
+                eagle_hidden_size=speculative_config.get("eagle_hidden_size", 4096),
+                eagle_vocab_size=speculative_config.get("eagle_vocab_size", 32000),
                 ngram_min_match=speculative_config.get("ngram_min_match", 4),
             )
+            eagle_checkpoint = speculative_config.get("eagle_checkpoint")
+            if eagle_checkpoint:
+                self._spec_decoder.load_eagle_checkpoint(
+                    eagle_checkpoint,
+                    variant=speculative_config.get("eagle_variant", "eagle"),
+                    hidden_size=speculative_config.get("eagle_hidden_size"),
+                    vocab_size=speculative_config.get("eagle_vocab_size"),
+                    num_layers=speculative_config.get("eagle_num_layers", 2),
+                )
         else:
             self._draft_model_name = None
+
+        # Continuous speculative fine-tuning
+        self._continuous_trainer: ContinuousSpeculativeTrainer | None = None
+        self._continuous_trainer_config = None
+
+        # Request replay buffer and deterministic debug mode
+        self._replay_buffer: RequestReplayBuffer = get_replay_buffer(max_requests=100)
+        self._deterministic_mode = DeterministicMode(seed=42, enabled=False)
 
         # Batch scheduler
         self.scheduler: BatchScheduler | None = None
@@ -197,6 +355,21 @@ class Coordinator:
         self.chunked_prefill_enabled = self._cache_mgr.chunked_prefill_enabled
         self.chunked_prefill_chunk_size = self._cache_mgr.chunked_prefill_chunk_size
 
+        # Wire cache manager to scheduler for radix tree storage
+        if self.scheduler is not None:
+            self.scheduler.set_cache_manager(self._cache_mgr)
+
+        # Preemption policy: SLA-aware request preemption with checkpoint/resume
+        self._preemption_policy: PreemptionPolicy | None = None
+        if max_batch_size > 1:
+            self._preemption_policy = PreemptionPolicy(
+                gpu_monitor=GPUMemoryMonitor(),
+                sla_tracker=SLATracker(max_violations=3, sla_deadline_ms=5000.0),
+                max_queue_depth=100,
+                max_checkpoints=10,
+                checkpoint_memory_limit_mb=4096,
+            )
+
         # Request completion tracking (delegated to RequestTracker)
         self._request_tracker = RequestTracker()
 
@@ -205,6 +378,26 @@ class Coordinator:
 
         # Node info for distributed state
         self.nodes_info = {}
+
+        # Extension points initialized by the micro-orchestrator setup below.
+        self._embedding_config = embedding_config
+        self._version_config = version_config
+        self._embedding_loader = None
+        self._embedding_max_length = 512
+        self._embedding_normalize = True
+        self._embedding_batch_size = 32
+        self._version_manager = None
+        self._model_hotswap = None
+        self._paged_attention = None
+        self._paged_kv_backend = None
+        self._vlm_pipeline = None
+        self._flash_attention = None
+        self._plugin_manager: 'PluginManager' | None = None
+        self._hybrid_parallel_planner = None
+        self._hybrid_parallel_executor = None
+        self._zero_copy_engine = None
+        self._adaptive_precision = None
+        self._predictive_cache = None
 
         # Multi-model registry and MoE (delegated to managers)
         self._multi_model: MultiModelManager | None = None
@@ -220,6 +413,21 @@ class Coordinator:
         self._init_zero_copy(zero_copy_config)
         self._init_adaptive_precision(adaptive_precision_config)
         self._init_predictive_cache(predictive_cache_config)
+
+        # Self-optimizing engine, CUDA graphs, compile support, SLoRA, RAG, agent, disagg
+        self._self_optimizing = None
+        self._cuda_graph_pool = None
+        self._slora_manager = None
+        self._rag_pipeline = None
+        self._agent_loop = None
+        self._disagg_orchestrator = None
+        self._init_self_optimizing(self_optimizing_config)
+        self._init_cuda_graph(cuda_graph_config)
+        self._init_compile_support(compile_config)
+        self._init_slora(slora_config)
+        self._init_rag(rag_config)
+        self._init_agent(agent_config)
+        self._init_disagg(disagg_config)
 
         # Dynamic rebalancing
         self._latency_tracker: LatencyTracker | None = None
@@ -241,6 +449,12 @@ class Coordinator:
         self._batch_kv_caches_lock = threading.Lock()
         self._batch_event = threading.Event()
 
+        # Fallback model registry: primary_model -> [fallback_model_names]
+        self._fallback_models: dict[str, list[str]] = {}
+
+        # Pipeline composition runtime
+        self._pipeline_composer = None
+
         # P2P KV cache gossip
         self._cache_index = None
         self._gossip_protocol = None
@@ -258,65 +472,133 @@ class Coordinator:
             # Create gossip client with peer resolver from node registrar
             def resolve_peer(peer_id: str):
                 """Resolve peer_id to (host, port) from registered nodes."""
-                with self._nodes_lock:
-                    nodes_snapshot = dict(self.nodes)
+                nodes_snapshot = dict(self.nodes)
                 for node_id, reg in nodes_snapshot.items():
                     if node_id == peer_id or peer_id in node_id:
                         return reg.host, reg.port
                 return None
 
-            self._gossip_client = GossipClient(peer_resolver=resolve_peer)
+            self._gossip_client = GossipClient(
+                node_id=self._gossip_protocol.state.node_id,
+                peer_resolver=resolve_peer,
+            )
             # Wire gossip to cache manager
             self._cache_mgr.cache_index = self._cache_index
             self._cache_mgr.gossip_protocol = self._gossip_protocol
             self._cache_mgr.gossip_client = self._gossip_client
 
+        # --- New Modules (Request Auditor, Prompt Cache, Graceful Degradation, etc.) ---
+
+        # Request Auditor: compliance logging, PII detection
+        self._request_auditor: RequestAuditor | None = None
+        if request_auditor_config:
+            aud_cfg = request_auditor_config if not isinstance(request_auditor_config, bool) else {}
+            self._request_auditor = RequestAuditor(
+                max_entries=getattr(aud_cfg, 'max_entries', 10000) if not isinstance(aud_cfg, dict) else aud_cfg.get('max_entries', 10000),
+                log_dir=getattr(aud_cfg, 'log_dir', None) if not isinstance(aud_cfg, dict) else aud_cfg.get('log_dir', None),
+                enable_pii_detection=getattr(aud_cfg, 'enable_pii_detection', True) if not isinstance(aud_cfg, dict) else aud_cfg.get('enable_pii_detection', True),
+            )
+
+        # Prompt Caching Service: Redis-backed shared prompt cache
+        self._prompt_cache_service: PromptCachingService | None = None
+        if prompt_cache_config:
+            pc_cfg = prompt_cache_config if not isinstance(prompt_cache_config, bool) else {}
+            self._prompt_cache_service = PromptCachingService(
+                redis_url=getattr(pc_cfg, 'redis_url', '') if not isinstance(pc_cfg, dict) else pc_cfg.get('redis_url', ''),
+                memory_cache_size=getattr(pc_cfg, 'memory_cache_size', 256) if not isinstance(pc_cfg, dict) else pc_cfg.get('memory_cache_size', 256),
+                default_ttl_s=getattr(pc_cfg, 'default_ttl_s', 3600.0) if not isinstance(pc_cfg, dict) else pc_cfg.get('default_ttl_s', 3600.0),
+            )
+
+        # Graceful Degradation: partial responses instead of 503
+        self._graceful_degradation: GracefulDegradation | None = None
+        if graceful_degradation_config:
+            gd_cfg = graceful_degradation_config if not isinstance(graceful_degradation_config, bool) else {}
+            self._graceful_degradation = GracefulDegradation(
+                enabled=True,
+                light_threshold=getattr(gd_cfg, 'light_threshold', 0.3) if not isinstance(gd_cfg, dict) else gd_cfg.get('light_threshold', 0.3),
+                moderate_threshold=getattr(gd_cfg, 'moderate_threshold', 0.5) if not isinstance(gd_cfg, dict) else gd_cfg.get('moderate_threshold', 0.5),
+                severe_threshold=getattr(gd_cfg, 'severe_threshold', 0.7) if not isinstance(gd_cfg, dict) else gd_cfg.get('severe_threshold', 0.7),
+                critical_threshold=getattr(gd_cfg, 'critical_threshold', 0.85) if not isinstance(gd_cfg, dict) else gd_cfg.get('critical_threshold', 0.85),
+                fallback_model=getattr(gd_cfg, 'fallback_model', None) if not isinstance(gd_cfg, dict) else gd_cfg.get('fallback_model', None),
+            )
+
+        # Adaptive Batching Engine: dynamic batch size from latency SLOs
+        self._adaptive_batching: AdaptiveBatchingEngine | None = None
+        if adaptive_batching_config:
+            ab_cfg = adaptive_batching_config if not isinstance(adaptive_batching_config, bool) else {}
+            from distllm.core.adaptive_batching import SLOConfig
+            slo = SLOConfig(
+                p50_latency_ms=getattr(ab_cfg, 'p50_latency_ms', 500) if not isinstance(ab_cfg, dict) else ab_cfg.get('p50_latency_ms', 500),
+                p99_latency_ms=getattr(ab_cfg, 'p99_latency_ms', 2000) if not isinstance(ab_cfg, dict) else ab_cfg.get('p99_latency_ms', 2000),
+                max_batch_size=getattr(ab_cfg, 'max_batch_size', 64) if not isinstance(ab_cfg, dict) else ab_cfg.get('max_batch_size', 64),
+                min_batch_size=getattr(ab_cfg, 'min_batch_size', 1) if not isinstance(ab_cfg, dict) else ab_cfg.get('min_batch_size', 1),
+            )
+            self._adaptive_batching = AdaptiveBatchingEngine(default_config=slo)
+            self._adaptive_batching.set_slo(self.model_name)
+            if self.scheduler is not None and self._adaptive_batching is not None:
+                self.scheduler.max_batch_size = self._adaptive_batching.get_batch_size(self.model_name)
+
+        # Model Version Comparator: statistical comparison (used externally)
+        self._model_comparator = ModelVersionComparator()
+
+        # Token Streaming Buffer: batch tokens to reduce SSE overhead
+        self._token_streaming_buffer: TokenStreamingBuffer | None = None
+
+        # Request Fingerprinting: deduplication
+        self._request_fingerprinter: RequestFingerprinter | None = None
+        if request_fingerprinting_config:
+            rf_cfg = request_fingerprinting_config if not isinstance(request_fingerprinting_config, bool) else {}
+            self._request_fingerprinter = RequestFingerprinter(
+                cache_size=getattr(rf_cfg, 'cache_size', 10000) if not isinstance(rf_cfg, dict) else rf_cfg.get('cache_size', 10000),
+                cache_ttl_s=getattr(rf_cfg, 'cache_ttl_s', 3600.0) if not isinstance(rf_cfg, dict) else rf_cfg.get('cache_ttl_s', 3600.0),
+                enable_dedup=getattr(rf_cfg, 'enable_dedup', True) if not isinstance(rf_cfg, dict) else rf_cfg.get('enable_dedup', True),
+            )
+
+        # Rate Limiter with Leaky Bucket
+        self._rate_limiter: LeakyBucketRateLimiter | None = None
+        if leaky_bucket_config:
+            lb_cfg = leaky_bucket_config if not isinstance(leaky_bucket_config, bool) else {}
+            self._rate_limiter = LeakyBucketRateLimiter(
+                default_rate=getattr(lb_cfg, 'default_rate', 10.0) if not isinstance(lb_cfg, dict) else lb_cfg.get('default_rate', 10.0),
+                default_burst=getattr(lb_cfg, 'default_burst', 20) if not isinstance(lb_cfg, dict) else lb_cfg.get('default_burst', 20),
+                enable_backoff=getattr(lb_cfg, 'enable_backoff', True) if not isinstance(lb_cfg, dict) else lb_cfg.get('enable_backoff', True),
+            )
+
+        # Lifecycle flag for background threads (rebalancer, gossip)
+        self._running = threading.Event()
+
         # Streaming parameter updates
         from distllm.core.param_update_channel import ParamUpdateChannel
         self._param_update_channel = ParamUpdateChannel()
 
-        # Cross-cluster federation
-        from distllm.core.cluster_topology import FederationManager, CrossClusterLatencyMonitor
-        self._federation_manager = FederationManager()
-        self._latency_monitor = CrossClusterLatencyMonitor(self._federation_manager)
+        # Cross-cluster federation and geo-aware routing
+        from distllm.core.federation_router import FederationRouter
+        self._federation_router = FederationRouter()
+        self._federation_manager = self._federation_router.federation_manager
+        self._latency_monitor = self._federation_router.latency_monitor
+        self._geo_router = self._federation_router.geo_router
 
         # Wire federation and expert resources to node registrar
-        self._node_registrar.federation_manager = self._federation_manager
-        self._node_registrar.expert_registry = self._expert_registry
+        self._federation_router.attach_registrar(
+            self._node_registrar,
+            expert_registry=self._expert_registry,
+        )
 
-        # Embedding and reranking model loader
-        self._embedding_config = embedding_config
-        self._version_config = version_config
-        self._embedding_loader = None
-        self._embedding_max_length = 512
-        self._embedding_normalize = True
-        self._embedding_batch_size = 32
+        # Node recovery manager: self-healing cluster
+        self._recovery = NodeRecoveryManager()
+        self._recovery.set_drain_callback(self._on_recovery_drain)
+        self._recovery.set_redistribute_layers_callback(self._on_recovery_redistribute)
+        self._recovery.set_recover_sequences_callback(self._on_recovery_recover)
+        self._recovery.set_mark_dead_callback(self._on_recovery_mark_dead)
 
-        # Version manager (shadow mode, A/B testing, blue-green)
-        self._version_manager = None
+        # Wire resource manager circuit breaker to node recovery
+        self._resource_mgr.set_node_failure_callback(self._on_resource_mgr_failure)
 
-        # Multi-model hot-swap manager
-        self._model_hotswap = None
+        # Request pipeline: generates tokens through local or distributed execution
+        self._pipeline_runner = RequestPipeline(self)
 
-        # PagedAttention block manager
-        self._paged_attention = None
-        self._paged_kv_backend = None
-
-        # VLM (Vision-Language Model) pipeline
-        self._vlm_pipeline = None
-
-        # FlashAttention wrapper
-        self._flash_attention = None
-
-        # Plugin manager
-        self._plugin_manager: 'PluginManager' | None = None
-
-        # Extension points (initialized on demand via _init_* config methods)
-        self._hybrid_parallel_planner = None
-        self._hybrid_parallel_executor = None
-        self._zero_copy_engine = None
-        self._adaptive_precision = None
-        self._predictive_cache = None
+        # Multi-model chat router: content-based model selection
+        self._chat_router = None
 
     # -- Property aliases for backward compat --
 
@@ -360,51 +642,36 @@ class Coordinator:
     def prefix_cache(self, value: "PrefixCache | None") -> None:
         self._cache_mgr.prefix_cache = value
 
-    # -- Backward-compat for circuit breaker internals (used by tests) --
+    # -- Circuit breaker status (consolidated public API) --
 
-    @property
-    def _node_failure_counts(self) -> dict[str, int]:
+    def get_circuit_breaker_status(self, node_id: str | None = None) -> dict:
+        """Get circuit breaker status for one or all nodes.
+
+        Replaces the old test-only proxy properties:
+        _node_failure_counts, _node_recovery_time, _node_circuit_breaker_threshold,
+        _node_base_retry_delay, _node_max_retry_delay.
+        """
         with self._resource_mgr._lock:
-            return dict(self._resource_mgr._node_failure_counts)
-
-    @_node_failure_counts.setter
-    def _node_failure_counts(self, value: dict[str, int]):
-        with self._resource_mgr._lock:
-            self._resource_mgr._node_failure_counts = dict(value)
-
-    @property
-    def _node_recovery_time(self) -> dict[str, float]:
-        with self._resource_mgr._lock:
-            return dict(self._resource_mgr._node_recovery_time)
-
-    @_node_recovery_time.setter
-    def _node_recovery_time(self, value: dict[str, float]):
-        with self._resource_mgr._lock:
-            self._resource_mgr._node_recovery_time = dict(value)
-
-    @property
-    def _node_circuit_breaker_threshold(self) -> int:
-        return self._resource_mgr.cb_config.threshold
-
-    @_node_circuit_breaker_threshold.setter
-    def _node_circuit_breaker_threshold(self, value: int):
-        self._resource_mgr.cb_config.threshold = value
-
-    @property
-    def _node_base_retry_delay(self) -> float:
-        return self._resource_mgr.cb_config.base_delay
-
-    @_node_base_retry_delay.setter
-    def _node_base_retry_delay(self, value: float):
-        self._resource_mgr.cb_config.base_delay = value
-
-    @property
-    def _node_max_retry_delay(self) -> float:
-        return self._resource_mgr.cb_config.max_delay
-
-    @_node_max_retry_delay.setter
-    def _node_max_retry_delay(self, value: float):
-        self._resource_mgr.cb_config.max_delay = value
+            if node_id:
+                return {
+                    "failures": self._resource_mgr._node_failure_counts.get(node_id, 0),
+                    "recovery_time": self._resource_mgr._node_recovery_time.get(node_id, 0.0),
+                    "threshold": self._resource_mgr.cb_config.threshold,
+                    "base_delay": self._resource_mgr.cb_config.base_delay,
+                    "max_delay": self._resource_mgr.cb_config.max_delay,
+                }
+            return {
+                "nodes": {
+                    nid: {
+                        "failures": self._resource_mgr._node_failure_counts.get(nid, 0),
+                        "recovery_time": self._resource_mgr._node_recovery_time.get(nid, 0.0),
+                    }
+                    for nid in self._resource_mgr._node_failure_counts
+                },
+                "threshold": self._resource_mgr.cb_config.threshold,
+                "base_delay": self._resource_mgr.cb_config.base_delay,
+                "max_delay": self._resource_mgr.cb_config.max_delay,
+            }
 
     @property
     def metrics(self) -> dict[str, float]:
@@ -444,7 +711,6 @@ class Coordinator:
 
     def _init_multi_model(self, multi_model_config: MultiModelSettings | None) -> None:
         """Initialize multi-model and MoE subsystems."""
-        self._multi_model: MultiModelManager | None = None
         if multi_model_config and multi_model_config.enabled:
             model_registry = ModelRegistry(max_models=multi_model_config.max_models)
             model_registry._default_model = multi_model_config.default_model or self.model_name
@@ -530,7 +796,6 @@ class Coordinator:
             )
             partitioner.load_full_model()
             # Estimate memory
-            import torch
             mem_gb = 0.0
             if torch.cuda.is_available():
                 mem_gb = torch.cuda.memory_allocated() / (1024 ** 3)
@@ -538,8 +803,6 @@ class Coordinator:
 
         def _unload_model_callback(name: str, model, tokenizer):
             """Unload a model and free GPU memory."""
-            import gc
-            import torch
             del model
             del tokenizer
             gc.collect()
@@ -565,7 +828,6 @@ class Coordinator:
         max_swap_blocks: int = 0,
     ) -> None:
         """Initialize PagedAttention block manager."""
-        import torch
         from distllm.core.paged_attention import PagedAttentionManager
 
         dtype = getattr(torch, self.dtype, torch.float16)
@@ -656,9 +918,22 @@ class Coordinator:
             total_layers=self.total_layers,
             num_experts=getattr(self._expert_registry, 'num_experts', 0) if self._expert_registry else 0,
             use_moe=self._moe_orchestrator is not None,
+            pp_overlap=getattr(config, "pp_overlap", True),
+            tp_enabled=getattr(config, "tp_enabled", True),
+            ep_enabled=getattr(config, "ep_enabled", True),
         )
+        force_tp = getattr(config, "force_tp_world_size", 0)
+        if force_tp and force_tp > 1:
+            from distllm.core.hybrid_parallel import ParallelStrategy
+            plan.tp_world_size = force_tp
+            if plan.strategy == ParallelStrategy.PP:
+                plan.strategy = ParallelStrategy.TP_PP if plan.pp_num_stages > 1 else ParallelStrategy.TP
         self._hybrid_parallel_executor = HybridParallelExecutor(plan, coordinator=self)
         self._hybrid_parallel_executor.configure_pp(self._pipeline)
+        self._hybrid_parallel_executor.launch_tp(
+            model_name=self.model_name,
+            dtype=self.dtype,
+        )
         if hasattr(self, '_pipeline') and plan.pp_num_stages > 1:
             self._pipeline.enable_overlap = True
         logger.info(f"Hybrid parallel plan: {plan.explanation}")
@@ -713,6 +988,116 @@ class Coordinator:
         self._predictive_cache.start_background_compression(compress_int)
         logger.info(f"Predictive cache initialized (GPU={gpu_mb}MB, CPU={cpu_mb}MB)")
 
+    def _init_self_optimizing(self, config: Any = None) -> None:
+        """Initialize self-optimizing engine."""
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        from distllm.core.self_optimizing_engine import SelfOptimizingEngine
+        self._self_optimizing = SelfOptimizingEngine(
+            model_name=self.model_name,
+            profile_dir=getattr(config, 'profile_dir', None),
+            tune_interval_seconds=getattr(config, 'tune_interval_seconds', 60.0),
+            warmup_seconds=getattr(config, 'warmup_seconds', 30.0),
+            apply_params=self._apply_tunable_params,
+        )
+        logger.info("Self-optimizing engine initialized")
+
+    def _apply_tunable_params(self, params) -> None:
+        """Apply auto-tuned parameters to the live system."""
+        if self.scheduler is not None and hasattr(params, 'batch_size'):
+            if params.batch_size != self.scheduler.max_batch_size:
+                self.scheduler.max_batch_size = params.batch_size
+        if self._spec_decoder is not None and hasattr(params, 'speculative_decoding_enabled') and params.speculative_decoding_enabled is not None:
+            self._spec_decoder._enabled = params.speculative_decoding_enabled
+
+    def _init_cuda_graph(self, config: Any = None) -> None:
+        """Initialize CUDA graph pool (deferred to model load time)."""
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        self._cuda_graph_batch_sizes = getattr(config, 'batch_sizes', [1, 2, 4, 8, 16, 32])
+        logger.info("CUDA graph capture enabled (will initialize after model load)")
+
+    def _init_compile_support(self, config: Any = None) -> None:
+        """Initialize torch.compile support (deferred to model load time)."""
+        self._compile_enabled = False
+        if config is None:
+            return
+        self._compile_enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if self._compile_enabled:
+            self._compile_mode = getattr(config, 'mode', 'reduce-overhead')
+            self._compile_fullgraph = getattr(config, 'fullgraph', False)
+            logger.info("torch.compile enabled (will apply after model load)")
+
+    def _init_slora(self, config: Any = None) -> None:
+        """Initialize SLoRA manager (deferred to model load time)."""
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        self._slora_max_adapters = getattr(config, 'max_adapters', 64)
+        logger.info("SLoRA multi-adapter serving enabled (will initialize after model load)")
+
+    def _init_rag(self, config: Any = None) -> None:
+        """Initialize RAG pipeline."""
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        from distllm.core.rag_pipeline import RAGPipeline
+        embedding_fn = getattr(self._embedding_loader, 'encode', None) if hasattr(self, '_embedding_loader') and self._embedding_loader else None
+        if embedding_fn is None:
+            logger.warning("RAG enabled but embedding_loader not available — skipping")
+            return
+        self._rag_pipeline = RAGPipeline(
+            embedding_fn=embedding_fn,
+            dimension=getattr(config, 'dimension', 768),
+            chunk_size=getattr(config, 'chunk_size', 512),
+            chunk_overlap=getattr(config, 'chunk_overlap', 50),
+            index_path=getattr(config, 'index_path', None),
+        )
+        logger.info("RAG pipeline initialized")
+
+    def _init_agent(self, config: Any = None) -> None:
+        """Initialize agent loop."""
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        from distllm.core.agent_loop import AgentLoop
+        def llm_fn(prompt: str) -> str:
+            return self.generate(prompt, max_new_tokens=512, temperature=0.7)
+        self._agent_loop = AgentLoop(
+            llm_fn=llm_fn,
+            max_iterations=getattr(config, 'max_iterations', 10),
+            reflection_enabled=getattr(config, 'reflection_enabled', True),
+        )
+        logger.info("Agent loop initialized")
+
+    def _init_disagg(self, config: Any = None) -> None:
+        """Initialize disaggregated serving."""
+        if config is None:
+            return
+        enabled = getattr(config, 'enabled', False) if not isinstance(config, bool) else config
+        if not enabled:
+            return
+        from distllm.core.disagg_serving import DisaggRouter, DisaggOrchestrator
+        router = DisaggRouter(local_coordinator=self, local_model_name=self.model_name)
+        for node in getattr(config, 'prefill_nodes', []):
+            router.add_prefill_node(**node)
+        for node in getattr(config, 'decode_nodes', []):
+            router.add_decode_node(**node)
+        self._disagg_orchestrator = DisaggOrchestrator(router=router)
+        logger.info("Disaggregated orchestrator initialized")
+
     def _init_moe(self, moe_config: MoESettings | None) -> None:
         """Initialize MoE subsystem."""
         if moe_config and moe_config.enabled:
@@ -740,10 +1125,17 @@ class Coordinator:
         return self._multi_model.register_model(name, path, total_layers)
 
     def list_models(self) -> list[str]:
-        """List all registered model names."""
+        """List all registered model names, including hybrid router models."""
         if self._multi_model is None:
-            return [self.model_name]
-        return self._multi_model.list_models()
+            models = [self.model_name]
+        else:
+            models = self._multi_model.list_models()
+        # Append hybrid router model names so clients can discover them
+        if self._chat_router is not None:
+            for hname in self._chat_router.list_hybrid_models():
+                if hname and hname not in models:
+                    models.append(hname)
+        return models
 
     def get_model_name(self, requested: str | None = None) -> str:
         """Resolve model name: requested > registry default > self.model_name."""
@@ -758,9 +1150,8 @@ class Coordinator:
 
     def _gossip_loop(self):
         """Background daemon that runs periodic gossip rounds."""
-        import time
         interval = 10.0  # default, could be read from gossip_config
-        while True:
+        while self._running.is_set():
             try:
                 time.sleep(interval)
                 if self._cache_mgr is not None:
@@ -797,7 +1188,9 @@ class Coordinator:
 
     def get_metrics(self) -> dict:
         """Get current metrics in Prometheus-compatible format (thread-safe)."""
-        return self._metrics_mgr.get_prometheus()
+        base = self._metrics_mgr.get_prometheus()
+        base["recovery"] = self._recovery.get_metrics()
+        return base
 
     # -- Delegation to ResourceManager --
 
@@ -850,249 +1243,30 @@ class Coordinator:
     # -- Token Sampling (delegates to TokenGenerator) --
 
     def _sample(self, logits: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0, top_k: int = 0) -> torch.Tensor:
-        self._token_gen.tokenizer = self.tokenizer
-        # Check for dynamic param updates using context variable
-        request_id = _current_request_id_ctx.get()
-        if request_id is not None:
-            params = self._param_update_channel.get(request_id)
-            if params is not None:
-                temperature = params.temperature
-                top_p = params.top_p
-                top_k = params.top_k
-        return self._token_gen.sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
+        return self._pipeline_runner._sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
 
     def _sample_batch(self, logits: torch.Tensor, batch: ScheduledBatch) -> torch.Tensor:
-        self._token_gen.tokenizer = self.tokenizer
-        # Apply param updates per sequence
-        for seq in batch.sequences:
-            params = self._param_update_channel.get(seq.request_id)
-            if params is not None:
-                seq.temperature = params.temperature
-                seq.top_p = params.top_p
-                seq.top_k = params.top_k
-        return self._token_gen.sample_batch(logits, batch.sequences, tokenizer=self.tokenizer)
+        return self._pipeline_runner._sample_batch(logits, batch)
+
+    def _speculative_tokens_to_append(
+        self,
+        draft_tokens: list[int] | torch.Tensor,
+        target_logits: torch.Tensor,
+        accepted_count: int,
+        accepted_tokens: list[int],
+        next_token: int,
+    ) -> list[int]:
+        return self._pipeline_runner._speculative_tokens_to_append(
+            draft_tokens, target_logits, accepted_count, accepted_tokens, next_token
+        )
 
     # -- Generation --
 
-    def generate(self, prompt: str, max_new_tokens: int = 128, temperature: float = 0.7, top_p: float = 0.9, top_k: int = 0, request_id: str | None = None) -> str:
-        """Generate text using distributed pipeline parallelism.
-
-        Args:
-            prompt: Input text prompt.
-            max_new_tokens: Maximum number of tokens to generate.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling threshold.
-            top_k: Top-k sampling. 0 means disabled.
-            request_id: Optional request ID for param updates. Auto-generated if None.
-
-        Returns:
-            Generated text.
-        """
-        if not self.node_order and self.local_partitioner is None:
-            raise NodeError("No nodes registered and no local model loaded")
-
-        request_id = request_id or str(uuid.uuid4())
-        self._param_update_channel.register(request_id)
-        token = _current_request_id_ctx.set(request_id)
-        req_log = logger.bind(request_id=request_id, mode="distributed" if self.node_order else "local")
-
-        self.record_metric("total_requests", 1)
-        start_time = time.time()
-
-        # Generation span
-        from distllm.observability.spans import span_prefill, record_ttft
-        prompt_len = len(self.tokenizer.encode(prompt)) if self.tokenizer else 0
-        tenant = "default"
-
-        try:
-            if self.tokenizer is None:
-                raise ValueError("Tokenizer not loaded")
-            input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
-
-            if self.node_order:
-                req_log.info(f"Starting distributed generation: {max_new_tokens} tokens max")
-                input_ids = input_ids.to("cpu")
-                prompt_len = input_ids.shape[1]
-                total_capacity = prompt_len + max_new_tokens
-                generated_ids = torch.zeros(1, total_capacity, dtype=torch.long)
-                generated_ids[:, :prompt_len] = input_ids
-                gen_pos = prompt_len
-
-                node_kv_caches: dict[str, list | None] = {
-                    nid: None for nid in self.node_order
-                }
-
-                prefill_start = time.monotonic()
-
-                # Predictive cache: observe request patterns & pre-warm
-                predictive_cache = self._predictive_cache
-                if predictive_cache is not None:
-                    token_ids = input_ids[0].tolist()
-                    predictions = predictive_cache.observe_request(token_ids)
-                    for pred in predictions:
-                        if pred.should_prefetch and pred.confidence > 0.3:
-                            self._cache_mgr.lookup_prefix(list(pred.prefix_tokens))
-
-                # Check if speculative decoding is available and enabled
-                active_method = self._spec_decoder.get_active_method(self.draft_model) if self._spec_decoder else None
-                use_speculative = (
-                    self._spec_decoder is not None
-                    and self._spec_decoder.is_enabled
-                    and active_method in ("draft_model", "medusa", "ngram")
-                )
-                if use_speculative:
-                    draft_tokens_count = self.num_assistant_tokens
-                    req_log.info(f"Speculative decoding enabled ({active_method}): {draft_tokens_count} draft tokens")
-
-                step = 0
-                while step < max_new_tokens:
-                    if gen_pos == prompt_len:
-                        step_input = generated_ids[:, :gen_pos]
-                    else:
-                        step_input = generated_ids[:, gen_pos-1:gen_pos]
-
-                    draft_tokens = None
-                    if use_speculative:
-                        # Generate draft tokens using the active speculation method
-                        active_method = self._spec_decoder.get_active_method(self.draft_model)
-                        if active_method == "draft_model" and self.draft_model is not None:
-                            draft_tokens, _ = self._spec_decoder.generate_draft_tokens(
-                                self.draft_model, step_input
-                            )
-                        elif active_method == "ngram":
-                            # N-gram matching uses generated_ids as context
-                            generated_list = generated_ids[0].tolist() if generated_ids.dim() == 2 else generated_ids.tolist()
-                            draft_tokens, _ = self._spec_decoder.generate_draft_tokens(
-                                None, step_input, generated_ids=generated_list
-                            )
-                        else:
-                            # Medusa: generate drafts after we get target logits
-                            pass
-
-                        if draft_tokens and is_debug_mode():
-                            req_log.debug(f"Draft tokens: {draft_tokens}")
-
-                    # Zero-copy: wrap input tensor for GPU-direct transfer
-                    zc_engine = self._zero_copy_engine
-                    zc_input = step_input
-                    if zc_engine is not None and step_input.is_cuda and self.node_order:
-                        for nid in self.node_order:
-                            zc_engine.send(nid, step_input, peer_is_local=False, tag=f"input_{request_id}")
-
-                    hybrid_executor = self._hybrid_parallel_executor
-                    if hybrid_executor is not None:
-                        logits = hybrid_executor.execute(
-                            zc_input, node_kv_caches, request_id=request_id,
-                            draft_tokens=draft_tokens if use_speculative else None,
-                        )
-                    else:
-                        logits = self._pipeline.run_pipeline(
-                            zc_input, node_kv_caches, request_id=request_id,
-                            draft_tokens=draft_tokens if use_speculative else None,
-                        )
-
-                    if use_speculative and active_method == "medusa":
-                        # Medusa: generate draft tokens from target logits
-                        draft_tokens, _ = self._spec_decoder.generate_draft_tokens(
-                            None, step_input, target_logits=logits
-                        )
-                        if draft_tokens and is_debug_mode():
-                            req_log.debug(f"Medusa draft tokens: {draft_tokens}")
-
-                    if use_speculative and draft_tokens:
-                        # Verify draft tokens against target model logits
-                        accepted_count, accepted_tokens, next_token = self._spec_decoder.verify_and_accept(
-                            draft_tokens, logits, self.tokenizer
-                        )
-                        # Append accepted tokens
-                        for token_id in accepted_tokens:
-                            generated_ids[:, gen_pos] = token_id
-                            gen_pos += 1
-                            if next_token == self.tokenizer.eos_token_id:
-                                break
-                        # If we got a valid next_token after accepted prefix, append it
-                        if next_token > 0 and next_token != self.tokenizer.eos_token_id:
-                            generated_ids[:, gen_pos] = next_token
-                            gen_pos += 1
-                        elif next_token == self.tokenizer.eos_token_id:
-                            generated_ids[:, gen_pos] = next_token
-                            gen_pos += 1
-                            break
-                        # Count tokens generated this step
-                        step += accepted_count + (1 if next_token > 0 else 0)
-
-                        # Record generated tokens for n-gram indexing
-                        self._spec_decoder.record_generated_tokens(generated_ids[0, :gen_pos].tolist())
-                    else:
-                        next_token = self._sample(logits[:, -1, :], temperature=temperature, top_p=top_p, top_k=top_k)
-                        generated_ids[:, gen_pos] = next_token.item()
-                        gen_pos += 1
-                        step += 1
-                        if next_token.item() == self.tokenizer.eos_token_id:
-                            break
-
-                        # Record tokens for n-gram indexing even without speculation
-                        if self._spec_decoder:
-                            self._spec_decoder.record_generated_tokens(generated_ids[0, :gen_pos].tolist())
-
-                result = self.tokenizer.decode(generated_ids[0, :gen_pos], skip_special_tokens=True)
-                tokens_generated = gen_pos - prompt_len
-            else:
-                req_log.info(f"Starting local generation: {max_new_tokens} tokens max")
-                model_device = next(self.local_partitioner.full_model.parameters()).device
-                input_ids = input_ids.to(model_device)
-
-                gen_kwargs = {
-                    "max_new_tokens": max_new_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "do_sample": temperature > 0,
-                    "pad_token_id": self.tokenizer.eos_token_id,
-                }
-                if self.draft_model is not None:
-                    gen_kwargs["assistant_model"] = self.draft_model
-                    gen_kwargs["num_assistant_tokens"] = self.num_assistant_tokens
-                    req_log.info(f"Speculative decoding enabled with {self.num_assistant_tokens} assistant tokens")
-
-                with torch.no_grad():
-                    output = self.local_partitioner.full_model.generate(input_ids, **gen_kwargs)
-                result = self.tokenizer.decode(output[0], skip_special_tokens=True)
-                tokens_generated = output.shape[1] - input_ids.shape[1]
-
-            elapsed = time.time() - start_time
-            self.record_metric("total_tokens_generated", tokens_generated)
-            self.record_metric("total_generation_time", elapsed)
-
-            if self.metrics_exporter:
-                self.metrics_exporter.tokens_generated.inc(tokens_generated)
-                self.metrics_exporter.token_latency.observe(elapsed)
-                if elapsed > 0:
-                    self.metrics_exporter.tokens_per_second.set(tokens_generated / elapsed)
-
-            req_log.info(f"Generated {tokens_generated} tokens in {elapsed:.2f}s ({tokens_generated/elapsed:.1f} tok/s)")
-
-            return result
-
-        except (NodeUnreachableError, OOMError, GRPCTimeoutError, NodeError) as e:
-            self.record_metric("errors", 1)
-            if self.metrics_exporter:
-                self.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()
-            req_log.error(f"Generation failed: {e}")
-            raise
-        except Exception as e:
-            self.record_metric("errors", 1)
-            if self.metrics_exporter:
-                self.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()
-            req_log.error(f"Generation failed: {e}")
-            raise
-
-        finally:
-            paged_bt = locals().get('paged_block_tables', {})
-            if self._paged_kv_backend is not None and paged_bt:
-                for nid, block_table in paged_bt.items():
-                    self._paged_kv_backend.free(block_table)
-            self._param_update_channel.unregister(request_id)
-            _current_request_id_ctx.reset(token)
+    def generate(self, prompt: str, max_new_tokens: int = 128, temperature: float = 0.7, top_p: float = 0.9, top_k: int = 0, request_id: str | None = None, user_id: str = "default", speculative_config: dict | None = None) -> str:
+        return self._pipeline_runner.generate(
+            prompt, max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
+            request_id=request_id, user_id=user_id, speculative_config=speculative_config,
+        )
 
     def generate_async(
         self,
@@ -1103,214 +1277,161 @@ class Coordinator:
         top_p: float = 0.9,
         top_k: int = 0,
         schema: dict | None = None,
+        response_format: dict | None = None,
         priority: int = 2,
         adapter_id: str | None = None,
+        include_logprobs: bool = False,
+        top_logprobs: int = 0,
+        logit_bias: dict[int, float] | None = None,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        max_latency_ms: float | None = None,
+        user_id: str = "default",
     ) -> str:
-        """Add a request to the batch scheduler (non-blocking)."""
-        if self.scheduler is None:
-            raise BatchError("Batch scheduler not configured. Use generate() instead.")
-
-        if request_id is None:
-            request_id = str(uuid.uuid4())
-
-        self._param_update_channel.register(request_id)
-
-        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").squeeze(0).tolist()
-
-        prefix_match_len = 0
-        if self.prefix_cache:
-            prefix_match_len, _ = self._cache_mgr.lookup_prefix(input_ids)
-
-        constraint = None
-        if schema:
-            constraint = JSONSchemaConstraint(schema=schema)
-
-        chunk_state = self._cache_mgr.maybe_chunk(input_ids)
-
-        seq = Sequence(
-            request_id=request_id,
-            prompt_tokens=input_ids,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            constraint=constraint,
-            prefix_match_len=prefix_match_len,
-            priority=priority,
-            adapter_id=adapter_id,
+        return self._pipeline_runner.generate_async(
+            prompt, request_id=request_id, max_new_tokens=max_new_tokens,
+            temperature=temperature, top_p=top_p, top_k=top_k,
+            schema=schema, response_format=response_format, priority=priority,
+            adapter_id=adapter_id, include_logprobs=include_logprobs,
+            top_logprobs=top_logprobs, logit_bias=logit_bias,
+            presence_penalty=presence_penalty, frequency_penalty=frequency_penalty,
+            max_latency_ms=max_latency_ms, user_id=user_id,
         )
-        if chunk_state:
-            seq.chunk_state = chunk_state
-
-        if self.tokenizer.eos_token_id is not None:
-            seq.stop_token_ids = [self.tokenizer.eos_token_id]
-
-        self.scheduler.add(seq)
-        self._batch_event.set()
-
-        event = self._request_tracker.register_request(request_id)
-
-        self.record_metric("total_requests", 1)
-        return request_id
 
     def wait_for_result(self, request_id: str, timeout: float = 120.0) -> str:
-        """Wait for a batched request to complete and return the result."""
-        return self._request_tracker.wait_for_result(request_id, timeout)
+        return self._pipeline_runner.wait_for_result(request_id, timeout)
+
+    def get_logprobs(self, request_id: str) -> list[dict] | None:
+        return self._pipeline_runner.get_logprobs(request_id)
 
     def generate_batch(self, timeout: float = 120.0, max_steps: int = 0) -> None:
-        """Run the batch generation loop until all pending requests are complete."""
-        if self.scheduler is None:
-            raise BatchError("Batch scheduler not configured. Use generate() instead.")
-
-        step = 0
-        idle_time = 0.0
-
-        while self.scheduler.has_pending:
-            batch = self.scheduler.schedule()
-            if batch is None:
-                self._batch_event.wait(timeout=0.01)
-                self._batch_event.clear()
-                idle_time += 0.01
-                if idle_time > timeout:
-                    break
-                continue
-
-            idle_time = 0.0
-
-            batch_request_ids = [seq.request_id for seq in batch.sequences]
-            try:
-                if self.local_partitioner is not None:
-                    self._generate_local_batch(batch)
-                else:
-                    self._run_distributed_pipeline_batch(batch)
-            except Exception:
-                with self._batch_kv_caches_lock:
-                    for rid in batch_request_ids:
-                        self._batch_kv_caches.pop(rid, None)
-                raise
-
-            step += 1
-            if max_steps > 0 and step >= max_steps:
-                break
-
-        if self.scheduler is not None:
-            self._request_tracker.complete_batch_requests(
-                self.scheduler.active, list(self.scheduler.pending_queue), self.tokenizer
-            )
-            # Clean up KV cache state for completed requests
-            with self._batch_kv_caches_lock:
-                for rid in list(self._batch_kv_caches.keys()):
-                    if rid not in self.scheduler.active:
-                        self._batch_kv_caches.pop(rid, None)
+        self._pipeline_runner.generate_batch(timeout=timeout, max_steps=max_steps)
 
     def _generate_local_batch(self, batch: ScheduledBatch) -> None:
-        """Run a batch through the local model."""
-        batch_size = batch.batch_size
-        device = next(self.local_partitioner.full_model.parameters()).device
-
-        max_len = batch.max_seq_len
-        input_ids_list = []
-        for i, seq in enumerate(batch.sequences):
-            if batch.is_prefill[i]:
-                start = seq.prefix_match_len
-                tokens = seq.prompt_tokens[start:]
-            else:
-                tokens = [seq.decode_input_token]
-            padded = tokens + [0] * (max_len - len(tokens))
-            input_ids_list.append(padded)
-
-        input_ids = torch.tensor(input_ids_list, dtype=torch.long, device=device)
-        attention_mask = (input_ids != 0).long()
-
-        # Speculative batch decoding: generate draft tokens for all sequences,
-        # verify against target model logits in one pass
-        if self._spec_decoder and self._spec_decoder.is_enabled and self.draft_model is not None:
-            draft_tokens_per_seq = []
-            for i, seq in enumerate(batch.sequences):
-                seq_input = input_ids[i:i+1]  # [1, seq_len]
-                drafts, _ = self._spec_decoder.generate_draft_tokens(
-                    self.draft_model, seq_input
-                )
-                draft_tokens_per_seq.append(drafts)
-
-            with torch.no_grad():
-                outputs = self.local_partitioner.full_model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                )
-                logits = outputs.logits  # [batch, seq_len, vocab]
-
-            # Verify each sequence's draft tokens
-            all_next_tokens = []
-            for i, seq in enumerate(batch.sequences):
-                drafts = draft_tokens_per_seq[i] if i < len(draft_tokens_per_seq) else []
-                _, accepted, next_token = self._spec_decoder.verify_and_accept(
-                    drafts, logits[i:i+1], self.tokenizer
-                )
-                all_next_tokens.append(next_token)
-
-            next_tokens = torch.tensor(all_next_tokens, device=device)
-        else:
-            with torch.no_grad():
-                outputs = self.local_partitioner.full_model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                )
-                logits = outputs.logits[:, -1, :]
-
-            next_tokens = self._sample_batch(logits, batch)
-
-        self.scheduler.step(batch, next_tokens)
+        self._pipeline_runner._generate_local_batch(batch)
 
     def _run_distributed_pipeline_batch(self, batch: ScheduledBatch) -> None:
-        """Run a batch through the distributed pipeline with persistent KV caches."""
-        next_tokens: list[torch.Tensor] = []
+        self._pipeline_runner._run_distributed_pipeline_batch(batch)
 
+    def _run_async_pipeline_batch(self, batch: ScheduledBatch) -> None:
+        self._pipeline_runner._run_async_pipeline_batch(batch)
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded")
+
+        # Build input tensors for all sequences in the batch
+        input_tensors = []
         for seq_idx, seq in enumerate(batch.sequences):
             if batch.is_prefill[seq_idx]:
                 start = seq.prefix_match_len
                 tokens = seq.prompt_tokens[start:]
             else:
                 tokens = [seq.decode_input_token]
+            input_tensors.append(torch.tensor([tokens], dtype=torch.long))
 
-            input_ids = torch.tensor([tokens], dtype=torch.long)
+        # Stack into a single batch tensor [batch_size, seq_len]
+        max_len = max(t.shape[1] for t in input_tensors)
+        padded_tensors = []
+        for t in input_tensors:
+            if t.shape[1] < max_len:
+                padding = torch.zeros((1, max_len - t.shape[1]), dtype=torch.long)
+                t = torch.cat([t, padding], dim=1)
+            padded_tensors.append(t)
 
-            # Reuse KV cache state if it exists from a prior step
-            with self._batch_kv_caches_lock:
-                if seq.request_id in self._batch_kv_caches:
-                    node_kv_caches = self._batch_kv_caches[seq.request_id]
-                else:
-                    node_kv_caches: dict[str, list | None] = {
-                        nid: None for nid in self.node_order
-                    }
+        batch_input = torch.cat(padded_tensors, dim=0)  # [batch_size, max_seq_len]
 
-                    if self._paged_kv_backend is not None:
-                        logger.debug("PagedAttention backend available for distributed pipeline")
-                    self._batch_kv_caches[seq.request_id] = node_kv_caches
+        # Speculative decoding: generate drafts before pipeline run
+        use_spec = (
+            self._spec_decoder is not None
+            and self._spec_decoder.is_enabled
+            and self.draft_model is not None
+            and not all(batch.is_prefill)
+        )
+
+        draft_tokens_list = None
+        if use_spec:
+            draft_tokens_list, _ = self._spec_decoder.generate_batch_draft_tokens(
+                self.draft_model, input_tensors
+            )
+
+        # Wrap existing pipeline run_pipeline as a stage forward function
+        # The async engine splits the batch into micro-batches and runs them
+        # through stages with 1F1B/interleaved scheduling
+        def stage_forward(micro_batch: torch.Tensor) -> torch.Tensor:
+            """Forward pass for a micro-batch through the full pipeline.
+
+            This delegates to the existing distributed pipeline execution
+            but with micro-batch granularity for async scheduling.
+            """
+            # Initialize KV caches for this micro-batch
+            micro_kv_caches = self._pipeline.create_node_kv_caches()
 
             if self._pipeline.enable_overlap:
                 logits = self._pipeline.run_pipeline_overlap(
-                    input_ids,
-                    node_kv_caches,
-                    request_id=seq.request_id,
+                    micro_batch, micro_kv_caches, request_id="async_micro"
                 )
             else:
                 logits = self._pipeline.run_pipeline(
-                    input_ids,
-                    node_kv_caches,
-                    request_id=seq.request_id,
+                    micro_batch, micro_kv_caches, request_id="async_micro"
                 )
+            return logits
 
-            seq_logits = logits[:, -1, :]
-            if seq.constraint is not None:
-                mask = seq.constraint.get_logits_mask(seq_logits.shape[-1], self.tokenizer)
-                seq_logits = seq_logits.masked_fill(~mask, float('-inf'))
+        # Create a single stage wrapping the full pipeline (for now)
+        # In a full implementation, each node would be a separate stage
+        if not self._async_pipeline._stages:
+            from distllm.core.async_pipeline import AsyncPipelineStage
+            stage = AsyncPipelineStage(
+                stage_id=0,
+                forward_fn=stage_forward,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            )
+            self._async_pipeline.add_stage(stage)
 
-            token = self._sample(seq_logits, temperature=seq.temperature, top_p=seq.top_p, top_k=seq.top_k)
-            next_tokens.append(token)
+        # Run through async pipeline engine
+        logits = self._async_pipeline.forward(batch_input)
 
-        next_tokens_tensor = torch.stack(next_tokens).squeeze(-1)
-        self.scheduler.step(batch, next_tokens_tensor)
+        # Sample next tokens for each sequence
+        if use_spec and draft_tokens_list is not None:
+            target_logits_list = [logits[i:i+1] for i in range(len(batch.sequences))]
+            results = self._spec_decoder.verify_batch(
+                draft_tokens_list=draft_tokens_list,
+                target_logits_list=target_logits_list,
+                tokenizer=self.tokenizer,
+            )
+            if self._continuous_trainer is not None:
+                for idx, (_, accepted, _) in enumerate(results):
+                    if accepted and idx < len(draft_tokens_list):
+                        dt = draft_tokens_list[idx]
+                        draft_ids = dt.tolist() if hasattr(dt, 'tolist') else list(dt) if dt else []
+                        if draft_ids:
+                            self._continuous_trainer.record(draft_ids, list(accepted))
+            for i, seq in enumerate(batch.sequences):
+                next_token = results[i][2]
+                seq._async_next_token = torch.tensor([next_token], dtype=torch.long)
+        else:
+            for i, seq in enumerate(batch.sequences):
+                seq_logits = logits[i:i+1, -1, :]
+                if seq.constraint is not None:
+                    mask = seq.constraint.get_logits_mask(seq_logits.shape[-1], self.tokenizer)
+                    seq_logits = seq_logits.masked_fill(~mask, float('-inf'))
+
+                token = self._sample(seq_logits, temperature=seq.temperature, top_p=seq.top_p, top_k=seq.top_k)
+                # Store in batch.sequences for scheduler.step
+                if not hasattr(seq, '_async_next_token'):
+                    seq._async_next_token = token
+                else:
+                    seq._async_next_token = token
+
+        # Collect tokens into tensor for scheduler
+        next_tokens_list = [seq._async_next_token for seq in batch.sequences]
+        next_tokens_tensor = torch.stack(next_tokens_list).squeeze(-1)
+        with self._batch_kv_caches_lock:
+            kv_copy = dict(self._batch_kv_caches)
+        decoded = [self.tokenizer.decode([int(next_tokens_tensor[i])]) if batch.sequences[i].constraint is not None else None for i in range(len(batch.sequences))]
+        self.scheduler.step(batch, next_tokens_tensor, kv_caches=kv_copy, decoded_tokens=decoded)
+
+        # Log async pipeline stats
+        if is_debug_mode():
+            logger.debug(f"Async pipeline stats: {self._async_pipeline.summary()}")
 
     # -- Model Loading (delegated to ModelManager) --
 
@@ -1321,6 +1442,37 @@ class Coordinator:
         self._apply_rope_scaling()
         self._wire_paged_attention()
         self._apply_adaptive_precision()
+
+        # CUDA graph capture
+        if getattr(self, '_cuda_graph_batch_sizes', None) and self.local_partitioner is not None:
+            model = self.local_partitioner.full_model
+            config = model.config
+            from distllm.core.cuda_graph import CUDAGraphPool
+            self._cuda_graph_pool = CUDAGraphPool(
+                model=model,
+                batch_sizes=self._cuda_graph_batch_sizes,
+                num_layers=getattr(config, 'num_hidden_layers', 0),
+                num_heads=getattr(config, 'num_attention_heads', 0),
+                head_dim=getattr(config, 'hidden_size', 4096) // getattr(config, 'num_attention_heads', 32),
+            )
+            self._cuda_graph_pool.capture_all()
+
+        # torch.compile
+        if getattr(self, '_compile_enabled', False) and self.local_partitioner is not None:
+            from distllm.core.compile_support import compile_model
+            self.local_partitioner.full_model = compile_model(
+                self.local_partitioner.full_model,
+                mode=getattr(self, '_compile_mode', 'reduce-overhead'),
+                fullgraph=getattr(self, '_compile_fullgraph', False),
+            )
+
+        # SLoRA manager
+        if getattr(self, '_slora_max_adapters', None) and self.local_partitioner is not None:
+            from distllm.core.slora_manager import SLoRAManager
+            self._slora_manager = SLoRAManager(
+                base_model=self.local_partitioner.full_model,
+                max_adapters=self._slora_max_adapters,
+            )
 
     def _apply_flash_attention(self):
         """Patch the loaded model's attention layers to use FlashAttention-2."""
@@ -1405,6 +1557,82 @@ class Coordinator:
 
     # -- Server Lifecycle --
 
+    # -- New Module Public API --
+
+    @property
+    def request_auditor(self) -> RequestAuditor | None:
+        return self._request_auditor
+
+    @property
+    def prompt_cache_service(self) -> PromptCachingService | None:
+        return self._prompt_cache_service
+
+    @property
+    def graceful_degradation(self) -> GracefulDegradation | None:
+        return self._graceful_degradation
+
+    @property
+    def adaptive_batching(self) -> AdaptiveBatchingEngine | None:
+        return self._adaptive_batching
+
+    @property
+    def model_comparator(self) -> ModelVersionComparator:
+        return self._model_comparator
+
+    @property
+    def token_streaming_buffer(self) -> TokenStreamingBuffer | None:
+        return self._token_streaming_buffer
+
+    @token_streaming_buffer.setter
+    def token_streaming_buffer(self, value: TokenStreamingBuffer | None) -> None:
+        self._token_streaming_buffer = value
+
+    @property
+    def request_fingerprinter(self) -> RequestFingerprinter | None:
+        return self._request_fingerprinter
+
+    @property
+    def rate_limiter(self) -> LeakyBucketRateLimiter | None:
+        return self._rate_limiter
+
+    def set_streaming_buffer(self, flush_handler=None, max_batch_size: int = 5, flush_interval_ms: float = 50.0) -> TokenStreamingBuffer:
+        """Create and set a token streaming buffer with the given flush handler."""
+        buf = TokenStreamingBuffer(
+            flush_handler=flush_handler,
+            max_batch_size=max_batch_size,
+            flush_interval_ms=flush_interval_ms,
+        )
+        self._token_streaming_buffer = buf
+        return buf
+
+    def configure_adaptive_batching(self, model: str, p50: float | None = None, p99: float | None = None, max_batch: int | None = None) -> None:
+        """Configure per-model SLO for adaptive batching."""
+        if self._adaptive_batching is not None:
+            self._adaptive_batching.set_slo(model, p50=p50, p99=p99, max_batch=max_batch)
+
+    def rate_limit_key(self, key: str, rate: float | None = None, burst: int | None = None) -> None:
+        """Configure rate limit for a specific key (user, IP, endpoint)."""
+        if self._rate_limiter is not None:
+            if rate is not None and burst is not None:
+                self._rate_limiter.set_limit(key, rate, burst)
+
+    def get_new_module_stats(self) -> dict:
+        """Get stats from all new modules."""
+        stats = {}
+        if self._request_auditor:
+            stats["auditor"] = self._request_auditor.stats()
+        if self._prompt_cache_service:
+            stats["prompt_cache"] = self._prompt_cache_service.stats()
+        if self._graceful_degradation:
+            stats["degradation"] = self._graceful_degradation.stats()
+        if self._adaptive_batching:
+            stats["adaptive_batching"] = self._adaptive_batching.all_stats()
+        if self._rate_limiter:
+            stats["rate_limiter"] = self._rate_limiter.stats()
+        if self._request_fingerprinter:
+            stats["fingerprinter"] = self._request_fingerprinter.stats()
+        return stats
+
     def start(self, blocking: bool = True, on_stop: Callable | None = None):
         """Start the coordinator gRPC server."""
         if self.tokenizer is None:
@@ -1418,6 +1646,9 @@ class Coordinator:
         if self.model_info is not None and self.scheduler is not None:
             self.scheduler._model_info = self.model_info
             self.scheduler._use_length_grouping = True
+
+        # Signal background threads that coordinator is running
+        self._running.set()
 
         # Launch gossip loop if enabled
         if self._gossip_protocol is not None:
@@ -1445,6 +1676,10 @@ class Coordinator:
 
         logger.info(f"Coordinator started on port {self.port}")
 
+        # Start self-optimizing engine
+        if self._self_optimizing:
+            self._self_optimizing.start()
+
         if blocking:
             try:
                 self.server.wait_for_termination()
@@ -1471,8 +1706,10 @@ class Coordinator:
 
     def _rebalancer_loop(self) -> None:
         """Background loop that checks for stragglers periodically."""
-        while True:
+        while self._running.is_set():
             time.sleep(self._rebalancer._settings.check_interval)
+            if not self._running.is_set():
+                break
             if not self._rebalancer._settings.enabled:
                 continue
             should, reason = self._rebalancer.should_rebalance()
@@ -1485,6 +1722,141 @@ class Coordinator:
                 logger.info("NOTE: Partition recommendation is logged for manual approval (v1)")
                 self._rebalancer.record_rebalance()
 
+    # ------------------------------------------------------------------
+    # Self-healing: node recovery callbacks
+    # ------------------------------------------------------------------
+
+    def _on_resource_mgr_failure(self, node_id: str) -> None:
+        """Called by ``ResourceManager`` when circuit breaker opens for a node.
+
+        Delegates to ``NodeRecoveryManager`` which orchestrates drain,
+        layer redistribution, and sequence recovery.
+        """
+        logger.warning(f"Resource manager reported failure for {node_id}")
+        plan = self._recovery.on_node_failure(node_id)
+        if plan.recovered_sequences:
+            logger.info(
+                f"Recovered {len(plan.recovered_sequences)} sequences "
+                f"from failed node {node_id}"
+            )
+
+    def _on_recovery_drain(self, node_id: str) -> None:
+        """Callback: drain a failed node — remove from active topology."""
+        logger.info(f"Draining node {node_id}")
+        self._pipeline.unregister_node(node_id)
+
+    def _on_recovery_redistribute(
+        self, failed_node_id: str, plan: NodeRecoveryPlan
+    ) -> None:
+        """Callback: redistribute the failed node's layers to survivors.
+
+        Computes a new partition by dividing the total layers evenly across
+        surviving nodes (since the failed node is already removed from topology
+        by the drain callback). Updates ``NodeRegistration`` records.
+        """
+        with self._pipeline._topology_lock:
+            survivors = sorted(
+                self._pipeline.nodes.keys(),
+                key=lambda nid: self._pipeline.nodes[nid].start_layer,
+            )
+            num_survivors = len(survivors)
+            if num_survivors == 0:
+                logger.error(f"No survivors to redistribute layers from {failed_node_id}")
+                return
+
+            total_layers = self._pipeline.total_layers
+            layers_per_node = total_layers // num_survivors
+            remainder = total_layers % num_survivors
+
+            for i, nid in enumerate(survivors):
+                start = i * layers_per_node + min(i, remainder)
+                end = start + layers_per_node - 1
+                if i < remainder:
+                    end += 1
+                node_reg = self._pipeline.nodes.get(nid)
+                if node_reg:
+                    redist = LayerRedistribution(
+                        surviving_node_id=nid,
+                        added_start_layer=node_reg.end_layer + 1 if i > 0 else 0,
+                        added_end_layer=end,
+                        new_start_layer=start,
+                        new_end_layer=end,
+                    )
+                    node_reg.start_layer = start
+                    node_reg.end_layer = end
+                    plan.redistributions.append(redist)
+
+            self._pipeline.node_order = survivors
+            logger.info(
+                f"Redistributed layers for {failed_node_id}: "
+                f"{len(plan.redistributions)} survivors updated"
+            )
+
+    def _on_recovery_recover(
+        self, failed_node_id: str, request_ids: list[str]
+    ) -> list[dict]:
+        """Callback: recover in-flight sequences from checkpoints.
+
+        Returns empty snapshots — the surviving nodes will regenerate
+        the KV cache from the prompt tokens stored in the checkpoint.
+        """
+        recovered = []
+        for rid in request_ids:
+            ckpt = self._recovery.get_checkpoint(rid)
+            if ckpt is not None:
+                recovered.append({
+                    "request_id": rid,
+                    "prompt_tokens": ckpt.prompt_tokens,
+                    "generated_tokens": ckpt.generated_tokens,
+                    "kv_cache": ckpt.kv_cache,
+                })
+        logger.info(
+            f"Recovering {len(recovered)} sequences from {failed_node_id}"
+        )
+        return recovered
+
+    def _on_recovery_mark_dead(self, node_id: str) -> None:
+        """Callback: final cleanup after a failed node."""
+        logger.warning(f"Node {node_id} marked as dead — pipeline reconfigured")
+
+    def check_recovery(self, request_id: str) -> bool:
+        """Check if a request was recovered from a node failure.
+        
+        Used to inject ``x-distllm-recovered`` into responses.
+        Returns True once per request, then clears the flag.
+        """
+        return self._recovery.consume_recovered_flag(request_id)
+
+    def get_recovery_metrics(self) -> dict:
+        """Get self-healing recovery metrics."""
+        return self._recovery.get_metrics()
+
+    # ------------------------------------------------------------------
+    # Request-level SLA: latency-aware routing & model fallback
+    # ------------------------------------------------------------------
+
+    def register_fallback_models(self, model: str, fallbacks: list[str]) -> None:
+        """Register fallback models for SLA-aware model downgrade."""
+        self._fallback_models[model] = fallbacks
+
+    def _get_nodes_within_sla(self, max_latency_ms: float) -> set[str]:
+        """Return node IDs whose average latency is below the threshold."""
+        if self._latency_tracker is None:
+            return set(self._pipeline.nodes.keys())
+        sla_nodes: set[str] = set()
+        for node_id in self._pipeline.nodes:
+            avg = self._latency_tracker.get_avg(node_id)
+            if avg is None or avg < max_latency_ms:
+                sla_nodes.add(node_id)
+        return sla_nodes
+
+    def _get_fallback_model(self, model: str) -> str | None:
+        """Return the fastest fallback model whose latency meets SLA."""
+        fallbacks = self._fallback_models.get(model, [])
+        if not fallbacks:
+            return None
+        return fallbacks[-1]  # smallest / fastest model as final fallback
+
     def wait_for_termination(self):
         """Block until the coordinator server terminates."""
         if self.server:
@@ -1494,9 +1866,81 @@ class Coordinator:
                 logger.info("Coordinator shutting down...")
                 self.stop()
 
+    def enable_continuous_training(
+        self,
+        base_model: torch.nn.Module,
+        draft_head: torch.nn.Module | None = None,
+        config: ContinuousTrainConfig | None = None,
+    ) -> None:
+        """Enable continuous speculative fine-tuning during serving.
+
+        Args:
+            base_model: The target base model for hidden state extraction.
+            draft_head: Optional draft head module. If None, uses spec decoder's heads.
+            config: Training configuration.
+        """
+        head = draft_head or (
+            self._spec_decoder._eagle_heads if self._spec_decoder and self._spec_decoder.has_eagle_heads else None
+        )
+        if head is None:
+            logger.warning("Continuous training requires a draft head module")
+            return
+
+        device = next(base_model.parameters()).device
+        self._continuous_trainer = ContinuousSpeculativeTrainer(
+            base_model=base_model,
+            draft_head=head,
+            config=config or ContinuousTrainConfig(),
+            device=str(device),
+        )
+        self._continuous_trainer.start_background()
+        logger.info("Continuous speculative training enabled")
+
+    def set_deterministic_mode(self, enabled: bool = True, seed: int = 42) -> None:
+        """Enable or disable deterministic debug mode."""
+        if enabled:
+            self._deterministic_mode.enable(seed)
+        else:
+            self._deterministic_mode.disable()
+
+    def get_recent_requests(self, n: int = 10) -> list[Any]:
+        """Get recent requests from the replay buffer."""
+        return self._replay_buffer.list_recent(n)
+
+    def replay_request(self, request_id: str) -> str | None:
+        """Replay a stored request through the generate path."""
+        entry = self._replay_buffer.get(request_id)
+        if entry is None:
+            return None
+
+        if self.scheduler is not None:
+            rid = self.generate_async(
+                prompt=entry.prompt,
+                max_new_tokens=entry.params.get("max_new_tokens", 128),
+                temperature=entry.params.get("temperature", 0.7),
+                top_p=entry.params.get("top_p", 0.9),
+                top_k=entry.params.get("top_k", 0),
+                priority=entry.params.get("priority", 2),
+            )
+            return self.wait_for_result(rid)
+        return self.generate(
+            entry.prompt,
+            entry.params.get("max_new_tokens", 128),
+            entry.params.get("temperature", 0.7),
+            entry.params.get("top_p", 0.9),
+        )
+
     def stop(self):
         """Stop the coordinator with graceful shutdown."""
         logger.info("Initiating graceful shutdown...")
+
+        # Phase 0: Signal background threads to stop
+        self._running.clear()
+
+        # Phase 0a: Stop continuous speculative training
+        if self._continuous_trainer is not None:
+            self._continuous_trainer.stop()
+            logger.info("Continuous speculative training stopped")
 
         # Phase 1: Stop accepting new requests
         self._shutting_down = True
@@ -1536,11 +1980,45 @@ class Coordinator:
             logger.info("Phase 7: Shutting down plugins...")
             self._plugin_manager.shutdown_all()
 
+        # Phase 8: Join background threads
+        if hasattr(self, '_gossip_loop_task') and self._gossip_loop_task:
+            self._gossip_loop_task.join(timeout=5.0)
+        if hasattr(self, '_rebalancer_task') and self._rebalancer_task:
+            self._rebalancer_task.join(timeout=5.0)
+
+        # Phase 9: Close gossip client
+        if self._gossip_client:
+            self._gossip_client.close()
+
+        # Phase 10: Shutdown pipeline (NCCL transport, thread pool)
+        self._pipeline.shutdown()
+
+        # Phase 11: Stop subsystems
+        self._subsystems.stop_all()
+        if self._self_optimizing:
+            self._self_optimizing.stop()
+        if self._slora_manager:
+            self._slora_manager.shutdown()
+        if self._agent_loop:
+            self._agent_loop.stop()
+
+        # Phase 12: Log recovery metrics
+        rec_metrics = self._recovery.get_metrics()
+        if rec_metrics.get("recoveries", 0) > 0:
+            logger.info(
+                f"Recovery stats: {rec_metrics['recoveries']} events, "
+                f"{rec_metrics['sequences_recovered']} seqs recovered, "
+                f"{rec_metrics['sequences_lost']} seqs lost"
+            )
+
         logger.info("Graceful shutdown complete")
 
     async def stop_async(self):
         """Stop the coordinator with graceful shutdown (async)."""
         logger.info("Initiating graceful shutdown (async)...")
+
+        # Phase 0: Signal background threads to stop
+        self._running.clear()
 
         # Phase 1: Stop accepting new requests
         self._shutting_down = True
@@ -1576,6 +2054,28 @@ class Coordinator:
             logger.info("Phase 7: Shutting down plugins...")
             self._plugin_manager.shutdown_all()
 
+        # Phase 8: Join background threads
+        if hasattr(self, '_gossip_loop_task') and self._gossip_loop_task:
+            self._gossip_loop_task.join(timeout=5.0)
+        if hasattr(self, '_rebalancer_task') and self._rebalancer_task:
+            self._rebalancer_task.join(timeout=5.0)
+
+        # Phase 9: Close gossip client
+        if self._gossip_client:
+            self._gossip_client.close()
+
+        # Phase 10: Shutdown pipeline (NCCL transport, thread pool)
+        self._pipeline.shutdown()
+
+        # Phase 11: Stop subsystems
+        self._subsystems.stop_all()
+        if self._self_optimizing:
+            self._self_optimizing.stop()
+        if self._slora_manager:
+            self._slora_manager.shutdown()
+        if self._agent_loop:
+            self._agent_loop.stop()
+
         logger.info("Graceful shutdown complete (async)")
 
     # -- Async Generation (Phase 5) --
@@ -1596,6 +2096,9 @@ class Coordinator:
         if not self.node_order and self.local_partitioner is None:
             raise NodeError("No nodes registered and no local model loaded")
 
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call load_local_model() or register nodes first.")
+
         request_id = request_id or str(uuid.uuid4())
         token = _current_request_id_ctx.set(request_id)
         self._param_update_channel.register(request_id)
@@ -1603,10 +2106,7 @@ class Coordinator:
         self.record_metric("total_requests", 1)
         start_time = time.time()
 
-        # Generation span
-        from distllm.observability.spans import async_span_generation, record_ttft
         prompt_len = len(self.tokenizer.encode(prompt)) if self.tokenizer else 0
-        tenant = "default"
 
         try:
             # Tokenize in thread pool
@@ -1617,14 +2117,12 @@ class Coordinator:
             if self.node_order:
                 input_ids = input_ids.to("cpu")
                 prompt_len = input_ids.shape[1]
-                total_capacity = prompt_len + max_new_tokens
+                total_capacity = min(prompt_len + max_new_tokens, self.config.max_context_length)
                 generated_ids = torch.zeros(1, total_capacity, dtype=torch.long)
                 generated_ids[:, :prompt_len] = input_ids
                 gen_pos = prompt_len
 
-                node_kv_caches: dict[str, list | None] = {
-                    nid: None for nid in self.node_order
-                }
+                node_kv_caches = self._pipeline.create_node_kv_caches()
 
                 active_method = self._spec_decoder.get_active_method(self.draft_model) if self._spec_decoder else None
                 use_speculative = (
@@ -1641,9 +2139,6 @@ class Coordinator:
                     for pred in predictions:
                         if pred.should_prefetch and pred.confidence > 0.3:
                             self._cache_mgr.lookup_prefix(list(pred.prefix_tokens))
-
-                prefill_start = time.monotonic()
-                ttft_recorded = None
 
                 step = 0
                 while step < max_new_tokens:
@@ -1688,17 +2183,23 @@ class Coordinator:
                             self._spec_decoder.verify_and_accept,
                             draft_tokens, logits, self.tokenizer,
                         )
-                        for token_id in accepted_tokens:
+                        if self._continuous_trainer is not None and accepted_tokens:
+                            draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
+                            self._continuous_trainer.record(draft_ids, list(accepted_tokens))
+                        tokens_to_append = self._speculative_tokens_to_append(
+                            draft_tokens, logits, accepted_count, accepted_tokens, next_token
+                        )
+                        tokens_to_append = tokens_to_append[: max_new_tokens - step]
+                        hit_eos = False
+                        for token_id in tokens_to_append:
                             generated_ids[:, gen_pos] = token_id
                             gen_pos += 1
-                        if next_token > 0 and next_token != self.tokenizer.eos_token_id:
-                            generated_ids[:, gen_pos] = next_token
-                            gen_pos += 1
-                        elif next_token == self.tokenizer.eos_token_id:
-                            generated_ids[:, gen_pos] = next_token
-                            gen_pos += 1
+                            if token_id == self.tokenizer.eos_token_id:
+                                hit_eos = True
+                                break
+                        if hit_eos:
                             break
-                        step += accepted_count + (1 if next_token > 0 else 0)
+                        step += len(tokens_to_append)
                     else:
                         next_token = self._sample(logits[:, -1, :], temperature=temperature, top_p=top_p, top_k=top_k)
                         generated_ids[:, gen_pos] = next_token.item()
@@ -1748,25 +2249,21 @@ class Coordinator:
     def _generate_local_sync(
         self, prompt: str, max_new_tokens: int, temperature: float, top_p: float
     ) -> str:
-        """Synchronous local generation helper."""
-        input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
-        model_device = next(self.local_partitioner.full_model.parameters()).device
-        input_ids = input_ids.to(model_device)
+        return self._pipeline_runner._generate_local_sync(prompt, max_new_tokens, temperature, top_p)
 
-        gen_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "do_sample": temperature > 0,
-            "pad_token_id": self.tokenizer.eos_token_id,
-        }
-        if self.draft_model is not None:
-            gen_kwargs["assistant_model"] = self.draft_model
-            gen_kwargs["num_assistant_tokens"] = self.num_assistant_tokens
-
-        with torch.no_grad():
-            output = self.local_partitioner.full_model.generate(input_ids, **gen_kwargs)
-        return self.tokenizer.decode(output[0], skip_special_tokens=True)
+    def _generate_local_eagle_sync(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int = 0,
+    ) -> str:
+        return self._pipeline_runner._generate_local_eagle_sync(
+            input_ids, max_new_tokens=max_new_tokens, temperature=temperature,
+            top_p=top_p, top_k=top_k,
+        )
 
 
 def main():

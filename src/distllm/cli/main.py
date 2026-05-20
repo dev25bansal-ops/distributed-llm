@@ -546,6 +546,38 @@ def dashboard(
     uvicorn.run(dashboard_app, host=host, port=port, log_level="info")
 
 
+@app.command()
+def deploy(
+    model: str = typer.Argument(..., help="Model name or HuggingFace path"),
+    nodes: int = typer.Option(2, "--nodes", "-n", help="Number of nodes"),
+    dtype: str = typer.Option("float16", "--dtype", help="Data type"),
+    quantization: str = typer.Option("none", "--quantization", help="Quantization method"),
+    gpu_type: str | None = typer.Option(None, "--gpu-type", help="Target GPU type"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without deploying"),
+    wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for deployment to complete"),
+    host: str = typer.Option("localhost", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+):
+    """Deploy a model to the distributed cluster."""
+    from distllm.cli.deploy import run_deploy
+    run_deploy(model, nodes, dtype, quantization, gpu_type, dry_run, wait, host, port, console)
+
+
+@app.command()
+def profile(
+    model: str = typer.Argument(..., help="Model name"),
+    host: str = typer.Option("localhost", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+    prompt_len: int = typer.Option(128, "--prompt-len", help="Prompt length in tokens"),
+    gen_len: int = typer.Option(64, "--gen-len", help="Generated tokens"),
+    num_iterations: int = typer.Option(10, "--iterations", "-n", help="Number of iterations"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Save to JSON file"),
+):
+    """Profile model inference (latency, throughput, memory)."""
+    from distllm.cli.profile import run_profile
+    run_profile(model, host, port, prompt_len, gen_len, num_iterations, output, console)
+
+
 if __name__ == "__main__":
     app()
 

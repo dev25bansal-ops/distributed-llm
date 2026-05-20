@@ -6,6 +6,10 @@ help: ## Show this help
 install: ## Install dependencies
 	pip install -e ".[dev]"
 
+lock: ## Regenerate requirements.lock from pyproject.toml
+	pip install pip-tools
+	pip-compile --output-file=requirements.lock pyproject.toml
+
 install-cuda: ## Install with CUDA support
 	pip install torch --index-url https://download.pytorch.org/whl/cu128
 	pip install -e ".[dev]"
@@ -117,7 +121,51 @@ security-full: ## Run full security scan (bandit, safety, SBOM, container scan)
 	$(MAKE) sbom
 	$(MAKE) container-scan
 
+# --- Load Testing ---
+load-test-chat: ## Run chat load test scenario
+	locust -f tests/load/locust/scenarios/chat_scenario.py --headless -u 10 -r 2 --run-time 2m --host http://localhost:8000 --csv tests/load/results/chat
+
+load-test-streaming: ## Run streaming load test scenario
+	locust -f tests/load/locust/scenarios/streaming_scenario.py --headless -u 5 -r 1 --run-time 2m --host http://localhost:8000 --csv tests/load/results/streaming
+
+load-test-embeddings: ## Run embeddings load test scenario
+	locust -f tests/load/locust/scenarios/embeddings_scenario.py --headless -u 5 -r 2 --run-time 1m --host http://localhost:8000 --csv tests/load/results/embeddings
+
+load-test-batch: ## Run batch load test scenario
+	locust -f tests/load/locust/scenarios/batch_scenario.py --headless -u 3 -r 1 --run-time 1m --host http://localhost:8000 --csv tests/load/results/batch
+
+load-test-mixed: ## Run mixed workload load test
+	locust -f tests/load/locust/scenarios/mixed_scenario.py --headless -u 20 -r 4 --run-time 5m --host http://localhost:8000 --csv tests/load/results/mixed
+
+load-test-all: ## Run all load test scenarios
+	python tests/load/locust/run_scenarios.py --host http://localhost:8000
+
+# --- Chaos Engineering ---
+chaos-test: ## Run all chaos engineering tests
+	pytest tests/chaos/test_all_scenarios.py -v
+
+chaos-test-all: ## Run ALL chaos tests (unit + cluster integration)
+	pytest tests/chaos/ -v --timeout=180
+
+chaos-test-cluster: ## Run cluster-level chaos tests (2-node real gRPC cluster)
+	pytest tests/chaos/test_cluster_chaos_integration.py tests/chaos/test_cluster_chaos.py -v --timeout=120
+
+chaos-test-cluster-integration: ## Run comprehensive cluster chaos tests (CI-grade)
+	pytest tests/chaos/test_cluster_chaos_integration.py -v --timeout=120
+
+chaos-test-node-failure: ## Run node failure chaos tests
+	pytest tests/chaos/test_node_failure.py -v
+
+chaos-test-network: ## Run network chaos tests (latency, partition)
+	pytest tests/chaos/scenarios/network_latency.py tests/chaos/scenarios/network_partition.py -v
+
+chaos-test-corruption: ## Run data corruption chaos tests
+	pytest tests/chaos/scenarios/data_corruption.py -v
+
 # --- Pre-commit ---
 pre-commit-install: ## Install pre-commit hooks
 	pre-commit install
 	pre-commit install --hook-type pre-push
+
+# --- Phony ---
+.PHONY: load-test-chat load-test-streaming load-test-embeddings load-test-batch load-test-mixed load-test-all chaos-test chaos-test-node-failure chaos-test-network chaos-test-corruption

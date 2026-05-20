@@ -6,9 +6,14 @@ and data between peer nodes. Supports:
 - HTTP fallback for testing
 - Bandwidth-aware transfers (skip when network saturated)
 - Polynomial rolling hash for cache identification
+- HMAC-SHA256 message authentication
 """
 
 import hashlib
+import hmac
+import io
+import json
+import os
 import time
 from loguru import logger
 
@@ -63,7 +68,7 @@ class KVCacheTransfer:
         Returns:
             Hex-encoded SHA-256 hash (first 16 chars).
         """
-        data = bytes(token_ids)
+        data = json.dumps(token_ids, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(data).hexdigest()[:16]
 
     @classmethod
@@ -76,7 +81,7 @@ class KVCacheTransfer:
         Returns:
             Serialized bytes.
         """
-        buffer = torch.io.BytesIO()
+        buffer = io.BytesIO()
         torch.save(cache_data, buffer)
         return buffer.getvalue()
 
@@ -90,8 +95,8 @@ class KVCacheTransfer:
         Returns:
             Dict with layer_idx -> (k_tensor, v_tensor).
         """
-        buffer = torch.io.BytesIO(data)
-        return torch.load(buffer, weights_only=False)
+        buffer = io.BytesIO(data)
+        return torch.load(buffer, weights_only=True)
 
     @classmethod
     def estimate_size(cls, cache_data: dict) -> int:
@@ -180,6 +185,7 @@ class GossipTransport:
         port: int = 50052,
         peer_resolver=None,
         max_bandwidth: int = KVCacheTransfer.DEFAULT_MAX_BANDWIDTH,
+        hmac_key: str | None = None,
     ):
         self.node_id = node_id
         self.host = host
@@ -187,14 +193,28 @@ class GossipTransport:
         self._peer_resolver = peer_resolver
         self._transfer = KVCacheTransfer(max_bandwidth=max_bandwidth)
         self._session = None
+        self._hmac_key: str | None = hmac_key
+
+    def _sign_message(self, data: dict) -> dict:
+        """Add HMAC-SHA256 signature to a message dict."""
+        if self._hmac_key is None:
+            return data
+        msg = dict(data)
+        serialized = json.dumps(msg, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        signature = hmac.new(
+            self._hmac_key.encode(), msg=serialized, digestmod=hashlib.sha256
+        ).hexdigest()
+        msg["_hmac"] = signature
+        return msg
 
     def _get_session(self):
         """Get or create HTTP session for peer communication."""
         if self._session is None:
-            import urllib3
-            self._session = urllib3.PoolManager(
-                timeout=urllib3.Timeout(connect=2.0, read=10.0),
-                retries=urllib3.Retry(total=1, connect=1, read=1),
+            import httpx
+
+            self._session = httpx.Client(
+                timeout=httpx.Timeout(10.0, connect=2.0),
+                follow_redirects=False,
             )
         return self._session
 
@@ -222,15 +242,15 @@ class GossipTransport:
         try:
             import json
             session = self._get_session()
-            response = session.request(
-                "POST",
+            signed_ad = self._sign_message(my_ad)
+            response = session.post(
                 url,
-                body=json.dumps(my_ad).encode(),
-                headers={"Content-Type": "application/json"},
+                content=json.dumps(signed_ad).encode(),
+                headers=self._headers(),
             )
 
-            if response.status == 200:
-                peer_ad = json.loads(response.data.decode())
+            if response.status_code == 200:
+                peer_ad = json.loads(response.text)
                 logger.debug(
                     f"Gossip exchange with {peer_id}: "
                     f"{peer_ad.get('total_cache_entries', 0)} entries"
@@ -281,21 +301,20 @@ class GossipTransport:
         try:
             import json
             session = self._get_session()
-            request_data = {
+            request_data = self._sign_message({
                 "requester_id": self.node_id,
                 "prefix_hashes": beneficial_hashes,
-            }
-            response = session.request(
-                "POST",
+            })
+            response = session.post(
                 url,
-                body=json.dumps(request_data).encode(),
-                headers={"Content-Type": "application/json"},
+                content=json.dumps(request_data).encode(),
+                headers=self._headers(),
             )
 
-            if response.status == 200:
-                result = json.loads(response.data.decode())
+            if response.status_code == 200:
+                result = json.loads(response.text)
                 total_size = sum(
-                    len(e.get("data", b""))
+                    len(e.get("data", b"")) if isinstance(e, dict) else len(str(e).encode())
                     for e in result.get("cache_entries", {}).values()
                 )
                 self._transfer.record_transfer(total_size, success=True)
@@ -325,6 +344,20 @@ class GossipTransport:
                 return result
         # Default: localhost with incremental port
         return None, 0
+
+    def close(self) -> None:
+        """Close the HTTP session and release resources."""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def _headers(self) -> dict[str, str]:
+        """Build HTTP headers for peer gossip requests."""
+        headers = {"Content-Type": "application/json"}
+        api_key = os.environ.get("DISTLLM_GOSSIP_API_KEY") or os.environ.get("API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
 
     @property
     def transfer_stats(self) -> dict:

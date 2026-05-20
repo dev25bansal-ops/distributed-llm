@@ -15,6 +15,7 @@ Run: pytest tests/core/test_tls.py -v
 """
 
 import os
+import shutil
 import subprocess
 
 import grpc
@@ -30,6 +31,10 @@ class TestGenerateSelfSignedCerts:
         assert os.path.exists(tls_certificates["key_file"])
         assert os.path.exists(tls_certificates["ca_cert_file"])
 
+    @pytest.mark.skipif(
+        shutil.which("openssl") is None,
+        reason="openssl not installed",
+    )
     def test_generate_certs_valid_cert(self, tls_certificates):
         """Generated certificate should be parseable by openssl."""
         result = subprocess.run(
@@ -40,6 +45,10 @@ class TestGenerateSelfSignedCerts:
         assert result.returncode == 0
         assert "Certificate" in result.stdout
 
+    @pytest.mark.skipif(
+        shutil.which("openssl") is None,
+        reason="openssl not installed",
+    )
     def test_generate_certs_contains_san(self, tls_certificates):
         """Certificate should contain Subject Alternative Names."""
         result = subprocess.run(
@@ -66,7 +75,7 @@ class TestGenerateSelfSignedCerts:
             assert os.path.exists(ca_cert_file)
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "openssl"], capture_output=True).returncode != 0,
+        shutil.which("openssl") is None,
         reason="openssl not installed",
     )
     def test_generate_certs_returns_paths(self):

@@ -2,8 +2,11 @@
 
 import time
 import sys
+import threading
 from collections import OrderedDict
 from typing import Any
+
+from distllm.core.cache_eviction import TTLPolicy
 
 
 # Default memory budget: 512 MiB
@@ -34,6 +37,7 @@ class PrefixCache:
         min_prefix_len: int = 16,
         memory_budget_bytes: int = _DEFAULT_MEMORY_BUDGET_BYTES,
         paged_attention_mgr: object | None = None,
+        ttl_policy: TTLPolicy | None = None,
     ):
         self.min_prefix_len = min_prefix_len
         self._paged_attention_mgr = paged_attention_mgr
@@ -45,6 +49,10 @@ class PrefixCache:
         self._memory_budget = memory_budget_bytes
         self._total_memory_bytes = 0
         self._max_entries_soft = max_entries or 0  # 0 = unlimited soft cap
+
+        # TTL-based eviction
+        self._ttl_policy = ttl_policy
+        self._lock = threading.Lock()
 
     @property
     def max_entries(self) -> int:
@@ -72,123 +80,132 @@ class PrefixCache:
         return total
 
     def _evict_until_fit(self, needed_bytes: int) -> None:
-        """Evict LRU entries until enough memory is free."""
+        """Evict expired entries first, then LRU entries until enough memory is free."""
+        # First, evict expired TTL entries
+        if self._ttl_policy:
+            all_keys = list(self._cache.keys())
+            expired = self._ttl_policy.get_expired_keys(all_keys)
+            for key in expired:
+                if key in self._cache:
+                    entry = self._cache.pop(key)
+                    entry_bytes = self._estimate_entry_memory(entry.get("kv_data", {}))
+                    self._total_memory_bytes = max(0, self._total_memory_bytes - entry_bytes)
+                    self._ttl_policy.remove(key)
+                    if self._total_memory_bytes + needed_bytes <= self._memory_budget:
+                        return
+
+        # Fall back to LRU eviction
         while self._cache and (self._total_memory_bytes + needed_bytes > self._memory_budget):
             _key, entry = self._cache.popitem(last=False)
             entry_bytes = self._estimate_entry_memory(entry.get("kv_data", {}))
             self._total_memory_bytes = max(0, self._total_memory_bytes - entry_bytes)
+            if self._ttl_policy:
+                self._ttl_policy.remove(_key)
 
     def lookup(self, token_ids: list[int]) -> tuple[int, dict | None]:
-        """Find the longest cached prefix.
+        """Find the longest cached prefix."""
+        with self._lock:
+            if len(token_ids) < self.min_prefix_len:
+                self._misses += 1
+                return 0, None
 
-        Uses incremental polynomial hash: computes hash(token_ids[:length])
-        for each length from min_prefix_len to len(token_ids) in a single pass.
+            hashes = []
+            running_hash = 0
+            for i, tok in enumerate(token_ids):
+                running_hash = ((running_hash * self._HASH_BASE) + tok) % self._HASH_MOD
+                length = i + 1
+                if length >= self.min_prefix_len:
+                    hashes.append((length, running_hash))
 
-        Args:
-            token_ids: Full sequence of token IDs.
+            for length, h in reversed(hashes):
+                if h in self._cache:
+                    if self._ttl_policy and self._ttl_policy.is_expired(h):
+                        continue
+                    if self._cache[h]["tokens"] == token_ids[:length]:
+                        self._hits += 1
+                        self._cache.move_to_end(h)
+                        if self._ttl_policy:
+                            self._ttl_policy.record_access(h)
+                        return length, self._cache[h]["kv_data"]
 
-        Returns:
-            (matched_len, kv_data) where matched_len is the number of tokens
-            that were found in the cache. Returns (0, None) on miss.
-        """
-        if len(token_ids) < self.min_prefix_len:
             self._misses += 1
             return 0, None
 
-        # Compute rolling polynomial hash for each prefix length
-        # Store (length, hash) pairs, then search from longest
-        hashes = []
-        running_hash = 0
-        for i, tok in enumerate(token_ids):
-            running_hash = ((running_hash * self._HASH_BASE) + tok) % self._HASH_MOD
-            length = i + 1
-            if length >= self.min_prefix_len:
-                hashes.append((length, running_hash))
-
-        # Search from longest prefix down to min_prefix_len
-        for length, h in reversed(hashes):
-            if h in self._cache:
-                # Verify token match to handle hash collisions
-                if self._cache[h]["tokens"] == token_ids[:length]:
-                    self._hits += 1
-                    self._cache.move_to_end(h)
-                    return length, self._cache[h]["kv_data"]
-
-        self._misses += 1
-        return 0, None
-
     def store(self, token_ids: list[int], kv_data: dict) -> None:
-        """Cache a prefix's KV data.
+        """Cache a prefix's KV data."""
+        with self._lock:
+            if len(token_ids) < self.min_prefix_len:
+                return
 
-        Args:
-            token_ids: Token sequence to cache.
-            kv_data: Precomputed KV cache data (layer_idx -> (k, v) tensors).
-        """
-        if len(token_ids) < self.min_prefix_len:
-            return
+            h = 0
+            for tok in token_ids:
+                h = ((h * self._HASH_BASE) + tok) % self._HASH_MOD
 
-        # Compute polynomial hash for the full prefix
-        h = 0
-        for tok in token_ids:
-            h = ((h * self._HASH_BASE) + tok) % self._HASH_MOD
+            if h in self._cache:
+                self._cache.move_to_end(h)
+                self._cache[h]["kv_data"] = kv_data
+                if self._ttl_policy:
+                    self._ttl_policy.record_access(h)
+                return
 
-        if h in self._cache:
-            # Update existing entry
-            self._cache.move_to_end(h)
-            self._cache[h]["kv_data"] = kv_data
-            return
+            while len(self._cache) >= self.max_entries:
+                self._cache.popitem(last=False)
 
-        # Evict LRU if at capacity
-        while len(self._cache) >= self.max_entries:
-            self._cache.popitem(last=False)
+            self._cache[h] = {
+                "tokens": list(token_ids),
+                "kv_data": kv_data,
+                "stored_at": time.time(),
+            }
+            entry_bytes = self._estimate_entry_memory(kv_data)
+            self._total_memory_bytes += entry_bytes
 
-        self._cache[h] = {
-            "tokens": list(token_ids),
-            "kv_data": kv_data,
-            "stored_at": time.time(),
-        }
-        entry_bytes = self._estimate_entry_memory(kv_data)
-        self._total_memory_bytes += entry_bytes
-        self._evict_until_fit(0)
+            if self._ttl_policy:
+                self._ttl_policy.record_access(h)
+
+            self._evict_until_fit(0)
 
     def evict(self, token_ids: list[int]) -> bool:
-        """Remove a specific prefix from the cache.
-
-        Returns True if the entry was found and removed.
-        """
-        h = 0
-        for tok in token_ids:
-            h = ((h * self._HASH_BASE) + tok) % self._HASH_MOD
-        if h in self._cache:
-            del self._cache[h]
-            return True
-        return False
+        """Remove a specific prefix from the cache."""
+        with self._lock:
+            h = 0
+            for tok in token_ids:
+                h = ((h * self._HASH_BASE) + tok) % self._HASH_MOD
+            if h in self._cache:
+                del self._cache[h]
+                return True
+            return False
 
     def clear(self) -> None:
         """Remove all cached entries."""
-        self._cache.clear()
-        self._hits = 0
-        self._misses = 0
+        with self._lock:
+            self._cache.clear()
+            self._hits = 0
+            self._misses = 0
+            if self._ttl_policy:
+                self._ttl_policy.clear()
 
     @property
     def hit_rate(self) -> float:
-        total = self._hits + self._misses
-        return self._hits / total if total > 0 else 0.0
+        with self._lock:
+            total = self._hits + self._misses
+            return self._hits / total if total > 0 else 0.0
 
     def stats(self) -> dict:
-        return {
-            "prefix_cache_entries": len(self._cache),
-            "prefix_cache_max_entries": self.max_entries,
-            "prefix_cache_hits": self._hits,
-            "prefix_cache_misses": self._misses,
-            "prefix_cache_hit_rate": round(self.hit_rate, 4),
-            "prefix_cache_memory_bytes": self._total_memory_bytes,
-            "prefix_cache_memory_budget": self._memory_budget,
-            "prefix_cache_memory_util": round(
-                self._total_memory_bytes / max(self._memory_budget, 1), 4
-            ),
-        }
+        with self._lock:
+            return {
+                "prefix_cache_entries": len(self._cache),
+                "prefix_cache_max_entries": self.max_entries,
+                "prefix_cache_hits": self._hits,
+                "prefix_cache_misses": self._misses,
+                "prefix_cache_hit_rate": round(self.hit_rate, 4),
+                "prefix_cache_memory_bytes": self._total_memory_bytes,
+                "prefix_cache_memory_budget": self._memory_budget,
+                "prefix_cache_memory_util": round(
+                    self._total_memory_bytes / max(self._memory_budget, 1), 4
+                ),
+            }
 
     def adjust_memory_budget(self, new_budget_bytes: int) -> None:
-        self._memory_budget = new_budget_bytes
-        self._evict_until_fit(0)
+        with self._lock:
+            self._memory_budget = new_budget_bytes
+            self._evict_until_fit(0)
