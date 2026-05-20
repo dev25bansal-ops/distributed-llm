@@ -110,8 +110,8 @@ class CanaryRollout:
         if error_rate > self._config.error_threshold:
             return False, f"Error rate {error_rate:.2%} exceeds threshold {self._config.error_threshold:.2%}"
         
-        if m.avg_latency_ms > self._config.latency_p99_threshold_ms:
-            return False, f"Latency {m.avg_latency_ms:.0f}ms exceeds threshold"
+        if m.p99_latency_ms > self._config.latency_p99_threshold_ms:
+            return False, f"P99 latency {m.p99_latency_ms:.0f}ms exceeds threshold"
         
         return True, "Healthy"
     

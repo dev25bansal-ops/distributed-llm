@@ -271,18 +271,31 @@ def benchmark_run(
     prompts: int = typer.Option(5, "--prompts", help="Number of test prompts"),
     max_tokens: int = typer.Option(50, "--max-tokens", help="Max tokens per prompt"),
     local: bool = typer.Option(False, "--local", help="Benchmark local mode"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON (for CI)"),
 ):
     """Run benchmarks against the API server."""
-    from distllm.cli.benchmark import run_benchmark
-    run_benchmark(
-        model=model,
-        host=host,
-        port=port,
-        num_prompts=prompts,
-        max_tokens=max_tokens,
-        local=local,
-        console=console,
-    )
+    if json_output:
+        from distllm.cli.benchmark import run_benchmark_json
+        result = run_benchmark_json(
+            model=model,
+            host=host,
+            port=port,
+            num_prompts=prompts,
+            max_tokens=max_tokens,
+            local=local,
+        )
+        console.print(result)
+    else:
+        from distllm.cli.benchmark import run_benchmark
+        run_benchmark(
+            model=model,
+            host=host,
+            port=port,
+            num_prompts=prompts,
+            max_tokens=max_tokens,
+            local=local,
+            console=console,
+        )
 
 
 @benchmark_app.command("compare")

@@ -12,9 +12,7 @@ Upgraded with CRDT semantics for eventual consistency:
 
 import hashlib
 import hmac
-import os
 import random
-import secrets
 import time
 from dataclasses import dataclass, field
 from typing import List
@@ -126,8 +124,8 @@ class GossipProtocol:
         self.state = GossipState(node_id=node_id)
         self.max_peers = max_peers
         self.cache_ttl = cache_ttl
-        # HMAC key for message authentication; auto-generated if not provided
-        self._hmac_key: str = hmac_key or secrets.token_hex(32)
+        # HMAC key for message authentication; shared default across all nodes
+        self._hmac_key: str = hmac_key or "distllm-gossip-shared-key-v1"
 
     def sign_message(self, message: dict) -> dict:
         """Sign a gossip message with HMAC-SHA256 for authenticity.
@@ -404,9 +402,9 @@ class GossipProtocol:
         return None
 
     def request_cache_from_peers(self, prefix_hash: str, client: "GossipClient" | None = None) -> dict | None:
-        """Actively request a KV cache entry from all known peers.
+        """Actively request a KV cache entry from all known peers in parallel.
 
-        Broadcasts to all peers in order until one returns the entry.
+        Broadcasts to all peers concurrently and returns the first match.
         Used when local lookup and cache index miss — actively pulls
         from the network rather than waiting for periodic gossip sync.
 
@@ -419,13 +417,24 @@ class GossipProtocol:
         """
         if client is None:
             return None
-        for peer_id in list(self.state.known_peers):
-            try:
-                result = client.fetch_kv_cache(peer_id, prefix_hash)
-                if result is not None:
-                    return result
-            except Exception:
-                continue
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        peers = list(self.state.known_peers)
+        if not peers:
+            return None
+
+        with ThreadPoolExecutor(max_workers=min(len(peers), 32)) as executor:
+            futures = {executor.submit(client.fetch_kv_cache, pid, prefix_hash): pid for pid in peers}
+            for future in as_completed(futures):
+                try:
+                    result = future.result(timeout=10)
+                    if result is not None:
+                        # Cancel remaining futures on first hit
+                        for f in futures:
+                            f.cancel()
+                        return result
+                except Exception:
+                    continue
         return None
 
     def tombstone_entry(self, prefix_hash: str) -> None:

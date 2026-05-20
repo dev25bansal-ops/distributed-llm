@@ -71,6 +71,9 @@ spec:
             - name: grpc
               containerPort: 50051
               protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
           lifecycle:
             preStop:
               exec:

@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-"""Security scan script for CI.
-
-Runs bandit (static analysis), safety (dependency vulns), and detect-secrets.
-Outputs SARIF-compatible report to stdout.
-
-Usage:
-    bash scripts/security_scan.sh
-    bash scripts/security_scan.sh --output report.sarif
-"""
+# Security scan script for CI.
+#
+# Runs bandit (static analysis), safety (dependency vulns), and detect-secrets.
+# Outputs SARIF-compatible report to stdout.
+#
+# Usage:
+#     bash scripts/security_scan.sh
+#     bash scripts/security_scan.sh --output report.sarif
 
 set -euo pipefail
 

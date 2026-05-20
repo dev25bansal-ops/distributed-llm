@@ -4,10 +4,9 @@ Manages prefix cache, KV cache lifecycle, and chunked prefill.
 Extracted from the Coordinator class.
 """
 
-import hashlib
+import threading
 from typing import Any
 
-import torch
 from loguru import logger
 
 from distllm.core.prefix_cache import PrefixCache
@@ -61,6 +60,7 @@ class CacheManager:
         self.cache_index = cache_index
         self.gossip_protocol = gossip_protocol
         self.gossip_client = gossip_client
+        self._lock = threading.Lock()
 
     def lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
         """Lookup prefix match length for tokens.
@@ -73,7 +73,8 @@ class CacheManager:
         """
         if self.prefix_cache is None:
             return (0, None)
-        return self.prefix_cache.lookup(tokens)
+        with self._lock:
+            return self.prefix_cache.lookup(tokens)
 
     def store_prefix(self, tokens: list[int], entry: Any) -> None:
         """Store tokens and entry in the prefix cache.
@@ -83,7 +84,8 @@ class CacheManager:
             entry: Cache entry to store.
         """
         if self.prefix_cache is not None:
-            self.prefix_cache.store(tokens, entry)
+            with self._lock:
+                self.prefix_cache.store(tokens, entry)
 
     def find_shared_prefix(self, tokens: list[int]) -> int:
         """Find shared prefix length for cross-request substring sharing.
@@ -99,11 +101,11 @@ class CacheManager:
         """
         if self.prefix_cache is None:
             return 0
-        if hasattr(self.prefix_cache, "find_shared_prefix"):
-            return self.prefix_cache.find_shared_prefix(tokens)
-        # Fallback: use regular lookup
-        match_len, _ = self.prefix_cache.lookup(tokens)
-        return match_len
+        with self._lock:
+            if hasattr(self.prefix_cache, "find_shared_prefix"):
+                return self.prefix_cache.find_shared_prefix(tokens)
+            match_len, _ = self.prefix_cache.lookup(tokens)
+            return match_len
 
     def maybe_chunk(self, tokens: list[int]) -> ChunkState | None:
         """Apply chunked prefill if enabled and prompt is long.
@@ -134,6 +136,7 @@ class CacheManager:
         """Lookup prefix with disk cache fallback.
 
         First checks in-memory prefix cache, then falls back to disk cache.
+        Uses rolling hash matching prefix_cache / CacheIndex semantics.
 
         Args:
             tokens: List of token IDs.
@@ -142,22 +145,29 @@ class CacheManager:
         Returns:
             Tuple of (prefix_match_length, cached_data_or_None).
         """
-        match_len, entry = self.lookup_prefix(tokens)
-        if match_len > 0:
-            return match_len, entry
+        with self._lock:
+            match_len, entry = self.lookup_prefix(tokens)
+            if match_len > 0:
+                return match_len, entry
 
-        if self.persistence_manager is not None:
-            request_id = hashlib.sha256(str(tokens).encode()).hexdigest()
-            cached = self.persistence_manager.load(request_id, model_name)
-            if cached is not None:
-                return len(tokens), cached
+            if self.persistence_manager is not None:
+                from distllm.core.cache_index import CacheIndex
+                idx = CacheIndex()
+                for trim in range(min(len(tokens), 512)):
+                    trimmed = tokens[:len(tokens) - trim]
+                    prefix_hash = idx.index_tokens(trimmed)
+                    key = str(prefix_hash)
+                    cached = self.persistence_manager.load(key, model_name)
+                    if cached is not None:
+                        return len(trimmed), cached
 
         return 0, None
 
     def mark_dirty(self, request_id: str) -> None:
         """Mark a cache entry as dirty for persistence."""
         if self.persistence_manager is not None:
-            self.persistence_manager.mark_dirty(request_id)
+            with self._lock:
+                self.persistence_manager.mark_dirty(request_id)
 
     def lookup_with_gossip(self, tokens: list[int]) -> str | None:
         """Lookup prefix with gossip fallback: local → disk → peer nodes.

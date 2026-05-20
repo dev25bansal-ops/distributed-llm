@@ -10,7 +10,11 @@ patches:
   - path: resource-patch.yaml
     target:
       kind: Deployment
-      name: distllm-operator
+      name: distllm-coordinator
+  - path: resource-patch.yaml
+    target:
+      kind: StatefulSet
+      name: distllm-worker
 
 commonLabels:
   app.kubernetes.io/environment: staging

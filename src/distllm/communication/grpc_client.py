@@ -6,6 +6,7 @@ classes that manage server lifecycle and client connections.
 
 import asyncio
 import grpc
+import os
 import pathlib
 import sys
 from concurrent import futures
@@ -19,7 +20,6 @@ from distllm.communication.node_pb2_grpc import (
     add_NodeServiceServicer_to_server, add_CoordinatorServiceServicer_to_server,
 )
 from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError
-from distllm.errors.retry import retry_grpc_call
 
 
 _MAX_GRPC_MESSAGE_BYTES = (2 * 1024 * 1024 * 1024) - 1
@@ -71,18 +71,30 @@ class GRPCServer:
 
         if self.use_tls:
             if not self.cert_file or not self.key_file:
+                env = os.environ.get("DISTLLM_ENV", "development")
+                if env == "production":
+                    raise RuntimeError(
+                        "TLS enabled with no cert_file/key_file in production mode. "
+                        "Set cert_file and key_file explicitly."
+                    )
+                logger.critical(
+                    "SECURITY: Using auto-generated self-signed TLS certificates. "
+                    "This provides NO protection against MITM attacks. "
+                    "For production, set use_tls=true, cert_file, and key_file explicitly."
+                )
                 from distllm.core.tls import generate_self_signed_certs
                 self._cert_dir = "_auto_certs"
-                cert_file, key_file, _ = generate_self_signed_certs(self._cert_dir)
+                cert_file, key_file, ca_cert_file = generate_self_signed_certs(self._cert_dir)
             else:
                 cert_file = str(pathlib.Path(self.cert_file).resolve())
                 key_file = str(pathlib.Path(self.key_file).resolve())
                 for path, name in [(cert_file, "cert"), (key_file, "key")]:
                     if not pathlib.Path(path).exists():
                         raise FileNotFoundError(f"TLS {name} file not found: {path}")
+                ca_cert_file = str(pathlib.Path(self.ca_cert).resolve()) if self.ca_cert else None
 
             from distllm.core.tls import load_tls_credentials
-            credentials = load_tls_credentials(cert_file, key_file)
+            credentials = load_tls_credentials(cert_file, key_file, ca_cert_file=ca_cert_file)
             self.server.add_secure_port(f"[::]:{self.port}", credentials)
             logger.info(f"gRPC server started on port {self.port} (TLS enabled)")
         else:
@@ -99,15 +111,7 @@ class GRPCServer:
         if hasattr(self.servicer, 'node_channels'):
             for channel in self.servicer.node_channels.values():
                 try:
-                    import threading
-                    def _close():
-                        try:
-                            channel.close()
-                        except Exception:
-                            pass
-                    t = threading.Thread(target=_close, daemon=True)
-                    t.start()
-                    t.join(timeout=grace)
+                    channel.close()
                 except Exception as e:
                     logger.debug(f"Error closing channel: {e}")
             self.servicer.node_channels.clear()
@@ -133,34 +137,76 @@ class GRPCServer:
             self.stop()
 
 
-class NodeClient:
-    """gRPC client for communicating with worker nodes."""
+def _build_grpc_options() -> list:
+    """Build shared gRPC channel options."""
+    return [
+        ('grpc.max_send_message_length', _MAX_GRPC_MESSAGE_BYTES),
+        ('grpc.max_receive_message_length', _MAX_GRPC_MESSAGE_BYTES),
+        ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
+        ('grpc.keepalive_time_ms', 30000),
+        ('grpc.keepalive_timeout_ms', 10000),
+        ('grpc.keepalive_permit_without_calls', 1),
+        ('grpc.enable_retries', 1),
+    ]
 
-    def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: str | None = None):
+
+def _convert_grpc_error(e: Exception, host: str, port: int, timeout: float):
+    """Convert a gRPC exception into a project-specific exception."""
+    if isinstance(e, asyncio.TimeoutError):
+        return GRPCTimeoutError(node_id="unknown", timeout=timeout)
+    if isinstance(e, (grpc.RpcError, grpc.aio.AioRpcError)):
+        if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            return GRPCTimeoutError(node_id="unknown", timeout=timeout)
+        return NodeUnreachableError(
+            node_id="unknown", host=host, port=port, original_error=e,
+        )
+    return NodeUnreachableError(
+        node_id="unknown", host=host, port=port, original_error=e,
+    )
+
+
+class UnifiedNodeClient:
+    """gRPC client base with shared TLS/channel setup.
+
+    Subclasses override _create_sync_channel / _create_aio_channel
+    to choose between grpc (sync) and grpc.aio (async).
+
+    NodeClient (sync) and AsyncNodeClient (async) share:
+      - __init__ TLS/credentials setup
+      - _convert_grpc_error exception handling
+      - _build_grpc_options channel options
+    """
+
+    def __init__(self, host: str, port: int, max_retries: int = 3,
+                 retry_delay: float = 1.0, use_tls: bool = True,
+                 ca_cert: str | None = None, timeout: float = 30.0):
         self.host = host
         self.port = port
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        options = [
-            ('grpc.max_send_message_length', _MAX_GRPC_MESSAGE_BYTES),
-            ('grpc.max_receive_message_length', _MAX_GRPC_MESSAGE_BYTES),
-            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
-            # Auto-reconnect options
-            ('grpc.keepalive_time_ms', 30000),
-            ('grpc.keepalive_timeout_ms', 10000),
-            ('grpc.keepalive_permit_without_calls', 1),
-            ('grpc.enable_retries', 1),
-        ]
+        self.timeout = timeout
+        self._closed = False
+
+        options = _build_grpc_options()
+        target = f"{host}:{port}"
+
         if use_tls:
+            auto_client_cert = os.path.join("_auto_certs", "client.crt")
+            auto_client_key = os.path.join("_auto_certs", "client.key")
             if ca_cert:
                 from distllm.core.tls import load_tls_channel_credentials
                 credentials = load_tls_channel_credentials(ca_cert, host)
             else:
-                import os as _os
-                auto_ca = _os.path.join("_auto_certs", "ca.crt")
-                if _os.path.exists(auto_ca):
+                auto_ca = os.path.join("_auto_certs", "ca.crt")
+                if os.path.exists(auto_ca):
                     from distllm.core.tls import load_tls_channel_credentials
-                    credentials = load_tls_channel_credentials(auto_ca, host)
+                    client_cert = auto_client_cert if os.path.exists(auto_client_cert) else None
+                    client_key = auto_client_key if os.path.exists(auto_client_key) else None
+                    credentials = load_tls_channel_credentials(
+                        auto_ca, host,
+                        client_cert_file=client_cert,
+                        client_key_file=client_key,
+                    )
                 else:
                     raise NodeUnreachableError(
                         node_id="unknown", host=host, port=port,
@@ -169,82 +215,103 @@ class NodeClient:
                             "Pass --insecure to the worker node to disable TLS."
                         ),
                     )
-            self.channel = grpc.secure_channel(f"{host}:{port}", credentials, options=options)
+            self.channel = self._create_secure_channel(target, credentials, options)
         else:
-            self.channel = grpc.insecure_channel(f"{host}:{port}", options=options)
+            self.channel = self._create_insecure_channel(target, options)
         self.stub = _node_service_stub_class()(self.channel)
-        self._closed = False
+
+    def _create_secure_channel(self, target, credentials, options):
+        """Override in subclass — return a secure gRPC channel."""
+        raise NotImplementedError
+
+    def _create_insecure_channel(self, target, options):
+        """Override in subclass — return an insecure gRPC channel."""
+        raise NotImplementedError
+
+    def _close_channel(self):
+        """Close the underlying channel — handles both sync and async close."""
+        if self._closed:
+            return
+        self._closed = True
+        close_fn = self.channel.close
+        if asyncio.iscoroutinefunction(close_fn):
+            try:
+                asyncio.run(close_fn())
+            except RuntimeError:
+                pass
+        else:
+            try:
+                close_fn()
+            except Exception:
+                pass
+
+    def __del__(self):
+        try:
+            self._close_channel()
+        except Exception:
+            pass
+
+
+class NodeClient(UnifiedNodeClient):
+    """Sync gRPC client with retry — uses grpc (not grpc.aio) channels."""
+
+    def _create_secure_channel(self, target, credentials, options):
+        return grpc.secure_channel(target, credentials, options=options)
+
+    def _create_insecure_channel(self, target, options):
+        return grpc.insecure_channel(target, options=options)
+
+    def _retry(self, rpc_fn):
+        """Execute rpc_fn with exponential backoff (sync)."""
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return rpc_fn()
+            except (NodeUnreachableError, GRPCTimeoutError, grpc.RpcError) as e:
+                last_exc = e if isinstance(e, (NodeUnreachableError, GRPCTimeoutError)) else _convert_grpc_error(e, self.host, self.port, 0)
+                if attempt == self.max_retries:
+                    raise last_exc
+                import time
+                delay = min(self.retry_delay * (2 ** attempt), 60.0)
+                logger.warning(
+                    f"gRPC call failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                    f"{last_exc}, retrying in {delay:.1f}s"
+                )
+                time.sleep(delay)
+        raise last_exc  # type: ignore[misc]
 
     def health_check(self, timeout: float = 10) -> HealthCheckResponse:
-        """Check node health with retry."""
         def _call():
             try:
                 return self.stub.HealthCheck(HealthCheckRequest(), timeout=timeout)
             except grpc.RpcError as e:
-                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                    raise GRPCTimeoutError(node_id="unknown", timeout=timeout)
-                raise NodeUnreachableError(
-                    node_id="unknown", host=self.host, port=self.port, original_error=e
-                )
-        return retry_grpc_call(
-            _call,
-            max_retries=self.max_retries,
-            base_delay=self.retry_delay,
-            retryable_exceptions=(NodeUnreachableError, GRPCTimeoutError),
-        )
+                raise _convert_grpc_error(e, self.host, self.port, timeout)
+        return self._retry(_call)
 
     def get_info(self, timeout: float = 10) -> NodeInfo:
-        """Get node info with retry."""
         def _call():
             try:
                 return self.stub.GetNodeInfo(HealthCheckRequest(), timeout=timeout)
             except grpc.RpcError as e:
-                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                    raise GRPCTimeoutError(node_id="unknown", timeout=timeout)
-                raise NodeUnreachableError(
-                    node_id="unknown", host=self.host, port=self.port, original_error=e
-                )
-        return retry_grpc_call(
-            _call,
-            max_retries=self.max_retries,
-            base_delay=self.retry_delay,
-            retryable_exceptions=(NodeUnreachableError, GRPCTimeoutError),
-        )
+                raise _convert_grpc_error(e, self.host, self.port, timeout)
+        return self._retry(_call)
 
     def forward(self, request, timeout: float = 30) -> ForwardPassResponse:
-        """Run a blocking forward pass with retry."""
         def _call():
             try:
                 return self.stub.ForwardPass(request, timeout=timeout)
             except grpc.RpcError as e:
-                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                    raise GRPCTimeoutError(node_id="unknown", timeout=timeout)
-                raise NodeUnreachableError(
-                    node_id="unknown", host=self.host, port=self.port, original_error=e
-                )
-        return retry_grpc_call(
-            _call,
-            max_retries=self.max_retries,
-            base_delay=self.retry_delay,
-            retryable_exceptions=(NodeUnreachableError, GRPCTimeoutError),
-        )
+                raise _convert_grpc_error(e, self.host, self.port, timeout)
+        return self._retry(_call)
 
     def close(self):
-        """Close the gRPC channel with a timeout to prevent indefinite blocking."""
         if self._closed:
             return
-        import threading
-        def _close():
-            try:
-                self.channel.close()
-            except Exception:
-                pass
-        t = threading.Thread(target=_close, daemon=True)
-        t.start()
-        t.join(timeout=5)
-        if t.is_alive():
-            logger.warning(f"Channel close timed out for {self.host}:{self.port}")
         self._closed = True
+        try:
+            self.channel.close()
+        except Exception:
+            pass
 
     def __enter__(self):
         return self
@@ -252,11 +319,77 @@ class NodeClient:
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
+
+class AsyncNodeClient(UnifiedNodeClient):
+    """Async gRPC client with retry — uses grpc.aio channels."""
+
+    def _create_secure_channel(self, target, credentials, options):
+        return grpc.aio.secure_channel(target, credentials, options=options)
+
+    def _create_insecure_channel(self, target, options):
+        return grpc.aio.insecure_channel(target, options=options)
+
+    async def _retry_async(self, rpc_coro, timeout: float, method_name: str):
+        """Execute rpc_coro with exponential backoff (async)."""
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await rpc_coro()
+            except (NodeUnreachableError, GRPCTimeoutError) as e:
+                last_exc = e
+                if attempt == self.max_retries:
+                    raise last_exc
+                delay = min(self.retry_delay * (2 ** attempt), 60.0)
+                logger.warning(
+                    f"{method_name} failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                    f"{last_exc}, retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                last_exc = _convert_grpc_error(e, self.host, self.port, timeout)
+                if attempt == self.max_retries:
+                    raise last_exc
+                delay = min(self.retry_delay * (2 ** attempt), 60.0)
+                logger.warning(
+                    f"{method_name} failed (attempt {attempt + 1}/{self.max_retries + 1}): "
+                    f"{last_exc}, retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
+    async def health_check(self, timeout: float = 10) -> HealthCheckResponse:
+        return await self._retry_async(
+            lambda: self.stub.HealthCheck(HealthCheckRequest(), timeout=timeout),
+            timeout, "health_check",
+        )
+
+    async def get_info(self, timeout: float = 10) -> NodeInfo:
+        return await self._retry_async(
+            lambda: self.stub.GetNodeInfo(HealthCheckRequest(), timeout=timeout),
+            timeout, "get_info",
+        )
+
+    async def forward(self, request, timeout: float | None = None) -> ForwardPassResponse:
+        deadline = timeout if timeout is not None else self.timeout
+        return await self._retry_async(
+            lambda: asyncio.wait_for(
+                self.stub.ForwardPass(request, timeout=deadline),
+                timeout=deadline,
+            ),
+            deadline, "forward",
+        )
+
+    async def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        await self.channel.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
 
 class AsyncGRPCServer:
@@ -280,8 +413,9 @@ class AsyncGRPCServer:
         if hasattr(servicer, 'ca_cert'):
             servicer.ca_cert = ca_cert
         options = [
-            ('grpc.max_send_message_length', 64 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 64 * 1024 * 1024),
+            ('grpc.max_send_message_length', _MAX_GRPC_MESSAGE_BYTES),
+            ('grpc.max_receive_message_length', _MAX_GRPC_MESSAGE_BYTES),
+            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
         ]
         self._server_options = options
 
@@ -301,16 +435,17 @@ class AsyncGRPCServer:
             if not self.cert_file or not self.key_file:
                 from distllm.core.tls import generate_self_signed_certs
                 self._cert_dir = "_auto_certs"
-                cert_file, key_file, _ = generate_self_signed_certs(self._cert_dir)
+                cert_file, key_file, ca_cert_file = generate_self_signed_certs(self._cert_dir)
             else:
                 cert_file = str(pathlib.Path(self.cert_file).resolve())
                 key_file = str(pathlib.Path(self.key_file).resolve())
                 for path, name in [(cert_file, "cert"), (key_file, "key")]:
                     if not pathlib.Path(path).exists():
                         raise FileNotFoundError(f"TLS {name} file not found: {path}")
+                ca_cert_file = str(pathlib.Path(self.ca_cert).resolve()) if self.ca_cert else None
 
             from distllm.core.tls import load_tls_credentials
-            credentials = load_tls_credentials(cert_file, key_file)
+            credentials = load_tls_credentials(cert_file, key_file, ca_cert_file=ca_cert_file)
             self.server.add_secure_port(f"[::]:{self.port}", credentials)
             logger.info(f"Async gRPC server started on port {self.port} (TLS enabled)")
         else:
@@ -355,127 +490,3 @@ class AsyncGRPCServer:
                 await self.stop()
 
 
-class AsyncNodeClient:
-    """Async gRPC client for communicating with worker nodes using grpc.aio."""
-
-    def __init__(self, host: str, port: int, max_retries: int = 3, retry_delay: float = 1.0, use_tls: bool = True, ca_cert: str | None = None):
-        self.host = host
-        self.port = port
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        options = [
-            ('grpc.max_send_message_length', _MAX_GRPC_MESSAGE_BYTES),
-            ('grpc.max_receive_message_length', _MAX_GRPC_MESSAGE_BYTES),
-            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
-            # Auto-reconnect options
-            ('grpc.keepalive_time_ms', 30000),
-            ('grpc.keepalive_timeout_ms', 10000),
-            ('grpc.keepalive_permit_without_calls', 1),
-            ('grpc.enable_retries', 1),
-        ]
-
-        if use_tls:
-            if ca_cert:
-                from distllm.core.tls import load_tls_channel_credentials
-                credentials = load_tls_channel_credentials(ca_cert, host)
-            else:
-                import os as _os
-                auto_ca = _os.path.join("_auto_certs", "ca.crt")
-                if _os.path.exists(auto_ca):
-                    from distllm.core.tls import load_tls_channel_credentials
-                    credentials = load_tls_channel_credentials(auto_ca, host)
-                else:
-                    raise NodeUnreachableError(
-                        node_id="unknown", host=host, port=port,
-                        original_error=ConnectionError(
-                            f"TLS enabled but no CA cert found for {host}:{port}. "
-                            "Pass --insecure to the worker node to disable TLS."
-                        ),
-                    )
-            self.channel = grpc.aio.secure_channel(f"{host}:{port}", credentials, options=options)
-        else:
-            self.channel = grpc.aio.insecure_channel(f"{host}:{port}", options=options)
-        self.stub = _node_service_stub_class()(self.channel)
-        self._closed = False
-
-    async def health_check(self) -> HealthCheckResponse:
-        """Check node health (async) with retry."""
-        last_exc = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                return await self.stub.HealthCheck(HealthCheckRequest(), timeout=10)
-            except grpc.aio.AioRpcError as e:
-                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                    last_exc = GRPCTimeoutError(node_id="unknown", timeout=10)
-                else:
-                    last_exc = NodeUnreachableError(
-                        node_id="unknown", host=self.host, port=self.port, original_error=e
-                    )
-                if attempt == self.max_retries:
-                    raise last_exc
-                delay = min(self.retry_delay * (2 ** attempt), 60.0)
-                logger.warning(
-                    f"health_check failed (attempt {attempt + 1}/{self.max_retries + 1}): "
-                    f"{last_exc}, retrying in {delay:.1f}s"
-                )
-                await asyncio.sleep(delay)
-        raise last_exc  # type: ignore[misc]
-
-    async def get_info(self) -> NodeInfo:
-        """Get node info (async) with retry."""
-        last_exc = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                return await self.stub.GetNodeInfo(HealthCheckRequest())
-            except grpc.aio.AioRpcError as e:
-                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                    last_exc = GRPCTimeoutError(node_id="unknown", timeout=10)
-                else:
-                    last_exc = NodeUnreachableError(
-                        node_id="unknown", host=self.host, port=self.port, original_error=e
-                    )
-                if attempt == self.max_retries:
-                    raise last_exc
-                delay = min(self.retry_delay * (2 ** attempt), 60.0)
-                logger.warning(
-                    f"get_info failed (attempt {attempt + 1}/{self.max_retries + 1}): "
-                    f"{last_exc}, retrying in {delay:.1f}s"
-                )
-                await asyncio.sleep(delay)
-        raise last_exc  # type: ignore[misc]
-
-    async def forward(self, request) -> ForwardPassResponse:
-        """Run forward pass (async) with retry."""
-        last_exc = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                return await self.stub.ForwardPass(request)
-            except grpc.aio.AioRpcError as e:
-                if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                    last_exc = GRPCTimeoutError(node_id="unknown", timeout=10)
-                else:
-                    last_exc = NodeUnreachableError(
-                        node_id="unknown", host=self.host, port=self.port, original_error=e
-                    )
-                if attempt == self.max_retries:
-                    raise last_exc
-                delay = min(self.retry_delay * (2 ** attempt), 60.0)
-                logger.warning(
-                    f"forward failed (attempt {attempt + 1}/{self.max_retries + 1}): "
-                    f"{last_exc}, retrying in {delay:.1f}s"
-                )
-                await asyncio.sleep(delay)
-        raise last_exc  # type: ignore[misc]
-
-    async def close(self):
-        """Close the async gRPC channel."""
-        if self._closed:
-            return
-        await self.channel.close()
-        self._closed = True
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        await self.close()

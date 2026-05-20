@@ -13,14 +13,12 @@ Provides:
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
-from loguru import logger
 
 
 @dataclass

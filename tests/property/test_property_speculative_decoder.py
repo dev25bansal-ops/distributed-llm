@@ -132,7 +132,7 @@ def test_generate_draft_tokens_returns_tokens(logits):
     draft_model = MockDraftModel()
 
     input_ids = torch.randint(0, VOCAB_SIZE, (1, 5))
-    drafts, _ = decoder.generate_draft_tokens(
+    drafts, _, _ = decoder.generate_draft_tokens(
         draft_model=draft_model,
         input_ids=input_ids,
         target_logits=logits,

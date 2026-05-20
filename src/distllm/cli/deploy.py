@@ -72,10 +72,8 @@ def run_deploy(
     try:
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                f"http://{host}:{port}/api/models/deploy",
+                f"http://{host}:{port}/v1/models/{model}/load",
                 json={
-                    "model": model,
-                    "num_nodes": nodes,
                     "dtype": dtype,
                     "quantization": quantization,
                 },
@@ -96,10 +94,10 @@ def run_deploy(
         while time.time() - start < max_wait:
             try:
                 with httpx.Client(timeout=10.0) as client:
-                    resp = client.get(f"http://{host}:{port}/api/status")
+                    resp = client.get(f"http://{host}:{port}/health")
                     resp.raise_for_status()
                     data = resp.json()
-                    node_count = data.get("node_count", 0)
+                    node_count = data.get("nodes", 0)
                     if node_count >= nodes:
                         console.print(f"[green]Deployment complete: {node_count}/{nodes} nodes ready.[/green]")
                         return

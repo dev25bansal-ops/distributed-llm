@@ -1,0 +1,102 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Tokens Generated / sec",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "targets": [{"expr": "rate(distllm_tokens_generated_total[1m])", "legendFormat": "tokens/s"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "title": "Requests / sec",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0},
+      "targets": [{"expr": "rate(distllm_requests_total[1m])", "legendFormat": "requests/s"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "title": "Batch Size Distribution",
+      "type": "heatmap",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
+      "targets": [{"expr": "distllm_batch_size", "legendFormat": "batch size"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "title": "Time to First Token (TTFT)",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 6},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(distllm_ttft_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(distllm_ttft_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, rate(distllm_ttft_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Inter-Token Latency (ITL)",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 6},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(distllm_itl_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(distllm_itl_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, rate(distllm_itl_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Speculative Decoding Acceptance Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 12},
+      "targets": [{"expr": "rate(distllm_spec_decode_accepted_total[5m]) / rate(distllm_spec_decode_drafted_total[5m])", "legendFormat": "acceptance"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "title": "KV Cache Hit Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 12},
+      "targets": [{"expr": "rate(distllm_cache_hits_total[5m]) / (rate(distllm_cache_hits_total[5m]) + rate(distllm_cache_misses_total[5m]))", "legendFormat": "hit rate"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "title": "Pipeline Bubble Ratio",
+      "type": "gauge",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 12},
+      "targets": [{"expr": "distllm_pipeline_bubble_ratio", "legendFormat": "bubble"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "title": "Active Sequences",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 18},
+      "targets": [{"expr": "distllm_active_sequences", "legendFormat": "sequences"}]
+    },
+    {
+      "title": "Context Length Distribution",
+      "type": "histogram",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 18},
+      "targets": [{"expr": "distllm_context_length", "legendFormat": "context"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "title": "P95 Latency by Model",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 18},
+      "targets": [{"expr": "histogram_quantile(0.95, rate(distllm_model_latency_seconds_bucket[5m]))", "legendFormat": "{{model}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["distllm", "inference"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Distributed LLM - Inference",
+  "uid": "distllm-inference",
+  "version": 1
+}

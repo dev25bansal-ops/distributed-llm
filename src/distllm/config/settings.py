@@ -8,8 +8,13 @@ delimiter "__" (e.g., DISTLLM__MODEL__NAME).
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, SecretStr
+from pydantic import BaseModel, Field, field_validator, SecretStr, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from distllm.core.optimization.config import OptimizationConfig as _OptimizationConfig
+from distllm.core.predictive_migration.config import PredictiveMigrationConfig as _PredictiveMigrationConfig
+from distllm.core.auto_partition.config import AutoPartitionConfig as _AutoPartitionConfig
+from distllm.core.structured_output.config import StructuredOutputConfig as _StructuredOutputConfig
 
 
 class NodeRole(str, Enum):
@@ -268,9 +273,17 @@ class SpeculativeSettings(BaseModel):
 
 
 class PartitioningSettings(BaseModel):
-    """Layer partitioning strategy configuration."""
+    """Layer partitioning strategy configuration (legacy)."""
     strategy: str = "gpu_aware"  # "equal" | "gpu_aware"
     safety_margin: float = 0.1  # leave 10% VRAM free
+
+    def to_auto_partition_config(self):
+        """Convert to the new AutoPartitionConfig."""
+        return _AutoPartitionConfig(
+            enabled=self.strategy != "equal",
+            strategy=self.strategy if self.strategy != "gpu_aware" else "auto",
+            safety_margin=self.safety_margin,
+        )
 
     @field_validator("strategy")
     @classmethod
@@ -288,6 +301,8 @@ class RebalancerSettings(BaseModel):
     straggler_threshold: float = 1.5
     min_improvement_pct: float = 0.1
     cooldown_seconds: float = 300.0
+    grace_period_steps: int = 3
+    auto_mitigate: bool = False
 
 
 class CachePersistenceSettings(BaseModel):
@@ -621,11 +636,20 @@ class PredictiveCacheSettings(BaseModel):
 
 
 class SelfOptimizingSettings(BaseModel):
-    """Auto-tuning via hill-climbing optimization."""
+    """Auto-tuning via hill-climbing optimization (legacy)."""
     enabled: bool = False
     tune_interval_seconds: float = 60.0
     warmup_seconds: float = 30.0
     profile_dir: str | None = None
+
+    def to_optimization_config(self):
+        """Convert to the new Bayesian OptimizationConfig."""
+        from distllm.core.optimization.config import OptimizationConfig
+
+        return OptimizationConfig(
+            enabled=self.enabled,
+            runner={"warmup_seconds": self.warmup_seconds},
+        )
 
 
 class CudaGraphSettings(BaseModel):
@@ -664,10 +688,96 @@ class AgentSettings(BaseModel):
 
 
 class DisaggSettings(BaseModel):
-    """Disaggregated prefill/decode serving."""
+    """Disaggregated prefill/decode serving configuration.
+
+    Delegates to the full config model from the disagg package.
+    """
+
     enabled: bool = False
     prefill_nodes: list[dict] = []
     decode_nodes: list[dict] = []
+
+    def to_full_config(self):
+        """Convert to the package-level DisaggFullConfig."""
+        from distllm.core.disagg.config import DisaggFullConfig
+
+        return DisaggFullConfig(
+            enabled=self.enabled,
+            prefill_nodes=self.prefill_nodes,
+            decode_nodes=self.decode_nodes,
+        )
+
+
+class VLLMSettings(BaseModel):
+    """vLLM backend configuration."""
+    enabled: bool = False
+    tensor_parallel_size: int = 1
+    gpu_memory_utilization: float = 0.9
+    max_num_seqs: int = 256
+    max_num_batched_tokens: int = 8192
+    dtype: str = "auto"
+    seed: int = 0
+    enforce_eager: bool = False
+    max_model_len: int | None = None
+
+    @field_validator("gpu_memory_utilization")
+    @classmethod
+    def validate_gpu_memory_utilization(cls, v: float) -> float:
+        if not 0 < v <= 1:
+            raise ValueError(f"gpu_memory_utilization must be in (0, 1], got {v}")
+        return v
+
+    @field_validator("tensor_parallel_size")
+    @classmethod
+    def validate_tp_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"tensor_parallel_size must be >= 1, got {v}")
+        return v
+
+    @field_validator("dtype")
+    @classmethod
+    def validate_dtype(cls, v: str) -> str:
+        allowed = {"auto", "float16", "float32", "bfloat16", "half", "full"}
+        if v not in allowed:
+            raise ValueError(f"dtype must be one of {allowed}, got '{v}'")
+        return v
+
+
+class LlamacppSettings(BaseModel):
+    """llama.cpp backend configuration.
+
+    Lightweight alternative to vLLM for CPU/GPU inference with GGUF models.
+    Supports CPU, CUDA, AMD ROCm, and Apple Metal backends.
+    """
+    enabled: bool = False
+    model_path: str = ""
+    n_gpu_layers: int = 0
+    n_ctx: int = 2048
+    n_threads: int | None = None
+    n_batch: int = 512
+    seed: int = 0
+    verbose: bool = False
+
+    @field_validator("model_path")
+    @classmethod
+    def validate_model_path(cls, v: str, info) -> str:
+        if info.data.get("enabled", False) and not v:
+            raise ValueError("model_path is required when llamacpp is enabled")
+        return v
+
+    @field_validator("n_gpu_layers")
+    @classmethod
+    def validate_n_gpu_layers(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"n_gpu_layers must be >= 0, got {v}")
+        return v
+
+    @field_validator("n_ctx")
+    @classmethod
+    def validate_n_ctx(cls, v: int) -> int:
+        if v < 128:
+            raise ValueError(f"n_ctx must be >= 128, got {v}")
+        return v
 
 
 class RouteRuleSettings(BaseModel):
@@ -714,7 +824,42 @@ class TenantSettings(BaseModel):
     """Multi-tenant SaaS configuration."""
     enabled: bool = False
     default_tier: str = "free"
-    admin_api_key: str | None = Field(default=None, description="Admin API key for tenant management. Set via DISTLLM__TENANT__ADMIN_API_KEY env var.")
+    admin_api_key: SecretStr | None = Field(default=None, description="Admin API key for tenant management. Set via DISTLLM__TENANT__ADMIN_API_KEY env var.")
+
+
+class HardwareSettings(BaseModel):
+    """Multi-architecture hardware configuration.
+
+    Controls device selection, backend preference, and architecture-
+    specific settings for heterogeneous clusters.
+    """
+    device_type: str = "auto"  # "auto" | "cuda" | "rocm" | "mps" | "xpu" | "cpu"
+    preferred_backend: str = "auto"  # "auto" | "vllm" | "pytorch" | "llamacpp"
+    force_device_id: int = -1  # -1 = auto-select
+    fallback_to_cpu: bool = True
+
+    # Architecture-specific overrides
+    rocm_visible_devices: str = ""
+    mps_optimize_memory: bool = True
+    xpu_oneapi_verbose: bool = False
+    cpu_threads: int = 0  # 0 = auto-detect via psutil
+    cpu_numa_aware: bool = True
+
+    @field_validator("device_type")
+    @classmethod
+    def validate_device_type(cls, v: str) -> str:
+        allowed = {"auto", "cuda", "rocm", "mps", "xpu", "cpu"}
+        if v not in allowed:
+            raise ValueError(f"device_type must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("preferred_backend")
+    @classmethod
+    def validate_backend(cls, v: str) -> str:
+        allowed = {"auto", "vllm", "pytorch", "llamacpp"}
+        if v not in allowed:
+            raise ValueError(f"preferred_backend must be one of {allowed}, got '{v}'")
+        return v
 
 
 class DistLLMSettings(BaseSettings):
@@ -743,6 +888,7 @@ class DistLLMSettings(BaseSettings):
     quantization: QuantizationSettings = Field(default_factory=QuantizationSettings)
     speculative: SpeculativeSettings = Field(default_factory=SpeculativeSettings)
     partitioning: PartitioningSettings = Field(default_factory=PartitioningSettings)
+    auto_partition: _AutoPartitionConfig = Field(default_factory=_AutoPartitionConfig)
     rebalancer: RebalancerSettings = Field(default_factory=RebalancerSettings)
     cache_persistence: CachePersistenceSettings = Field(default_factory=CachePersistenceSettings)
     priority: PrioritySettings = Field(default_factory=PrioritySettings)
@@ -767,7 +913,10 @@ class DistLLMSettings(BaseSettings):
     zero_copy: ZeroCopySettings = Field(default_factory=ZeroCopySettings)
     adaptive_precision: AdaptivePrecisionSettings = Field(default_factory=AdaptivePrecisionSettings)
     predictive_cache: PredictiveCacheSettings = Field(default_factory=PredictiveCacheSettings)
+    predictive_migration: _PredictiveMigrationConfig = Field(default_factory=_PredictiveMigrationConfig)
+    structured_output: _StructuredOutputConfig = Field(default_factory=_StructuredOutputConfig)
     self_optimizing: SelfOptimizingSettings = Field(default_factory=SelfOptimizingSettings)
+    optimization: _OptimizationConfig = Field(default_factory=_OptimizationConfig)
     cuda_graph: CudaGraphSettings = Field(default_factory=CudaGraphSettings)
     compile: CompileSettings = Field(default_factory=CompileSettings)
     slora: SloRaSettings = Field(default_factory=SloRaSettings)
@@ -775,6 +924,9 @@ class DistLLMSettings(BaseSettings):
     agent: AgentSettings = Field(default_factory=AgentSettings)
     disagg: DisaggSettings = Field(default_factory=DisaggSettings)
     chat_router: ChatRouterSettings = Field(default_factory=ChatRouterSettings)
+    hardware: HardwareSettings = Field(default_factory=HardwareSettings)
+    vllm: VLLMSettings = Field(default_factory=VLLMSettings)
+    llamacpp: LlamacppSettings = Field(default_factory=LlamacppSettings)
 
     @classmethod
     def from_profile(cls, config_path: str, profile: str | None = None) -> "DistLLMSettings":

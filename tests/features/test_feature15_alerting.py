@@ -74,9 +74,14 @@ class TestRuleGroup:
 class TestDefaultAlerts:
     def test_six_default_alerts(self):
         alerts = get_default_alerts()
-        assert len(alerts) == 6
+        assert len(alerts) == 11
         names = {a.alert for a in alerts}
-        expected = {"NodeDown", "NodeDegraded", "HighP99Latency", "OOMRisk", "HighErrorRate", "ThroughputDrop"}
+        expected = {
+            "NodeDown", "NodeDegraded", "HighP99Latency", "OOMRisk",
+            "HighErrorRate", "ThroughputDrop", "SLOErrorBudgetBurn",
+            "SLOLatencyP99Breach", "SLOLatencyP95Breach",
+            "AnomalousRequestDuration", "AnomalousErrorRate",
+        }
         assert names == expected
 
     def test_all_alerts_have_severity(self):
@@ -94,9 +99,13 @@ class TestDefaultAlerts:
 class TestDefaultRecordingRules:
     def test_three_default_recording_rules(self):
         rules = get_default_recording_rules()
-        assert len(rules) == 3
+        assert len(rules) == 7
         names = {r.record for r in rules}
-        expected = {"node_health_avg:1m", "request_rate:5m", "error_ratio:5m"}
+        expected = {
+            "node_health_avg:1m", "request_rate:5m", "error_ratio:5m",
+            "slo:error_budget_remaining_ratio:5m", "slo:latency_p99_s:5m",
+            "slo:latency_p95_s:5m", "slo:availability_ratio:5m",
+        }
         assert names == expected
 
 
@@ -142,8 +151,8 @@ class TestRuleApplier:
     def test_load_defaults(self):
         applier = RuleApplier("http://localhost:9090")
         alerts, recording, yaml_content = applier.load_and_validate(use_defaults=True)
-        assert len(alerts) == 6
-        assert len(recording) == 3
+        assert len(alerts) == 11
+        assert len(recording) == 7
         assert isinstance(yaml_content, str)
 
     def test_get_rules_yaml(self):

@@ -5,8 +5,6 @@ Extracted from the Coordinator class.
 """
 
 import asyncio
-import concurrent.futures
-import os
 import threading
 from typing import Any
 
@@ -56,7 +54,7 @@ class PipelineOrchestrator:
         self,
         resource_mgr: ResourceManager | None = None,
         total_layers: int = 0,
-        max_workers: int | None = None,
+        pipeline_timeout: float = 30.0,
     ):
         self.nodes: dict[str, NodeRegistration] = {}
         self.node_order: list[str] = []
@@ -65,9 +63,9 @@ class PipelineOrchestrator:
         self.total_layers = total_layers
         self.resource_mgr = resource_mgr or ResourceManager()
         self._latency_tracker: LatencyTracker | None = None
-        self._max_workers = max_workers or os.cpu_count() or 4
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers)
         self.enable_overlap: bool = False
+        # Pipeline timeout per node stage
+        self.pipeline_timeout = pipeline_timeout
         # Track last KV length sent per (node_id, request_id) for delta-only gRPC
         self._node_kv_sent_lens: dict[tuple[str, str], int] = {}
 
@@ -165,13 +163,6 @@ class PipelineOrchestrator:
                 self.prefill_nodes[node_id] = registration
             elif role == NodeRole.DECODE:
                 self.decode_nodes[node_id] = registration
-
-            # Auto-scale thread pool to match node count
-            target_workers = max(self._max_workers, min(32, len(self.nodes) * 2))
-            if target_workers != self._executor._max_workers:
-                old_executor = self._executor
-                self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=target_workers)
-                old_executor.shutdown(wait=True)
 
         logger.info(f"Registered {node_id}: layers {start_layer}-{end_layer}")
 
@@ -529,7 +520,7 @@ class PipelineOrchestrator:
                     request_id, draft_tokens,
                     transport_mode="nccl",
                 )
-                self._executor.submit(node.client.stub.ForwardControl, request).result()
+                node.client.stub.ForwardControl(request, timeout=30)
 
                 # Receive output via NCCL
                 response_shape = current_hidden.shape
@@ -650,14 +641,32 @@ class PipelineOrchestrator:
                     request_id, draft_tokens, input_ids,
                 )
 
+                timeout = self.pipeline_timeout
                 if hasattr(node, 'async_client') and node.async_client is not None:
-                    response = await node.async_client.stub.ForwardPass(request)
+                    response = await asyncio.wait_for(
+                        node.async_client.stub.ForwardPass(request),
+                        timeout=timeout,
+                    )
                 else:
-                    response = await asyncio.to_thread(node.client.stub.ForwardPass, request)
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(node.client.stub.ForwardPass, request),
+                        timeout=timeout,
+                    )
 
                 current_hidden = self._process_forward_response(response, node_id, node, node_kv_caches)
 
+            except asyncio.TimeoutError:
+                self.resource_mgr.record_failure(node_id)
+                node_log.error(f"Node {node_id} timed out after {timeout}s")
+                # Clean up node state on timeout
+                with self._topology_lock:
+                    if node_id in self.nodes:
+                        self.nodes[node_id].healthy = False
+                node_kv_caches.pop(node_id, None)
+                raise GRPCTimeoutError(node_id=node_id, timeout=timeout)
             except (NodeUnreachableError, OOMError, InputValidationError, GRPCTimeoutError):
+                # Clean up KV cache for failed node
+                node_kv_caches.pop(node_id, None)
                 raise
             except grpc.RpcError as e:
                 self.resource_mgr.record_failure(node_id)
@@ -665,6 +674,7 @@ class PipelineOrchestrator:
                 with self._topology_lock:
                     if node_id in self.nodes:
                         self.nodes[node_id].healthy = False
+                node_kv_caches.pop(node_id, None)
                 raise NodeUnreachableError(
                     node_id=node_id, host=node.host, port=node.port, original_error=e
                 )
@@ -674,6 +684,7 @@ class PipelineOrchestrator:
                 with self._topology_lock:
                     if node_id in self.nodes:
                         self.nodes[node_id].healthy = False
+                node_kv_caches.pop(node_id, None)
                 raise
 
         return current_hidden
@@ -711,8 +722,7 @@ class PipelineOrchestrator:
             request_id, draft_tokens, input_ids,
         )
 
-        future0 = self._executor.submit(first_node.client.stub.ForwardPass, req0)
-        resp0 = future0.result()
+        resp0 = first_node.client.stub.ForwardPass(req0)
         current_hidden = self._process_forward_response(resp0, first_node_id, first_node, node_kv_caches)
 
         for i in range(1, total_nodes):
@@ -860,7 +870,7 @@ class PipelineOrchestrator:
                 seq_len, batch_size, current_hidden, past_kv,
                 request_id, draft_tokens, input_ids,
             )
-            response = self._executor.submit(node.client.stub.ForwardPass, request).result()
+            response = node.client.stub.ForwardPass(request)
             return self._process_forward_response(response, node_id, node, node_kv_caches)
 
         except (NodeUnreachableError, OOMError, InputValidationError, GRPCTimeoutError):

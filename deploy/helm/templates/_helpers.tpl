@@ -79,3 +79,8 @@ Usage: include "distllm.workerLabels" (dict "root" $ "pool" $pool)
 app.distllm.io/component: worker
 app.distllm.io/pool: {{ .pool.name }}
 {{- end }}
+
+{{- define "distllm.workerSelectorLabels" -}}
+{{ include "distllm.selectorLabels" . }}
+app.distllm.io/component: worker
+{{- end }}

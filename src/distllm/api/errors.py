@@ -15,20 +15,26 @@ def error_response(
     request_id: str | None = None,
     retry_after: float | None = None,
 ) -> JSONResponse:
-    """Build a standardized API error response.
+    """Build a standardized API error response (OpenAI-compatible format).
 
     All API errors should use this function or the _error_response helper
     (which injects request_id from request.state) to ensure consistent format.
+
+    OpenAI error format:
+    {"error": {"message": "...", "type": "...", "param": null, "code": "..."}}
     """
-    content: dict = {
-        "error": error,
+    error_body: dict = {
         "message": message,
         "type": type,
         "code": str(status_code),
-        "request_id": request_id,
     }
     if retry_after is not None:
-        content["retry_after"] = retry_after
+        error_body["retry_after"] = retry_after
+    content: dict = {
+        "error": error_body,
+    }
+    if request_id:
+        content["request_id"] = request_id
     return JSONResponse(
         status_code=status_code,
         content=content,

@@ -6,7 +6,6 @@ Extracted from the Coordinator class.
 
 
 from loguru import logger
-from transformers import AutoTokenizer
 
 from distllm.models.partitioner import get_model_info
 from distllm.models.partitioner import partition_model_across_nodes

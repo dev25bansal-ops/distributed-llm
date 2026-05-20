@@ -18,7 +18,10 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,10 +34,11 @@ jobs:
         run: mypy src/
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     needs: [lint]
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
@@ -42,8 +46,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,testing]"
-      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=70 -m "not e2e and not slow and not chaos"
+      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=85 -m "not e2e and not slow and not chaos"
+        shell: bash
       - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
@@ -90,14 +96,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Detect secrets
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install detect-secrets
+      - name: Detect secrets vs baseline
         run: |
-          grep -rniE '(api[_-]?key|secret[_-]?key|password|token|credential)\s*[:=]\s*["'"'"'][a-zA-Z0-9_\-]{16,}' src/ --include="*.py" --include="*.yaml" --include="*.json" --include="*.env" > secrets-scan.txt || true
-          if [ -s secrets-scan.txt ]; then
-            echo "Potential secrets found:"
-            cat secrets-scan.txt
-            exit 1
-          fi
+          detect-secrets scan src/ deploy/ > .secrets.new.baseline
+          python scripts/ci/check_secrets_baseline.py
 
   benchmark:
     runs-on: ubuntu-latest

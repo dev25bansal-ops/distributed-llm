@@ -242,8 +242,8 @@ class ModelPartitioner:
         if quant_config is not None:
             model_kwargs["quantization_config"] = quant_config
 
+        # Load to CPU only; extract_subset moves individual layers to the target device
         model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-        model = model.to(d)
         model.eval()
 
         self._extract_subset(model, start_layer, end_layer, total_layers, device)

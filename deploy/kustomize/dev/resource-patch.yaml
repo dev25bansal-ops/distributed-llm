@@ -1,14 +1,14 @@
-# Dev: minimal resources
+# Dev: minimal coordinator resources
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: distllm-operator
+  name: distllm-coordinator
 spec:
   replicas: 1
   template:
     spec:
       containers:
-        - name: operator
+        - name: coordinator
           resources:
             requests:
               cpu: 50m
@@ -16,3 +16,22 @@ spec:
             limits:
               cpu: 200m
               memory: 128Mi
+---
+# Dev: minimal worker resources, single replica
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distllm-worker
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: worker
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

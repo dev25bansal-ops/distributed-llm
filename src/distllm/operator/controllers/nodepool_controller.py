@@ -14,7 +14,7 @@ def _get_k8s_client():
         k8s_config.load_incluster_config()
     except k8s_config.ConfigException:
         k8s_config.load_kube_config()
-    return k8s.client.AppsV1Api()
+    return k8s.AppsV1Api()
 
 
 @kopf.on.create("distllm.zeroroute.ai", "v1", "nodepools")
@@ -110,6 +110,6 @@ def delete_nodepool(spec, name, namespace, **kwargs):
     apps_v1 = _get_k8s_client()
     try:
         apps_v1.delete_namespaced_stateful_set(name, namespace)
-    except k8s.client.ApiException:
+    except k8s.ApiException:
         pass
     logger.info(f"Deleted NodePool {name}")

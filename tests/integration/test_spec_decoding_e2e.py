@@ -65,7 +65,7 @@ class TestDraftTargetEndToEnd:
         draft_model = DummyDraftModel(start_id=10, length=5)
         input_ids = torch.tensor([[1, 2, 3]])
 
-        draft_tokens, _ = decoder.generate_draft_tokens(draft_model, input_ids)
+        draft_tokens, _, _ = decoder.generate_draft_tokens(draft_model, input_ids)
         assert draft_tokens is not None
         assert len(draft_tokens) > 0
 
@@ -75,7 +75,7 @@ class TestDraftTargetEndToEnd:
         draft_model = DummyDraftModel(start_id=10, length=3)
         input_ids = torch.tensor([[1, 2, 3]])
 
-        draft_tokens, _ = decoder.generate_draft_tokens(draft_model, input_ids)
+        draft_tokens, _, _ = decoder.generate_draft_tokens(draft_model, input_ids)
         assert draft_tokens is not None
 
         # Simulate target model output where target agrees with draft
@@ -98,7 +98,7 @@ class TestDraftTargetEndToEnd:
         total_output = []
 
         for step in range(5):
-            draft_tokens, _ = decoder.generate_draft_tokens(draft_model, input_ids)
+            draft_tokens, _, _ = decoder.generate_draft_tokens(draft_model, input_ids)
 
             if draft_tokens is not None:
                 # Simulate target agreeing with all but last

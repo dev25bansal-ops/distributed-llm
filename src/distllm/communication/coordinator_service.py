@@ -17,6 +17,9 @@ from distllm.communication.node_pb2_grpc import CoordinatorServiceServicer, Node
 from distllm.errors import SerializationError
 
 
+_MAX_GRPC_MESSAGE_BYTES = (2 * 1024 * 1024 * 1024) - 1  # ~2 GB
+
+
 def _node_service_stub_class():
     shim = sys.modules.get("distllm.communication.grpc")
     if shim is not None and hasattr(shim, "NodeServiceStub"):
@@ -80,33 +83,48 @@ class CoordinatorService(CoordinatorServiceServicer):
             logger.info(f"Node {node_id} hosts experts: {expert_ids}")
 
         if self.use_tls:
+            import os as _os
+            auto_client_cert = _os.path.join("_auto_certs", "client.crt")
+            auto_client_key = _os.path.join("_auto_certs", "client.key")
             if self.ca_cert:
                 from distllm.core.tls import load_tls_channel_credentials
                 credentials = load_tls_channel_credentials(self.ca_cert, node_info.host)
             else:
-                import os as _os
                 auto_ca = _os.path.join("_auto_certs", "ca.crt")
                 if _os.path.exists(auto_ca):
                     from distllm.core.tls import load_tls_channel_credentials
-                    credentials = load_tls_channel_credentials(auto_ca, node_info.host)
+                    client_cert = auto_client_cert if _os.path.exists(auto_client_cert) else None
+                    client_key = auto_client_key if _os.path.exists(auto_client_key) else None
+                    credentials = load_tls_channel_credentials(
+                        auto_ca, node_info.host,
+                        client_cert_file=client_cert,
+                        client_key_file=client_key,
+                    )
                 else:
                     # Security: Do NOT silently downgrade to insecure channel.
-                    # Force proper TLS configuration to prevent MITM attacks.
                     context.set_code(grpc.StatusCode.UNAVAILABLE)
                     context.set_details(
                         f"TLS enabled but no CA certificate available for {node_info.host}:{node_info.port}. "
                         "Configure TLS certificates or start with TLS disabled for development only."
                     )
                     return RegistrationResponse(accepted=False)
-            channel = grpc.secure_channel(
+            channel = grpc.aio.secure_channel(
                 f"{node_info.host}:{node_info.port}",
                 credentials,
-                options=[("grpc.default_method_deadline", 30.0)],
+                options=[
+                    ("grpc.max_send_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                    ("grpc.max_receive_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                    ("grpc.default_method_deadline", 30.0),
+                ],
             )
         else:
             channel = grpc.insecure_channel(
                 f"{node_info.host}:{node_info.port}",
-                options=[("grpc.default_method_deadline", 30.0)],
+                options=[
+                    ("grpc.max_send_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                    ("grpc.max_receive_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                    ("grpc.default_method_deadline", 30.0),
+                ],
             )
         stub = _node_service_stub_class()(channel)
 
@@ -295,15 +313,23 @@ class AsyncCoordinatorService(CoordinatorServiceServicer):
             logger.info(f"Node {node_id} hosts experts: {expert_ids}")
 
         if self.use_tls:
+            import os as _os
+            auto_client_cert = _os.path.join("_auto_certs", "client.crt")
+            auto_client_key = _os.path.join("_auto_certs", "client.key")
             if self.ca_cert:
                 from distllm.core.tls import load_tls_channel_credentials
                 credentials = load_tls_channel_credentials(self.ca_cert, node_info.host)
             else:
-                import os as _os
                 auto_ca = _os.path.join("_auto_certs", "ca.crt")
                 if _os.path.exists(auto_ca):
                     from distllm.core.tls import load_tls_channel_credentials
-                    credentials = load_tls_channel_credentials(auto_ca, node_info.host)
+                    client_cert = auto_client_cert if _os.path.exists(auto_client_cert) else None
+                    client_key = auto_client_key if _os.path.exists(auto_client_key) else None
+                    credentials = load_tls_channel_credentials(
+                        auto_ca, node_info.host,
+                        client_cert_file=client_cert,
+                        client_key_file=client_key,
+                    )
                 else:
                     # Security: Do NOT silently downgrade to insecure channel.
                     context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -312,9 +338,22 @@ class AsyncCoordinatorService(CoordinatorServiceServicer):
                         "Configure TLS certificates or start with TLS disabled for development only."
                     )
                     return RegistrationResponse(accepted=False)
-            channel = grpc.aio.secure_channel(f"{node_info.host}:{node_info.port}", credentials)
+            channel = grpc.secure_channel(
+                f"{node_info.host}:{node_info.port}",
+                credentials,
+                options=[
+                    ("grpc.max_send_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                    ("grpc.max_receive_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                ],
+            )
         else:
-            channel = grpc.aio.insecure_channel(f"{node_info.host}:{node_info.port}")
+            channel = grpc.aio.insecure_channel(
+                f"{node_info.host}:{node_info.port}",
+                options=[
+                    ("grpc.max_send_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                    ("grpc.max_receive_message_length", _MAX_GRPC_MESSAGE_BYTES),
+                ],
+            )
         stub = _node_service_stub_class()(channel)
 
         old_channel = None

@@ -1,10 +1,8 @@
 """Hash-based LRU prefix cache for token sequences with memory-based limits."""
 
 import time
-import sys
 import threading
 from collections import OrderedDict
-from typing import Any
 
 from distllm.core.cache_eviction import TTLPolicy
 
@@ -104,32 +102,47 @@ class PrefixCache:
 
     def lookup(self, token_ids: list[int]) -> tuple[int, dict | None]:
         """Find the longest cached prefix."""
-        with self._lock:
-            if len(token_ids) < self.min_prefix_len:
+        if len(token_ids) < self.min_prefix_len:
+            with self._lock:
                 self._misses += 1
-                return 0, None
+            return 0, None
 
-            hashes = []
-            running_hash = 0
-            for i, tok in enumerate(token_ids):
-                running_hash = ((running_hash * self._HASH_BASE) + tok) % self._HASH_MOD
-                length = i + 1
-                if length >= self.min_prefix_len:
-                    hashes.append((length, running_hash))
+        # Compute rolling hash for the full sequence (fast, no lock needed)
+        hashes = []
+        running_hash = 0
+        for i, tok in enumerate(token_ids):
+            running_hash = ((running_hash * self._HASH_BASE) + tok) % self._HASH_MOD
+            length = i + 1
+            if length >= self.min_prefix_len:
+                hashes.append((length, running_hash))
 
-            for length, h in reversed(hashes):
-                if h in self._cache:
-                    if self._ttl_policy and self._ttl_policy.is_expired(h):
-                        continue
-                    if self._cache[h]["tokens"] == token_ids[:length]:
+        # Lock held only for dict lookups and the single matching compare
+        for length, h in reversed(hashes):
+            with self._lock:
+                cached = self._cache.get(h)
+            if cached is None:
+                continue
+            if self._ttl_policy and self._ttl_policy.is_expired(h):
+                continue
+            # Compare without allocating a slice
+            cached_tokens = cached["tokens"]
+            if len(cached_tokens) == length:
+                match = True
+                for j in range(length):
+                    if cached_tokens[j] != token_ids[j]:
+                        match = False
+                        break
+                if match:
+                    with self._lock:
                         self._hits += 1
                         self._cache.move_to_end(h)
                         if self._ttl_policy:
                             self._ttl_policy.record_access(h)
-                        return length, self._cache[h]["kv_data"]
+                    return length, cached["kv_data"]
 
+        with self._lock:
             self._misses += 1
-            return 0, None
+        return 0, None
 
     def store(self, token_ids: list[int], kv_data: dict) -> None:
         """Cache a prefix's KV data."""

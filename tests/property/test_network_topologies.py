@@ -234,9 +234,8 @@ def test_flatten_topology_roundtrip(topo_fn, num_nodes, bandwidth):
     bandwidth=st.floats(1.0, 50.0, allow_nan=False, allow_infinity=False),
 )
 @settings(max_examples=30, deadline=None)
-def test_shortest_path_valid(args):
+def test_shortest_path_valid(topo_fn, num_nodes, bandwidth):
     """Shortest paths are valid and respect the triangle inequality."""
-    topo_fn, num_nodes, bandwidth = args
     if topo_fn == "ring":
         topo = create_ring_topology(num_nodes, bandwidth)
     else:

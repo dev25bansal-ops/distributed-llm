@@ -13,7 +13,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 import torch
 from loguru import logger
@@ -87,7 +87,6 @@ class CudaIPCManager:
                 logger.error("CUDA not available for IPC import")
                 return None
             import pickle
-            import torch.multiprocessing.reduction as reduction
             func, args = pickle.loads(ipc_handle)
             storage = func(*args)
             tensor = torch.tensor([], dtype=dtype, device=self._device).set_(

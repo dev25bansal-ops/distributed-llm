@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 import torch
-from loguru import logger
 
 
 class QualityTier(str, Enum):

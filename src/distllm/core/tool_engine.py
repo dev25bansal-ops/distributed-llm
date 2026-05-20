@@ -11,7 +11,7 @@ import json
 import re
 import uuid
 from typing import Any, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from loguru import logger
 
 

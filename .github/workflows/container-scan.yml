@@ -29,7 +29,6 @@ jobs:
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           exit-code: "1"
-        continue-on-error: true
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -45,7 +44,7 @@ jobs:
         uses: anchore/scan-action@v3
         with:
           image: distributed-llm:scan
-          fail-build: false
+          fail-build: true
           output-format: sarif
           severity-cutoff: high
       - name: Upload Grype results
@@ -64,7 +63,6 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pip install pip-audit
       - run: pip-audit --format json --output pip-audit-results.json
-        continue-on-error: true
       - name: Upload dependency scan results
         uses: actions/upload-artifact@v4
         with:

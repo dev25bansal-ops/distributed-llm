@@ -6,7 +6,6 @@ GPU memory to maximize throughput without OOM.
 
 from typing import Dict, List, Optional, Tuple
 
-from loguru import logger
 
 
 def get_memory_per_sequence(

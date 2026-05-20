@@ -9,7 +9,6 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 from loguru import logger
 

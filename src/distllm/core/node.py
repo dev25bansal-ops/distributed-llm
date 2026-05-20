@@ -2,7 +2,6 @@
 
 import argparse
 from dataclasses import dataclass
-import uuid
 
 import torch
 from loguru import logger
@@ -92,16 +91,17 @@ class WorkerNode:
         For middle nodes: process hidden states directly.
         For last node: compute logits after layers.
         """
+        # Guard: model must be loaded before forward pass
+        if self.partitioner is None:
+            raise RuntimeError("Model not loaded. Call load_model() before starting the node.")
+
         # First node: embed token IDs if provided
-        if input_ids is not None and self.partitioner is not None and self.partitioner.embed_input is not None:
+        if input_ids is not None and self.partitioner.embed_input is not None:
             # Determine position offset from KV cache length
             position_offset = 0
             if past_key_values and len(past_key_values) > 0:
                 position_offset = past_key_values[0][0].shape[-2]
             hidden_states = self.partitioner.embed_input(input_ids, position_offset=position_offset)
-
-        if self.partitioner is None:
-            raise RuntimeError("Model not loaded. Call load_model() before starting the node.")
 
         output, new_kv = self.partitioner.forward(
             hidden_states,

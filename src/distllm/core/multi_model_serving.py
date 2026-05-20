@@ -11,7 +11,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-import torch
 from loguru import logger
 
 from distllm.core.model_registry import ModelEntry, ModelRegistry

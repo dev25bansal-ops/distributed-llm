@@ -8,6 +8,7 @@ coordinator's backend.
 
 import asyncio
 import hashlib
+import random
 import time
 from typing import Any, Optional
 
@@ -138,7 +139,7 @@ class GatewayRouter:
         if total == 0:
             selected = backends[0]
         else:
-            r = time.monotonic() % total
+            r = random.random() * total
             cumulative = 0
             selected = backends[0]
             for b in backends:
@@ -170,7 +171,7 @@ class GatewayRouter:
             raise RuntimeError("No healthy backends available")
 
         total = sum(b.config.weight for b in backends)
-        r = time.monotonic() % (total or 1)
+        r = random.random() * (total or 1)
         cumulative = 0
         selected = backends[0]
         for b in backends:

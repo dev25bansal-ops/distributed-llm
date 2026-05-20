@@ -14,6 +14,7 @@ Inspired by vLLM's PagedAttention architecture.
 import hashlib
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -111,14 +112,17 @@ class BlockPool:
         self._initial_num_blocks = num_blocks
         # FP8 scales: parallel storage for per-block scale factors [num_blocks, num_layers, 2]
         self._fp8_scales: Optional[torch.Tensor] = None
+        # FP8 block pools: parallel fp8 storage (half the size of main pools)
+        self._fp8_pools: List[torch.Tensor] = []
 
-        # GPU block pool: pre-allocate all blocks
+        # GPU block pool: lazy allocation starting small (scales to 70B+)
         self.num_blocks = 0
-        self._free_blocks: List[int] = list(range(num_blocks))
+        self._free_blocks: List[int] = []
         self._block_usage: Dict[int, Block] = {}
 
-        # Pre-allocate initial block pool
-        self._allocate_initial_pool(num_blocks)
+        # Start with minimal allocation; rely on _expand_pool for growth
+        initial = max(1, min(num_blocks, 64))
+        self._allocate_initial_pool(initial)
 
         # CPU swap space
         self._swap_space: Dict[int, SwapEntry] = {}
@@ -292,23 +296,28 @@ class BlockPool:
         Returns:
             (key, value) tensors of shape [num_heads, tokens, head_dim].
         """
-        pool, offset = self._get_pool_and_offset(block_id)
-
-        block_data = pool[offset, layer_idx]  # [2, num_heads, block_size, head_dim]
-        key = block_data[0]  # [num_heads, block_size, head_dim]
-        value = block_data[1]
-
-        if num_tokens is not None and num_tokens < self.block_size:
-            key = key[:, :num_tokens, :]
-            value = value[:, :num_tokens, :]
-
-        # Dequantize from FP8 if needed
-        if self.use_fp8 and self._fp8_scales is not None:
+        # If FP8 mode, read from fp8 pool and dequantize
+        if self.use_fp8 and self._fp8_pools:
+            fp8_pool, fp8_offset = self._get_fp8_pool_and_offset(block_id)
+            fp8_block = fp8_pool[fp8_offset, layer_idx]
+            key = fp8_block[0]  # [num_heads, block_size, head_dim]
+            value = fp8_block[1]
+            if num_tokens is not None and num_tokens < self.block_size:
+                key = key[:, :num_tokens, :]
+                value = value[:, :num_tokens, :]
             from distllm.core.fp8_engine import dequantize_kv_fp8
             scale_k = self._fp8_scales[block_id, layer_idx, 0]
             scale_v = self._fp8_scales[block_id, layer_idx, 1]
             key = dequantize_kv_fp8(key, scale_k)
             value = dequantize_kv_fp8(value, scale_v)
+        else:
+            pool, offset = self._get_pool_and_offset(block_id)
+            block_data = pool[offset, layer_idx]  # [2, num_heads, block_size, head_dim]
+            key = block_data[0]  # [num_heads, block_size, head_dim]
+            value = block_data[1]
+            if num_tokens is not None and num_tokens < self.block_size:
+                key = key[:, :num_tokens, :]
+                value = value[:, :num_tokens, :]
 
         return key, value
 
@@ -333,7 +342,7 @@ class BlockPool:
 
         num_tokens = key.shape[-2]
 
-        # Quantize to FP8 if enabled
+        # Quantize to FP8 if enabled — store in fp8 pool, not in main pool
         if self.use_fp8:
             from distllm.core.fp8_engine import quantize_kv_fp8
             if self._fp8_scales is None:
@@ -342,9 +351,12 @@ class BlockPool:
             fp8_v, scale_v = quantize_kv_fp8(value)
             self._fp8_scales[block_id, layer_idx, 0] = scale_k
             self._fp8_scales[block_id, layer_idx, 1] = scale_v
-            block_data = pool[local_offset, layer_idx]
-            block_data[0, :, offset : offset + num_tokens, :] = fp8_k.to(self.dtype)
-            block_data[1, :, offset : offset + num_tokens, :] = fp8_v.to(self.dtype)
+            if not self._fp8_pools:
+                self._allocate_fp8_pools()
+            fp8_pool, fp8_local_offset = self._get_fp8_pool_and_offset(block_id)
+            fp8_block = fp8_pool[fp8_local_offset, layer_idx]
+            fp8_block[0, :, offset : offset + num_tokens, :] = fp8_k
+            fp8_block[1, :, offset : offset + num_tokens, :] = fp8_v
         else:
             block_data = pool[local_offset, layer_idx]
             block_data[0, :, offset : offset + num_tokens, :] = key
@@ -362,6 +374,20 @@ class BlockPool:
         """Enable FP8 KV cache storage for this block pool."""
         self.use_fp8 = True
         self._init_fp8_scales()
+
+    def _allocate_fp8_pools(self) -> None:
+        """Allocate parallel fp8 block pools (half memory vs self.dtype)."""
+        for pool in self._pools:
+            fp8_pool = torch.empty_like(pool, dtype=torch.float8_e4m3fn)
+            self._fp8_pools.append(fp8_pool)
+
+    def _get_fp8_pool_and_offset(self, block_id: int) -> tuple[torch.Tensor, int]:
+        """Find the fp8 pool and local offset for a given block ID."""
+        for pool_idx, boundary in enumerate(self._pool_boundaries):
+            if block_id < boundary:
+                prev = self._pool_boundaries[pool_idx - 1] if pool_idx > 0 else 0
+                return self._fp8_pools[pool_idx], block_id - prev
+        raise IndexError(f"Block {block_id} out of range")
 
     def _swap_lru_block(self) -> bool:
         """Swap out the least recently used block to CPU.
@@ -533,7 +559,8 @@ class PagedAttentionManager:
         # physical block ID → block hash (reverse map for Merkle update)
         self._block_id_to_hash: dict[int, str] = {}
         # physical block ID → peer node ID that has this block (remote)
-        self._remote_blocks: dict[int, str] = {}
+        self._remote_blocks: OrderedDict[int, str] = OrderedDict()
+        self._max_remote_blocks: int = 10000
         self._merkle_tree = MerkleTree()
 
     # ------------------------------------------------------------------
@@ -652,8 +679,14 @@ class PagedAttentionManager:
         """Register a block fetched from a peer as a local cache."""
         with self._lock:
             self._remote_blocks[block_id] = peer_node_id
+            self._remote_blocks.move_to_end(block_id)
             self._block_id_to_hash[block_id] = block_hash
             self._local_block_hashes[block_hash] = block_id
+            if len(self._remote_blocks) > self._max_remote_blocks:
+                evicted_id, _ = self._remote_blocks.popitem(last=False)
+                evicted_hash = self._block_id_to_hash.pop(evicted_id, None)
+                if evicted_hash:
+                    self._local_block_hashes.pop(evicted_hash, None)
             self._update_merkle_tree()
 
     def create_sequence(self, request_id: str) -> BlockTable:

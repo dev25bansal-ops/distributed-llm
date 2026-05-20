@@ -6,16 +6,14 @@ scrape_configs:
   - job_name: "distllm-coordinator"
     metrics_path: "/metrics"
     static_configs:
-      - targets: ["coordinator:8000"]
-
-  - job_name: "distllm-router"
-    metrics_path: "/metrics"
-    static_configs:
-      - targets: ["router:8001"]
+      - targets: ["distllm-coordinator:8000"]
 
   - job_name: "distllm-nodes"
+    metrics_path: "/metrics"
     static_configs:
-      - targets: ["node_0:50051", "node_1:50051"]
+      - targets:
+          - "distllm-worker-0.distllm-worker:50051"
+          - "distllm-worker-1.distllm-worker:50051"
 
   - job_name: "prometheus"
     static_configs:

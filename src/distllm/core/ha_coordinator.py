@@ -5,7 +5,6 @@ Supports active-passive and active-active configurations.
 """
 import time
 import threading
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable

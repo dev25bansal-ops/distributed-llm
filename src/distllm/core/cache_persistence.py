@@ -1,6 +1,5 @@
 """KV cache persistence manager for disk-backed cache storage."""
 
-import os
 import time
 import threading
 from pathlib import Path

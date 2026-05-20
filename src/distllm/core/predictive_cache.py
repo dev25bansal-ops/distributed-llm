@@ -9,15 +9,13 @@ Uses request pattern learning to:
 Integrates with PrefixCache and RadixTreeCache for storage.
 """
 
-import os
 import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import torch
 from loguru import logger
 
 

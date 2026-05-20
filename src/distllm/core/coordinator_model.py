@@ -6,7 +6,7 @@ Extracted from the Coordinator class.
 
 import torch
 from loguru import logger
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
 from distllm.core.token_generator import TokenGenerator
 from distllm.core.batch_scheduler import ScheduledBatch
@@ -81,14 +81,19 @@ class ModelManager:
 
         logger.info(f"Loading draft model: {coordinator._draft_model_name}")
         trust = self.trust_remote_code
-        coordinator.draft_model = AutoModelForCausalLM.from_pretrained(
-            coordinator._draft_model_name,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=trust,
-            low_cpu_mem_usage=True,
-        )
-        coordinator.draft_model.eval()
+        try:
+            coordinator.draft_model = AutoModelForCausalLM.from_pretrained(
+                coordinator._draft_model_name,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                trust_remote_code=trust,
+                low_cpu_mem_usage=True,
+            )
+            coordinator.draft_model.eval()
+        except Exception as e:
+            coordinator.draft_model = None
+            logger.error(f"Failed to load draft model {coordinator._draft_model_name}: {e}")
+            raise RuntimeError(f"Failed to load draft model {coordinator._draft_model_name}: {e}") from e
         logger.info(f"Draft model loaded: {coordinator._draft_model_name}")
 
     def load_draft_model_early(self, coordinator) -> None:
@@ -189,7 +194,7 @@ class ModelManager:
             draft_tokens_per_seq = []
             for i, seq in enumerate(batch.sequences):
                 seq_input = input_ids[i : i + 1]
-                drafts, _ = spec_decoder.generate_draft_tokens(draft_model, seq_input)
+                drafts, _, _ = spec_decoder.generate_draft_tokens(draft_model, seq_input)
                 draft_tokens_per_seq.append(drafts)
 
             with torch.no_grad():

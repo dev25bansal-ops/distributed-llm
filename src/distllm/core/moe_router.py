@@ -2,7 +2,6 @@
 
 import torch
 import torch.nn as nn
-from loguru import logger
 
 
 class MoERouter(nn.Module):

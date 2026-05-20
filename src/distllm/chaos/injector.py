@@ -157,7 +157,7 @@ class ChaosInjector:
             return False
         compiled = re.compile(pattern, re.DOTALL)
         try:
-            return bool(compiled.search(message, timeout=1.0))
+            return bool(compiled.search(message))
         except Exception:
             return False
 

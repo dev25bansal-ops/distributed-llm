@@ -185,8 +185,9 @@ class TestRateLimitMiddleware:
         assert response is not None
         assert response.status_code == 429
         data = response.json()
-        assert data["error"] == "rate_limit_exceeded"
-        assert "retry_after" in data
+        assert "error" in data
+        assert data["error"]["code"] == "429"
+        assert data["error"]["type"] == "rate_limit_error"
 
     def test_middleware_skips_health_and_metrics(self):
         from starlette.testclient import TestClient

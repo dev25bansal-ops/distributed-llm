@@ -24,8 +24,42 @@ class ChatMessage:
 
 
 @dataclass
+class ChatCompletionRequest:
+    messages: list[ChatMessage]
+    model: str = "distributed-llm"
+    temperature: float = 0.7
+    top_p: float = 1.0
+    n: int = 1
+    max_tokens: int = 256
+    stream: bool = False
+    stop: list[str] | None = None
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    logit_bias: dict[int, float] | None = None
+    user: str | None = None
+    response_format: dict | None = None
+    adapter: str | None = None
+
+
+@dataclass
+class CompletionRequest:
+    prompt: str | list[str]
+    model: str = "distributed-llm"
+    temperature: float = 0.7
+    top_p: float = 1.0
+    n: int = 1
+    max_tokens: int = 256
+    stream: bool = False
+    stop: list[str] | None = None
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    logit_bias: dict[int, float] | None = None
+    user: str | None = None
+
+
+@dataclass
 class ChatChoice:
-    index: int
+    index: int = 0
     message: ChatMessage | None = None
     delta: str | None = None
     finish_reason: str | None = None
@@ -44,7 +78,7 @@ class ChatCompletionResponse:
 
 @dataclass
 class CompletionChoice:
-    index: int
+    index: int = 0
     text: str = ""
     finish_reason: str | None = None
 
@@ -176,6 +210,37 @@ class FineTuningJob:
     finished_at: int | None = None
     result_file: str | None = None
     error: str | None = None
+
+
+# --- SDK Exception Classes ---
+
+class ApiError(Exception):
+    """Base exception for API errors."""
+    def __init__(self, message: str, status_code: int = 500, error_type: str = "api_error", request_id: str | None = None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.error_type = error_type
+        self.request_id = request_id
+
+
+class AuthenticationError(ApiError):
+    """Raised when API key is invalid or missing."""
+    def __init__(self, message: str = "Authentication failed", request_id: str | None = None):
+        super().__init__(message, status_code=401, error_type="authentication_error", request_id=request_id)
+
+
+class RateLimitError(ApiError):
+    """Raised when rate limit is exceeded."""
+    def __init__(self, message: str = "Rate limit exceeded", retry_after: float | None = None, request_id: str | None = None):
+        super().__init__(message, status_code=429, error_type="rate_limit_error", request_id=request_id)
+        self.retry_after = retry_after
+
+
+class TimeoutError_(ApiError):
+    """Raised when a request times out."""
+    def __init__(self, message: str = "Request timed out", request_id: str | None = None):
+        super().__init__(message, status_code=504, error_type="timeout_error", request_id=request_id)
 
 
 # --- Usage tracking ---

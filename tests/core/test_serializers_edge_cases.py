@@ -181,13 +181,14 @@ class TestProtoToTensor:
         assert torch.allclose(result, torch.tensor([1.0, 2.0, 3.0]))
 
     def test_byte_length_mismatch_raises(self):
-        """Byte length mismatch should raise ValueError."""
+        """Byte length mismatch should raise SerializationError."""
+        from distllm.errors.types import SerializationError
         proto = Tensor()
         proto.shape.extend([3])  # 3 elements
         proto.dtype = "torch.float32"  # 4 bytes each = 12 bytes expected
         proto.raw_data = b"\x00" * 6  # Only 6 bytes
 
-        with pytest.raises(ValueError, match="data length mismatch"):
+        with pytest.raises(SerializationError, match="data length mismatch"):
             proto_to_tensor(proto)
 
     def test_device_parameter(self):

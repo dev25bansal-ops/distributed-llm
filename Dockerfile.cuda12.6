@@ -14,7 +14,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
-    python${PYTHON_VERSION}-distutils curl && rm -rf /var/lib/apt/lists/* \
+    python3-pip python3-distutils curl && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python
 
@@ -29,6 +29,8 @@ RUN pip install --no-cache-dir --prefix=/install -e . --no-deps
 
 FROM runtime-base
 COPY --from=builder /install /usr/local
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 RUN groupadd -r distllm && useradd -r -g distllm -d /app -s /bin/bash distllm \
     && chown -R distllm:distllm /app
@@ -45,4 +47,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 EXPOSE 8000 50051
 
-ENTRYPOINT ["sh", "-c", "distllm-node --node-id ${DISTLLM_NODE_ID} --model ${DISTLLM_MODEL} --start-layer ${DISTLLM_START_LAYER} --end-layer ${DISTLLM_END_LAYER} --total-layers ${DISTLLM_TOTAL_LAYERS}"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -6,6 +6,7 @@ and capacity-aware spillover to support multi-cluster federated inference.
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 import threading
 from typing import Any
@@ -64,8 +65,16 @@ class DNSGeoResolver:
     def _resolve_ip(self, ip: str) -> str | None:
         with self._lock:
             for prefix, cluster_id in self._ip_prefix_map.items():
-                if ip.startswith(prefix.rstrip('.')):
-                    return cluster_id
+                try:
+                    if "/" in prefix:
+                        network = ipaddress.ip_network(prefix, strict=False)
+                        if ipaddress.ip_address(ip) in network:
+                            return cluster_id
+                    elif ip.startswith(prefix.rstrip(".")):
+                        return cluster_id
+                except ValueError:
+                    if ip.startswith(prefix.rstrip(".")):
+                        return cluster_id
         return None
 
     def get_cluster_for_region(self, region: str) -> str | None:

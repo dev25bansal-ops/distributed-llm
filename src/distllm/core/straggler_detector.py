@@ -13,11 +13,10 @@ Detection methods:
 
 from __future__ import annotations
 
-import math
 import statistics
 import time
 import threading
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -175,32 +174,30 @@ class StragglerDetector:
             if len(self._nodes) < 2:
                 return []
 
-            all_latencies = []
-            for node in self._nodes.values():
-                if len(node.latencies) >= 5:
-                    all_latencies.extend(node.latencies)
-
-            if not all_latencies:
+            eligible_nodes = {nid: n for nid, n in self._nodes.items() if len(n.latencies) >= 5}
+            if len(eligible_nodes) < 2:
                 return []
 
-            median_all = statistics.median(all_latencies)
-            p95_all = sorted(all_latencies)[int(len(all_latencies) * 0.95)]
+            # Per-node P95 latencies for accurate comparison
+            node_p95s = {nid: n.p95_latency for nid, n in eligible_nodes.items()}
+            node_avgs = {nid: n.avg_latency for nid, n in eligible_nodes.items()}
+            all_p95_vals = list(node_p95s.values())
+            all_avg_vals = list(node_avgs.values())
+            median_p95 = statistics.median(all_p95_vals)
+            median_avg = statistics.median(all_avg_vals)
 
-            for node_id, node in self._nodes.items():
-                if len(node.latencies) < 5:
-                    continue
-
+            for node_id, node in eligible_nodes.items():
                 is_slow = False
                 method = self._detection_method
                 severity = StragglerSeverity.NONE
 
                 if method == DetectionMethod.THRESHOLD:
-                    is_slow = node.avg_latency > p95_all * 1.5
+                    is_slow = node.p95_latency > median_p95 * 1.5
                 elif method == DetectionMethod.MAD:
-                    devs = [abs(l - median_all) for l in all_latencies]
+                    devs = [abs(p - median_p95) for p in all_p95_vals]
                     mad = statistics.median(devs) if devs else 0
                     if mad > 0:
-                        is_slow = abs(node.avg_latency - median_all) / mad > self._mad_threshold
+                        is_slow = abs(node.p95_latency - median_p95) / mad > self._mad_threshold
                 elif method == DetectionMethod.TREND:
                     if node.baseline_latency > 0:
                         is_slow = node.avg_latency > node.baseline_latency * 1.5
@@ -209,7 +206,7 @@ class StragglerDetector:
                         is_slow = node.avg_throughput < node.baseline_throughput * 0.5
 
                 if is_slow:
-                    slowdown = node.avg_latency / max(node.baseline_latency, median_all, 1)
+                    slowdown = node.p95_latency / max(node.baseline_latency, median_p95, 1)
                     if slowdown > 3.0:
                         severity = StragglerSeverity.SEVERE
                     elif slowdown > 2.0:

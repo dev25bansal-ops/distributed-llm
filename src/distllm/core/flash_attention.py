@@ -22,10 +22,12 @@ class FlashAttentionWrapper:
         output = flash_attn(q, k, v, attention_mask=mask)
     """
 
-    def __init__(self, causal: bool = True):
+    def __init__(self, causal: bool = True, num_heads: int | None = None, head_dim: int | None = None):
         self.causal = causal
         self._flash_attn_fn = None
         self._available = False
+        self._num_heads = num_heads
+        self._head_dim = head_dim
         self._attempt_load()
 
     def _attempt_load(self) -> None:
@@ -136,24 +138,35 @@ class FlashAttentionWrapper:
         batch, seq_len, num_heads, head_dim = out.shape
         return out.reshape(batch, seq_len, num_heads * head_dim)
 
-    @staticmethod
     def _ensure_format(
+        self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool]:
         """Ensure tensors are in [batch, seq_len, num_heads, head_dim] format.
 
+        Detection (in order of robustness):
+          1. If head_dim is configured, check shape[3] == head_dim:
+               - If shape[1] == num_heads → needs transpose.
+          2. Fallback to heuristic: if shape[1] < shape[2] → likely BNHS.
+
         Returns:
             (q, k, v, was_transposed)
         """
         was_transposed = False
-        if q.dim() == 4 and q.shape[1] < q.shape[2]:
-            # Likely [batch, num_heads, seq_len, head_dim]
-            q = q.transpose(1, 2)
-            k = k.transpose(1, 2)
-            v = v.transpose(1, 2)
-            was_transposed = True
+        if q.dim() == 4:
+            if self._head_dim is not None and q.shape[3] == self._head_dim:
+                if self._num_heads is not None and q.shape[1] == self._num_heads:
+                    q = q.transpose(1, 2)
+                    k = k.transpose(1, 2)
+                    v = v.transpose(1, 2)
+                    was_transposed = True
+            elif q.shape[1] < q.shape[2]:
+                q = q.transpose(1, 2)
+                k = k.transpose(1, 2)
+                v = v.transpose(1, 2)
+                was_transposed = True
         return q, k, v, was_transposed
 
     def stats(self) -> dict:

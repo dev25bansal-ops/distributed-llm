@@ -94,7 +94,7 @@ class TestDraftModel:
         draft_model.return_value = mock_output
         input_ids = torch.tensor([[10, 11, 12]])
 
-        draft_tokens, _ = decoder.generate_draft_tokens(draft_model, input_ids)
+        draft_tokens, _, _ = decoder.generate_draft_tokens(draft_model, input_ids)
         assert draft_model.called
 
     def test_generate_draft_without_model(self, decoder):
@@ -116,7 +116,7 @@ class TestMedusa:
         target_logits = torch.randn(1, 1, 100)
         input_ids = torch.tensor([[1, 2, 3]])
 
-        draft_tokens, _ = decoder.generate_draft_tokens(
+        draft_tokens, _, _ = decoder.generate_draft_tokens(
             None, input_ids, target_logits=target_logits
         )
         # Should not crash; may return None if medusa heads aren't set up
@@ -134,7 +134,7 @@ class TestNGram:
         decoder.record_generated_tokens([1, 2, 3, 4, 5, 1, 2, 3, 6])
 
         input_ids = torch.tensor([[1, 2]])  # prefix matches history
-        draft_tokens, _ = decoder.generate_draft_tokens(None, input_ids)
+        draft_tokens, _, _ = decoder.generate_draft_tokens(None, input_ids)
         # Should find continuation or return empty
         assert draft_tokens is not None
 
@@ -142,7 +142,7 @@ class TestNGram:
         """When no n-gram match found, return empty list."""
         decoder = SpeculativeDecoder(method="ngram", ngram_min_match=2)
         input_ids = torch.tensor([[99, 98]])
-        draft_tokens, _ = decoder.generate_draft_tokens(None, input_ids)
+        draft_tokens, _, _ = decoder.generate_draft_tokens(None, input_ids)
         assert draft_tokens is not None
 
     def test_record_generated_tokens(self, decoder):
@@ -168,7 +168,7 @@ class TestEagle:
     def test_eagle_generate_without_heads(self):
         decoder = SpeculativeDecoder(method="eagle", num_assistant_tokens=3)
         input_ids = torch.tensor([[1, 2, 3]])
-        draft_tokens, _ = decoder.generate_draft_tokens(None, input_ids)
+        draft_tokens, _, _ = decoder.generate_draft_tokens(None, input_ids)
         # Falls back to ngram or returns empty
         assert draft_tokens is not None
 

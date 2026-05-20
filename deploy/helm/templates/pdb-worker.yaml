@@ -1,5 +1,6 @@
 {{- if .Values.podDisruptionBudget.worker.enabled }}
 {{- range $pool := .Values.nodePools }}
+{{- if gt (int $pool.replicas) 1 }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -13,5 +14,6 @@ spec:
   selector:
     matchLabels:
       {{- include "distllm.workerLabels" (dict "root" $ "pool" $pool) | nindent 6 }}
+{{- end }}
 {{- end }}
 {{- end }}

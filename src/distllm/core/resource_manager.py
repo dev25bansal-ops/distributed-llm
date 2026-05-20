@@ -8,14 +8,14 @@ import asyncio
 import concurrent.futures
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from collections.abc import Callable
 
 from loguru import logger
 
 from distllm.communication.grpc import NodeClient, AsyncNodeClient
 from distllm.config.loader import NodeRole
-from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError, CircuitBreakerError
+from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError
 
 
 @dataclass
@@ -193,7 +193,7 @@ class ResourceManager:
     # -- Health Checks --
 
     def health_check_all(self, nodes: dict[str, NodeRegistration]) -> dict:
-        """Check health of all registered nodes concurrently.
+        """Check health of all registered nodes in parallel.
 
         Args:
             nodes: Dict of node_id -> NodeRegistration.
@@ -201,35 +201,32 @@ class ResourceManager:
         Returns:
             Dict of node_id -> health status.
         """
-        results = {}
-        nodes_to_check = {}
-
-        for node_id, node in nodes.items():
+        def check_one(node_id: str, node: NodeRegistration) -> tuple[str, dict]:
             if self.check_circuit_breaker(node_id):
                 failures = self._node_failure_counts.get(node_id, 0)
                 recovery_at = self._node_recovery_time.get(node_id, 0)
                 recovery_in = max(0, recovery_at - time.time()) if recovery_at > 0 else 0
-                results[node_id] = {
+                return node_id, {
                     "healthy": False,
                     "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
                 }
-            else:
-                nodes_to_check[node_id] = node
-
-        def check_one(nid: str, nd: NodeRegistration) -> tuple[str, dict]:
             try:
-                health = nd.client.health_check()
-                return nid, {"healthy": health.healthy, "memory_used": health.memory_used, "memory_total": health.memory_total}
+                health = node.client.health_check()
+                return node_id, {
+                    "healthy": health.healthy,
+                    "memory_used": health.memory_used,
+                    "memory_total": health.memory_total,
+                }
             except (NodeUnreachableError, GRPCTimeoutError, ConnectionError, OSError) as e:
-                self.record_failure(nid)
-                return nid, {"healthy": False, "error": str(e)}
+                self.record_failure(node_id)
+                return node_id, {"healthy": False, "error": str(e)}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(nodes_to_check) or 1) as executor:
-            futures = {executor.submit(check_one, nid, nd): nid for nid, nd in nodes_to_check.items()}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(nodes) or 1) as executor:
+            futures = {executor.submit(check_one, nid, node): nid for nid, node in nodes.items()}
+            results = {}
             for future in concurrent.futures.as_completed(futures):
-                nid, status = future.result()
-                results[nid] = status
-
+                node_id, status = future.result()
+                results[node_id] = status
         return results
 
     async def health_check_all_async(self, nodes: dict[str, NodeRegistration]) -> dict:
@@ -333,3 +330,4 @@ class ResourceManager:
         with self._lock:
             self._node_failure_counts[node_id] = self.cb_config.threshold
             self._node_recovery_time[node_id] = time.time() + 3600  # 1 hour
+            self._metrics["node_failures"] += 1

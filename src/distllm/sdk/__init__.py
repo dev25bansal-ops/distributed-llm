@@ -25,6 +25,10 @@ from distllm.sdk.types import (
     UsageInfo,
     ClientStats,
     CallStats,
+    ApiError,
+    AuthenticationError,
+    RateLimitError,
+    TimeoutError_,
 )
 
 __all__ = [
@@ -70,4 +74,9 @@ __all__ = [
     "UsageInfo",
     "ClientStats",
     "CallStats",
+    # Error types
+    "ApiError",
+    "AuthenticationError",
+    "RateLimitError",
+    "TimeoutError_",
 ]

@@ -5,10 +5,9 @@ namespace: distllm
 
 resources:
   - namespace.yaml
-  - ../../operator/deployment.yaml
-  - ../../operator/rbac.yaml
-  - ../../operator/servicemonitor.yaml
-  - ../../crds/distllm.zeroroute.ai_crds.yaml
+  - ../../inference/coordinator-deployment.yaml
+  - ../../inference/worker-statefulset.yaml
+  - ../../inference/pvc.yaml
 
 commonLabels:
   app.kubernetes.io/name: distributed-llm
@@ -17,11 +16,18 @@ commonLabels:
 configMapGenerator:
   - name: distllm-config
     literals:
-      - DISTLLM_MODEL=roneneldan/TinyStories-1M
+      - DISTLLM_MODEL=HuggingFaceTB/SmolLM-135M
       - DISTLLM_DTYPE=float16
+      - DISTLLM_QUANTIZATION_ENABLED=false
+      - DISTLLM_RATE_LIMIT_ENABLED=true
+      - DISTLLM_DEGRADATION_ENABLED=true
 
 patches:
   - path: operator-patch.yaml
     target:
       kind: Deployment
-      name: distllm-operator
+      name: distllm-coordinator
+  - path: operator-patch.yaml
+    target:
+      kind: StatefulSet
+      name: distllm-worker

@@ -3,9 +3,8 @@
 Groups: CacheManager, CachePersistenceManager, GossipProtocol, PredictiveCacheManager
 """
 
-from typing import Any, Optional
+from typing import Any
 
-from loguru import logger
 
 
 class CacheSystem:

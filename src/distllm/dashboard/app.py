@@ -208,7 +208,7 @@ def main():
     """CLI entry point for the dashboard."""
     parser = argparse.ArgumentParser(description="DistLLM Web Dashboard")
     parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8500)
+    parser.add_argument("--port", type=int, default=8501)
     parser.add_argument("--api-url", type=str, default=None,
                         help="URL of the DistLLM API server (default: localhost:8000)")
 

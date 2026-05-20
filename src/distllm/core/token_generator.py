@@ -21,6 +21,38 @@ class TokenGenerator:
     def __init__(self, tokenizer=None):
         self.tokenizer = tokenizer
 
+    @staticmethod
+    def _top_k_top_p_filtering(
+        logits: torch.Tensor,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        min_tokens_to_keep: int = 1,
+    ) -> torch.Tensor:
+        """Apply top-k and/or top-p (nucleus) filtering to logits.
+
+        Matches HuggingFace reference implementation exactly.
+        Tokens outside the top-k/top-p set are set to -inf.
+        """
+        logits = logits.clone()
+
+        if top_k > 0:
+            top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))
+            indices_to_remove = logits < torch.topk(logits, top_k, dim=-1)[0][..., -1, None]
+            logits[indices_to_remove] = float('-inf')
+
+        if 0.0 <= top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=False)
+            cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+            sorted_indices_to_remove = cumulative_probs <= (1.0 - top_p)
+            if min_tokens_to_keep > 0:
+                sorted_indices_to_remove[..., -min_tokens_to_keep:] = False
+            indices_to_remove = sorted_indices_to_remove.scatter(
+                1, sorted_indices, sorted_indices_to_remove
+            )
+            logits[indices_to_remove] = float('-inf')
+
+        return logits
+
     def sample(
         self,
         logits: torch.Tensor,
@@ -65,26 +97,13 @@ class TokenGenerator:
 
         # Sample
         if temperature > 0:
+            # Apply top-k and top-p filtering (HF reference implementation)
+            logits = self._top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
             probs = torch.softmax(logits / temperature, dim=-1)
-            # Apply top-k filtering before top-p
-            if top_k > 0:
-                indices_to_remove = torch.zeros_like(probs, dtype=torch.bool)
-                for i in range(probs.shape[0]):
-                    top_k_indices = torch.topk(probs[i], top_k, dim=-1).indices
-                    batch_indices = torch.arange(probs.shape[1], device=probs.device)
-                    row_mask = ~torch.isin(batch_indices, top_k_indices)
-                    indices_to_remove[i, row_mask] = True
-                probs = probs.masked_fill(indices_to_remove, 0.0)
-                probs = probs / probs.sum(dim=-1, keepdim=True)
-            if top_p < 1.0:
-                sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-                sorted_indices_to_remove = cumulative_probs > top_p
-                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                sorted_indices_to_remove[..., 0] = False
-                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                probs = probs.masked_fill(indices_to_remove, 0.0)
-                probs = probs / probs.sum(dim=-1, keepdim=True)
+            # Handle edge case where all probs are zero after filtering
+            probs_sum = probs.sum(dim=-1, keepdim=True)
+            if (probs_sum == 0).any():
+                probs = torch.full_like(probs, 1.0 / probs.size(-1))
             tokens = torch.multinomial(probs, 1).squeeze(-1)
         else:
             tokens = torch.argmax(logits, dim=-1)

@@ -89,8 +89,7 @@ class TestChunkStateNextChunk:
         state.next_chunk()
         chunk = state.next_chunk()
         assert chunk == [5]
-        # offset advances by chunk_size even past end
-        assert state.current_offset == 6
+        assert state.current_offset == 5
 
     def test_empty_chunk_when_done(self):
         state = ChunkState(prompt_tokens=[1, 2], chunk_size=2)

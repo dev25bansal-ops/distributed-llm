@@ -1,0 +1,61 @@
+{
+  "title": "Distributed LLM Performance Dashboard",
+  "uid": "distllm-performance",
+  "version": 1,
+  "timezone": "browser",
+  "panels": [
+    {
+      "title": "Request Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "rate(distllm_total_requests[1m])", "legendFormat": "requests/s"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "title": "Token Throughput",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "rate(distllm_tokens_per_second[1m])", "legendFormat": "tok/s"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "title": "Latency Percentiles (P50, P95, P99)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(distllm_token_latency_bucket[5m]))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, rate(distllm_token_latency_bucket[5m]))", "legendFormat": "P95"},
+        {"expr": "histogram_quantile(0.99, rate(distllm_token_latency_bucket[5m]))", "legendFormat": "P99"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "title": "Error Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "rate(distllm_errors_total[1m])", "legendFormat": "errors/s"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "title": "Cache Hit Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "rate(distllm_cache_hits_total[5m]) / (rate(distllm_cache_hits_total[5m]) + rate(distllm_cache_misses_total[5m])) * 100", "legendFormat": "hit rate %"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "title": "GPU Memory Usage",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "distllm_gpu_memory_used_bytes / 1024 / 1024 / 1024", "legendFormat": "{{node}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+    },
+    {
+      "title": "Active Batch Size",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "distllm_active_batch_size", "legendFormat": "batch size"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+    }
+  ]
+}

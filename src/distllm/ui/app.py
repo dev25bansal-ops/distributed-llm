@@ -11,6 +11,15 @@ import uvicorn
 
 UI_DIR = Path(__file__).parent
 
+_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=10.0)
+    return _client
+
 ui_app = FastAPI(
     title="DistLLM UI",
     description="Web interface for Distributed LLM",
@@ -51,9 +60,9 @@ async def models_page(request: Request):
 async def health_proxy():
     """Proxy health check from API server."""
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{API_URL}/health", timeout=10.0)
-            return response.json()
+        client = get_http_client()
+        response = await client.get(f"{API_URL}/health")
+        return response.json()
     except (httpx.RequestError, httpx.HTTPStatusError):
         return {"status": "unavailable", "reason": "API server not reachable"}
 

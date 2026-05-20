@@ -10,10 +10,16 @@ patches:
   - path: resource-patch.yaml
     target:
       kind: Deployment
-      name: distllm-operator
+      name: distllm-coordinator
+  - path: resource-patch.yaml
+    target:
+      kind: StatefulSet
+      name: distllm-worker
 
 images:
-  - name: ghcr.io/distributed-llm/operator
+  - name: ghcr.io/distributed-llm/coordinator
+    newTag: "0.4.0"
+  - name: ghcr.io/distributed-llm/worker
     newTag: "0.4.0"
 
 commonLabels:

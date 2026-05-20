@@ -77,7 +77,7 @@ class TestMultiModelAPI:
         })
 
         assert response.status_code == 400
-        assert "not found" in response.json()["message"]
+        assert "not found" in response.json()["error"]["message"]
 
     def test_chat_accepts_valid_model(self):
         """Accepts a model that exists in registry."""

@@ -42,3 +42,6 @@ def parse_sse_stream_sync(response) -> Iterator[dict]:
                 yield json.loads(data)
             except json.JSONDecodeError:
                 continue
+
+
+parse_sse_stream = parse_sse_stream_async

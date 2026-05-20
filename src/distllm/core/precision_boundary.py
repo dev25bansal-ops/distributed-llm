@@ -7,7 +7,6 @@ ensuring correct results when nodes use different precisions.
 from __future__ import annotations
 
 import torch
-from loguru import logger
 
 
 # Conversion targets: always convert to highest precision in the path

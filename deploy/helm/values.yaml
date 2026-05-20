@@ -10,6 +10,7 @@ model:
   name: roneneldan/TinyStories-1M
   dtype: float16
   trustRemoteCode: false
+  totalLayers: 32
 
 quantization:
   enabled: false
@@ -17,7 +18,7 @@ quantization:
   bits: 4  # 4 or 8
 
 coordinator:
-  replicas: 1
+  replicas: 3
   port: 8000
   grpcPort: 50050
   metricsPort: 9090

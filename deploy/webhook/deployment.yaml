@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
         - name: webhook
-          image: ghcr.io/distributed-llm/webhook:0.4.0
+          image: ghcr.io/distributed-llm/operator:0.4.0
           ports:
             - name: https
               containerPort: 8443

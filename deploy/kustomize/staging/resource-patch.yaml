@@ -1,18 +1,37 @@
-# Staging: moderate resources
+# Staging: moderate coordinator resources, HA
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: distllm-operator
+  name: distllm-coordinator
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: coordinator
+          resources:
+            requests:
+              cpu: 1
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+---
+# Staging: moderate worker resources, 2 replicas per pool
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distllm-worker
 spec:
   replicas: 2
   template:
     spec:
       containers:
-        - name: operator
+        - name: worker
           resources:
             requests:
-              cpu: 200m
-              memory: 256Mi
+              cpu: 2
+              memory: 4Gi
             limits:
-              cpu: 1
-              memory: 512Mi
+              cpu: 8
+              memory: 16Gi

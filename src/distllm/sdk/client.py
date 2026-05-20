@@ -123,11 +123,11 @@ class _BaseClient:
         """Return the circuit breaker instance, if configured."""
         return self._circuit_breaker
 
-    @staticmethod
-    def _build_headers(api_key: str | None) -> dict[str, str]:
+    def _build_headers(self, api_key: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        key = api_key or self._api_key
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         return headers
 
     @staticmethod
@@ -138,10 +138,10 @@ class _BaseClient:
         top_p: float,
         max_tokens: int,
         stream: bool,
-        response_format: dict | None,
-        adapter: str | None,
-        logprobs: dict | None,
-        include_usage: bool,
+        response_format: dict | None = None,
+        adapter: str | None = None,
+        logprobs: dict | None = None,
+        include_usage: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,

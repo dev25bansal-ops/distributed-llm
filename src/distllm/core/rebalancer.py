@@ -58,10 +58,10 @@ class Rebalancer:
 
         # Grace period tracking
         self._straggler_history: dict[str, int] = {}  # node_id -> consecutive detections
-        self._grace_period_steps: int = getattr(settings, 'grace_period_steps', 3)
+        self._grace_period_steps: int = settings.grace_period_steps
 
         # Auto-mitigation state
-        self._auto_mitigate_enabled: bool = getattr(settings, 'auto_mitigate', False)
+        self._auto_mitigate_enabled: bool = settings.auto_mitigate
         self._batch_size_adjustments: dict[str, int] = {}
 
     def detect_stragglers(self, threshold: float | None = None) -> list[str]:

@@ -8,12 +8,13 @@ from distllm.core.rebalancer import Rebalancer, PartitionRecommendation
 from distllm.config.settings import RebalancerSettings
 
 
-def make_rebalancer(enabled=True, straggler_threshold=1.5, min_improvement_pct=0.1, cooldown_seconds=0):
+def make_rebalancer(enabled=True, straggler_threshold=1.5, min_improvement_pct=0.1, cooldown_seconds=0, grace_period_steps=1):
     settings = RebalancerSettings(
         enabled=enabled,
         straggler_threshold=straggler_threshold,
         min_improvement_pct=min_improvement_pct,
         cooldown_seconds=cooldown_seconds,
+        grace_period_steps=grace_period_steps,
     )
     tracker = LatencyTracker()
     return Rebalancer(tracker, settings), tracker

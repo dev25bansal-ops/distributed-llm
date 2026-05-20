@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
 import torch
-from loguru import logger
 
 
 class ScheduleType(Enum):
@@ -236,18 +235,43 @@ class AsyncPipelineEngine:
         num_micro = self._config.num_micro_batches
         batch_size = input_tensor.shape[0]
         micro_batch_size = max(1, batch_size // num_micro)
+        num_stages = len(self._stages)
 
         # Split into micro-batches
         micro_batches = []
         for i in range(0, batch_size, micro_batch_size):
             micro_batches.append(input_tensor[i:i + micro_batch_size])
 
-        outputs = []
-        for mb_id, mb in enumerate(micro_batches):
-            h = mb
-            for stage in self._stages:
-                h = stage.run_micro_batch(h, mb_id)
-            outputs.append(h)
+        outputs: dict[int, torch.Tensor] = {}
+
+        if self._config.schedule.value == "1f1b" and num_stages > 1:
+            # 1F1B schedule: interleave micro-batches across stages for overlap
+            # Warmup: fill pipeline (micro-batch i runs through stages 0..i)
+            num_micro_b = len(micro_batches)
+            for step in range(num_micro_b + num_stages - 1):
+                for stage_idx in range(num_stages):
+                    mb_id = step - stage_idx
+                    if mb_id < 0 or mb_id >= num_micro_b:
+                        continue
+                    if stage_idx == 0:
+                        inp = micro_batches[mb_id]
+                    else:
+                        prev_output = outputs.get((stage_idx - 1, mb_id))
+                        if prev_output is None:
+                            continue
+                        inp = prev_output
+                    out = self._stages[stage_idx].run_micro_batch(inp, mb_id)
+                    outputs[(stage_idx, mb_id)] = out
+            # Collect final outputs
+            result_outputs = [outputs[(num_stages - 1, mb_id)] for mb_id in range(num_micro_b) if (num_stages - 1, mb_id) in outputs]
+        else:
+            # GPipe schedule: fill all stages then flush (sequential)
+            for mb_id, mb in enumerate(micro_batches):
+                h = mb
+                for stage in self._stages:
+                    h = stage.run_micro_batch(h, mb_id)
+                outputs[(len(self._stages) - 1, mb_id)] = h
+            result_outputs = [outputs[(len(self._stages) - 1, mb_id)] for mb_id in range(len(micro_batches))]
 
         # Wait for all stages
         for stage in self._stages:
@@ -257,9 +281,9 @@ class AsyncPipelineEngine:
             self._total_forward_calls += 1
 
         # Concatenate micro-batch outputs
-        if len(outputs) > 1:
-            return torch.cat(outputs, dim=0)
-        return outputs[0] if outputs else input_tensor
+        if len(result_outputs) > 1:
+            return torch.cat(result_outputs, dim=0)
+        return result_outputs[0] if result_outputs else input_tensor
 
     @property
     def total_overlap_ms(self) -> float:

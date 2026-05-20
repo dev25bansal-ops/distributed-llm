@@ -252,7 +252,6 @@ def apply_kv_cache_quantization(
         ((quantized_key, scale_key), (quantized_value, scale_value))
         Each element is None if the corresponding input was None.
     """
-    import torch
 
     qk_result = _quantize_int8(key) if key is not None else (None, None)
     qv_result = _quantize_int8(value) if value is not None else (None, None)
@@ -370,7 +369,6 @@ class SimulatedNF4Linear(torch.nn.Module):
     @staticmethod
     def _build_nf4_table() -> torch.Tensor:
         """Build the NF4 lookup table: 16 evenly spaced quantiles of N(0,1)."""
-        import math
         levels = torch.linspace(-1 + 1 / 16, 1 - 1 / 16, 16)
         return torch.erfinv(levels).half()
 
@@ -652,7 +650,6 @@ class QuantizationAutoTuner:
         Returns:
             :class:`MixedPrecisionPlan` with per-layer dtype assignments.
         """
-        import torch
 
         if sensitivity_scores is None:
             sensitivity_scores = self.profile_layer_sensitivity()
@@ -739,7 +736,6 @@ class QuantizationAutoTuner:
         Returns:
             Number of modules replaced.
         """
-        import torch.nn as nn
 
         if self._model is None or not plan.plans:
             return 0
@@ -832,7 +828,6 @@ class QuantizationAutoTuner:
             ``{layer_idx: hidden_state_before_layer}``.
         """
         import torch
-        import torch.nn as nn
 
         captured: dict[int, torch.Tensor] = {}
         hooks = []
@@ -868,8 +863,6 @@ class QuantizationAutoTuner:
         3. Measure the relative output perturbation
         """
         import torch
-        import torch.nn as nn
-        import math
 
         # Use the hook-captured hidden state after this layer, but first
         # we need the output of this layer specifically.  We'll use the
@@ -1009,7 +1002,6 @@ class QuantizationAutoTuner:
         Returns:
             Number of Linear layers replaced.
         """
-        import torch
         import torch.nn as nn
 
         replacements = 0

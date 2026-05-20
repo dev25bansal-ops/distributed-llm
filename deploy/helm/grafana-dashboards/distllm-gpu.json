@@ -1,0 +1,29 @@
+{
+  "title": "Distributed LLM GPU Dashboard",
+  "uid": "distllm-gpu",
+  "version": 1,
+  "timezone": "browser",
+  "panels": [
+    {
+      "title": "GPU Memory Usage by Node",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "distllm_gpu_memory_used_bytes / 1024 / 1024 / 1024", "legendFormat": "{{node}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "title": "GPU Utilization",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "rate(distllm_gpu_compute_time_ms[1m]) / 1000 * 100", "legendFormat": "{{node}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "title": "KV Cache Usage",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "distllm_kv_cache_used_bytes / 1024 / 1024", "legendFormat": "{{node}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    }
+  ]
+}

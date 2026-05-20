@@ -2,6 +2,7 @@
 
 import asyncio
 import ipaddress
+import os
 import time
 from urllib.parse import urlparse
 
@@ -53,16 +54,18 @@ class ImageURLContent(BaseModel):
         host = parsed.hostname
         if not host:
             raise ValueError("URL must have a hostname")
-        if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
-            raise ValueError("Connections to localhost are not allowed")
-        try:
-            addr = ipaddress.ip_address(host)
-        except ValueError:
-            if not host or host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        # SSRF protection is configurable via DISTLLM_SSRF_ENABLED env var
+        if os.environ.get("DISTLLM_SSRF_ENABLED", "1").lower() in ("1", "true"):
+            if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
                 raise ValueError("Connections to localhost are not allowed")
-            return v
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            raise ValueError(f"Connections to {host} are not allowed")
+            try:
+                addr = ipaddress.ip_address(host)
+            except ValueError:
+                if not host or host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+                    raise ValueError("Connections to localhost are not allowed")
+                return v
+            if addr.is_private or addr.is_loopback or addr.is_link_local:
+                raise ValueError(f"Connections to {host} are not allowed")
         return v
 
 
@@ -269,9 +272,6 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     start_time = time.time()
     request_id = ""
 
-    start_time = time.time()
-    request_id = ""
-
     # Use batch scheduler if available
     if coord.scheduler is not None:
         request_id = coord.generate_async(
@@ -305,7 +305,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
     elapsed = time.time() - start_time
 
-    generated = result[len(prompt):] if result.startswith(prompt) else result
+    generated = result.removeprefix(prompt) if len(result) > len(prompt) else result
 
     # Record request in replay buffer for debugging
     if hasattr(coord, '_replay_buffer'):

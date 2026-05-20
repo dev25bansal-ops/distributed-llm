@@ -70,7 +70,7 @@ class PluginInstaller:
 
         if extras:
             extras_str = ",".join(extras)
-            pip_spec = f"{plugin_name}[{extras_str}]" if version else f"{plugin_name}[{extras_str}]"
+            pip_spec = f"{plugin_name}=={version}[{extras_str}]" if version else f"{plugin_name}[{extras_str}]"
 
         # Install via pip
         success, errors = self._pip_install(pip_spec)

@@ -6,7 +6,6 @@ Groups: TokenGenerator, BatchScheduler, RequestTracker, SpeculativeDecoder
 from typing import Any, Optional
 
 import torch
-from loguru import logger
 
 
 class GenerationSystem:

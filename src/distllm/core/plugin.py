@@ -10,7 +10,6 @@ import importlib
 import importlib.metadata
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from loguru import logger

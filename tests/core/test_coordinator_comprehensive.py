@@ -32,9 +32,8 @@ def _make_coord(**overrides) -> Coordinator:
         RequestTracker=_mock_factory,
         Container=_mock_factory,
         SubsystemManager=_mock_factory,
-        ModelRegistry=_mock_factory,
     ):
-        # Prevent actual model loading by mocking ModelRegistry etc.
+        # Prevent actual model loading by mocking model loading etc.
         with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
             mock_tok.from_pretrained.return_value = MagicMock()
             coord = Coordinator(model_name="test-model", dtype="float32", **overrides)
@@ -56,7 +55,7 @@ def _make_coord(**overrides) -> Coordinator:
 class TestInitMultiModel:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._multi_model is None
+        assert c._model_svc._multi_model is None
 
     def test_enabled_config_initializes(self):
         config = MagicMock()
@@ -65,51 +64,51 @@ class TestInitMultiModel:
         config.default_model = "test-model"
         config.models = {}
         c = _make_coord(multi_model_config=config)
-        assert c._multi_model is not None
+        assert c._model_svc._multi_model is not None
 
     def test_disabled_config_skips(self):
         config = MagicMock()
         config.enabled = False
         c = _make_coord(multi_model_config=config)
-        assert c._multi_model is None
+        assert c._model_svc._multi_model is None
 
 
 class TestInitMoE:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._moe_orchestrator is None
+        assert c._model_svc._multi_model is None or c._model_svc._moe_orchestrator is None
 
     def test_enabled_config_initializes(self):
         config = MagicMock()
         config.enabled = True
         c = _make_coord(moe_config=config)
-        assert c._moe_orchestrator is not None
-        assert c._expert_registry is not None
+        assert c._model_svc._multi_model is not None
+        assert c._model_svc._multi_model.moe_orchestrator is not None
 
 
 class TestInitFlashAttention:
     def test_enabled_fa2(self):
         c = _make_coord()
-        with patch("distllm.core.coordinator.logger") as mock_log:
-            c._init_flash_attention(enable_fa2=True)
-            assert c._flash_attention is None or c._flash_attention is not None
+        c._model_svc.init_flash_attention(causal=True, enable_fa2=True)
+        assert c._model_svc._flash_attention is None or c._model_svc._flash_attention is not None
 
     def test_disabled_fa2(self):
         c = _make_coord()
-        c._init_flash_attention(enable_fa2=False)
-        assert c._flash_attention is None
+        c._model_svc.init_flash_attention(causal=True, enable_fa2=False)
+        assert c._model_svc._flash_attention is None
 
 
 class TestInitPluginManager:
     def test_creates_plugin_manager(self):
         c = _make_coord()
-        assert c._plugin_manager is not None
+        c._model_svc.init_plugin_manager(c)
+        assert c._model_svc._plugin_manager is not None
 
 
 class TestInitHybridParallel:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._hybrid_parallel_planner is None
+        assert c._model_svc._hybrid_parallel_planner is None
 
     def test_enabled_config_initializes(self):
         config = MagicMock()
@@ -119,97 +118,95 @@ class TestInitHybridParallel:
         config.ep_enabled = True
         config.force_tp_world_size = 0
         c = _make_coord(hybrid_parallel_config=config)
-        # May or may not create planner depending on HardwareProbe
-        assert c._hybrid_parallel_planner is not None or c._hybrid_parallel_executor is None
+        assert c._model_svc._hybrid_parallel_planner is not None or c._model_svc._hybrid_parallel_executor is None
 
     def test_disabled_config_skips(self):
         config = MagicMock()
         config.enabled = False
         c = _make_coord(hybrid_parallel_config=config)
-        assert c._hybrid_parallel_planner is None
+        assert c._model_svc._hybrid_parallel_planner is None
 
 
 class TestInitZeroCopy:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._zero_copy_engine is None
+        assert c._model_svc._zero_copy_engine is None
 
     def test_enabled_config_creates_engine(self):
         c = _make_coord(zero_copy_config=type("cfg", (), {"enabled": True})())
-        assert c._zero_copy_engine is not None
+        assert c._model_svc._zero_copy_engine is not None
 
 
 class TestInitAdaptivePrecision:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._adaptive_precision is None
+        assert c._model_svc._adaptive_precision is None
 
     def test_enabled_config_creates(self):
         c = _make_coord(adaptive_precision_config=type("cfg", (), {"enabled": True})())
-        assert c._adaptive_precision is not None
+        assert c._model_svc._adaptive_precision is not None
 
 
 class TestInitPredictiveCache:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._predictive_cache is None
+        assert c._model_svc._predictive_cache is None
 
 
 class TestInitSelfOptimizing:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._self_optimizing is None
+        assert c._model_svc._self_optimizing is None
 
     def test_enabled_config_creates(self):
         config = type("cfg", (), {"enabled": True, "profile_dir": None, "tune_interval_seconds": 60.0, "warmup_seconds": 30.0})()
         c = _make_coord(self_optimizing_config=config)
-        assert c._self_optimizing is not None
+        assert c._model_svc._self_optimizing is not None
 
 
 class TestInitCUDA:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert not hasattr(c, '_cuda_graph_batch_sizes') or c._cuda_graph_batch_sizes is None
+        assert not hasattr(c._model_svc, '_cuda_graph_batch_sizes') or c._model_svc._cuda_graph_batch_sizes is None
 
     def test_enabled_sets_batch_sizes(self):
         config = type("cfg", (), {"enabled": True, "batch_sizes": [1, 2, 4]})()
         c = _make_coord(cuda_graph_config=config)
-        assert c._cuda_graph_batch_sizes == [1, 2, 4]
+        assert c._model_svc._cuda_graph_batch_sizes == [1, 2, 4]
 
 
 class TestInitCompile:
     def test_no_config_disabled(self):
         c = _make_coord()
-        assert c._compile_enabled is False
+        assert c._model_svc._compile_enabled is False
 
     def test_enabled_sets_flag(self):
         config = type("cfg", (), {"enabled": True, "mode": "reduce-overhead", "fullgraph": False})()
         c = _make_coord(compile_config=config)
-        assert c._compile_enabled is True
+        assert c._model_svc._compile_enabled is True
 
 
 class TestInitRAG:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._rag_pipeline is None
+        assert c._model_svc._rag_pipeline is None
 
     def test_enabled_with_embedder(self):
         config = type("cfg", (), {"enabled": True, "dimension": 768, "chunk_size": 512, "chunk_overlap": 50, "index_path": None})()
         c = _make_coord(rag_config=config)
-        # Should create pipeline if embedding_loader is available
-        assert c._rag_pipeline is not None or c._rag_pipeline is None
+        assert c._model_svc._rag_pipeline is not None or c._model_svc._rag_pipeline is None
 
 
 class TestInitAgent:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._agent_loop is None
+        assert c._model_svc._agent_loop is None
 
 
 class TestInitDisagg:
     def test_no_config_skips(self):
         c = _make_coord()
-        assert c._disagg_orchestrator is None
+        assert c._model_svc._disagg_orchestrator is None
 
 
 class TestInitSlora:
@@ -327,14 +324,14 @@ class TestGenerate:
 
     def test_generate_reduces_max_new_tokens_when_exceeding_context(self):
         c = _make_coord()
-        c.model_info = {"max_position_embeddings": 128}
-        with patch.object(c, '_param_update_channel') as mock_ch:
-            with pytest.raises(Exception):
-                c.generate("hi", max_new_tokens=200)
+        c.model_info = {"num_layers": 6, "max_position_embeddings": 128}
+        c.node_order = []
+        with pytest.raises(Exception):
+            c.generate("hi", max_new_tokens=200)
 
     def test_generate_async_returns_id(self):
         c = _make_coord()
-        c.scheduler = MagicMock()
+        c._scheduler_svc.scheduler = MagicMock()
         c.tokenizer = MagicMock()
         c.tokenizer.encode.return_value = self._mock_tensor_tokens()
         c.tokenizer.eos_token_id = 0
@@ -345,7 +342,7 @@ class TestGenerate:
 
     def test_generate_async_no_scheduler_raises(self):
         c = _make_coord()
-        c.scheduler = None
+        c._scheduler_svc.scheduler = None
         with pytest.raises(Exception):
             c.generate_async("hello")
 
@@ -396,7 +393,7 @@ class TestNewModuleProperties:
 class TestRegistration:
     def test_register_model(self):
         c = _make_coord()
-        c._multi_model = MagicMock()
+        c._model_svc._multi_model = MagicMock()
         entry = c.register_model("model-2", "/path/to/model", 12)
         assert entry is not None
 

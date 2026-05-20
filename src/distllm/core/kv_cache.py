@@ -1,5 +1,7 @@
 """KV cache management for distributed LLM inference."""
 
+import threading
+
 import torch
 from loguru import logger
 
@@ -58,11 +60,14 @@ class KVCache:
 
     Stores past_key_values for each transformer layer, enabling
     efficient autoregressive generation without re-processing tokens.
+    Uses pre-allocated buffers and slicing to avoid O(n²) torch.cat.
     """
 
-    def __init__(self):
+    def __init__(self, max_seq_len: int = 0):
         self.cache: list[tuple[torch.Tensor, torch.Tensor]] = []
         self.num_layers = 0
+        self._max_seq_len = max_seq_len
+        self._seq_lens: list[int] = []
         # Quantization state
         self._quantized: bool = False
         self._quant_bits: int = 8
@@ -71,65 +76,86 @@ class KVCache:
         self._qsegments: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]] = []
         # FP8 segments: list of (fp8_k, fp8_v, scale_k, scale_v) per layer
         self._fp8_segments: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]] = []
+        self._lock = threading.Lock()
 
     def init_cache(self, num_layers: int, batch_size: int, num_heads: int, head_dim: int, device: str = "cpu"):
-        """Initialize empty KV cache for all layers."""
-        self.cache = []
-        self.num_layers = num_layers
-        for _ in range(num_layers):
-            k = torch.zeros(batch_size, num_heads, 0, head_dim, device=device)
-            v = torch.zeros(batch_size, num_heads, 0, head_dim, device=device)
-            self.cache.append((k, v))
+        """Initialize empty KV cache for all layers with pre-allocated buffer."""
+        with self._lock:
+            self.cache = []
+            self.num_layers = num_layers
+            self._seq_lens = [0] * num_layers
+            capacity = max(self._max_seq_len, 1)
+            for _ in range(num_layers):
+                k = torch.zeros(batch_size, num_heads, capacity, head_dim, device=device)
+                v = torch.zeros(batch_size, num_heads, capacity, head_dim, device=device)
+                self.cache.append((k, v))
 
     def get(self, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Get cached key/value states for a layer."""
-        if layer_idx >= len(self.cache):
-            return None
-        return self.cache[layer_idx]
+        with self._lock:
+            if layer_idx >= len(self.cache):
+                return None
+            return self.cache[layer_idx]
 
     def get_all(self) -> list[tuple[torch.Tensor, torch.Tensor]]:
         """Get all cached key/value states."""
-        return self.cache
+        with self._lock:
+            return list(self.cache)
 
     def set_all(self, cache: list[tuple[torch.Tensor, torch.Tensor]]):
         """Replace entire cache."""
-        self.cache.clear()
-        self.cache = cache
-        self.num_layers = len(cache)
+        with self._lock:
+            self.cache = list(cache)
+            self.num_layers = len(cache)
 
     def to(self, device: str) -> "KVCache":
-        """Move cache to device."""
+        """Move cache to device, preserving quantization state."""
         new_cache = KVCache()
-        new_cache.cache = [(k.to(device), v.to(device)) for k, v in self.cache]
-        new_cache.num_layers = self.num_layers
+        with self._lock:
+            new_cache.cache = [(k.to(device), v.to(device)) for k, v in self.cache]
+            new_cache.num_layers = self.num_layers
+            new_cache._quantized = self._quantized
+            new_cache._quant_bits = self._quant_bits
+            new_cache._quant_fp8 = self._quant_fp8
+            new_cache._qsegments = [
+                [(qk.to(device), qv.to(device), sk.to(device), sv.to(device)) for qk, qv, sk, sv in segs]
+                for segs in self._qsegments
+            ]
+            new_cache._fp8_segments = [
+                [(fk.to(device), fv.to(device), sk.to(device), sv.to(device)) for fk, fv, sk, sv in segs]
+                for segs in self._fp8_segments
+            ]
         return new_cache
 
     @property
     def sequence_length(self) -> int:
         """Get current sequence length from cache."""
-        if not self.cache:
-            return 0
-        return self.cache[0][0].shape[-2]
+        with self._lock:
+            if not self.cache:
+                return 0
+            return self.cache[0][0].shape[-2]
 
     def clear(self):
         """Clear the cache and quantization state."""
-        self.cache = []
-        self.num_layers = 0
-        self._qsegments = []
-        self._fp8_segments = []
-        self._quant_fp8 = False
+        with self._lock:
+            self.cache = []
+            self.num_layers = 0
+            self._qsegments = []
+            self._fp8_segments = []
+            self._quant_fp8 = False
 
     def memory_usage(self) -> int:
         """Get memory usage in bytes."""
-        total = 0
-        for k, v in self.cache:
-            total += k.element_size() * k.numel() + v.element_size() * v.numel()
-        if self._quantized:
-            for segs in self._qsegments:
-                for _qk, _qv, sk, sv in segs:
-                    total += sk.element_size() * sk.numel()
-                    total += sv.element_size() * sv.numel()
-        return total
+        with self._lock:
+            total = 0
+            for k, v in self.cache:
+                total += k.element_size() * k.numel() + v.element_size() * v.numel()
+            if self._quantized:
+                for segs in self._qsegments:
+                    for _qk, _qv, sk, sv in segs:
+                        total += sk.element_size() * sk.numel()
+                        total += sv.element_size() * sv.numel()
+            return total
 
     def enable_quantization(self, bits: int = 8, use_fp8: bool = False) -> None:
         """Enable KV cache quantization.
@@ -138,21 +164,25 @@ class KVCache:
             bits: Target bit width (4 or 8). Ignored if use_fp8=True.
             use_fp8: Use FP8 E4M3 quantization for 2x capacity vs fp16.
         """
-        if use_fp8:
-            from distllm.core.fp8_engine import FP8_AVAILABLE
-            if not FP8_AVAILABLE:
-                logger.warning("FP8 not available, falling back to int8 quantization")
-                bits = 8
-            else:
-                self._quant_fp8 = True
-                return
-        if bits not in (4, 8):
-            raise ValueError(f"KV cache quantization bits must be 4 or 8, got {bits}")
-        self._quantized = True
-        self._quant_bits = bits
+        with self._lock:
+            if use_fp8:
+                from distllm.core.fp8_engine import FP8_AVAILABLE
+                if not FP8_AVAILABLE:
+                    logger.warning("FP8 not available, falling back to int8 quantization")
+                    bits = 8
+                else:
+                    self._quant_fp8 = True
+                    return
+            if bits not in (4, 8):
+                raise ValueError(f"KV cache quantization bits must be 4 or 8, got {bits}")
+            self._quantized = True
+            self._quant_bits = bits
 
     def update(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Update KV cache for a layer with optional quantization.
+
+        Uses pre-allocated slicing to avoid O(n²) torch.cat overhead.
+        Falls back to dynamic growth when max_seq_len is not set.
 
         Args:
             layer_idx: Layer index.
@@ -165,24 +195,29 @@ class KVCache:
         Raises:
             IndexError: If layer_idx is out of range.
         """
-        if layer_idx < 0 or layer_idx >= len(self.cache):
-            raise IndexError(f"Layer index {layer_idx} out of range (cache has {len(self.cache)} layers)")
-        if self._quant_fp8:
-            return self._update_fp8(layer_idx, new_key, new_value)
-        if self._quantized:
-            return self._update_quantized(layer_idx, new_key, new_value)
+        with self._lock:
+            if layer_idx < 0 or layer_idx >= len(self.cache):
+                raise IndexError(f"Layer index {layer_idx} out of range (cache has {len(self.cache)} layers)")
+            if self._quant_fp8:
+                return self._update_fp8(layer_idx, new_key, new_value)
+            if self._quantized:
+                return self._update_quantized(layer_idx, new_key, new_value)
 
-        # Original unquantized path
+            old_k, old_v = self.cache[layer_idx]
+            cur_len = self._seq_lens[layer_idx]
+            new_len = new_key.shape[-2]
 
-        if layer_idx >= len(self.cache):
-            self.cache.append((new_key, new_value))
-            return new_key, new_value
+            if self._max_seq_len and cur_len + new_len <= self._max_seq_len:
+                old_k[:, :, cur_len:cur_len + new_len] = new_key
+                old_v[:, :, cur_len:cur_len + new_len] = new_value
+                self._seq_lens[layer_idx] = cur_len + new_len
+                return old_k[:, :, :cur_len + new_len], old_v[:, :, :cur_len + new_len]
 
-        old_k, old_v = self.cache[layer_idx]
-        key = torch.cat([old_k, new_key], dim=-2)
-        value = torch.cat([old_v, new_value], dim=-2)
-        self.cache[layer_idx] = (key, value)
-        return key, value
+            key = torch.cat([old_k[:, :, :cur_len], new_key], dim=-2)
+            value = torch.cat([old_v[:, :, :cur_len], new_value], dim=-2)
+            self.cache[layer_idx] = (key, value)
+            self._seq_lens[layer_idx] = cur_len + new_len
+            return key, value
 
     def _update_quantized(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Update KV cache with quantization for memory efficiency.
@@ -254,7 +289,8 @@ class KVCache:
         Returns:
             (key, value) tensors in original dtype.
         """
-        return self.cache[layer_idx]
+        with self._lock:
+            return self.cache[layer_idx]
 
     def quantization_savings(self) -> float:
         """Calculate memory savings from quantization.
@@ -283,48 +319,48 @@ class KVCache:
         """
         from distllm.communication.node_pb2 import KVCache as ProtoKVCache, KVLayerCache
 
-        layers = []
-        if self._quantized:
-            for segs in self._qsegments:
-                layer_msg = KVLayerCache()
-                if segs:
-                    # Concatenate all appended quantized segments for this layer
-                    all_qk = torch.cat([s[0] for s in segs], dim=-2)
-                    all_qv = torch.cat([s[1] for s in segs], dim=-2)
-                    all_sk = torch.cat([s[2] for s in segs], dim=-2)
-                    all_sv = torch.cat([s[3] for s in segs], dim=-2)
-                    pk = tensor_to_proto(all_qk)
-                    pk.scale.extend(all_sk.flatten().tolist())
-                    pv = tensor_to_proto(all_qv)
-                    pv.scale.extend(all_sv.flatten().tolist())
-                    layer_msg.key_states.CopyFrom(pk)
-                    layer_msg.value_states.CopyFrom(pv)
-                layers.append(layer_msg)
-        elif self._quant_fp8:
-            for segs in self._fp8_segments:
-                layer_msg = KVLayerCache()
-                if segs:
-                    all_fp8k = torch.cat([s[0] for s in segs], dim=-2)
-                    all_fp8v = torch.cat([s[1] for s in segs], dim=-2)
-                    all_sk = torch.cat([s[2] for s in segs], dim=-2)
-                    all_sv = torch.cat([s[3] for s in segs], dim=-2)
-                    pk = tensor_to_proto(all_fp8k.to(torch.float16))
-                    pk.scale.extend(all_sk.flatten().tolist())
-                    pv = tensor_to_proto(all_fp8v.to(torch.float16))
-                    pv.scale.extend(all_sv.flatten().tolist())
-                    layer_msg.key_states.CopyFrom(pk)
-                    layer_msg.value_states.CopyFrom(pv)
-                layers.append(layer_msg)
-        else:
-            for k, v in self.cache:
-                layer_msg = KVLayerCache()
-                layer_msg.key_states.CopyFrom(tensor_to_proto(k))
-                layer_msg.value_states.CopyFrom(tensor_to_proto(v))
-                layers.append(layer_msg)
-        proto = ProtoKVCache(layers=layers)
-        if self._quantized:
-            proto.quant_bits = self._quant_bits
-        return proto
+        with self._lock:
+            layers = []
+            if self._quantized:
+                for segs in self._qsegments:
+                    layer_msg = KVLayerCache()
+                    if segs:
+                        all_qk = torch.cat([s[0] for s in segs], dim=-2)
+                        all_qv = torch.cat([s[1] for s in segs], dim=-2)
+                        all_sk = torch.cat([s[2] for s in segs], dim=-2)
+                        all_sv = torch.cat([s[3] for s in segs], dim=-2)
+                        pk = tensor_to_proto(all_qk)
+                        pk.scale.extend(all_sk.flatten().tolist())
+                        pv = tensor_to_proto(all_qv)
+                        pv.scale.extend(all_sv.flatten().tolist())
+                        layer_msg.key_states.CopyFrom(pk)
+                        layer_msg.value_states.CopyFrom(pv)
+                    layers.append(layer_msg)
+            elif self._quant_fp8:
+                for segs in self._fp8_segments:
+                    layer_msg = KVLayerCache()
+                    if segs:
+                        all_fp8k = torch.cat([s[0] for s in segs], dim=-2)
+                        all_fp8v = torch.cat([s[1] for s in segs], dim=-2)
+                        all_sk = torch.cat([s[2] for s in segs], dim=-2)
+                        all_sv = torch.cat([s[3] for s in segs], dim=-2)
+                        pk = tensor_to_proto(all_fp8k.to(torch.float16))
+                        pk.scale.extend(all_sk.flatten().tolist())
+                        pv = tensor_to_proto(all_fp8v.to(torch.float16))
+                        pv.scale.extend(all_sv.flatten().tolist())
+                        layer_msg.key_states.CopyFrom(pk)
+                        layer_msg.value_states.CopyFrom(pv)
+                    layers.append(layer_msg)
+            else:
+                for k, v in self.cache:
+                    layer_msg = KVLayerCache()
+                    layer_msg.key_states.CopyFrom(tensor_to_proto(k))
+                    layer_msg.value_states.CopyFrom(tensor_to_proto(v))
+                    layers.append(layer_msg)
+            proto = ProtoKVCache(layers=layers)
+            if self._quantized:
+                proto.quant_bits = self._quant_bits
+            return proto
 
     @staticmethod
     def from_proto(proto, device: str = "cpu"):
@@ -355,6 +391,7 @@ class KVCacheManager:
 
     def __init__(self):
         self.caches: dict[str, KVCache] = {}
+        self._lock = threading.Lock()
 
     def create(
         self,
@@ -381,39 +418,46 @@ class KVCacheManager:
         cache.init_cache(num_layers, batch_size, num_heads, head_dim, device)
         if quant_bits > 0:
             cache.enable_quantization(quant_bits)
-        self.caches[request_id] = cache
+        with self._lock:
+            self.caches[request_id] = cache
         return cache
 
     def get(self, request_id: str) -> KVCache | None:
         """Get KV cache for a request."""
-        return self.caches.get(request_id)
+        with self._lock:
+            return self.caches.get(request_id)
 
     def update(self, request_id: str, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Update KV cache for a request."""
-        cache = self.caches.get(request_id)
+        with self._lock:
+            cache = self.caches.get(request_id)
         if cache is None:
             return None
         return cache.update(layer_idx, new_key, new_value)
 
     def delete(self, request_id: str):
         """Delete KV cache for a request."""
-        if request_id in self.caches:
-            self.caches[request_id].clear()
-            del self.caches[request_id]
+        with self._lock:
+            if request_id in self.caches:
+                self.caches[request_id].clear()
+                del self.caches[request_id]
 
     def clear_all(self):
         """Clear all caches."""
-        for cache in self.caches.values():
-            cache.clear()
-        self.caches = {}
+        with self._lock:
+            for cache in self.caches.values():
+                cache.clear()
+            self.caches = {}
 
     @property
     def active_requests(self) -> int:
-        return len(self.caches)
+        with self._lock:
+            return len(self.caches)
 
     def total_memory_usage(self) -> int:
         """Total memory usage across all caches."""
-        return sum(cache.memory_usage() for cache in self.caches.values())
+        with self._lock:
+            return sum(cache.memory_usage() for cache in self.caches.values())
 
 
 def serialize_kv_cache(cache: KVCache) -> dict:

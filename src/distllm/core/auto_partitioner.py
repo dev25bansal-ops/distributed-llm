@@ -12,11 +12,9 @@ Strategy:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
-import torch
 from loguru import logger
 
 from distllm.core.gpu_profiler import GPUProfiler, GPUInfo
@@ -85,6 +83,20 @@ class AutoPartitioner:
         max_seq_len: int = 4096,
         batch_size: int = 1,
     ):
+        if hidden_size <= 0 or hidden_size % 64 != 0:
+            raise ValueError(f"hidden_size must be positive multiple of 64, got {hidden_size}")
+        if num_layers <= 0:
+            raise ValueError(f"num_layers must be positive, got {num_layers}")
+        if num_attention_heads <= 0:
+            raise ValueError(f"num_attention_heads must be positive, got {num_attention_heads}")
+        if intermediate_size <= 0:
+            raise ValueError(f"intermediate_size must be positive, got {intermediate_size}")
+        if vocab_size <= 0:
+            raise ValueError(f"vocab_size must be positive, got {vocab_size}")
+        if max_seq_len <= 0:
+            raise ValueError(f"max_seq_len must be positive, got {max_seq_len}")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
         self._hidden = hidden_size
         self._num_layers = num_layers
         self._num_heads = num_attention_heads

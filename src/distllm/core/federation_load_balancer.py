@@ -7,7 +7,7 @@ integrates with the existing LoadReporter in geo_router.py.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -97,11 +97,11 @@ class FederationLoadBalancer:
         load = self._loads[cluster_id]
         alpha = self.ema_alpha
 
-        # EMA smoothing
-        load.active_requests = int(alpha * active_requests + (1 - alpha) * load.active_requests)
-        load.pending_requests = int(alpha * pending_requests + (1 - alpha) * load.pending_requests)
+        # EMA smoothing (stored as float to avoid integer truncation to 0)
+        load.active_requests = alpha * active_requests + (1 - alpha) * load.active_requests
+        load.pending_requests = alpha * pending_requests + (1 - alpha) * load.pending_requests
         load.gpu_utilization = alpha * gpu_utilization + (1 - alpha) * load.gpu_utilization
-        load.queue_depth = int(alpha * queue_depth + (1 - alpha) * load.queue_depth)
+        load.queue_depth = alpha * queue_depth + (1 - alpha) * load.queue_depth
         load.tokens_per_sec = alpha * tokens_per_sec + (1 - alpha) * load.tokens_per_sec
         load.last_report = now
         load.stale = False

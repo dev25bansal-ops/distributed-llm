@@ -6,7 +6,7 @@
 
 model:
   # HuggingFace model name or local path
-  name: "roneneldan/TinyStories-1M"
+  name: "HuggingFaceTB/SmolLM-135M"
   # Data type for model weights
   dtype: "float16"  # float16, float32, bfloat16
 
@@ -51,6 +51,26 @@ network:
   max_retries: 3
   retry_delay: 1.0
 
+# vLLM backend (replaces legacy pipeline parallelism)
+vllm:
+  # Security: vLLM uses PagedAttention, FlashAttention, continuous batching
+  enabled: false
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_num_seqs: 256
+  dtype: "auto"
+
+# llama.cpp backend (lightweight alternative to vLLM, supports CPU/GPU/ROCm/Metal)
+llamacpp:
+  enabled: false
+  model_path: ""
+  n_gpu_layers: 0
+  n_ctx: 2048
+  n_threads: null
+  n_batch: 512
+  seed: 0
+  verbose: false
+
 # TLS/Security
 tls:
   # Security: TLS disabled by default — enable and provide certs for production.
@@ -69,13 +89,19 @@ tls:
 dev:
   coordinator:
     api_port: 8000
+  llamacpp:
+    enabled: true
+    model_path: "models/smollm-135m.Q4_K_M.gguf"
+    n_gpu_layers: 0
+    n_ctx: 2048
   batching:
     max_batch_size: 8
     max_tokens_per_batch: 1024
   monitoring:
     enabled: false
   rate_limit:
-    enabled: false
+    enabled: true
+    default_rpm: 60
   tls:
     enabled: false
   prefix_cache:
@@ -85,6 +111,10 @@ staging:
   batching:
     max_batch_size: 16
     max_tokens_per_batch: 2048
+  vllm:
+    enabled: true
+    gpu_memory_utilization: 0.85
+    max_num_seqs: 128
   rate_limit:
     enabled: true
     default_rpm: 30
@@ -98,10 +128,15 @@ production:
   batching:
     max_batch_size: 64
     max_tokens_per_batch: 8192
+  vllm:
+    enabled: true
+    gpu_memory_utilization: 0.95
+    max_num_seqs: 256
+    tensor_parallel_size: 1
   rate_limit:
     enabled: true
     default_rpm: 120
-    auth_rpm_multiplier: 3.0
+    auth_rpm_multiplier: 2.0
   tls:
     enabled: true
   monitoring:
@@ -113,6 +148,7 @@ production:
   cache_persistence:
     enabled: true
     ttl_hours: 24
+    max_size_bytes: 1073741824  # 1 GiB cap to prevent unbounded growth
   priority:
     enabled: true
     preemption_enabled: true

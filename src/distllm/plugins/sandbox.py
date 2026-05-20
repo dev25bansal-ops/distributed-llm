@@ -43,7 +43,9 @@ class SandboxContext:
         return self.get(key)
 
     def __contains__(self, key: str) -> bool:
-        return key in self.get.__self__  # type: ignore[union-attr]
+        return key in (
+            "config", "hooks", "logger", "coordinator_ref", "metrics"
+        )
 
 
 @dataclass

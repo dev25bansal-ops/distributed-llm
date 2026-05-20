@@ -242,10 +242,15 @@ def tls_certificates(tls_cert_dir):
 
     cert_file, key_file, ca_cert_file = generate_self_signed_certs(tls_cert_dir)
 
+    client_cert_file = os.path.join(tls_cert_dir, "client.crt")
+    client_key_file = os.path.join(tls_cert_dir, "client.key")
+
     return {
         "cert_file": cert_file,
         "key_file": key_file,
         "ca_cert_file": ca_cert_file,
+        "client_cert_file": client_cert_file,
+        "client_key_file": client_key_file,
         "cert_dir": tls_cert_dir,
     }
 

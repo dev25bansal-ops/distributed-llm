@@ -58,6 +58,8 @@ class StreamingConfig:
     include_usage: bool = False
     echo_prompt: bool = False
     extra_headers: dict[str, str] = field(default_factory=dict)
+    max_buffer_size: int = 256     # Max buffered tokens before backpressure kicks in
+    backpressure_sleep_s: float = 0.01  # Sleep duration when buffer is full
 
 
 class StreamingGenerator:
@@ -138,6 +140,15 @@ class StreamingGenerator:
 
                 if first_token_time == 0:
                     first_token_time = time.time()
+
+                # Backpressure: if buffer exceeds max allowed size, sleep to let
+                # the consumer catch up before generating more tokens.
+                # This prevents unbounded memory growth when client reads slower
+                # than generation.
+                while len(token_buffer) >= config.max_buffer_size:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    await asyncio.sleep(config.backpressure_sleep_s)
 
                 # Emit chunk when buffer reaches chunk_size or on final token
                 if len(token_buffer) >= config.stream_chunk_size or is_done:

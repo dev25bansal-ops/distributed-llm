@@ -288,8 +288,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
             data["scheduler"] = sched
             collector.record_queue_depth(sched.get("pending_requests", 0))
             collector.record_active_requests(sched.get("active_requests", 0))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect scheduler stats: {e}")
 
     # Node health with GPU utilization
     try:
@@ -319,8 +319,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
             nid: ninfo["gpu_utilization"]
             for nid, ninfo in nodes.items()
         }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect node health data: {e}")
 
     # Prefix / KV cache stats
     try:
@@ -330,8 +330,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
                 if hasattr(coordinator.prefix_cache, "stats")
                 else {}
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect prefix cache stats: {e}")
 
     # Speculative decoder
     try:
@@ -342,8 +342,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
                 if hasattr(sd, "get_metrics")
                 else {}
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect speculative decoder metrics: {e}")
 
     # Pipeline topology
     try:
@@ -354,8 +354,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
         }
         collector.update_pipeline_topology(topology)
         data["topology"] = topology
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect pipeline topology: {e}")
 
     # Tenant info
     try:
@@ -366,8 +366,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
                 {"tenant_id": t.tenant_id, "name": t.name, "tier": t.tier.value}
                 for t in tenants
             ]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect tenant info: {e}")
 
     # Request latency tracker percentiles (per-request granularity)
     try:
@@ -392,8 +392,8 @@ async def collect_metrics_snapshot(coordinator) -> dict:
                     data["per_request_ttft"] = {
                         "avg": sum(ttfts) / len(ttfts),
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to collect request latency metrics: {e}")
 
     return data
 

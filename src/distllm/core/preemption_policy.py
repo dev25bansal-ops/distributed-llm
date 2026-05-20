@@ -9,7 +9,7 @@ Inspired by vLLM's preemption policy and Kubernetes eviction policies.
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 import torch
 from loguru import logger

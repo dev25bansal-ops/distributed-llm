@@ -1,5 +1,7 @@
 """Tensor and KV cache serialization to/from protobuf."""
 
+import threading
+
 import torch
 import numpy as np
 from distllm.communication.node_pb2 import Tensor, KVCache as ProtoKVCache, KVLayerCache
@@ -11,23 +13,26 @@ from distllm.errors import SerializationError
 _tensor_buffer_pool: list[np.ndarray] = []
 _buffer_pool_max_size: int = 256  # Max buffers to retain
 _buffer_pool_size: int = 0  # Current pool size
+_buffer_pool_lock = threading.Lock()
 
 
 def _get_buffer(size: int) -> np.ndarray:
     """Get a pre-allocated buffer from the pool or create a new one."""
-    if _tensor_buffer_pool:
-        buf = _tensor_buffer_pool.pop()
-        if buf.nbytes >= size:
-            return buf
+    with _buffer_pool_lock:
+        if _tensor_buffer_pool:
+            buf = _tensor_buffer_pool.pop()
+            if buf.nbytes >= size:
+                return buf
     return np.empty(max(size, 1024), dtype=np.uint8)
 
 
 def _release_buffer(buf: np.ndarray) -> None:
     """Return a buffer to the pool for reuse."""
     global _buffer_pool_size
-    if _buffer_pool_size < _buffer_pool_max_size:
-        _tensor_buffer_pool.append(buf)
-        _buffer_pool_size += 1
+    with _buffer_pool_lock:
+        if _buffer_pool_size < _buffer_pool_max_size:
+            _tensor_buffer_pool.append(buf)
+            _buffer_pool_size += 1
 
 
 def tensor_to_proto(tensor: torch.Tensor) -> Tensor:
@@ -51,8 +56,11 @@ def tensor_to_proto(tensor: torch.Tensor) -> Tensor:
     if t.dim() == 0:
         t = t.reshape(1)
 
-    # Ensure contiguous for zero-copy numpy conversion
-    raw_bytes = t.contiguous().view(torch.uint8).numpy(force=True).tobytes()
+    # Zero-copy path: avoid 3-4 copies from contiguous -> view -> numpy -> tobytes
+    if t.is_contiguous():
+        raw_bytes = bytes(memoryview(t.view(torch.uint8).numpy(force=True)))
+    else:
+        raw_bytes = t.contiguous().view(torch.uint8).numpy(force=True).tobytes()
 
     return Tensor(
         raw_data=raw_bytes,
@@ -150,6 +158,8 @@ def proto_to_tensor(proto: Tensor, device: str = "cpu") -> torch.Tensor:
         "torch.float16": torch.float16,
         "torch.float64": torch.float64,
         "torch.bfloat16": torch.bfloat16,
+        "torch.float8_e4m3fn": torch.float8_e4m3fn if hasattr(torch, 'float8_e4m3fn') else torch.uint8,
+        "torch.float8_e5m2": torch.float8_e5m2 if hasattr(torch, 'float8_e5m2') else torch.uint8,
         "torch.int64": torch.int64,
         "torch.int32": torch.int32,
         "torch.int16": torch.int16,
@@ -203,13 +213,15 @@ def kv_cache_to_proto(cache: "KVCache") -> ProtoKVCache:
 _activation_quant_enabled = True
 _activation_quant_bits = 8
 _activation_quant_fp8 = False  # Use FP8 instead of INT when available
+_activation_quant_lock = threading.Lock()
 
 
 def set_activation_quant(enabled: bool, bits: int = 8, use_fp8: bool = False) -> None:
     global _activation_quant_enabled, _activation_quant_bits, _activation_quant_fp8
-    _activation_quant_enabled = enabled
-    _activation_quant_bits = bits
-    _activation_quant_fp8 = use_fp8 and bits == 8 and torch.cuda.is_available() and hasattr(torch, 'float8_e4m3fn')
+    with _activation_quant_lock:
+        _activation_quant_enabled = enabled
+        _activation_quant_bits = bits
+        _activation_quant_fp8 = use_fp8 and bits == 8 and torch.cuda.is_available() and hasattr(torch, 'float8_e4m3fn')
 
 
 def quantize_activation(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:

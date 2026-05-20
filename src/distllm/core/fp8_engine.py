@@ -8,11 +8,8 @@ Provides native FP8 (float8) compute support for transformer inference:
 - Graceful fallback when FP8 hardware is unavailable
 """
 
-import copy
 import math
-import threading
-from typing import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn

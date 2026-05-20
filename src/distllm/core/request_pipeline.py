@@ -7,7 +7,6 @@ and their supporting functions (sampling, speculative decoding, pipeline batch).
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from contextvars import ContextVar
@@ -15,10 +14,9 @@ from contextvars import ContextVar
 import torch
 from loguru import logger
 
-from distllm.core.batch_scheduler import ScheduledBatch, Sequence
+from distllm.core.batch_scheduler import Sequence
 from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.core.constrained_decoder import SchemaConstrainedDecoder
-from distllm.core.cache_manager import CacheManager
 from distllm.communication.grpc import is_debug_mode
 from distllm.core.graceful_degradation import LoadSnapshot
 from distllm.errors.types import (
@@ -210,13 +208,14 @@ class RequestPipeline:
                         step_input = generated_ids[:, gen_pos-1:gen_pos]
 
                     draft_tokens = None
+                    draft_logits = None
                     if use_speculative:
                         active_method = c._spec_decoder.get_active_method(c.draft_model)
                         if active_method == "draft_model" and c.draft_model is not None:
-                            draft_tokens, _ = c._spec_decoder.generate_draft_tokens(c.draft_model, step_input)
+                            draft_tokens, _, draft_logits = c._spec_decoder.generate_draft_tokens(c.draft_model, step_input)
                         elif active_method == "ngram":
                             generated_list = generated_ids[0].tolist() if generated_ids.dim() == 2 else generated_ids.tolist()
-                            draft_tokens, _ = c._spec_decoder.generate_draft_tokens(None, step_input, generated_ids=generated_list)
+                            draft_tokens, _, _ = c._spec_decoder.generate_draft_tokens(None, step_input, generated_ids=generated_list)
 
                     zc_engine = c._zero_copy_engine
                     zc_input = step_input
@@ -231,10 +230,10 @@ class RequestPipeline:
                         logits = c._pipeline.run_pipeline(zc_input, node_kv_caches, request_id=request_id, draft_tokens=draft_tokens if use_speculative else None)
 
                     if use_speculative and active_method == "medusa":
-                        draft_tokens, _ = c._spec_decoder.generate_draft_tokens(None, step_input, target_logits=logits)
+                        draft_tokens, _, _ = c._spec_decoder.generate_draft_tokens(None, step_input, target_logits=logits)
 
                     if use_speculative and draft_tokens:
-                        accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer)
+                        accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer, temperature=temperature, draft_logits=draft_logits)
                         if c._continuous_trainer is not None and accepted_tokens:
                             draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
                             c._continuous_trainer.record(draft_ids, list(accepted_tokens))
@@ -571,12 +570,12 @@ class RequestPipeline:
             use_spec = c._spec_decoder is not None and c._spec_decoder.is_enabled and c.draft_model is not None and not batch.is_prefill[seq_idx]
 
             if use_spec:
-                draft_tokens, _ = c._spec_decoder.generate_draft_tokens(c.draft_model, input_ids)
+                draft_tokens, _, draft_logits = c._spec_decoder.generate_draft_tokens(c.draft_model, input_ids)
                 if c._pipeline.enable_overlap:
                     logits = c._pipeline.run_pipeline_overlap(input_ids, node_kv_caches, request_id=seq.request_id)
                 else:
                     logits = c._pipeline.run_pipeline(input_ids, node_kv_caches, request_id=seq.request_id)
-                _, accepted, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer, temperature=seq.temperature)
+                _, accepted, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer, temperature=seq.temperature, draft_logits=draft_logits)
                 if c._continuous_trainer is not None and accepted:
                     draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
                     c._continuous_trainer.record(draft_ids, list(accepted))
@@ -623,8 +622,9 @@ class RequestPipeline:
         use_spec = c._spec_decoder is not None and c._spec_decoder.is_enabled and c.draft_model is not None and not all(batch.is_prefill)
 
         draft_tokens_list = None
+        draft_logits_list = None
         if use_spec:
-            draft_tokens_list, _ = c._spec_decoder.generate_batch_draft_tokens(c.draft_model, input_tensors)
+            draft_tokens_list, _, draft_logits_list = c._spec_decoder.generate_batch_draft_tokens(c.draft_model, input_tensors)
 
         def stage_forward(micro_batch):
             stage_logits = c._async_pipeline.forward_stage(micro_batch, None)
@@ -634,7 +634,7 @@ class RequestPipeline:
         last_logits = outputs[:, -1, :] if outputs.dim() == 3 else outputs
 
         if use_spec and draft_tokens_list:
-            results = c._spec_decoder.verify_batch(draft_tokens_list=draft_tokens_list, target_logits_list=[last_logits[i:i+1] for i in range(batch.batch_size)], tokenizer=c.tokenizer)
+            results = c._spec_decoder.verify_batch(draft_tokens_list=draft_tokens_list, target_logits_list=[last_logits[i:i+1] for i in range(batch.batch_size)], tokenizer=c.tokenizer, draft_logits_list=draft_logits_list)
             next_tokens = torch.tensor([r[2] for r in results], device=last_logits.device)
         else:
             next_tokens = self._sample_batch(last_logits, batch)
@@ -680,7 +680,7 @@ class RequestPipeline:
 
             hidden_states = getattr(outputs, "hidden_states", None)
             hidden_states = hidden_states[-1] if hidden_states else None
-            draft_tokens, _ = c._spec_decoder.generate_draft_tokens(None, generated_ids[:, -1:], hidden_states=hidden_states)
+            draft_tokens, _, _ = c._spec_decoder.generate_draft_tokens(None, generated_ids[:, -1:], hidden_states=hidden_states)
 
             if draft_tokens:
                 draft_tensor = torch.tensor([draft_tokens], device=generated_ids.device, dtype=generated_ids.dtype)

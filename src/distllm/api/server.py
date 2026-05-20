@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -124,7 +125,18 @@ def _get_cors_origins() -> list[str]:
 ALLOWED_ORIGINS = _get_cors_origins()
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: initialize services on startup, clean up on shutdown."""
+    _init_observability()
+    _start_ws_broadcaster()
+    yield
+    if state.ws_broadcast_task:
+        state.ws_broadcast_task.cancel()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Distributed LLM API",
     description="OpenAI-compatible REST API for distributed LLM inference across multiple machines using pipeline parallelism",
     version="0.4.0",
@@ -234,19 +246,27 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Application state — encapsulates global mutable state for lifecycle management
+# Application state — encapsulates all shared mutable state for lifecycle management
 class AppState:
-    """Manages shared application state (coordinator, monitor, startup time).
+    """Manages shared application state across the API server.
 
-    Provides set/clear methods for lifecycle management and testing.
-    Module-level globals (coordinator, monitor, _startup_time) are still
-    accessible for backwards compatibility with endpoint code.
+    All mutable module-level state is consolidated here to prevent shared
+    mutable globals that could be mutated across requests.
     """
 
     def __init__(self):
         self.coordinator: Coordinator | None = None
         self.monitor: SystemMonitor | None = None
         self.startup_time: float = time.time()
+        self.metrics_exporter: DistLLMPrometheusExporter | None = None
+        self.cost_tracker: GPUCostTracker | None = None
+        self.anomaly_detector: AnomalyDetector | None = None
+        self.tenant_store: TenantStore | None = None
+        self.tenant_rate_limiter: TenantRateLimiter | None = None
+        self.usage_meter: UsageMeter | None = None
+        self.tenant_router: TenantModelRouter | None = None
+        self.rate_limiter: RateLimiter | None = None
+        self.ws_broadcast_task = None
 
     @property
     def uptime_seconds(self) -> float:
@@ -256,53 +276,26 @@ class AppState:
         """Set the coordinator and monitor instances."""
         self.coordinator = coord
         self.monitor = mon
-        global coordinator, monitor, _startup_time
-        coordinator = self.coordinator
-        monitor = self.monitor
-        _startup_time = self.startup_time
 
     def clear(self) -> None:
         """Reset state (useful for testing)."""
         self.coordinator = None
         self.monitor = None
-        global coordinator, monitor
-        coordinator = None
-        monitor = None
 
 
 state = AppState()
 
-# Module-level globals for backwards compatibility with endpoint code
-coordinator: Coordinator | None = None
-monitor: SystemMonitor | None = None
-_startup_time: float = time.time()
-
-# Observability globals
-metrics_exporter: DistLLMPrometheusExporter | None = None
-cost_tracker: GPUCostTracker | None = None
-anomaly_detector: AnomalyDetector | None = None
-
-# Observability middleware (after RequestIDMiddleware, before AuthMiddleware)
-# --- Tenant System ---
-
-tenant_store: TenantStore | None = None
-tenant_rate_limiter: TenantRateLimiter | None = None
-usage_meter: UsageMeter | None = None
-tenant_router: TenantModelRouter | None = None
-
 
 def _init_tenants(settings: DistLLMSettings | None = None) -> None:
     """Initialize the multi-tenant system."""
-    global tenant_store, tenant_rate_limiter, usage_meter, tenant_router
+    state.tenant_store = TenantStore()
+    state.tenant_rate_limiter = TenantRateLimiter()
+    state.usage_meter = UsageMeter(state.tenant_store)
+    state.tenant_router = TenantModelRouter()
 
-    tenant_store = TenantStore()
-    tenant_rate_limiter = TenantRateLimiter()
-    usage_meter = UsageMeter(tenant_store)
-    tenant_router = TenantModelRouter()
-
-    app.state.tenant_store = tenant_store
-    app.state.usage_meter = usage_meter
-    app.state.tenant_router = tenant_router
+    app.state.tenant_store = state.tenant_store
+    app.state.usage_meter = state.usage_meter
+    app.state.tenant_router = state.tenant_router
 
     # Always read tenant config from settings; never from os.environ (no env injection)
     tenant_enabled = bool(settings and getattr(settings, "tenant", None) and settings.tenant.enabled)
@@ -315,22 +308,20 @@ def _init_tenants(settings: DistLLMSettings | None = None) -> None:
     os.environ.pop("ADMIN_API_KEY", None)
 
     if tenant_enabled:
-        app.add_middleware(TenantMiddleware, store=tenant_store, enabled=True)
+        app.add_middleware(TenantMiddleware, store=state.tenant_store, enabled=True)
         _init_tenant_routes()
         logger.info("Multi-tenant system initialized with middleware")
     else:
         logger.info("Tenant system enabled by default")
 
     # Seed default tenant for backward compatibility
-    if tenant_store.get_tenant("default") is None:
+    if state.tenant_store.get_tenant("default") is None:
         from distllm.tenant.models import TenantTier
-        tenant_store.create_tenant(name="Default", tier=TenantTier.FREE)
+        state.tenant_store.create_tenant(name="Default", tier=TenantTier.FREE)
 
 
 def _init_observability():
     """Initialize tracing, logging, metrics exporter, cost tracker, anomaly detector."""
-    global metrics_exporter, cost_tracker, anomaly_detector
-
     # Structured logging with OTel trace injection
     setup_logging(level="INFO", json_format=True)
 
@@ -342,36 +333,36 @@ def _init_observability():
     )
 
     # Prometheus metrics exporter
-    metrics_exporter = DistLLMPrometheusExporter()
+    state.metrics_exporter = DistLLMPrometheusExporter()
 
     # Cost tracker
-    cost_tracker = GPUCostTracker()
+    state.cost_tracker = GPUCostTracker()
 
     # Anomaly detector
-    anomaly_detector = AnomalyDetector(sigma_threshold=3.0)
-    anomaly_detector.register_metric("http_request_duration", window_size=60, sigma_threshold=3.0)
-    anomaly_detector.register_metric("http_error_rate", window_size=30, sigma_threshold=2.5)
+    state.anomaly_detector = AnomalyDetector(sigma_threshold=3.0)
+    state.anomaly_detector.register_metric("http_request_duration", window_size=60, sigma_threshold=3.0)
+    state.anomaly_detector.register_metric("http_error_rate", window_size=30, sigma_threshold=2.5)
 
     # Wire anomaly callbacks to increment Prometheus counter
+    exporter = state.metrics_exporter
+
     def _on_anomaly(event):
-        metrics_exporter.anomaly_detected_total.labels(
+        exporter.anomaly_detected_total.labels(
             metric=event.metric, type="statistical_deviation"
         ).inc()
         logger.warning(f"Anomaly detected: {event.metric}={event.value:.2f} "
                        f"(mean={event.mean:.2f}, sigma={event.deviation_sigma:.1f})")
 
-    anomaly_detector.on_anomaly(_on_anomaly)
+    state.anomaly_detector.on_anomaly(_on_anomaly)
 
     # Add ObservabilityMiddleware
     app.add_middleware(
         ObservabilityMiddleware,
-        metrics_exporter=metrics_exporter,
-        cost_tracker=cost_tracker,
-        anomaly_detector=anomaly_detector,
+        metrics_exporter=state.metrics_exporter,
+        cost_tracker=state.cost_tracker,
+        anomaly_detector=state.anomaly_detector,
     )
 
-
-_init_observability()
 
 # Request timeout middleware
 # NOTE: Registered BEFORE AuthMiddleware so that AuthMiddleware runs first
@@ -420,6 +411,33 @@ app.add_middleware(AuthMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
 
+# Request size limiting middleware
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Limit maximum request body size to prevent OOM."""
+
+    MAX_REQUEST_SIZE = 32 * 1024 * 1024  # 32 MB default
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT", "PATCH"):
+            cl = request.headers.get("content-length")
+            if cl:
+                try:
+                    if int(cl) > self.MAX_REQUEST_SIZE:
+                        return _error_response(
+                            status_code=413,
+                            error="Request Entity Too Large",
+                            message=f"Request exceeds maximum size of {self.MAX_REQUEST_SIZE // (1024*1024)} MB",
+                            type="request_too_large",
+                            request=request,
+                        )
+                except (ValueError, TypeError):
+                    pass
+        return await call_next(request)
+
+
+app.add_middleware(RequestSizeLimitMiddleware)
+
+
 # Backpressure middleware
 class BackpressureMiddleware(BaseHTTPMiddleware):
     """Reject requests when system is under heavy load."""
@@ -432,9 +450,9 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Check if scheduler is overloaded
-        if coordinator and coordinator.scheduler:
+        if state.coordinator and state.coordinator.scheduler:
             try:
-                stats = coordinator.scheduler.stats()
+                stats = state.coordinator.scheduler.stats()
                 pending = stats.get("pending_requests", 0)
                 if isinstance(pending, (int, float)) and pending >= self.MAX_PENDING_REQUESTS:
                     return _error_response(
@@ -448,7 +466,7 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
                 pass  # Scheduler stats unavailable or malformed, skip check
 
         # Check if shutting down
-        if coordinator and getattr(coordinator, "_shutting_down", False):
+        if state.coordinator and getattr(state.coordinator, "_shutting_down", False):
             return _error_response(
                 status_code=503,
                 error="Service Unavailable",
@@ -463,16 +481,11 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
 app.add_middleware(BackpressureMiddleware)
 
 
-# Rate limiter (initialized with defaults, configured on startup)
-_rate_limiter: RateLimiter | None = None
-
-
 def _init_rate_limiter(settings: DistLLMSettings | None = None) -> None:
     """Initialize the rate limiter from settings."""
-    global _rate_limiter
     from distllm.config.settings import RateLimitSettings
     rl_settings = settings.rate_limit if settings else RateLimitSettings()
-    _rate_limiter = RateLimiter(
+    state.rate_limiter = RateLimiter(
         default_rpm=rl_settings.default_rpm,
         endpoint_limits=rl_settings.endpoint_limits,
         burst_multiplier=rl_settings.burst_multiplier,
@@ -480,7 +493,7 @@ def _init_rate_limiter(settings: DistLLMSettings | None = None) -> None:
     )
     app.add_middleware(
         RateLimitMiddleware,
-        rate_limiter=_rate_limiter,
+        rate_limiter=state.rate_limiter,
         enabled=rl_settings.enabled,
     )
 
@@ -505,7 +518,7 @@ app.include_router(rag_router)
 app.include_router(agent_router)
 app.include_router(disagg_router)
 app.include_router(pipeline_router)
-app.include_router(debug_router)
+app.include_router(debug_router, include_in_schema=False)
 
 # --- Dashboard & WebSocket ---
 
@@ -613,7 +626,7 @@ async def api_metrics_stream(
             )
 
     return StreamingResponse(
-        stream_metrics_sse(coordinator, requested_metrics=requested, interval=interval),
+        stream_metrics_sse(state.coordinator, requested_metrics=requested, interval=interval),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -623,26 +636,10 @@ async def api_metrics_stream(
     )
 
 
-_ws_broadcast_task = None
-
-
 def _start_ws_broadcaster():
     """Start the WebSocket metrics broadcaster background task."""
-    global _ws_broadcast_task
-    if coordinator is not None:
-        _ws_broadcast_task = asyncio.create_task(metrics_broadcaster(coordinator))
-
-
-@app.on_event("startup")
-async def _startup_dashboard():
-    _start_ws_broadcaster()
-
-
-@app.on_event("shutdown")
-async def _shutdown_dashboard():
-    global _ws_broadcast_task
-    if _ws_broadcast_task:
-        _ws_broadcast_task.cancel()
+    if state.coordinator is not None:
+        state.ws_broadcast_task = asyncio.create_task(metrics_broadcaster(state.coordinator))
 
 
 def _init_tenant_routes():
@@ -767,7 +764,7 @@ def create_coordinator(
         lora_config=lora_config,
         embedding_config=getattr(settings, "embedding", None) if settings else None,
         version_config=getattr(settings, "version", None) if settings else None,
-        metrics_exporter=metrics_exporter,
+        metrics_exporter=state.metrics_exporter,
     )
 
     # Initialize multi-model chat router from settings
@@ -919,8 +916,20 @@ def main():
     logger.info(f"Starting API server on {settings.coordinator.host}:{settings.coordinator.api_port}")
 
     # Register graceful shutdown handler
-    def _shutdown() -> None:
+    async def _shutdown() -> None:
         logger.info("Shutdown requested, draining connections...")
+        if state.coordinator:
+            in_flight = 0
+            if state.coordinator.scheduler:
+                try:
+                    stats = state.coordinator.scheduler.stats()
+                    in_flight = stats.get("pending_requests", 0) + stats.get("active_requests", 0)
+                except (AttributeError, TypeError, KeyError):
+                    pass
+            if in_flight > 0:
+                logger.info(f"Waiting for {in_flight} in-flight request(s) to complete...")
+                await asyncio.sleep(min(in_flight * 0.5, 10.0))
+        logger.info("Shutdown complete")
 
     app.add_event_handler("shutdown", _shutdown)
     uvicorn.run(app, host=settings.coordinator.host, port=settings.coordinator.api_port, log_level="info", shutdown_timeout=30)

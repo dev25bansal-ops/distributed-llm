@@ -7,7 +7,7 @@ used by the rebalancer for straggler detection.
 
 import time
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

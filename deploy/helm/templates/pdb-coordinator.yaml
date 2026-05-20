@@ -1,4 +1,4 @@
-{{- if .Values.podDisruptionBudget.coordinator.enabled }}
+{{- if and .Values.podDisruptionBudget.coordinator.enabled (gt (int .Values.coordinator.replicas) 1) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

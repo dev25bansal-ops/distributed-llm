@@ -21,7 +21,7 @@ Configuration follows this precedence: **CLI args > environment variables > conf
 
 ```yaml
 model:
-  name: "meta-llama/Llama-3-8B"
+  name: "HuggingFaceTB/SmolLM-135M"
   dtype: "float16"
 
 coordinator:
@@ -31,46 +31,41 @@ coordinator:
 
 nodes:
   - node_id: "node_0"
-    host: "192.168.1.100"
+    host: "localhost"
     port: 50051
     start_layer: 0
-    end_layer: 15
+    end_layer: 3
 
   - node_id: "node_1"
-    host: "192.168.1.101"
+    host: "localhost"
     port: 50052
-    start_layer: 16
-    end_layer: 31
+    start_layer: 4
+    end_layer: 7
 
 generation:
   max_new_tokens: 256
   temperature: 0.7
   top_p: 0.9
 
-batching:
-  max_batch_size: 32
-  max_tokens_per_batch: 4096
+logging:
+  level: "INFO"
+  format: "json"
 
-prefix_cache:
-  enabled: true
-  max_entries: 1024
+network:
+  grpc_timeout: 30
+  max_retries: 3
+  retry_delay: 1.0
 
 tls:
-  enabled: false  # Set true for production with custom certs
-
-rate_limit:
-  enabled: true
-  default_rpm: 60.0
-  endpoint_limits:
-    "/v1/chat/completions": 30.0
-    "/v1/completions": 30.0
+  enabled: false
+  cert_dir: "certs"
 ```
 
 ### Environment Variables
 
 ```bash
 # Core
-DISTLLM__MODEL__NAME=meta-llama/Llama-3-8B
+DISTLLM__MODEL__NAME=HuggingFaceTB/SmolLM-135M
 DISTLLM__MODEL__DTYPE=float16
 DISTLLM__COORDINATOR__HOST=0.0.0.0
 DISTLLM__COORDINATOR__API_PORT=8000
@@ -85,6 +80,9 @@ DISTLLM__BATCHING__MAX_BATCH_SIZE=32
 DISTLLM__PREFIX_CACHE__ENABLED=true
 DISTLLM__RATE_LIMIT__ENABLED=true
 DISTLLM__RATE_LIMIT__DEFAULT_RPM=60
+
+# Profiles (dev / staging / production)
+DISTLLM__PROFILE=production
 ```
 
 ### Validate Configuration

@@ -7,7 +7,7 @@ Inspired by vLLM's CUDA graph capture for decode-phase acceleration.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import torch
 from loguru import logger

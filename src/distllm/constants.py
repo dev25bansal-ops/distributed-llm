@@ -37,7 +37,7 @@ MAX_CLIENTS: int = 10000
 
 # --- Security ---
 TENSOR_MAX_DIMS: int = 8
-TENSOR_MAX_DIM_SIZE: int = 65536
+TENSOR_MAX_DIM_SIZE: int = 2_000_000_000  # Effectively unlimited; real limit is TENSOR_MAX_TOTAL_BYTES
 TENSOR_MAX_TOTAL_BYTES: int = 4 * 1024 * 1024 * 1024  # 4 GiB (configurable via env var DISTLLM_MAX_TENSOR_BYTES)
 
 def get_tensor_max_bytes() -> int:

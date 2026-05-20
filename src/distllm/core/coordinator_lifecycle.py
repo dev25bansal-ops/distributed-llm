@@ -5,7 +5,6 @@ Extracted from the Coordinator class.
 """
 
 import threading
-import time
 from typing import Any, Callable
 
 from loguru import logger
@@ -217,7 +216,6 @@ class ServerLifecycle:
             on_stop: Optional callback when server stops.
         """
         if tokenizer is None:
-            from transformers import AutoTokenizer
             # This shouldn't happen in normal usage, but handle gracefully
             logger.warning("Tokenizer not initialized, loading for server start")
 

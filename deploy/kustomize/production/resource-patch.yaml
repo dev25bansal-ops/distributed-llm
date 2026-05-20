@@ -1,8 +1,8 @@
-# Production: full resources, HA
+# Production: full coordinator resources, HA with rolling updates
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: distllm-operator
+  name: distllm-coordinator
 spec:
   replicas: 3
   strategy:
@@ -13,11 +13,32 @@ spec:
   template:
     spec:
       containers:
-        - name: operator
+        - name: coordinator
           resources:
             requests:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: 2
+              memory: 4Gi
             limits:
-              cpu: "2"
-              memory: "2Gi"
+              cpu: 4
+              memory: 8Gi
+---
+# Production: full worker resources, 4 replicas per pool with GPU
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distllm-worker
+spec:
+  replicas: 4
+  template:
+    spec:
+      containers:
+        - name: worker
+          resources:
+            requests:
+              cpu: 4
+              memory: 16Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: 8
+              memory: 32Gi
+              nvidia.com/gpu: 1

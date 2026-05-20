@@ -101,6 +101,24 @@ quant = [
 lora = [
     "peft>=0.14.0",
 ]
+rocm = [
+    "torch>=2.5.0 --index-url https://download.pytorch.org/whl/rocm6.2",
+    "llama-cpp-python>=0.3.0",
+]
+metal = [
+    "torch>=2.5.0 --index-url https://download.pytorch.org/whl/mps",
+]
+xpu = [
+    "torch>=2.5.0 --index-url https://download.pytorch.org/whl/xpu",
+    "oneapi>=2025.0",
+]
+cpu = [
+    "llama-cpp-python>=0.3.0",
+]
+all = [
+    "distributed-llm[rocm,metal,xpu,cpu]",
+]
+
 testing = [
     "hypothesis>=6.90",
     "locust>=2.20",

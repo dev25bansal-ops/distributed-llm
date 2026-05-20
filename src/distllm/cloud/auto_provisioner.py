@@ -116,6 +116,8 @@ class AutoProvisioner:
                     })
                 except Exception as e:
                     logger.error(f"Failed to provision instance: {e}")
+        else:
+            logger.warning(f"Provider {best_price.provider} not found in price tracker")
 
         decision = ScalingDecision(
             action="scale_up",

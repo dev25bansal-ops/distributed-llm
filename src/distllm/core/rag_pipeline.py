@@ -3,12 +3,8 @@
 Supports FAISS for local vector search, document ingestion, chunking,
 retrieval, and RAG prompt templating.
 """
-import hashlib
 import json
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
 import numpy as np
 from loguru import logger

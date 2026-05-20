@@ -40,8 +40,7 @@ class TestPipelineOrchestratorInit:
         assert p.decode_nodes == {}
         assert p.total_layers == 0
         assert p.enable_overlap is False
-        assert p._max_workers == 4
-        assert p._executor is not None
+        assert p.pipeline_timeout == 30.0
 
     def test_init_with_resource_mgr(self, pipeline):
         assert pipeline.resource_mgr is not None

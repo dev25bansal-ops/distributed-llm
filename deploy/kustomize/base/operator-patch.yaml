@@ -1,18 +1,37 @@
-# Patch operator deployment for production readiness
+# Patch coordinator deployment for production readiness
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: distllm-operator
+  name: distllm-coordinator
 spec:
   template:
     spec:
       containers:
-        - name: operator
-          image: ghcr.io/distributed-llm/operator:0.4.0
+        - name: coordinator
+          image: ghcr.io/distributed-llm/coordinator:0.4.0
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 512Mi
+            limits:
+              cpu: 2
+              memory: 2Gi
+---
+# Patch worker StatefulSet for production readiness
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distllm-worker
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/distributed-llm/worker:0.4.0
+          resources:
+            requests:
+              cpu: 1
+              memory: 1Gi
+            limits:
+              cpu: 4
+              memory: 8Gi

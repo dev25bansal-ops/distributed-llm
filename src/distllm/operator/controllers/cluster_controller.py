@@ -17,7 +17,7 @@ def _get_k8s_client():
         k8s_config.load_incluster_config()
     except k8s_config.ConfigException:
         k8s_config.load_kube_config()
-    return k8s.client.AppsV1Api(), k8s.client.CoreV1Api()
+    return k8s.AppsV1Api(), k8s.CoreV1Api()
 
 
 def _build_coordinator_statefulset(spec: DistributedLLMClusterSpec, name: str, namespace: str):
@@ -293,7 +293,7 @@ def delete_cluster(spec, name, namespace, **kwargs):
             apps_v1.delete_namespaced_stateful_set(
                 f"{name}-pool-{pool.start_layer}-{pool.end_layer}", namespace
             )
-        except k8s.client.ApiException:
+        except k8s.ApiException:
             pass
 
     # Delete coordinator StatefulSet and services
@@ -301,7 +301,7 @@ def delete_cluster(spec, name, namespace, **kwargs):
         apps_v1.delete_namespaced_stateful_set(f"{name}-coordinator", namespace)
         core_v1.delete_namespaced_service(f"{name}-coordinator-headless", namespace)
         core_v1.delete_namespaced_service(f"{name}-api", namespace)
-    except k8s.client.ApiException:
+    except k8s.ApiException:
         pass
 
     kopf.info(spec, reason="Deleted", message=f"Cluster {name} resources deleted")
@@ -321,5 +321,5 @@ def reconcile_cluster(spec, name, namespace, **kwargs):
         }
         # Update CRD status
         kopf.info(spec, reason="Reconciled", message=f"Coordinator: {status}")
-    except k8s.client.ApiException:
+    except k8s.ApiException:
         kopf.warn(spec, reason="Missing", message=f"Coordinator StatefulSet not found for {name}")

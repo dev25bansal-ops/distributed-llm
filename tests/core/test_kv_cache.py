@@ -34,8 +34,8 @@ class TestKVCacheInit:
 
         assert len(cache.cache) == 2
         for k, v in cache.cache:
-            assert k.shape == (1, 4, 0, 8)  # (batch, heads, seq_len, head_dim)
-            assert v.shape == (1, 4, 0, 8)
+            assert k.shape == (1, 4, 1, 8)  # (batch, heads, seq_len, head_dim)
+            assert v.shape == (1, 4, 1, 8)
             assert k.device.type == "cpu"
 
     def test_init_cache_sets_num_layers(self):

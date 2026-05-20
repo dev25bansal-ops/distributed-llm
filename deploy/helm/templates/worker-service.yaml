@@ -14,6 +14,10 @@ spec:
       port: 50051
       targetPort: grpc
       protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
   selector:
     {{- include "distllm.workerLabels" (dict "root" $ "pool" $pool) | nindent 4 }}
 {{- end }}

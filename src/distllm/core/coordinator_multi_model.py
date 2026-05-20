@@ -45,7 +45,7 @@ class MultiModelManager:
         """
         if self.model_registry is None:
             self.model_registry = ModelRegistry()
-        return self.model_registry.register(name, path, total_layers)
+        return self.model_registry.register_version(name, "1", path, total_layers)
 
     def list_models(self) -> list[str]:
         """List all registered model names.

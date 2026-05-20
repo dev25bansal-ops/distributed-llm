@@ -353,10 +353,7 @@ class MoEOrchestrator:
                 proto.expert_ids.extend(expert_ids)
                 proto.routing_weights.extend(weights)
 
-                from concurrent.futures import ThreadPoolExecutor
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(client.stub.ExpertForward, proto)
-                    resp = future.result(timeout=30)
+                resp = client.stub.ExpertForward(proto, timeout=30)
 
                 output = _proto_to_tensor(resp.output)
                 elapsed = (time.monotonic() - start) * 1000

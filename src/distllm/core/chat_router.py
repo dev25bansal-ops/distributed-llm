@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from distllm.config.settings import ChatRouterSettings, RouteRuleSettings
-from distllm.core.workload_classifier import WorkloadType, classify
+from distllm.core.workload_classifier import classify
 
 
 class ModelRouter:

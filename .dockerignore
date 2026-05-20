@@ -43,7 +43,8 @@ deploy/webhook/
 # CI/CD
 .github/
 
-# Benchmarks
+# Tests & Benchmarks
+tests/
 benchmarks/
 
 # OS

@@ -28,27 +28,27 @@ spec:
           volumeMounts:
             - name: varlog
               mountPath: /var/log
-            - name: varlibdockercontainers
-              mountPath: /var/lib/docker/containers
+            - name: varlogpods
+              mountPath: /var/log/pods
               readOnly: true
           env:
             - name: FLUENT_OUTPUT
               value: "{{ .Values.logging.output }}"
-          {{- if eq .Values.logging.output "elasticsearch" }}
+            {{- if eq .Values.logging.output "elasticsearch" }}
             - name: FLUENT_ELASTICSEARCH_HOST
               value: "{{ .Values.logging.elasticsearch.host }}"
             - name: FLUENT_ELASTICSEARCH_PORT
               value: "{{ .Values.logging.elasticsearch.port }}"
-          {{- end }}
-          {{- if eq .Values.logging.output "loki" }}
+            {{- end }}
+            {{- if eq .Values.logging.output "loki" }}
             - name: FLUENT_LOKI_URL
               value: "{{ .Values.logging.loki.url }}"
-          {{- end }}
+            {{- end }}
       volumes:
         - name: varlog
           hostPath:
             path: /var/log
-        - name: varlibdockercontainers
+        - name: varlogpods
           hostPath:
-            path: /var/lib/docker/containers
+            path: /var/log/pods
 {{- end }}

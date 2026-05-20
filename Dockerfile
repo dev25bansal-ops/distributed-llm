@@ -34,18 +34,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install locked dependencies first (cached layer, pinning all transitive deps)
 COPY requirements.lock .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
 
 # Copy project files and install the package itself (without re-resolving deps)
 COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-COPY scripts/ scripts/
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --prefix=/install -e "." --no-deps
+RUN pip install --no-cache-dir --prefix=/install -e "." --no-deps
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
@@ -88,6 +84,9 @@ RUN groupadd -r distllm && \
     useradd -r -g distllm -d /app -s /bin/bash distllm && \
     chown -R distllm:distllm /app
 
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 USER distllm
 
 # Default env for deployment
@@ -102,4 +101,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 EXPOSE 8000 50051
 
-ENTRYPOINT ["sh", "-c", "distllm-node --node-id ${DISTLLM_NODE_ID} --model ${DISTLLM_MODEL} --start-layer ${DISTLLM_START_LAYER} --end-layer ${DISTLLM_END_LAYER} --total-layers ${DISTLLM_TOTAL_LAYERS}"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

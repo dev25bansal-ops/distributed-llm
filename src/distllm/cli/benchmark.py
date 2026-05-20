@@ -132,6 +132,37 @@ def run_benchmark(
 
     results = _run_benchmarks(model, host, port, num_prompts, max_tokens, console)
     _print_results(results, console, "Benchmark Results")
+    return results
+
+
+def run_benchmark_json(
+    model: str,
+    host: str,
+    port: int,
+    num_prompts: int,
+    max_tokens: int,
+    local: bool,
+) -> str:
+    """Run benchmarks and return JSON output (for CI)."""
+    import json
+    # Use a null console to suppress rich output
+    null_console = Console(quiet=True)
+    results = _run_benchmarks(model, host, port, num_prompts, max_tokens, null_console)
+    if not results:
+        return json.dumps({"error": "No successful benchmarks", "results": []})
+    avg_time = sum(r["elapsed"] for r in results) / len(results)
+    avg_tokens = sum(r["tokens"] for r in results) / len(results)
+    avg_tps = sum(r["tokens_per_sec"] for r in results) / len(results)
+    return json.dumps({
+        "model": model,
+        "prompts": num_prompts,
+        "max_tokens": max_tokens,
+        "num_runs": len(results),
+        "avg_latency_seconds": round(avg_time, 3),
+        "avg_tokens": round(avg_tokens, 1),
+        "avg_throughput_tps": round(avg_tps, 2),
+        "results": results,
+    }, indent=2)
 
 
 def run_benchmark_compare(

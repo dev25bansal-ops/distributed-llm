@@ -10,10 +10,7 @@ Inspired by outlines, guidance, and xgrammar approaches.
 """
 
 import re
-import json
 import copy
-import string
-from typing import Any
 from dataclasses import dataclass, field
 
 import torch

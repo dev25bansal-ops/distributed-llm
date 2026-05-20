@@ -1,4 +1,4 @@
-.PHONY: help install lint format test test-cov bench bench-regression bench-update security memory-profile clean proto docker-build docker-up docker-down run-local run-api run-distributed helm-install helm-upgrade helm-template helm-lint kustomize-build-dev kustomize-build-staging kustomize-build-prod docker-build-multi docker-push sbom container-scan security-full pre-commit-install
+.PHONY: help install lint format test test-all pre-commit-run test-cov bench bench-regression bench-update security memory-profile clean proto docker-build docker-up docker-down run-local run-api run-distributed helm-install helm-upgrade helm-template helm-lint kustomize-build-dev kustomize-build-staging kustomize-build-prod docker-build-multi docker-push sbom container-scan security-full pre-commit-install
 
 help: ## Show this help
 	@python -c "import re; lines = open('$(MAKEFILE_LIST)').readlines(); [print(f'\033[36m{m.group(1):20}\033[0m {m.group(2)}') for l in lines if (m := re.match(r'^([a-zA-Z_-]+):.*?## (.+)', l))]"
@@ -24,6 +24,12 @@ format: ## Format code
 
 test: ## Run tests
 	pytest -v
+
+test-all: ## Run all tests with timeout (CI-grade)
+	pytest -v --timeout=60
+
+pre-commit-run: ## Run all pre-commit hooks on all files
+	pre-commit run --all-files
 
 test-cov: ## Run tests with coverage
 	pytest --cov=distllm --cov-report=term-missing --cov-report=html
