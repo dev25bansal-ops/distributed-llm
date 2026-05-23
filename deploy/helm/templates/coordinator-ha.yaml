@@ -40,13 +40,15 @@ spec:
             - name: REDIS_URL
               value: {{ .Values.redis.url | default "redis://redis:6379/0" }}
           readinessProbe:
-            grpc:
-              port: {{ .Values.coordinator.grpcPort }}
+            httpGet:
+              path: /ready
+              port: http
             initialDelaySeconds: 10
             periodSeconds: 5
           livenessProbe:
-            grpc:
-              port: {{ .Values.coordinator.grpcPort }}
+            httpGet:
+              path: /live
+              port: http
             initialDelaySeconds: 30
             periodSeconds: 10
           resources:

@@ -1,5 +1,7 @@
 # Default values for distributed-llm
 # Enhanced with new module configurations and infrastructure settings
+#
+# Recommended usage: helm install distllm ./deploy/helm -n distllm --create-namespace
 
 image:
   repository: ghcr.io/distributed-llm/coordinator
@@ -10,7 +12,9 @@ model:
   name: roneneldan/TinyStories-1M
   dtype: float16
   trustRemoteCode: false
-  totalLayers: 32
+  # Must equal sum of (endLayer - startLayer + 1) across all nodePools.
+  # Change when adding/removing pools or adjusting layer ranges.
+  totalLayers: 8
 
 quantization:
   enabled: false
@@ -32,7 +36,9 @@ coordinator:
   ha:
     enabled: false
     replicas: 3
-    port: 50051
+    # Dedicated port for inter-coordinator HA communication.
+    # Must not clash with worker gRPC ports (50051+).
+    port: 50053
     heartbeatInterval: 1s
     electionTimeout: 3s
 
