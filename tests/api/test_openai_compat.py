@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from fastapi.testclient import TestClient
+from distllm.api.api_state import g as api_g
 from distllm.api.server import app
 
 
@@ -285,8 +286,7 @@ class TestEmbeddingModels:
 
 class TestEmbeddingsEndpoint:
     def test_embeddings_success(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/embeddings", json={
             "input": ["Hello world", "Test sentence"]
@@ -299,15 +299,13 @@ class TestEmbeddingsEndpoint:
         assert len(data["data"]) == 2
 
     def test_embeddings_no_coordinator(self, client):
-        from distllm.api import server
-        server.coordinator = None
+        api_g.coordinator = None
 
         response = client.post("/v1/embeddings", json={"input": ["Hello"]})
         assert response.status_code == 503
 
     def test_embeddings_multiple_inputs(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/embeddings", json={
             "input": ["First", "Second", "Third"]
@@ -321,8 +319,7 @@ class TestEmbeddingsEndpoint:
 
 class TestChatCompletionsEndpoint:
     def test_chat_with_tools(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "What's the weather in London?"}],
@@ -338,8 +335,7 @@ class TestChatCompletionsEndpoint:
         assert data["choices"][0]["message"]["role"] == "assistant"
 
     def test_chat_with_tool_response(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [
@@ -350,8 +346,7 @@ class TestChatCompletionsEndpoint:
         assert response.status_code == 200
 
     def test_chat_with_stop_sequences(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Write a short story"}],
@@ -360,8 +355,7 @@ class TestChatCompletionsEndpoint:
         assert response.status_code == 200
 
     def test_chat_with_penalties(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Be creative"}],
@@ -371,8 +365,7 @@ class TestChatCompletionsEndpoint:
         assert response.status_code == 200
 
     def test_chat_with_seed(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Hello"}],
@@ -381,8 +374,7 @@ class TestChatCompletionsEndpoint:
         assert response.status_code == 200
 
     def test_chat_stream_with_usage(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Hello"}],
@@ -393,8 +385,7 @@ class TestChatCompletionsEndpoint:
         assert "text/event-stream" in response.headers.get("content-type", "")
 
     def test_chat_with_user_field(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Hello"}],
@@ -405,8 +396,7 @@ class TestChatCompletionsEndpoint:
 
 class TestModelsEndpoint:
     def test_list_models_extended(self, client, mock_coordinator):
-        from distllm.api import server
-        server.coordinator = mock_coordinator
+        api_g.coordinator = mock_coordinator
 
         response = client.get("/v1/models")
         assert response.status_code == 200

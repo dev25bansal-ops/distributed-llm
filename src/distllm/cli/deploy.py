@@ -1,5 +1,6 @@
 """Deploy command for DistLLM CLI.
 
+from loguru import logger
 Deploys a model to the distributed cluster with layer partitioning
 across nodes.
 """
@@ -103,7 +104,7 @@ def run_deploy(
                         return
                     console.print(f"  Waiting... {node_count}/{nodes} nodes registered")
             except Exception:
-                pass
+                logger.debug("Deploy operation failed (non-fatal)")
             time.sleep(5)
 
         console.print("[red]Deployment timed out after 5 minutes.[/red]")

@@ -1,7 +1,10 @@
-"""Request replay buffer and deterministic debug mode.
+"""Request replay buffer with LRU eviction and deterministic debug mode.
 
 Stores a configurable number of recent requests with full context
 (prompt, parameters, response, timing) for debugging purposes.
+Uses LRU eviction: when the buffer is full, the oldest *accessed*
+request is removed (not the oldest *stored* request).
+
 Supports replaying any stored request and deterministic mode
 with fixed random seeds for reproducible debugging.
 """
@@ -12,6 +15,7 @@ import random
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -36,11 +40,15 @@ class StoredRequest:
 
 
 class RequestReplayBuffer:
-    """Ring buffer that stores recent requests with full context.
+    """LRU-evicting buffer that stores recent requests with full context.
+
+    When the buffer reaches max_requests, the least-recently-*accessed*
+    entry is evicted (LRU), not the oldest-stored entry (FIFO).
+    Calling `get()` or `store()` on an existing ID refreshes its position.
 
     Supports:
-      - Configurable max size (ring buffer eviction)
-      - Lookup by request_id or index
+      - Configurable max size (LRU eviction)
+      - Lookup by request_id
       - Replay: re-runs a stored request through a provided handler
       - Export/import for sharing debugging sessions
 
@@ -52,9 +60,10 @@ class RequestReplayBuffer:
     """
 
     def __init__(self, max_requests: int = 100):
+        if max_requests < 1:
+            raise ValueError("max_requests must be >= 1")
         self._max = max_requests
-        self._requests: list[StoredRequest] = []
-        self._index: dict[str, StoredRequest] = {}
+        self._cache: OrderedDict[str, StoredRequest] = OrderedDict()
         self._lock = threading.Lock()
 
     def store(
@@ -69,7 +78,12 @@ class RequestReplayBuffer:
         generated_tokens: list[int] | None = None,
         model: str = "",
     ) -> None:
-        """Store a completed request with its full context."""
+        """Store a completed request with its full context.
+
+        If request_id already exists, it is updated and moved to
+        the most-recently-used position. If the buffer is full,
+        the least-recently-used entry is evicted.
+        """
         entry = StoredRequest(
             request_id=request_id,
             prompt=prompt,
@@ -82,40 +96,32 @@ class RequestReplayBuffer:
             model=model,
         )
         with self._lock:
-            self._requests.append(entry)
-            self._index[request_id] = entry
-            if len(self._requests) > self._max:
-                removed = self._requests.pop(0)
-                self._index.pop(removed.request_id, None)
+            if request_id in self._cache:
+                del self._cache[request_id]
+            self._cache[request_id] = entry
+            self._cache.move_to_end(request_id)
+            while len(self._cache) > self._max:
+                self._cache.popitem(last=False)
 
     def get(self, request_id: str) -> StoredRequest | None:
+        """Look up a request by ID. Refreshes its LRU position."""
         with self._lock:
-            return self._index.get(request_id)
-
-    def get_by_index(self, index: int) -> StoredRequest | None:
-        with self._lock:
-            if 0 <= index < len(self._requests):
-                return self._requests[index]
-            return None
+            entry = self._cache.get(request_id)
+            if entry is not None:
+                self._cache.move_to_end(request_id)
+            return entry
 
     def list_recent(self, n: int = 10) -> list[StoredRequest]:
+        """Return the n most recently stored requests (MRU first)."""
         with self._lock:
-            return list(self._requests[-n:])
+            all_entries = list(self._cache.values())
+            return all_entries[-n:][::-1] if n > 0 else []
 
     def replay(
         self,
         request_id: str,
         handler: Callable[[str, dict[str, Any]], str],
     ) -> str | None:
-        """Replay a stored request through a handler function.
-
-        Args:
-            request_id: ID of the request to replay.
-            handler: Callable that takes (prompt, params) and returns response.
-
-        Returns:
-            Response text, or None if request not found.
-        """
         entry = self.get(request_id)
         if entry is None:
             logger.warning(f"Request {request_id} not found in replay buffer")
@@ -133,13 +139,12 @@ class RequestReplayBuffer:
             return None
 
     def export(self, request_ids: list[str] | None = None) -> list[dict]:
-        """Export requests to JSON-serializable dicts for debugging sessions."""
         entries = []
         with self._lock:
             targets = (
-                [self._index[rid] for rid in request_ids if rid in self._index]
+                [self._cache[rid] for rid in request_ids if rid in self._cache]
                 if request_ids
-                else self._requests
+                else self._cache.values()
             )
             for e in targets:
                 entries.append({
@@ -155,7 +160,6 @@ class RequestReplayBuffer:
         return entries
 
     def import_requests(self, entries: list[dict]) -> int:
-        """Import requests from exported dicts."""
         count = 0
         for data in entries:
             rid = data.get("request_id", str(uuid.uuid4()))
@@ -173,12 +177,11 @@ class RequestReplayBuffer:
 
     def size(self) -> int:
         with self._lock:
-            return len(self._requests)
+            return len(self._cache)
 
     def clear(self) -> None:
         with self._lock:
-            self._requests.clear()
-            self._index.clear()
+            self._cache.clear()
 
 
 class DeterministicMode:

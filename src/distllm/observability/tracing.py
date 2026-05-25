@@ -17,12 +17,12 @@ from opentelemetry.sdk.trace.sampling import (
 try:
     from opentelemetry.instrumentation.grpc import GRPCInstrumentor
 except ImportError:
-    GRPCInstrumentor = None  # type: ignore[misc,assignment]
+    GRPCInstrumentor: Any = None  # type: ignore[misc]
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 try:
     from opentelemetry.propagators.textmap import DictGetter
 except ImportError:
-    DictGetter = None  # type: ignore[misc,assignment]
+    DictGetter: Any = None  # type: ignore[misc]
 
 
 # W3C TraceContext propagator for cross-node trace correlation
@@ -188,3 +188,5 @@ def get_current_span_id() -> str | None:
     if span is not None and span.is_recording():
         return format(span.get_span_context().span_id, "016x")
     return None
+
+

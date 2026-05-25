@@ -1,15 +1,44 @@
 """Continuous batch scheduler for pipeline-parallel inference."""
 
+from loguru import logger
 import heapq
 import math
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import torch
 
 from distllm.core.request_latency import RequestLatencyTracker
+
+
+def group_by_length(
+    sequences: list[object],
+    num_buckets: int = 4,
+) -> dict[int, list[object]]:
+    """Group sequences by similar total length into log-scale buckets."""
+    buckets: dict[int, list[object]] = {i: [] for i in range(num_buckets)}
+    lengths = [s.total_len for s in sequences]
+    if not lengths:
+        return buckets
+    min_len = min(lengths)
+    max_len = max(lengths)
+    if min_len == max_len:
+        buckets[0] = list(sequences)
+        return buckets
+    log_min = math.log(max(min_len, 1))
+    log_max = math.log(max_len)
+    log_range = log_max - log_min
+    for seq in sequences:
+        ln = math.log(max(seq.total_len, 1))
+        bucket = min(int((ln - log_min) / log_range * num_buckets), num_buckets - 1)
+        buckets[bucket].append(seq)
+    return buckets
+
+if TYPE_CHECKING:
+    from distllm.core.adaptive_batching import AdaptiveBatchingEngine
 
 
 class SequenceStatus(Enum):
@@ -224,6 +253,21 @@ class BatchScheduler:
         # Latency-aware scheduling
         self._latency_tracker = RequestLatencyTracker()
 
+        # Starvation prevention: aging tracker boosts priority of long-waiting requests
+        self._aging_enabled = True
+        self._aging_interval_s: float = 30.0  # Boost by 1 level every 30s of waiting
+        self._aging_max_boost: int = 2        # Max priority levels an aging request can gain
+
+        # Priority weights for within-batch token allocation.
+        # Multiplies the base chunk size (max_prefill_tokens per iteration)
+        # so higher-priority sequences finish prefill faster.
+        self._priority_weights: dict[int, float] = {
+            0: 1.5,   # critical — 50% bonus tokens/iteration
+            1: 1.25,  # high    — 25% bonus
+            2: 1.0,   # normal  — baseline
+            3: 0.5,   # low     — half the tokens (slower prefill)
+        }
+
         # Sarathi-Serve style adaptive pressure tracking
         self._pressure_tracker = DecodePressureTracker()
         self._adapt_prefill_budget = True  # toggle Sarathi-Serve adaptive control
@@ -232,6 +276,9 @@ class BatchScheduler:
         self._preempted: dict[str, Sequence] = {}  # request_id -> Sequence
         self._preempted_kv_state: dict[str, dict] = {}  # request_id -> KV cache state
         self._max_preempted: int = 4  # Max concurrent preempted sequences
+
+        # Adaptive batching engine (set externally by coordinator)
+        self._adaptive_engine: 'AdaptiveBatchingEngine | None' = None
 
         self._lock = threading.Lock()
 
@@ -258,6 +305,76 @@ class BatchScheduler:
             enable_chunked_prefill=False,
         )
 
+
+    def _aging_boost(self, seq: Sequence) -> int:
+        """Calculate priority boost from aging (starvation prevention).
+
+        The longer a request waits in the pending heap, the more its
+        effective priority is boosted, ensuring low-priority requests
+        are eventually served even under continuous high-priority load.
+        """
+        if not self._aging_enabled:
+            return 0
+        elapsed = time.time() - seq.created_at
+        boost = int(elapsed / self._aging_interval_s)
+        return min(boost, self._aging_max_boost)
+
+    def _priority_weight(self, priority: int) -> float:
+        """Return token allocation weight for a given priority level.
+
+        Higher priority sequences get a larger share of the prefill
+        token budget within a batch.
+        """
+        return self._priority_weights.get(priority, 1.0)
+
+    def set_adaptive_engine(self, engine: 'AdaptiveBatchingEngine') -> None:
+        """Connect adaptive batching engine for dynamic batch size tuning."""
+        self._adaptive_engine = engine
+        # Pull initial batch size from engine
+        model = getattr(self._model_info, 'model_name', None) or "default"
+        engine_size = engine.get_batch_size(model)
+        if engine_size != self.max_batch_size:
+            self.max_batch_size = engine_size
+
+    def update_batch_size_from_adaptive(self) -> None:
+        """Query adaptive engine and update max_batch_size for next iteration."""
+        if self._adaptive_engine is None:
+            return
+        model = getattr(self._model_info, 'model_name', None) or "default"
+        recommended = self._adaptive_engine.get_batch_size(model)
+        if recommended != self.max_batch_size and recommended >= 1:
+            with self._lock:
+                self.max_batch_size = recommended
+                self._budget.max_batch_size = recommended
+
+    def split_overflow(self, max_size: int | None = None) -> int:
+        """Limit the pending heap to at most *max_size* items.
+
+        Excess items are moved to an internal overflow list and re-inserted
+        (in priority order) on the next :meth:`schedule` call.  This prevents
+        the schedule loop from re-examining thousands of low-priority items
+        each iteration.
+
+        Args:
+            max_size: Maximum number of items to keep in the pending heap.
+                      Defaults to ``self.max_batch_size * 2`` so that the
+                      schedule loop still has a moderately-sized pool to
+                      choose from.
+
+        Returns:
+            Number of items moved to overflow (0 if none).
+        """
+        max_size = max_size or self.max_batch_size * 2
+        with self._lock:
+            overflow = len(self._pending_heap) - max_size
+            if overflow <= 0:
+                return 0
+            # Move lowest-priority items to overflow buffer
+            kept = self._pending_heap[:max_size]
+            overflowed = self._pending_heap[max_size:]
+            self._pending_heap = kept + overflowed
+            heapq.heapify(self._pending_heap)
+            return overflow
 
     def set_paged_attention(self, mgr: object) -> None:
         """Connect to PagedAttention manager for KV block-aware scheduling."""
@@ -403,6 +520,9 @@ class BatchScheduler:
         - Fill remaining capacity with chunked prefill
         - Co-schedule prefill chunks + decode tokens in the same batch
         """
+        # Update batch size from adaptive engine before scheduling
+        self.update_batch_size_from_adaptive()
+
         # Apply Sarathi-Serve adaptive budget if enabled
         if self._adapt_prefill_budget:
             budget = self._compute_sarathi_budget(budget)
@@ -426,6 +546,11 @@ class BatchScheduler:
         with self._lock:
             active_items = list(self.active.items())
         # 2a. Add active sequences - decode first (always prioritized)
+        # Sort by latency urgency so SLO-critical sequences run first
+        urgency = self._latency_tracker.get_requests_sorted_by_deadline()
+        urgent_ids = {rid for rid, _ in urgency}
+        active_items.sort(key=lambda item: (0 if item[0] in urgent_ids else 1, item[0]))
+
         seen_ids = set()
         for rid, seq in active_items:
             if decode_seqs_added >= budget.decode_slots:
@@ -439,7 +564,7 @@ class BatchScheduler:
 
         # 2b. Add chunked prefill sequences (already partially prefilled)
         if self._enable_chunked_prefill:
-            for rid, seq in active_items:
+            for _rid, seq in active_items:
                 if seq.request_id in self._chunked_prefill:
                     cinfo = self._chunked_prefill[seq.request_id]
                     if cinfo.is_complete:
@@ -483,6 +608,10 @@ class BatchScheduler:
             latency_aware_items = []
             for pri, cnt, candidate in pending_items:
                 effective_pri = self._latency_tracker.get_latency_boost(candidate.request_id, pri)
+                # Starvation prevention: aging reduces effective priority number
+                aging = self._aging_boost(candidate)
+                if aging > 0:
+                    effective_pri = max(0, effective_pri - aging)
                 if self._use_length_grouping and batch_avg_remaining > 0:
                     length_diff = abs((candidate.max_new_tokens - len(candidate.generated_tokens)) - batch_avg_remaining)
                     length_score = length_diff / (batch_avg_remaining + 1)
@@ -504,7 +633,7 @@ class BatchScheduler:
                     rejected.append((_pri, _cnt, candidate))
                     continue
 
-                if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens:
+                if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens > 0:
                     chunk = budget.max_prefill_tokens
                 else:
                     chunk = c_tokens
@@ -540,12 +669,13 @@ class BatchScheduler:
                 remaining_total_budget -= chunk
                 remaining_batch_slots -= 1
 
-                if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens:
+                if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens > 0:
+                    chunk_size = budget.max_prefill_tokens
                     self._chunked_prefill[candidate.request_id] = ChunkedPrefillInfo(
                         seq_id=candidate.request_id,
                         total_prompt_tokens=c_tokens,
-                        chunk_size=budget.max_prefill_tokens,
-                        chunks_remaining=math.ceil(c_tokens / budget.max_prefill_tokens),
+                        chunk_size=chunk_size,
+                        chunks_remaining=math.ceil(c_tokens / chunk_size),
                     )
 
             # Rebuild heap from ALL non-promoted items (not just rejected)
@@ -555,11 +685,21 @@ class BatchScheduler:
         if not batch_seqs:
             return None
 
-        # 3b. Length-aware grouping: sort batch by remaining tokens to minimize padding
-        if self._use_length_grouping:
-            batch_seqs.sort(key=lambda s: s.max_new_tokens - len(s.generated_tokens))
+        # 3b. Length-aware grouping: group by total length for efficient attention.
+        # Uses log-scale bucketing so sequences of similar length are processed
+        # together, reducing ragged attention overhead.
+        if self._use_length_grouping and len(batch_seqs) > 1:
+            bucketed = group_by_length(batch_seqs, num_buckets=min(4, len(batch_seqs)))
+            batch_seqs = []
+            for bucket_idx in sorted(bucketed.keys()):
+                bucket = bucketed[bucket_idx]
+                if bucket:
+                    bucket.sort(key=lambda s: s.total_len)
+                    batch_seqs.extend(bucket)
 
-        # 4. Build batch tensors with iteration-level chunking
+        # 4. Build batch tensors with priority-weighted token allocation.
+        #    Higher-priority sequences get a larger share of the per-iteration
+        #    chunked prefill budget, so they finish prefill sooner.
         request_ids = []
         seq_lengths = []
         seq_starts = []
@@ -575,7 +715,10 @@ class BatchScheduler:
             if is_chunked:
                 cinfo = self._chunked_prefill[seq.request_id]
                 start = seq.prefix_match_len + cinfo.tokens_processed
-                chunk_end = min(start + budget.max_prefill_tokens, len(seq.prompt_tokens))
+                # Priority-weighted chunk size: higher priority gets more tokens per iteration
+                weight = self._priority_weight(seq.priority)
+                max_chunk = max(1, int(budget.max_prefill_tokens * weight))
+                chunk_end = min(start + max_chunk, len(seq.prompt_tokens))
                 tokens = seq.prompt_tokens[start:chunk_end]
                 flat_tokens.extend(tokens)
                 seq_lengths.append(len(tokens))
@@ -609,7 +752,7 @@ class BatchScheduler:
 
         # No attention mask needed — coordinator_model.py builds its own per-sequence
         # padding mask, FlashAttention uses built-in causal=True, and the distributed
-        # pipeline_orchestrator constructs its own all-ones mask over gRPC.
+        # pipeline_orchestrator constructs its own all-ones mask over the network.
         # Skipping the old [total, total] dense mask avoids O(n²) memory blowup.
 
         # 5. Build batch tags
@@ -648,6 +791,32 @@ class BatchScheduler:
             return False
         return True
 
+    def _record_step_metrics(self, batch: ScheduledBatch, decode_count: int = 0, decode_elapsed_ms: float = 0.0) -> None:
+        """Record decode metrics and feed data to adaptive engine.
+
+        Extracted so subclasses (e.g. IterationScheduler) can call it
+        without duplicating token-processing logic.
+        """
+        # Record decode latency for Sarathi-Serve adaptive pressure tracking
+        if decode_count > 0 and decode_elapsed_ms > 0:
+            self._pressure_tracker.record_decode_step(decode_count, decode_elapsed_ms)
+
+        # Feed per-sequence latencies to adaptive batching engine
+        if self._adaptive_engine is not None:
+            model = getattr(self._model_info, 'model_name', None) or "default"
+            now = time.time()
+            seq_latencies = []
+            for seq in batch.sequences:
+                if seq.status != SequenceStatus.PENDING:
+                    lat = (now - seq.created_at) * 1000
+                    seq_latencies.append(lat)
+            if seq_latencies:
+                self._adaptive_engine.record_batch(
+                    model=model,
+                    batch_size=len(batch.sequences),
+                    latencies=seq_latencies,
+                )
+
     def step(self, batch: ScheduledBatch, next_tokens: torch.Tensor, kv_caches: dict | None = None, decoded_tokens: list[str] | None = None) -> None:
         """Process sampling output, update sequences, check for completion.
 
@@ -657,8 +826,8 @@ class BatchScheduler:
             kv_caches: Optional dict mapping request_id -> KV cache data for radix tree storage.
             decoded_tokens: Optional list of decoded token strings (for constraint updates).
         """
-        decode_start = time.monotonic()
         decode_count = sum(1 for s in batch.sequences if s.status == SequenceStatus.DECODING)
+        decode_start = time.monotonic()
         for i, seq in enumerate(batch.sequences):
             token = next_tokens[i].item()
             seq.generated_tokens.append(int(token))
@@ -690,10 +859,11 @@ class BatchScheduler:
                         if kv_data is not None:
                             self._cache_mgr.store_prefix(all_tokens, kv_data)
 
-        # Record decode latency for Sarathi-Serve adaptive pressure tracking
-        if decode_count > 0:
-            elapsed = (time.monotonic() - decode_start) * 1000
-            self._pressure_tracker.record_decode_step(decode_count, elapsed)
+        self._record_step_metrics(
+            batch,
+            decode_count=decode_count,
+            decode_elapsed_ms=(time.monotonic() - decode_start) * 1000 if decode_count > 0 else 0.0,
+        )
 
         # Prune completed sequences from active set (under lock — shared with get_sequence)
         with self._lock:
@@ -739,6 +909,7 @@ class BatchScheduler:
         with self._lock:
             for i, (_pri, _cnt, seq) in enumerate(self._pending_heap):
                 if seq.request_id == request_id:
+                    seq.priority = new_priority
                     self._pending_heap[i] = (new_priority, _cnt, seq)
                     heapq.heapify(self._pending_heap)
                     return True
@@ -752,7 +923,7 @@ class BatchScheduler:
 
             worst_seq = None
             worst_pri = -1
-            for rid, seq in self.active.items():
+            for _rid, seq in self.active.items():
                 if seq.priority >= min_priority and (worst_seq is None or seq.priority > worst_pri):
                     worst_seq = seq
                     worst_pri = seq.priority
@@ -766,8 +937,8 @@ class BatchScheduler:
             if self._paged_attention_mgr is not None:
                 try:
                     self._paged_attention_mgr.swap_out_sequence(req_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("PagedAttention swap failed: {}", e)
 
             del self.active[req_id]
             self._total_tokens -= worst_seq.total_len
@@ -809,8 +980,8 @@ class BatchScheduler:
                         self._paged_attention_mgr.pool.restore_block(
                             self._paged_attention_mgr.get_physical_blocks(req_id)[0]
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("PagedAttention restore failed: {}", e)
 
                 # Remove from pending heap if present (preempt_lowest pushes there)
                 self._pending_heap = [
@@ -835,7 +1006,7 @@ class BatchScheduler:
         return len(self._preempted)
 
     def stats(self) -> dict:
-        return {
+        stats = {
             "active_requests": self.active_count,
             "pending_requests": self.pending_count,
             "preempted_requests": len(self._preempted),
@@ -847,7 +1018,16 @@ class BatchScheduler:
             "total_decode_tokens": self._total_decode_tokens,
             "chunked_prefill_active": len(self._chunked_prefill),
             "chunked_prefill_enabled": self._enable_chunked_prefill,
+            "adaptive_batching": self._adaptive_engine is not None,
         }
+        if self._adaptive_engine is not None:
+            model = getattr(self._model_info, 'model_name', None) or "default"
+            try:
+                astats = self._adaptive_engine.get_stats(model)
+                stats["adaptive_batch_size"] = astats.avg_latency_ms
+            except Exception as e:
+                logger.debug("Adaptive engine get_stats failed: {}", e)
+        return stats
 
     @property
     def latency_tracker(self) -> RequestLatencyTracker:

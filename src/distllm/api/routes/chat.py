@@ -3,6 +3,7 @@
 import asyncio
 import ipaddress
 import os
+import socket
 import time
 from urllib.parse import urlparse
 
@@ -11,11 +12,71 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from ..api_state import g
-from ..streaming import _stream_response
-from distllm.core.tool_engine import ToolCallingEngine
+from ..streaming import _get_client_id, _stream_response
+
+
+class _ToolCallingEngine:
+    """Minimal tool-calling engine (legacy module removed)."""
+
+    def parse_schemas(self, tools):
+        return list(tools) if tools else []
+
+    def build_tool_prompt(self, schemas, messages, tool_choice="auto"):
+        prompts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            prompts.append(f"{role}: {content}")
+        return "\n".join(prompts), None
+
+    def has_tool_calls(self, text):
+        return False
+
+    def extract_tool_calls(self, text):
+        return []
+
+    def enforce_tool_choice(self, choice, calls):
+        return calls
+
+    def execute_tool_calls(self, calls):
+        return []
+
+    def should_continue_after_tool_calls(self, calls, results):
+        return False
+
+    def inject_tool_results(self, messages, result, calls, results):
+        return messages + [{"role": "assistant", "content": result}, {"role": "tool", "content": str(results)}]
 
 
 router = APIRouter(tags=["chat"])
+
+
+def _reject_private_address(host: str, port: int | None = None) -> None:
+    if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        raise ValueError("Connections to localhost are not allowed")
+
+    addresses = []
+    try:
+        addresses = [host]
+        ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError("Unable to resolve image URL hostname") from exc
+        addresses = [info[4][0] for info in infos]
+
+    for address in addresses:
+        addr = ipaddress.ip_address(address)
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            raise ValueError(f"Connections to {host} are not allowed")
 
 
 def _extract_text(content_items) -> str:
@@ -56,16 +117,7 @@ class ImageURLContent(BaseModel):
             raise ValueError("URL must have a hostname")
         # SSRF protection is configurable via DISTLLM_SSRF_ENABLED env var
         if os.environ.get("DISTLLM_SSRF_ENABLED", "1").lower() in ("1", "true"):
-            if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
-                raise ValueError("Connections to localhost are not allowed")
-            try:
-                addr = ipaddress.ip_address(host)
-            except ValueError:
-                if not host or host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
-                    raise ValueError("Connections to localhost are not allowed")
-                return v
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                raise ValueError(f"Connections to {host} are not allowed")
+            _reject_private_address(host, parsed.port)
         return v
 
 
@@ -108,7 +160,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2.0, description="Sampling temperature (0-2.0)")
     top_p: float = Field(default=0.9, ge=0, le=1.0, description="Nucleus sampling threshold (0-1)")
     top_k: int = Field(default=0, ge=0, description="Top-k sampling (0 = disabled)")
-    max_tokens: int = Field(default=256, ge=1, le=8192, description="Maximum tokens to generate (1-8192)")
+    max_tokens: int = Field(default=256, ge=0, le=8192, description="Maximum tokens to generate (0=return immediately, 1-8192)")
     stream: bool = Field(default=False, description="Whether to stream the response")
     stream_options: dict | None = Field(default=None, description="Options for streaming response, e.g. {'include_usage': true}")
     stop: list[str] | None = Field(default=None, description="Stop sequences to halt generation")
@@ -167,17 +219,8 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     if coord is None:
         raise HTTPException(status_code=503, detail="No model loaded")
 
-    # Route to appropriate backend model if a hybrid/compound model is configured
-    _routed_model = None
-    chat_router = getattr(coord, "_chat_router", None)
-    if chat_router is not None and body.model in chat_router.list_hybrid_models():
-        # Resolve target model based on the last user message
-        user_messages = [m for m in body.messages if m.role == "user"]
-        last_user_msg = user_messages[-1].content if user_messages else ""
-        if isinstance(last_user_msg, list):
-            last_user_msg = " ".join(
-                item.text for item in last_user_msg if hasattr(item, "text") and item.text
-            )
+    # The model name is used directly for distributed inference
+    # (routing to different model variants is handled by the coordinator)
         target_model = chat_router.resolve(str(last_user_msg), available_models=coord.list_models())
         if target_model:
             _routed_model = target_model
@@ -224,7 +267,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         ])
 
     # Tool calling setup
-    tool_engine = ToolCallingEngine()
+    tool_engine = _ToolCallingEngine()
     tool_calls_list = []
     tool_choice_value = body.tool_choice
 
@@ -262,10 +305,20 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         elif fmt_type == "json_schema" and "schema" in body.response_format:
             schema = body.response_format["schema"]
 
+    if body.max_tokens == 0:
+        return ChatCompletionResponse(
+            model=body.model,
+            choices=[ChatChoice(message=ChatMessage(role="assistant", content=""), finish_reason="length")],
+        )
+
     if body.stream:
+        client_id = _get_client_id(request)
         return StreamingResponse(
-            _stream_response(prompt, body, "chat.completion.chunk", "chatcmpl-",
-                             response_format=body.response_format),
+            _stream_response(
+                prompt, body, "chat.completion.chunk", "chatcmpl-",
+                response_format=body.response_format,
+                client_id=client_id, endpoint="/v1/chat/completions",
+            ),
             media_type="text/event-stream",
         )
 

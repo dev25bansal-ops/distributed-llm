@@ -11,11 +11,11 @@ spec:
         - name: coordinator
           resources:
             requests:
-              cpu: 50m
-              memory: 64Mi
+              cpu: 500m
+              memory: 2Gi
             limits:
-              cpu: 200m
-              memory: 128Mi
+              cpu: 2
+              memory: 8Gi
 ---
 # Dev: minimal worker resources, single replica
 apiVersion: apps/v1
@@ -30,8 +30,8 @@ spec:
         - name: worker
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 1
+              memory: 4Gi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 4
+              memory: 16Gi

@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 
 from ..api_state import g
-from ..streaming import _stream_response
+from ..streaming import _get_client_id, _stream_response
 
 
 router = APIRouter(tags=["completion"])
@@ -29,7 +29,7 @@ class CompletionRequest(BaseModel):
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
     prompt: str = Field(..., max_length=131072, description="The prompt text to generate from")
-    max_tokens: int = Field(default=256, ge=1, le=8192, description="Maximum tokens to generate (1-8192)")
+    max_tokens: int = Field(default=256, ge=0, le=8192, description="Maximum tokens to generate (0=return immediately, 1-8192)")
     temperature: float = Field(default=0.7, ge=0, le=2.0, description="Sampling temperature (0-2.0)")
     top_p: float = Field(default=0.9, ge=0, le=1.0, description="Nucleus sampling threshold (0-1)")
     top_k: int = Field(default=0, ge=0, description="Top-k sampling (0 = disabled)")
@@ -83,10 +83,20 @@ async def completions(request: Request, body: CompletionRequest):
         elif fmt_type == "json_schema" and "schema" in body.response_format:
             schema = body.response_format["schema"]
 
+    if body.max_tokens == 0:
+        return CompletionResponse(
+            model=body.model,
+            choices=[CompletionChoice(text="", finish_reason="length")],
+        )
+
     if body.stream:
+        client_id = _get_client_id(request)
         return StreamingResponse(
-            _stream_response(body.prompt, body, "text_completion.chunk", "cmpl-",
-                             response_format=body.response_format),
+            _stream_response(
+                body.prompt, body, "text_completion.chunk", "cmpl-",
+                response_format=body.response_format,
+                client_id=client_id, endpoint="/v1/completions",
+            ),
             media_type="text/event-stream",
         )
 

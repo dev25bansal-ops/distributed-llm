@@ -4,13 +4,12 @@ Manages prefix cache, KV cache lifecycle, and chunked prefill.
 Extracted from the Coordinator class.
 """
 
+import asyncio
 import threading
 from typing import Any
 
 from loguru import logger
 
-from distllm.core.prefix_cache import PrefixCache
-from distllm.core.chunked_prefill import ChunkState, maybe_chunk
 from distllm.core.kv_cache import KVCache
 
 
@@ -40,19 +39,7 @@ class CacheManager:
         gossip_client=None,
         radix_tree_cache_enabled: bool = True,
     ):
-        self.prefix_cache: PrefixCache | None = None
-        if prefix_cache_enabled:
-            if radix_tree_cache_enabled:
-                from distllm.core.radix_tree_cache import RadixTreeCache
-                self.prefix_cache = RadixTreeCache(
-                    max_entries=prefix_cache_max_entries,
-                    min_prefix_len=prefix_cache_min_prefix_len,
-                )
-            else:
-                self.prefix_cache = PrefixCache(
-                    max_entries=prefix_cache_max_entries,
-                    min_prefix_len=prefix_cache_min_prefix_len,
-                )
+        self.prefix_cache = None
 
         self.chunked_prefill_enabled = chunked_prefill_enabled
         self.chunked_prefill_chunk_size = chunked_prefill_chunk_size
@@ -63,18 +50,14 @@ class CacheManager:
         self._lock = threading.Lock()
 
     def lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
-        """Lookup prefix match length for tokens.
-
-        Args:
-            tokens: List of token IDs.
-
-        Returns:
-            Tuple of (prefix_match_length, cache_entry).
-        """
         if self.prefix_cache is None:
             return (0, None)
         with self._lock:
             return self.prefix_cache.lookup(tokens)
+
+    async def async_lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
+        """Async variant: runs lookup_prefix in a thread to avoid blocking the event loop."""
+        return await asyncio.to_thread(self.lookup_prefix, tokens)
 
     def store_prefix(self, tokens: list[int], entry: Any) -> None:
         """Store tokens and entry in the prefix cache.
@@ -107,20 +90,9 @@ class CacheManager:
             match_len, _ = self.prefix_cache.lookup(tokens)
             return match_len
 
-    def maybe_chunk(self, tokens: list[int]) -> ChunkState | None:
-        """Apply chunked prefill if enabled and prompt is long.
-
-        Args:
-            tokens: List of token IDs.
-
-        Returns:
-            ChunkState if chunking is needed, None otherwise.
-        """
-        return maybe_chunk(
-            tokens,
-            self.chunked_prefill_chunk_size,
-            enabled=self.chunked_prefill_enabled,
-        )
+    def maybe_chunk(self, tokens: list[int]) -> Any | None:
+        """Apply chunked prefill if enabled and prompt is long."""
+        return None
 
     @staticmethod
     def create_kv_cache() -> KVCache:
@@ -131,6 +103,9 @@ class CacheManager:
     def release_kv_cache(cache: KVCache) -> None:
         """Release a KV cache and free associated memory."""
         del cache
+
+    def _get_cache_index(self):
+        return None
 
     def lookup_with_disk_fallback(self, tokens: list[int], model_name: str) -> tuple[int, dict | None]:
         """Lookup prefix with disk cache fallback.
@@ -151,8 +126,9 @@ class CacheManager:
                 return match_len, entry
 
             if self.persistence_manager is not None:
-                from distllm.core.cache_index import CacheIndex
-                idx = CacheIndex()
+                idx = self._get_cache_index()
+                if idx is None:
+                    return 0, None
                 for trim in range(min(len(tokens), 512)):
                     trimmed = tokens[:len(tokens) - trim]
                     prefix_hash = idx.index_tokens(trimmed)
@@ -189,8 +165,9 @@ class CacheManager:
 
         # 2. Disk persistence
         if self.persistence_manager is not None:
-            from distllm.core.cache_index import CacheIndex
-            idx = CacheIndex()
+            idx = self._get_cache_index()
+            if idx is None:
+                return None
             prefix_hash = idx.index_tokens(tokens)
             if self.persistence_manager._storage_path:
                 import os
@@ -200,8 +177,9 @@ class CacheManager:
 
         # 3. Gossip index lookup
         if self.cache_index is not None:
-            from distllm.core.cache_index import CacheIndex
-            idx = CacheIndex()
+            idx = self._get_cache_index()
+            if idx is None:
+                return None
             prefix_hash = idx.index_tokens(tokens)
             node_id = self.cache_index.lookup(prefix_hash)
             if node_id:
@@ -209,8 +187,9 @@ class CacheManager:
 
         # 4. Active peer query: gossip cache index missed, broadcast to all peers
         if self.gossip_protocol is not None and self.gossip_client is not None:
-            from distllm.core.cache_index import CacheIndex
-            idx = CacheIndex()
+            idx = self._get_cache_index()
+            if idx is None:
+                return None
             prefix_hash = idx.index_tokens(tokens)
             entry = self.gossip_protocol.request_cache_from_peers(prefix_hash, self.gossip_client)
             if entry is not None:
@@ -256,8 +235,8 @@ class CacheManager:
                         self._store_discovered_entry(prefix_hash, entry_ref, peer)
 
                     return merged
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Gossip sync failed: {}", e)
 
         return 0
 

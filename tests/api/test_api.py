@@ -19,6 +19,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
+from distllm.api.api_state import g as api_g
 import distllm.api.server as server_module
 from distllm.api.server import app
 
@@ -89,13 +90,13 @@ def api_client_mock(monkeypatch):
     monkeypatch.setenv("DISABLE_AUTH", "1")
     monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
 
-    original = server_module.coordinator
-    server_module.coordinator = coord
+    original = api_g.coordinator
+    api_g.coordinator = coord
 
     client = TestClient(app)
     yield client
 
-    server_module.coordinator = original
+    api_g.coordinator = original
 
 
 @pytest.fixture
@@ -106,24 +107,25 @@ def api_client_no_coordinator(monkeypatch):
     monkeypatch.setenv("DISABLE_AUTH", "1")
     monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
 
-    original = server_module.coordinator
-    server_module.coordinator = None
+    original = api_g.coordinator
+    api_g.coordinator = None
 
     client = TestClient(app)
     yield client
 
-    server_module.coordinator = original
+    api_g.coordinator = original
 
 
 import secrets
+
 
 @pytest.fixture
 def api_client_with_auth():
     """FastAPI TestClient with API_KEY auth enabled."""
     coord = make_mock_coordinator()
 
-    original = server_module.coordinator
-    server_module.coordinator = coord
+    original = api_g.coordinator
+    api_g.coordinator = coord
 
     # Generate a secure random test key
     test_api_key = secrets.token_hex(32)
@@ -137,7 +139,7 @@ def api_client_with_auth():
     del os.environ["API_KEY"]
     os.environ.pop("API_KEY_WAS_SET", None)
 
-    server_module.coordinator = original
+    api_g.coordinator = original
 
 
 # ============================================================
@@ -160,7 +162,7 @@ class TestHealthEndpoint:
         response = api_client_no_coordinator.get("/health")
         assert response.status_code == 503
         data = response.json()
-        assert data["error"] == "Service Unavailable"
+        assert data["error"]["message"] == "No model loaded"
 
 
 class TestMetricsEndpoint:

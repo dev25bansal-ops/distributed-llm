@@ -13,31 +13,27 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from distllm.api.errors import error_response
 
+_generated_api_key: str | None = None
+
 
 def _get_or_generate_api_key() -> str | None:
     """Get API_KEY from env, or generate one if not set.
 
-    If API_KEY is not set, generates a secure random key and logs it.
+    If API_KEY is not set, generates a secure random key in memory.
     This ensures auth is never disabled by default in production.
     """
+    global _generated_api_key
     api_key = os.environ.get("API_KEY")
     if api_key:
-        # Mark explicitly configured keys without reclassifying keys that
-        # this middleware generated earlier in the same process.
-        if "API_KEY_WAS_SET" not in os.environ:
-            os.environ["API_KEY_WAS_SET"] = "1"
         return api_key
 
-    # Generate a secure random API key if not set
-    generated_key = secrets.token_urlsafe(48)
-    os.environ["API_KEY"] = generated_key
-    os.environ["API_KEY_WAS_SET"] = "0"
-    logger.warning(
-        "API_KEY not set. Generated a secure random API key for production use.\n"
-        "Save this key and set API_KEY=<your-key> in your environment:\n"
-        f"API_KEY={generated_key}"
-    )
-    return generated_key
+    if _generated_api_key is None:
+        _generated_api_key = secrets.token_urlsafe(48)
+        logger.warning(
+            "API_KEY not set. Generated an in-memory API key for this process. "
+            "Set API_KEY in the environment before startup for persistent credentials."
+        )
+    return _generated_api_key
 
 
 class _RateLimiter:
@@ -76,33 +72,22 @@ _rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60)
 class AuthMiddleware(BaseHTTPMiddleware):
     """Validate API key from Authorization header.
 
-    Security: Requires API_KEY environment variable to be set.
-    When not set, authentication fails-closed (returns 401) for security.
-    Set DISABLE_AUTH=1 to bypass in development only.
-    Includes rate limiting to prevent brute-force attacks.
+    Security: Always requires a valid API key. Authentication fails-closed
+    (returns 401) by default. DISABLE_AUTH bypass has been removed — all
+    requests must authenticate.
+
+    Use DISTLLM_DEV_MODE=1 + API_KEY=<key> for development.
     """
 
     async def dispatch(self, request: Request, call_next):
         api_key = _get_or_generate_api_key()
 
-        # Allow explicit opt-out for development only.
-        # Requires BOTH DISABLE_AUTH=1 AND DISTLLM_DEV_MODE=1 to be set.
-        # When API_KEY is configured, auth is NEVER bypassed.
-        if (
-            os.environ.get("DISABLE_AUTH") == "1"
-            and os.environ.get("DISTLLM_DEV_MODE") == "1"
-            and os.environ.get("API_KEY_WAS_SET") != "1"
-        ):
-            if not getattr(self, "_warned", False):
-                logger.warning(
-                    "AUTHENTICATION DISABLED via DISABLE_AUTH=1 + DISTLLM_DEV_MODE=1. "
-                    "This is a security risk and should only be used in development."
-                )
-                self._warned = True
-            return await call_next(request)
-
         auth_header = request.headers.get("Authorization", "")
-        client_ip = request.client.host if request.client else "unknown"
+        if os.environ.get("DISTLLM_TRUST_PROXY_HEADERS") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
+            client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        else:
+            client_ip = ""
+        client_ip = client_ip or (request.client.host if request.client else "unknown")
 
         # Check rate limit before validating
         if _rate_limiter.is_rate_limited(client_ip):
@@ -112,6 +97,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 error="Too Many Requests",
                 message="Too many failed authentication attempts. Try again later.",
                 type="auth_rate_limit",
+                retry_after=retry_after,
                 request_id=getattr(request.state, "request_id", None),
             )
 

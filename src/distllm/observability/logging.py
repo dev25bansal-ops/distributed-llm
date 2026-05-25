@@ -22,7 +22,7 @@ def _get_otel_context() -> dict:
                 "span_id": f"{ctx.span_id:016x}",
             }
     except Exception:
-        pass
+        logger.debug("Span context extraction failed")
     return {}
 
 

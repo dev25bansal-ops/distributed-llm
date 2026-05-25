@@ -7,6 +7,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 import uvicorn
@@ -14,9 +15,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from distllm.core.coordinator import Coordinator
 from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware
-from distllm.api.rate_limiter import RateLimiter
-from distllm.api.rate_limit_middleware import RateLimitMiddleware
-from distllm.api.observability_middleware import ObservabilityMiddleware
 from distllm.dashboard.ws_handler import (
     manager,
     metrics_broadcaster,
@@ -28,45 +26,23 @@ from distllm.dashboard.ws_handler import (
 from fastapi.responses import StreamingResponse
 from distllm.core.monitor import SystemMonitor
 from distllm.config.settings import DistLLMSettings
-from distllm.config.loader import load_config_file
-from distllm.communication.grpc import set_debug_mode
+from distllm.config.loader import load_config_file as _legacy_load_config_file
+from distllm.core.debug import set_debug_mode
 from distllm.observability.tracing import setup_tracing
 from distllm.observability.logging import setup_logging
 from distllm.observability.exporter import DistLLMPrometheusExporter
-from distllm.monitoring.anomaly_detector import AnomalyDetector
-from distllm.scheduling.cost_aware_scaler import GPUCostTracker
 from loguru import logger
 from distllm.constants import HSTS_MAX_AGE
-from distllm.core.quantization_selector import build_quantization_config
-from distllm.tenant.store import TenantStore
-from distllm.tenant.middleware import TenantMiddleware
-from distllm.tenant.rate_limiter import TenantRateLimiter
-from distllm.tenant.billing import UsageMeter
-from distllm.tenant.router import TenantModelRouter
 
 # Re-export route routers
+from distllm.api.api_state import g as _g
 from distllm.api.errors import error_response, error_response_from_request
 from distllm.api.routes import (
     chat_router,
     completion_router,
     embeddings_router,
-    adapters_router,
     health_router,
-    versions_router,
-    multi_model_router,
-    batch_router,
-    audio_router,
-    images_router,
-    moderations_router,
-    files_router,
-    fine_tuning_router,
     gossip_router,
-    optimization_router,
-    rag_router,
-    agent_router,
-    disagg_router,
-    pipeline_router,
-    debug_router,
 )
 
 # Re-export models from route modules for backward compatibility
@@ -86,7 +62,6 @@ from distllm.api.routes.embeddings import (
     EmbeddingObject,
     EmbeddingResponse,
 )
-from distllm.api.routes.adapters import AdapterLoadRequest
 from distllm.api.routes.health import ModelInfo, ModelList, ParamUpdateRequest
 
 # Re-export streaming helpers for backward compatibility
@@ -127,7 +102,7 @@ ALLOWED_ORIGINS = _get_cors_origins()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: initialize services on startup, clean up on shutdown."""
+    """Application lifespan: initialize on startup, clean up on shutdown."""
     _init_observability()
     _start_ws_broadcaster()
     yield
@@ -143,27 +118,11 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=[
-        {"name": "chat", "description": "Chat completion endpoints with streaming support"},
-        {"name": "completion", "description": "Text completion endpoints with streaming support"},
-        {"name": "embedding", "description": "Text embedding and document reranking for RAG pipelines"},
-        {"name": "adapters", "description": "LoRA adapter management for multi-adapter inference"},
-        {"name": "system", "description": "Health checks, Kubernetes probes, metrics, and generation parameter updates"},
-        {"name": "versions", "description": "Model versioning, A/B testing, shadow deployments, and blue-green rollouts"},
-        {"name": "multi-model", "description": "Multi-model hot-swap: load, unload, and manage multiple models concurrently"},
-        {"name": "batch", "description": "Async batch processing of chat and completion requests via JSONL files"},
-        {"name": "audio", "description": "Speech-to-text transcription and text-to-speech synthesis"},
-        {"name": "images", "description": "Image generation, editing, and variation using diffusion models"},
-        {"name": "moderations", "description": "Content moderation: classify text for harmful content across multiple categories"},
-        {"name": "files", "description": "File upload and management for fine-tuning, batch processing, and RAG"},
-        {"name": "fine-tuning", "description": "Model fine-tuning job creation, monitoring, and management"},
+        {"name": "chat", "description": "Chat completion endpoints with streaming support across distributed nodes"},
+        {"name": "completion", "description": "Text completion endpoints with streaming support across distributed nodes"},
+        {"name": "embedding", "description": "Text embedding and document reranking"},
+        {"name": "system", "description": "Health checks, metrics, and cluster status"},
         {"name": "gossip", "description": "P2P gossip protocol for distributed KV cache discovery between nodes"},
-        {"name": "optimization", "description": "Self-optimizing engine: performance tuning suggestions and auto-tuning"},
-        {"name": "rag", "description": "Retrieval-Augmented Generation: document ingestion, retrieval, and prompt enrichment"},
-        {"name": "agent", "description": "ReAct agent execution: run goal-oriented agents with custom tool definitions"},
-        {"name": "disagg", "description": "Disaggregated serving: separated prefill/decode node pools for improved throughput"},
-        {"name": "pipeline", "description": "Model pipeline composition: chain multiple models in sequential workflows"},
-        {"name": "debug", "description": "Debug and replay tools: request inspection, replay, and deterministic generation"},
-        {"name": "tenants", "description": "Multi-tenant management: CRUD, usage metering, billing, and quota enforcement"},
     ],
 )
 
@@ -173,7 +132,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,  # Security: Disable credentials for CORS
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Request-Timeout", "X-Priority"],
     max_age=600,  # Cache preflight for 10 minutes
 )
@@ -221,6 +180,22 @@ def _error_response(
     return error_response_from_request(status_code, error, message, type, request)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Convert Pydantic validation errors to OpenAI-compatible 422."""
+    messages = []
+    for err in exc.errors():
+        loc = " -> ".join(str(p) for p in err.get("loc", []))
+        messages.append(f"{loc}: {err.get('msg', '')}" if loc else err.get("msg", ""))
+    return _error_response(
+        status_code=422,
+        error="Invalid Request",
+        message="; ".join(messages),
+        type="invalid_request_error",
+        request=request,
+    )
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Convert HTTPException to structured error response."""
@@ -246,122 +221,39 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Application state — encapsulates all shared mutable state for lifecycle management
+# ── Single source of truth for application state ─────────────────────
 class AppState:
-    """Manages shared application state across the API server.
-
-    All mutable module-level state is consolidated here to prevent shared
-    mutable globals that could be mutated across requests.
-    """
+    """Manages shared application state — single source of truth."""
 
     def __init__(self):
         self.coordinator: Coordinator | None = None
         self.monitor: SystemMonitor | None = None
         self.startup_time: float = time.time()
         self.metrics_exporter: DistLLMPrometheusExporter | None = None
-        self.cost_tracker: GPUCostTracker | None = None
-        self.anomaly_detector: AnomalyDetector | None = None
-        self.tenant_store: TenantStore | None = None
-        self.tenant_rate_limiter: TenantRateLimiter | None = None
-        self.usage_meter: UsageMeter | None = None
-        self.tenant_router: TenantModelRouter | None = None
-        self.rate_limiter: RateLimiter | None = None
         self.ws_broadcast_task = None
 
     @property
     def uptime_seconds(self) -> float:
         return time.time() - self.startup_time
 
-    def set(self, coord: Coordinator, mon: SystemMonitor) -> None:
-        """Set the coordinator and monitor instances."""
-        self.coordinator = coord
-        self.monitor = mon
-
-    def clear(self) -> None:
-        """Reset state (useful for testing)."""
-        self.coordinator = None
-        self.monitor = None
-
 
 state = AppState()
 
 
-def _init_tenants(settings: DistLLMSettings | None = None) -> None:
-    """Initialize the multi-tenant system."""
-    state.tenant_store = TenantStore()
-    state.tenant_rate_limiter = TenantRateLimiter()
-    state.usage_meter = UsageMeter(state.tenant_store)
-    state.tenant_router = TenantModelRouter()
 
-    app.state.tenant_store = state.tenant_store
-    app.state.usage_meter = state.usage_meter
-    app.state.tenant_router = state.tenant_router
-
-    # Always read tenant config from settings; never from os.environ (no env injection)
-    tenant_enabled = bool(settings and getattr(settings, "tenant", None) and settings.tenant.enabled)
-
-    # Read admin API key from settings only; never write secrets to os.environ
-    admin_key = None
-    if settings and getattr(settings, "tenant", None) and settings.tenant.admin_api_key:
-        admin_key = settings.tenant.admin_api_key.get_secret_value() if hasattr(settings.tenant.admin_api_key, "get_secret_value") else str(settings.tenant.admin_api_key)
-    # Ensure no leftover env var remains (defense in depth)
-    os.environ.pop("ADMIN_API_KEY", None)
-
-    if tenant_enabled:
-        app.add_middleware(TenantMiddleware, store=state.tenant_store, enabled=True)
-        _init_tenant_routes()
-        logger.info("Multi-tenant system initialized with middleware")
-    else:
-        logger.info("Tenant system enabled by default")
-
-    # Seed default tenant for backward compatibility
-    if state.tenant_store.get_tenant("default") is None:
-        from distllm.tenant.models import TenantTier
-        state.tenant_store.create_tenant(name="Default", tier=TenantTier.FREE)
 
 
 def _init_observability():
-    """Initialize tracing, logging, metrics exporter, cost tracker, anomaly detector."""
-    # Structured logging with OTel trace injection
+    """Initialize tracing, logging, metrics exporter."""
     setup_logging(level="INFO", json_format=True)
 
-    # OpenTelemetry tracing with head-based sampling (100% by default)
     setup_tracing(
         service_name="distllm-api",
         sampling_strategy="head",
         sampling_ratio=1.0,
     )
 
-    # Prometheus metrics exporter
     state.metrics_exporter = DistLLMPrometheusExporter()
-
-    # Cost tracker
-    state.cost_tracker = GPUCostTracker()
-
-    # Anomaly detector
-    state.anomaly_detector = AnomalyDetector(sigma_threshold=3.0)
-    state.anomaly_detector.register_metric("http_request_duration", window_size=60, sigma_threshold=3.0)
-    state.anomaly_detector.register_metric("http_error_rate", window_size=30, sigma_threshold=2.5)
-
-    # Wire anomaly callbacks to increment Prometheus counter
-    exporter = state.metrics_exporter
-
-    def _on_anomaly(event):
-        exporter.anomaly_detected_total.labels(
-            metric=event.metric, type="statistical_deviation"
-        ).inc()
-        logger.warning(f"Anomaly detected: {event.metric}={event.value:.2f} "
-                       f"(mean={event.mean:.2f}, sigma={event.deviation_sigma:.1f})")
-
-    state.anomaly_detector.on_anomaly(_on_anomaly)
-
-    # Add ObservabilityMiddleware
-    app.add_middleware(
-        ObservabilityMiddleware,
-        metrics_exporter=state.metrics_exporter,
-        cost_tracker=state.cost_tracker,
-        anomaly_detector=state.anomaly_detector,
-    )
 
 
 # Request timeout middleware
@@ -410,29 +302,78 @@ app.add_middleware(AuthMiddleware)
 # middleware that reads it (e.g. AuthMiddleware error responses).
 app.add_middleware(RequestIDMiddleware)
 
+# DedupMiddleware — collapses identical concurrent POST requests
+# Only applies to /v1/chat/completions; uses content fingerprinting.
+from distllm.api.dedup import DedupMiddleware
+app.add_middleware(DedupMiddleware)
+
+
+
+
+class _RequestTooLarge(Exception):
+    pass
+
 
 # Request size limiting middleware
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+class RequestSizeLimitMiddleware:
     """Limit maximum request body size to prevent OOM."""
 
     MAX_REQUEST_SIZE = 32 * 1024 * 1024  # 32 MB default
 
-    async def dispatch(self, request: Request, call_next):
-        if request.method in ("POST", "PUT", "PATCH"):
-            cl = request.headers.get("content-length")
-            if cl:
-                try:
-                    if int(cl) > self.MAX_REQUEST_SIZE:
-                        return _error_response(
-                            status_code=413,
-                            error="Request Entity Too Large",
-                            message=f"Request exceeds maximum size of {self.MAX_REQUEST_SIZE // (1024*1024)} MB",
-                            type="request_too_large",
-                            request=request,
-                        )
-                except (ValueError, TypeError):
-                    pass
-        return await call_next(request)
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") not in ("POST", "PUT", "PATCH"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        cl = headers.get(b"content-length")
+        if cl:
+            try:
+                if int(cl) > self.MAX_REQUEST_SIZE:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": {
+                                "message": f"Request exceeds maximum size of {self.MAX_REQUEST_SIZE // (1024*1024)} MB",
+                                "type": "request_too_large",
+                                "code": "413",
+                            },
+                        },
+                    )
+                    await response(scope, receive, send)
+                    return
+            except (ValueError, TypeError):
+                pass
+
+        total = 0
+
+        async def limited_receive():
+            nonlocal total
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > self.MAX_REQUEST_SIZE:
+                    raise _RequestTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestTooLarge:
+            response = JSONResponse(
+                status_code=413,
+                content={
+                    "error": {
+                        "message": f"Request exceeds maximum size of {self.MAX_REQUEST_SIZE // (1024*1024)} MB",
+                        "type": "request_too_large",
+                        "code": "413",
+                    },
+                },
+            )
+            await response(scope, receive, send)
+            return
 
 
 app.add_middleware(RequestSizeLimitMiddleware)
@@ -481,44 +422,12 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
 app.add_middleware(BackpressureMiddleware)
 
 
-def _init_rate_limiter(settings: DistLLMSettings | None = None) -> None:
-    """Initialize the rate limiter from settings."""
-    from distllm.config.settings import RateLimitSettings
-    rl_settings = settings.rate_limit if settings else RateLimitSettings()
-    state.rate_limiter = RateLimiter(
-        default_rpm=rl_settings.default_rpm,
-        endpoint_limits=rl_settings.endpoint_limits,
-        burst_multiplier=rl_settings.burst_multiplier,
-        auth_rpm_multiplier=rl_settings.auth_rpm_multiplier,
-    )
-    app.add_middleware(
-        RateLimitMiddleware,
-        rate_limiter=state.rate_limiter,
-        enabled=rl_settings.enabled,
-    )
-
-
 # Include route routers
 app.include_router(chat_router)
 app.include_router(completion_router)
 app.include_router(embeddings_router)
-app.include_router(adapters_router)
 app.include_router(health_router)
-app.include_router(versions_router)
-app.include_router(multi_model_router)
-app.include_router(batch_router)
-app.include_router(audio_router)
-app.include_router(images_router)
-app.include_router(moderations_router)
-app.include_router(files_router)
-app.include_router(fine_tuning_router)
 app.include_router(gossip_router)
-app.include_router(optimization_router)
-app.include_router(rag_router)
-app.include_router(agent_router)
-app.include_router(disagg_router)
-app.include_router(pipeline_router)
-app.include_router(debug_router, include_in_schema=False)
 
 # --- Dashboard & WebSocket ---
 
@@ -577,6 +486,34 @@ async def dashboard_page():
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text())
     return HTMLResponse(content="<h1>Dashboard not found</h1>")
+
+
+@app.get(
+    "/api/cluster/nodes",
+    summary="Cluster node topology",
+    description="Return all registered worker nodes with their GPU info, health status, and layer assignments.",
+    response_description="List of cluster nodes with capabilities",
+)
+async def api_cluster_nodes():
+    """Return current cluster node topology."""
+    coord = state.coordinator
+    if coord is None:
+        return {"nodes": []}
+    nodes_list = []
+    for node_id, node in coord.nodes.items():
+        nodes_list.append({
+            "node_id": node_id,
+            "host": node.host,
+            "port": node.port,
+            "healthy": getattr(node, 'healthy', False),
+            "start_layer": node.start_layer,
+            "end_layer": node.end_layer,
+            "gpu_name": getattr(node, 'gpu_name', ''),
+            "gpu_memory_free": getattr(node, 'gpu_memory_free', 0),
+            "gpu_memory_total": getattr(node, 'gpu_memory_total', 0),
+            "gpu_sm_count": getattr(node, 'gpu_sm_count', 0),
+        })
+    return {"nodes": nodes_list, "total_layers": coord.total_layers}
 
 
 @app.get(
@@ -640,12 +577,6 @@ def _start_ws_broadcaster():
     """Start the WebSocket metrics broadcaster background task."""
     if state.coordinator is not None:
         state.ws_broadcast_task = asyncio.create_task(metrics_broadcaster(state.coordinator))
-
-
-def _init_tenant_routes():
-    """Include tenant router lazily to avoid circular import."""
-    from distllm.api.routes.tenants import router as t_router
-    app.include_router(t_router)
 
 
 def _build_quantization_config(settings: DistLLMSettings):
@@ -748,6 +679,23 @@ def create_coordinator(
         chunked_prefill_enabled = settings.chunked_prefill.enabled
         chunked_prefill_chunk_size = settings.chunked_prefill.chunk_size
 
+    try:
+        from distllm.dist.config import WideAreaConfig
+    except ImportError:
+        WideAreaConfig = None
+
+    wide_area_config = None
+    if settings and settings.wide_area.enabled:
+        wa = settings.wide_area
+        wide_area_config = WideAreaConfig(
+            enabled=wa.enabled,
+            p2p_forwarding=wa.p2p_forwarding,
+            tokens_before_forward=wa.tokens_before_forward,
+            wan_timeout_seconds=wa.wan_timeout_seconds,
+            max_retries=wa.max_retries,
+            backoff_base_seconds=wa.backoff_base_seconds,
+        )
+
     coord = Coordinator(
         model_name=model_name,
         dtype=dtype,
@@ -765,16 +713,8 @@ def create_coordinator(
         embedding_config=getattr(settings, "embedding", None) if settings else None,
         version_config=getattr(settings, "version", None) if settings else None,
         metrics_exporter=state.metrics_exporter,
+        wide_area_config=wide_area_config,
     )
-
-    # Initialize multi-model chat router from settings
-    if settings and settings.chat_router.enabled:
-        chat_router_settings = settings.chat_router
-        from distllm.core.chat_router import ModelRouter
-        model_router = ModelRouter(chat_router_settings)
-        # Register the hybrid model name so the chat route recognises it
-        model_router.register_hybrid_name(chat_router_settings.name)
-        coord._chat_router = model_router
 
     if local:
         coord.load_local_model()
@@ -783,7 +723,10 @@ def create_coordinator(
         logger.info(f"Coordinator ready for distributed mode: {model_name}")
 
     monitor_inst = SystemMonitor()
-    state.set(coord, monitor_inst)
+    state.coordinator = coord
+    state.monitor = monitor_inst
+    _g.coordinator = coord
+    _g.monitor = monitor_inst
 
     return coord
 
@@ -877,6 +820,8 @@ def main():
     parser.add_argument("--quantization", type=str, default="none",
         choices=["none", "bitsandbytes_4bit", "bitsandbytes_8bit", "gptq"],
         help="Quantization method for model loading")
+    parser.add_argument("--nodes", type=str, nargs="+", help="host:port:start:end per node")
+    parser.add_argument("--total-layers", type=int, help="Total layers in model")
 
     args = parser.parse_args()
 
@@ -897,7 +842,7 @@ def main():
         logger.info("Debug mode enabled: tensor shape logging active")
 
     # Settings is the source of truth (env + YAML + CLI already merged)
-    create_coordinator(
+    coord = create_coordinator(
         model_name=settings.model.name,
         dtype=settings.model.dtype,
         local=args.local,
@@ -907,11 +852,23 @@ def main():
         lora_config=_build_lora_config(settings),
     )
 
-    # Initialize rate limiter from settings
-    _init_rate_limiter(settings)
+    # Register distributed nodes from CLI args
+    if args.nodes and not args.local:
+        for i, node_str in enumerate(args.nodes):
+            parts = node_str.split(":")
+            host = parts[0]
+            port = int(parts[1])
+            start = int(parts[2])
+            end = int(parts[3])
+            coord.manual_register(
+                node_id=f"node_{i}",
+                host=host, port=port,
+                start_layer=start, end_layer=end,
+                total_layers=args.total_layers,
+            )
+        logger.info(f"Registered {len(args.nodes)} distributed nodes")
 
-    # Initialize tenant system
-    _init_tenants(settings)
+    logger.info("Distributed inference pipeline initialized")
 
     logger.info(f"Starting API server on {settings.coordinator.host}:{settings.coordinator.api_port}")
 
@@ -932,7 +889,7 @@ def main():
         logger.info("Shutdown complete")
 
     app.add_event_handler("shutdown", _shutdown)
-    uvicorn.run(app, host=settings.coordinator.host, port=settings.coordinator.api_port, log_level="info", shutdown_timeout=30)
+    uvicorn.run(app, host=settings.coordinator.host, port=settings.coordinator.api_port, log_level="info")
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

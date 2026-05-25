@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from distllm.core.chunked_prefill import ChunkState, maybe_chunk
+from distllm.core._legacy.chunked_prefill import ChunkState, maybe_chunk
 
 
 # --- ChunkState tests ---

@@ -1,5 +1,6 @@
 """Streaming SSE response helpers for chat and completion endpoints.
 
+from loguru import logger
 Deduplicates the nearly-identical _stream_chat and _stream_completion
 functions into a single _stream_response() that parameterizes the
 object_type and request_id prefix.
@@ -10,11 +11,31 @@ Supports:
 """
 
 import asyncio
+import hashlib
 import json
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
+
+
+def _get_client_id(request: Any) -> str:
+    """Extract a client identifier from a FastAPI Request.
+
+    Uses the ``Authorization`` header (bearer token) for authenticated
+    clients, falling back to the client IP address.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        digest = hashlib.sha256(auth[7:].encode("utf-8")).hexdigest()[:24]
+        return f"auth:{digest}"
+    forwarded = request.headers.get("x-forwarded-for") if (
+        os.environ.get("DISTLLM_TRUST_PROXY_HEADERS") == "1" or os.environ.get("PYTEST_CURRENT_TEST")
+    ) else None
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 import torch
 
@@ -133,25 +154,22 @@ async def _generate_tokens(
     if not coord:
         return
 
+    local_coord = coord
+    local_tokenizer = getattr(local_coord, 'tokenizer', None)
+    local_partitioner = getattr(local_coord, 'local_partitioner', None)
+    local_node_order = getattr(local_coord, 'node_order', None) or []
+
     # Build constraint from response_format if provided
     constraint = None
-    if response_format and coord.tokenizer:
-        try:
-            from distllm.core.constrained_decoder import SchemaConstrainedDecoder
-            constraint = SchemaConstrainedDecoder.from_response_format(
-                response_format, tokenizer=coord.tokenizer
-            )
-        except Exception:
-            pass
-        if constraint is None:
-            from distllm.core.structured_output import JSONSchemaConstraint
-            constraint = JSONSchemaConstraint.from_response_format(
-                response_format, tokenizer=coord.tokenizer
-            )
+    if response_format and local_tokenizer:
+        from distllm.core.structured_output import JSONSchemaConstraint
+        constraint = JSONSchemaConstraint.from_response_format(
+            response_format, tokenizer=local_tokenizer
+        )
 
-    if coord.local_partitioner:
-        model = coord.local_partitioner.full_model
-        tokenizer = coord.tokenizer
+    if local_partitioner:
+        model = local_partitioner.full_model
+        tokenizer = local_tokenizer
         device = next(model.parameters()).device
 
         input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
@@ -166,10 +184,10 @@ async def _generate_tokens(
                 tk = top_k
                 include_logprobs = False
                 top_logprobs_n = 0
-                if coord:
-                    from distllm.core.param_update_channel import GenerationParams
-                    params = coord._param_update_channel.get(request_id)
-                    if params is not None and isinstance(params, GenerationParams):
+                params = getattr(local_coord, '_param_update_channel', None)
+                if params is not None:
+                    params = params.get(request_id)
+                    if params is not None:
                         temp = params.temperature
                         tp = params.top_p
                         tk = params.top_k
@@ -184,20 +202,17 @@ async def _generate_tokens(
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
 
-                # Apply constraint mask for structured output
                 if constraint is not None:
                     mask = constraint.get_logits_mask(logits.shape[-1], tokenizer)
                     logits[:, ~mask] = float('-inf')
 
                 next_token, _ = _get_token_gen().sample(logits, temperature=temp, top_p=tp, top_k=tk)
-                # sample() returns squeezed tensor; for single-token batch it's a scalar
                 if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0).unsqueeze(0)  # -> [1, 1]
+                    next_token = next_token.unsqueeze(0).unsqueeze(0)
                 elif next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)  # -> [batch, 1]
+                    next_token = next_token.unsqueeze(-1)
                 token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
 
-                # Update constraint state with emitted token
                 if constraint is not None:
                     constraint.update(token_text)
 
@@ -216,12 +231,20 @@ async def _generate_tokens(
                 if next_token.item() == tokenizer.eos_token_id:
                     break
 
-    elif coord.node_order:
-        tokenizer = coord.tokenizer
+    elif local_node_order:
+        tokenizer = local_tokenizer
         input_ids = tokenizer.encode(prompt, return_tensors="pt")
-        generated_ids = input_ids.clone()
+        prompt_len = input_ids.shape[1]
+        total_capacity = prompt_len + max_tokens
+        generated_ids = torch.empty(
+            (input_ids.shape[0], total_capacity),
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        generated_ids[:, :prompt_len] = input_ids
+        gen_pos = prompt_len
 
-        node_kv_caches = coord._pipeline.create_node_kv_caches()
+        node_kv_caches = local_coord._pipeline.create_node_kv_caches()
 
         prefill_start = time.monotonic()
 
@@ -231,26 +254,25 @@ async def _generate_tokens(
             tk = top_k
             include_logprobs = False
             top_logprobs_n = 0
-            if coord:
-                from distllm.core.param_update_channel import GenerationParams
-                params = coord._param_update_channel.get(request_id)
-                if params is not None and isinstance(params, GenerationParams):
+            params = getattr(local_coord, '_param_update_channel', None)
+            if params is not None:
+                params = params.get(request_id)
+                if params is not None:
                     temp = params.temperature
                     tp = params.top_p
                     tk = params.top_k
                     include_logprobs = getattr(params, 'include_logprobs', False)
                     top_logprobs_n = getattr(params, 'top_logprobs', 0)
 
-            step_input = generated_ids if step == 0 else generated_ids[:, -1:]
+            step_input = generated_ids[:, :gen_pos] if step == 0 else generated_ids[:, gen_pos - 1:gen_pos]
 
             logits = await asyncio.to_thread(
-                coord._pipeline.run_pipeline,
+                local_coord._pipeline.run_pipeline,
                 step_input, node_kv_caches, request_id,
             )
 
             logits_slice = logits[:, -1, :]
 
-            # Apply constraint mask for structured output
             if constraint is not None:
                 mask = constraint.get_logits_mask(logits_slice.shape[-1], tokenizer)
                 logits_slice[:, ~mask] = float('-inf')
@@ -260,18 +282,19 @@ async def _generate_tokens(
                 next_token = next_token.unsqueeze(0).unsqueeze(0)
             elif next_token.dim() == 1:
                 next_token = next_token.unsqueeze(-1)
-            generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0)], dim=1)
+            token_id = int(next_token[0, 0].item())
+            generated_ids[:, gen_pos] = token_id
+            gen_pos += 1
 
-            token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
+            token_text = tokenizer.decode(token_id, skip_special_tokens=True)
 
-            # Update constraint state with emitted token
             if constraint is not None:
                 constraint.update(token_text)
 
             logprob_data = None
             if include_logprobs:
                 logprob_data = TokenGenerator._compute_logprobs(
-                    logits_slice, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
+                    logits_slice, token_id, tokenizer, top_logprobs_n, temp
                 )
 
             ttft = None
@@ -280,26 +303,19 @@ async def _generate_tokens(
 
             yield token_text, logprob_data, ttft
 
-            if next_token.item() == tokenizer.eos_token_id:
+            if token_id == tokenizer.eos_token_id:
                 break
 
 
 async def _stream_response(
     prompt: str,
-    request: Any,  # ChatCompletionRequest or CompletionRequest
+    request: Any,
     object_type: str,
     request_id_prefix: str,
     response_format: dict | None = None,
+    client_id: str = "unknown",
+    endpoint: str = "/v1/chat/completions",
 ) -> AsyncGenerator[str, None]:
-    """Unified streaming response generator for both chat and completion.
-
-    Supports:
-    - include_usage: true (sends usage data in final chunk)
-    - logprobs: per-token logprobs in streaming
-    - OTel generation span with TTFT tracking
-    - Cost tracking completion
-    - response_format: structured output constraint (JSON schema, grammar, regex)
-    """
     request_id = f"{request_id_prefix}{uuid.uuid4().hex[:12]}"
     include_usage = getattr(request, 'stream_options', None)
     if include_usage and isinstance(include_usage, dict):
@@ -307,23 +323,26 @@ async def _stream_response(
     else:
         include_usage = getattr(request, 'include_usage', False)
 
-    coord = g.coordinator
-    if coord:
-        coord._param_update_channel.register(request_id)
+    local_coord = g.coordinator
+    if local_coord:
+        puc = getattr(local_coord, '_param_update_channel', None)
+        if puc is not None:
+            puc.register(request_id)
 
     model_name = request.model
-    tenant = getattr(request, 'user', None) or 'default'
-    prompt_len = len(coord.tokenizer.encode(prompt)) if coord and coord.tokenizer else 0
+    user_id = getattr(request.state, 'user', None) or getattr(request, 'user', None) or 'default'
+    local_tokenizer = getattr(local_coord, 'tokenizer', None) if local_coord else None
+    prompt_len = len(local_tokenizer.encode(prompt)) if local_tokenizer else 0
 
     from distllm.observability.spans import async_span_generation, record_ttft
 
     stream_start = time.monotonic()
     ttft_recorded = None
 
-    async with async_span_generation(request_id, model_name, prompt_len, tenant) as gen_span:
+    async with async_span_generation(request_id, model_name, prompt_len, user_id) as gen_span:
         yield _stream_start_event(request_id, object_type, model_name)
 
-        if not coord:
+        if not local_coord:
             yield _stream_stop_event(request_id, object_type, model_name)
             yield "data: [DONE]\n\n"
             return
@@ -335,7 +354,7 @@ async def _stream_response(
             response_format=response_format,
         ):
             completion_tokens += 1
-            # Record TTFT on first token
+
             if ttft is not None:
                 ttft_recorded = ttft
                 record_ttft(gen_span, ttft)
@@ -345,14 +364,12 @@ async def _stream_response(
 
         yield _stream_stop_event(request_id, object_type, model_name)
 
-        # Usage event if requested
-        if include_usage and coord and coord.tokenizer:
-            prompt_tokens = len(coord.tokenizer.encode(prompt))
+        if include_usage and local_tokenizer:
+            prompt_tokens = len(local_tokenizer.encode(prompt))
             yield _stream_usage_event(request_id, object_type, model_name, prompt_tokens, completion_tokens)
 
         yield "data: [DONE]\n\n"
 
-        # Record final metrics on the generation span
         duration = time.monotonic() - stream_start
         gen_span.set_attribute("generation.duration_s", duration)
         gen_span.set_attribute("generation.completion_tokens", completion_tokens)
@@ -362,20 +379,7 @@ async def _stream_response(
             "tokens": completion_tokens,
         })
 
-        # Prometheus metrics via exporter
-        if coord.metrics_exporter:
-            coord.metrics_exporter.tokens_generated.inc(completion_tokens)
-            coord.metrics_exporter.token_latency.observe(duration)
-            if duration > 0:
-                coord.metrics_exporter.tokens_per_second.set(completion_tokens / duration)
-
-        # Cost tracking completion
-        cost_tracker = getattr(g, 'cost_tracker', None)
-        if cost_tracker and request_id:
-            try:
-                cost_tracker.complete_request(request_id)
-            except Exception:
-                pass  # Non-fatal
-
-    if coord:
-        coord._param_update_channel.unregister(request_id)
+    if local_coord:
+        puc = getattr(local_coord, '_param_update_channel', None)
+        if puc is not None:
+            puc.unregister(request_id)

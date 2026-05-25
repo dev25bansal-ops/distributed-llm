@@ -1,0 +1,105 @@
+# Ray Autoscaler Configuration for Distributed LLM Inference
+#
+# This configures Ray to automatically provision GPU nodes when
+# the coordinator requests workers via placement groups.
+#
+# Usage:
+#   ray up deploy/ray/autoscaler.yaml
+#   ray submit deploy/ray/autoscaler.yaml serve_run.py
+#
+# See: https://docs.ray.io/en/latest/cluster/vms/user-guides/launching-clusters.html
+
+cluster_name: distributed-llm
+min_workers: 0
+max_workers: 8
+target_utilization_fraction: 0.8
+idle_timeout_minutes: 5
+
+# Docker configuration (optional)
+# docker:
+#   image: "distributed-llm:latest"
+#   container_name: "ray-llm"
+#   pull_before_run: True
+
+# Provider-specific config (AWS example)
+provider:
+  type: aws
+  region: us-west-2
+  availability_zone: us-west-2a
+  cache_stopped_nodes: True
+
+# Head node (coordinator runs here)
+head_node:
+  InstanceType: m5.2xlarge
+  ImageId: ami-0abcdef1234567890  # Replace with your DLAMI
+
+  # Block device mappings
+  BlockDeviceMappings:
+    - DeviceName: /dev/sda1
+      Ebs:
+        VolumeSize: 200
+
+# Worker nodes (GPU instances)
+worker_nodes:
+  InstanceType: p4d.24xlarge  # 8x A100 40GB
+  # Alternative: g5.12xlarge (4x A10G), p3.16xlarge (8x V100)
+
+  # Number of workers per instance type
+  # For p4d.24xlarge with 8 GPUs, each worker gets 1 GPU
+  # So 8 workers per instance
+  MinInstances: 0
+  MaxInstances: 8
+
+  # Spot instance config (80% cost savings)
+  # InstanceMarketOptions:
+  #   MarketType: spot
+  #   SpotOptions:
+  #     MaxPrice: "12.00"
+
+  BlockDeviceMappings:
+    - DeviceName: /dev/sda1
+      Ebs:
+        VolumeSize: 200
+        VolumeType: gp3
+
+# Ray cluster setup commands
+setup_commands:
+  - pip install -U ray[default]>=2.30.0
+  - pip install torch>=2.5.0 transformers>=4.48.0
+
+# Commands to run on the head node
+head_setup_commands:
+  - pip install -e /home/ubuntu/distributed-llm  # Install project
+
+# File mounts
+file_mounts:
+  /home/ubuntu/distributed-llm: D:\distributed-llm
+
+# Custom startup commands
+head_start_ray_commands:
+  - ray stop
+  - ulimit -n 65536
+  - ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml
+
+worker_start_ray_commands:
+  - ray stop
+  - ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076
+
+# How Ray will distribute workers based on resource needs
+available_node_types:
+  ray.head.default:
+    node_config:
+      InstanceType: m5.2xlarge
+    resources:
+      CPU: 8
+      memory: 32000000000  # 32GB
+  ray.worker.default:
+    min_workers: 0
+    max_workers: 8
+    node_config:
+      InstanceType: p4d.24xlarge
+    resources:
+      CPU: 96
+      memory: 1152000000000  # 1.15TB
+      GPU: 8
+      accelerator_type: A100

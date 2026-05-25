@@ -96,7 +96,12 @@ class AdaptiveBatchingEngine:
         now = time.time()
         with self._lock:
             if model not in self._latencies:
-                self.set_slo(model)
+                config = self._configs.get(model, SLOConfig())
+                self._configs[model] = config
+                self._latencies[model] = deque(maxlen=1000)
+                self._batch_sizes[model] = deque(maxlen=100)
+                self._current_batch[model] = config.min_batch_size
+                self._last_adjustment[model] = 0.0
             for lat in latencies:
                 self._latencies[model].append(lat)
             self._batch_sizes[model].append(batch_size)
@@ -157,4 +162,38 @@ class AdaptiveBatchingEngine:
 
     def all_stats(self) -> dict[str, Any]:
         with self._lock:
-            return {m: str(self.get_stats(m)) for m in self._configs}
+            result = {}
+            for model, _config in self._configs.items():
+                latencies = list(self._latencies.get(model, []))
+                batch_sizes = list(self._batch_sizes.get(model, []))
+                if not latencies:
+                    result[model] = str(BatchWindowStats())
+                    continue
+                sorted_lats = sorted(latencies[-200:])
+                stats = BatchWindowStats(
+                    avg_latency_ms=sum(latencies[-200:]) / min(len(latencies), 200),
+                    p50_latency_ms=sorted_lats[len(sorted_lats) * 50 // 100],
+                    p99_latency_ms=sorted_lats[len(sorted_lats) * 99 // 100],
+                    throughput=len(latencies) / max(time.time() - 60, 1) * 60 if latencies else 0,
+                    sample_count=len(latencies),
+                    batch_sizes=batch_sizes[-20:],
+                )
+                result[model] = str(stats)
+            return result
+
+    def get_current_batch_size(self, model: str) -> int:
+        """Return the current (possibly adjusted) batch size for a model."""
+        with self._lock:
+            return self._current_batch.get(model, self._default_config.min_batch_size)
+
+    def get_slo_config(self, model: str) -> SLOConfig:
+        """Return the SLO config for a model (or default)."""
+        with self._lock:
+            return self._configs.get(model, self._default_config)
+
+    def set_current_batch_size(self, model: str, batch_size: int) -> None:
+        """Override the current batch size for a model (e.g. from profiler)."""
+        with self._lock:
+            config = self._configs.get(model, self._default_config)
+            clamped = max(config.min_batch_size, min(batch_size, config.max_batch_size))
+            self._current_batch[model] = clamped

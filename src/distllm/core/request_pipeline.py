@@ -16,8 +16,7 @@ from loguru import logger
 
 from distllm.core.batch_scheduler import Sequence
 from distllm.core.structured_output import JSONSchemaConstraint
-from distllm.core.constrained_decoder import SchemaConstrainedDecoder
-from distllm.communication.grpc import is_debug_mode
+from distllm.core.debug import is_debug_mode
 from distllm.core.graceful_degradation import LoadSnapshot
 from distllm.errors.types import (
     NodeError, NodeUnreachableError, OOMError, GRPCTimeoutError, BatchError,
@@ -125,7 +124,7 @@ class RequestPipeline:
         if c._rate_limiter is not None:
             allowed = c._rate_limiter.check(f"user:{user_id}", 1.0)
             if not allowed:
-                c._request_tracker.complete(request_id, "[Rate limited]")
+                c._request_tracker.set_result(request_id, "[Rate limited]")
                 c.record_metric("rate_limited", 1)
                 raise NodeError("Rate limit exceeded")
 
@@ -167,6 +166,11 @@ class RequestPipeline:
             c._request_auditor.record(request_id=request_id, prompt=prompt, model=c.model_name, status="processing")
 
         prompt_len = len(c.tokenizer.encode(prompt)) if c.tokenizer else 0
+
+        # Classify workload for auto-speculative method selection
+        spec_decoder = c._model_svc.get_spec_decoder() if hasattr(c, '_model_svc') else c._spec_decoder
+        if spec_decoder is not None and spec_decoder.method == "auto":
+            spec_decoder.set_workload_type(prompt)
 
         try:
             if c.tokenizer is None:
@@ -293,8 +297,7 @@ class RequestPipeline:
             elapsed = time.time() - start_time
 
             if c._self_optimizing:
-                from distllm.core.self_optimizing_engine import OpType
-                c._self_optimizing.record_operation(OpType.DECODE, duration_ms=elapsed * 1000, batch_size=1, seq_len=prompt_len + tokens_generated)
+                c._self_optimizing.record_operation("decode", duration_ms=elapsed * 1000, batch_size=1, seq_len=prompt_len + tokens_generated)
 
             c.record_metric("total_tokens_generated", tokens_generated)
             c.record_metric("total_generation_time", elapsed)
@@ -353,7 +356,7 @@ class RequestPipeline:
         if c._rate_limiter is not None:
             allowed = c._rate_limiter.check(f"user:{user_id}", 1.0)
             if not allowed:
-                c._request_tracker.complete(request_id, "[Rate limited]")
+                c._request_tracker.set_result(request_id, "[Rate limited]")
                 c.record_metric("rate_limited", 1)
                 raise NodeError("Rate limit exceeded")
 
@@ -364,14 +367,9 @@ class RequestPipeline:
 
         constraint = None
         if response_format:
-            # Use SchemaConstrainedDecoder (JSONSchemaFSM-backed) when possible
-            constraint = SchemaConstrainedDecoder.from_response_format(
+            constraint = JSONSchemaConstraint.from_response_format(
                 response_format, tokenizer=c.tokenizer
             )
-            if constraint is None:
-                constraint = JSONSchemaConstraint.from_response_format(
-                    response_format, tokenizer=c.tokenizer
-                )
         elif schema:
             constraint = JSONSchemaConstraint(schema=schema)
 
@@ -432,7 +430,7 @@ class RequestPipeline:
                             node_kv = c._batch_kv_caches.get(preempted_seq.request_id)
                         if node_kv:
                             all_kv = []
-                            for nid, kv_list in node_kv.items():
+                            for _nid, kv_list in node_kv.items():
                                 if kv_list is not None:
                                     all_kv.extend(kv_list)
                             if all_kv:
@@ -457,14 +455,15 @@ class RequestPipeline:
                 idle_time += 0.01
                 if idle_time > timeout:
                     logger.warning(f"Batch scheduler idle timeout ({timeout}s) exceeded. Completing {c.scheduler.pending_count} pending requests with error.")
-                    c._request_tracker.complete_batch_requests(c.scheduler.active, list(c.scheduler.pending_queue), c.tokenizer)
+                    pending_seqs = [s for _, _, s in c.scheduler._pending_heap]
+                    c._request_tracker.complete_batch_requests(c.scheduler.active, pending_seqs, c.tokenizer)
                     with c._request_tracker._lock:
-                        for seq in list(c.scheduler.pending_queue):
+                        for seq in pending_seqs:
                             c._request_tracker._results[seq.request_id] = "[Error: Request timed out in scheduler]"
                             event = c._request_tracker._events.pop(seq.request_id, None)
                             if event:
                                 event.set()
-                        c.scheduler.pending_queue.clear()
+                        c.scheduler._pending_heap.clear()
                     break
                 continue
 
@@ -486,7 +485,7 @@ class RequestPipeline:
                 break
 
         if c.scheduler is not None:
-            c._request_tracker.complete_batch_requests(c.scheduler.active, list(c.scheduler.pending_queue), c.tokenizer)
+            c._request_tracker.complete_batch_requests(c.scheduler.active, [s for _, _, s in c.scheduler._pending_heap], c.tokenizer)
             with c._batch_kv_caches_lock:
                 for rid in list(c._batch_kv_caches.keys()):
                     if rid not in c.scheduler.active:
@@ -509,7 +508,7 @@ class RequestPipeline:
         attention_mask = batch.build_attention_mask()
 
         if c._spec_decoder is not None and c._spec_decoder.is_enabled:
-            seq_inputs = [input_ids[:, start:start + length] for start, length in zip(seq_starts, seq_lengths)]
+            seq_inputs = [input_ids[:, start:start + length] for start, length in zip(seq_starts, seq_lengths, strict=False)]
             draft_tokens_list, _ = c._spec_decoder.generate_batch_draft_tokens(c.draft_model, seq_inputs)
             with torch.no_grad():
                 outputs = c.local_partitioner.full_model(input_ids=input_ids, attention_mask=attention_mask)
@@ -635,6 +634,15 @@ class RequestPipeline:
 
         if use_spec and draft_tokens_list:
             results = c._spec_decoder.verify_batch(draft_tokens_list=draft_tokens_list, target_logits_list=[last_logits[i:i+1] for i in range(batch.batch_size)], tokenizer=c.tokenizer, draft_logits_list=draft_logits_list)
+            if c._continuous_trainer is not None:
+                for idx, (_, accepted, _) in enumerate(results):
+                    if accepted and idx < len(draft_tokens_list):
+                        dt = draft_tokens_list[idx]
+                        if dt:
+                            c._continuous_trainer.record(
+                                dt.tolist() if hasattr(dt, 'tolist') else list(dt),
+                                list(accepted),
+                            )
             next_tokens = torch.tensor([r[2] for r in results], device=last_logits.device)
         else:
             next_tokens = self._sample_batch(last_logits, batch)
@@ -671,23 +679,38 @@ class RequestPipeline:
             raise RuntimeError("Speculative decoder is not configured")
 
         model = c.local_partitioner.full_model
-        generated_ids = input_ids.clone()
+        prompt_len = input_ids.shape[1]
+        total_capacity = prompt_len + max_new_tokens
+        generated_ids = torch.empty(
+            (input_ids.shape[0], total_capacity),
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        generated_ids[:, :prompt_len] = input_ids
+        gen_pos = prompt_len
         tokens_generated = 0
 
         while tokens_generated < max_new_tokens:
+            current_ids = generated_ids[:, :gen_pos]
             with torch.no_grad():
-                outputs = model(input_ids=generated_ids, output_hidden_states=True, use_cache=False)
+                outputs = model(input_ids=current_ids, output_hidden_states=True, use_cache=False)
 
             hidden_states = getattr(outputs, "hidden_states", None)
             hidden_states = hidden_states[-1] if hidden_states else None
-            draft_tokens, _, _ = c._spec_decoder.generate_draft_tokens(None, generated_ids[:, -1:], hidden_states=hidden_states)
+            draft_tokens, _, _ = c._spec_decoder.generate_draft_tokens(None, current_ids[:, -1:], hidden_states=hidden_states)
 
             if draft_tokens:
                 draft_tensor = torch.tensor([draft_tokens], device=generated_ids.device, dtype=generated_ids.dtype)
-                verify_input = torch.cat([generated_ids, draft_tensor], dim=1)
+                verify_input = torch.empty(
+                    (current_ids.shape[0], gen_pos + len(draft_tokens)),
+                    device=generated_ids.device,
+                    dtype=generated_ids.dtype,
+                )
+                verify_input[:, :gen_pos] = current_ids
+                verify_input[:, gen_pos:gen_pos + len(draft_tokens)] = draft_tensor
                 with torch.no_grad():
                     verify_outputs = model(input_ids=verify_input, use_cache=False)
-                target_logits = verify_outputs.logits[:, generated_ids.shape[1] - 1:, :]
+                target_logits = verify_outputs.logits[:, gen_pos - 1:, :]
                 accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(draft_tokens=draft_tokens, target_logits=target_logits, tokenizer=c.tokenizer, temperature=temperature)
                 if c._continuous_trainer is not None and accepted_tokens:
                     draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
@@ -701,12 +724,14 @@ class RequestPipeline:
             if not tokens_to_append:
                 break
 
+            append_len = len(tokens_to_append)
             next_tensor = torch.tensor([tokens_to_append], device=generated_ids.device, dtype=generated_ids.dtype)
-            generated_ids = torch.cat([generated_ids, next_tensor], dim=1)
-            tokens_generated += len(tokens_to_append)
-            c._spec_decoder.record_generated_tokens(generated_ids[0].tolist())
+            generated_ids[:, gen_pos:gen_pos + append_len] = next_tensor
+            gen_pos += append_len
+            tokens_generated += append_len
+            c._spec_decoder.record_generated_tokens(generated_ids[0, :gen_pos].tolist())
 
             if any(token_id == c.tokenizer.eos_token_id for token_id in tokens_to_append):
                 break
 
-        return c.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        return c.tokenizer.decode(generated_ids[0, :gen_pos], skip_special_tokens=True)

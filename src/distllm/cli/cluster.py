@@ -1,8 +1,16 @@
 """Cluster command group: distllm cluster."""
 
+import os
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
 import httpx
 from rich.console import Console
 from rich.table import Table
+from loguru import logger
 
 console = Console()
 
@@ -107,3 +115,147 @@ def _cluster_rebalance(host: str, port: int, strategy: str = "balanced"):
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
         console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+
+
+def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str, debug: bool):
+    """Start a coordinator and optionally the REST API."""
+    console.print(f"[bold]Starting coordinator...[/bold]")
+    console.print(f"  Model: {model}")
+    console.print(f"  gRPC port: {port}")
+    console.print(f"  API port: {api_port}")
+    console.print(f"  Mode: {'local' if local else 'distributed'}")
+
+    coord_args = [
+        sys.executable, "-m", "distllm.core.coordinator",
+        "--model", model,
+        "--port", str(port),
+        "--dtype", dtype,
+    ]
+    if local:
+        coord_args.append("--local")
+    if debug:
+        coord_args.append("--debug")
+
+    api_args = [
+        sys.executable, "-m", "distllm.api.server",
+        "--model", model,
+        "--port", str(api_port),
+        "--dtype", dtype,
+    ]
+    if local:
+        api_args.append("--local")
+    if debug:
+        api_args.append("--debug")
+
+    try:
+        coord_proc = subprocess.Popen(coord_args)
+        console.print(f"[green]Coordinator started[/green] (PID: {coord_proc.pid})")
+        time.sleep(1)
+
+        api_proc = subprocess.Popen(api_args)
+        console.print(f"[green]API server started[/green] (PID: {api_proc.pid})")
+
+        console.print()
+        console.print(f"Workers join: distllm cluster join --coordinator localhost:{port}")
+        console.print(f"API: http://localhost:{api_port}/v1/chat/completions")
+        console.print("Press Ctrl+C to stop")
+
+        try:
+            coord_proc.wait()
+        except KeyboardInterrupt:
+            coord_proc.terminate()
+            api_proc.terminate()
+            console.print("[yellow]Cluster stopped[/yellow]")
+    except FileNotFoundError:
+        console.print("[red]Error:[/red] distllm modules not found")
+
+
+def _cluster_join(
+    coordinator_host: str, coordinator_port: int,
+    node_id: str | None, start_layer: int | None,
+    end_layer: int | None, total_layers: int | None,
+    listen_port: int, device: str,
+    cluster_key: str | None = None,
+):
+    """Start a worker node and connect to an existing coordinator."""
+    if node_id is None:
+        node_id = f"node_{uuid.uuid4().hex[:8]}"
+
+    console.print(f"[bold]Joining cluster at {coordinator_host}:{coordinator_port}...[/bold]")
+    console.print(f"  Node ID: {node_id}  Listen port: {listen_port}")
+    if start_layer is not None and end_layer is not None:
+        console.print(f"  Layers: {start_layer}-{end_layer} of {total_layers or '?'}")
+
+    args = [
+        sys.executable, "-m", "distllm.dist.worker",
+        "--node-id", node_id,
+        "--model", "connecting",
+        "--start-layer", str(start_layer or 0),
+        "--end-layer", str(end_layer or 0),
+        "--total-layers", str(total_layers or 1),
+        "--port", str(listen_port),
+        "--coordinator-host", coordinator_host,
+        "--coordinator-port", str(coordinator_port),
+        "--device", device,
+    ]
+    if cluster_key:
+        args += ["--cluster-key", cluster_key]
+
+    try:
+        proc = subprocess.Popen(args)
+        console.print(f"[green]Worker started[/green] (PID: {proc.pid})")
+        console.print(f"[dim]Connected to {coordinator_host}:{coordinator_port}[/dim]")
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            console.print(f"[yellow]Worker {node_id} stopped[/yellow]")
+    except FileNotFoundError:
+        console.print("[red]Error:[/red] distllm modules not found")
+
+
+def _cluster_leave(node_id: str, coordinator_host: str, coordinator_port: int):
+    """Gracefully remove a worker node from the cluster."""
+    console.print(f"Removing node [cyan]{node_id}[/cyan] from cluster...")
+    try:
+        with httpx.Client(base_url=f"http://{coordinator_host}:{coordinator_port}") as client:
+            resp = client.post(f"/v1/cluster/nodes/{node_id}/drain")
+            if resp.status_code == 200:
+                console.print(f"[green]Node {node_id} drained[/green]")
+            else:
+                console.print(f"[yellow]Drain returned: {resp.status_code}[/yellow]")
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to {coordinator_host}:{coordinator_port}[/red]")
+
+
+def _cluster_list_nodes(coordinator_host: str, coordinator_port: int):
+    """List registered worker nodes."""
+    try:
+        with httpx.Client(base_url=f"http://{coordinator_host}:{coordinator_port}") as client:
+            resp = client.get("/v1/cluster/status")
+            resp.raise_for_status()
+            data = resp.json()
+
+        nodes = data.get("nodes", [])
+        if not nodes:
+            console.print("[yellow]No nodes registered[/yellow]")
+            return
+
+        table = Table(title=f"Cluster Nodes ({len(nodes)} total)")
+        table.add_column("Node ID", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("GPU", style="dim")
+        table.add_column("Layers", style="blue")
+        table.add_column("VRAM Free", style="magenta")
+
+        for node in nodes:
+            table.add_row(
+                node.get("node_id", "?"),
+                "healthy" if node.get("healthy") else "unhealthy",
+                node.get("gpu_name", "unknown"),
+                f"{node.get('start_layer', '?')}-{node.get('end_layer', '?')}",
+                f"{node.get('gpu_memory_free', 0) // (1024**3)}GB",
+            )
+        console.print(table)
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to coordinator at {coordinator_host}:{coordinator_port}[/red]")

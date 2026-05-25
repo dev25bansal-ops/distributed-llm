@@ -1,12 +1,4 @@
-"""Proto serialization edge case tests.
-
-Tests:
-- tensor_to_proto: empty tensors, None, various dtypes, large tensors
-- proto_to_tensor: empty tensors, malformed data, dtype mismatches, oversized payloads
-- Round-trip integrity for various tensor shapes and dtypes
-- KV cache serialization with empty/partial caches
-- 64MB max message size boundary
-- Legacy float list fallback
+"""Proto serialization edge case tests (legacy — serializers module removed).
 
 Run: pytest tests/core/test_serializers_edge_cases.py -v
 """
@@ -16,13 +8,17 @@ import struct
 import pytest
 import torch
 
-from distllm.communication.node_pb2 import Tensor
-from distllm.communication.serializers import (
-    kv_cache_to_proto,
-    proto_to_kv_cache,
-    proto_to_tensor,
-    tensor_to_proto,
-)
+try:
+    from distllm.communication.node_pb2 import Tensor
+    from distllm.communication.serializers import (
+        kv_cache_to_proto,
+        proto_to_kv_cache,
+        proto_to_tensor,
+        tensor_to_proto,
+    )
+except ImportError:
+    pytest.skip("distllm.communication.serializers module removed", allow_module_level=True)
+
 from distllm.core.kv_cache import KVCache
 
 # ============================================================

@@ -13,6 +13,7 @@ Fully rewritten with:
 
 import time
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, AsyncIterator
@@ -70,7 +71,7 @@ def _compute_delay(attempt: int, cfg: RetryConfig) -> float:
     """Compute exponential backoff delay with jitter."""
     import random
     delay = min(cfg.initial_delay * (cfg.exponential_base ** attempt), cfg.max_delay)
-    return delay * (0.5 + random.random() * 0.5)  # jitter
+    return delay * (0.5 + random.random() * 0.5)  # noqa: S311 - retry jitter
 
 
 def _parse_usage(data: dict) -> UsageInfo | None:
@@ -107,6 +108,7 @@ class _BaseClient:
         self._retry = retry or RetryConfig()
         self._pool = pool or PoolConfig()
         self._stats = ClientStats()
+        self._max_call_log_size = int(os.environ.get("DISTLLM_SDK_MAX_CALL_LOG", "1000"))
         self._circuit_breaker = CircuitBreaker(circuit_breaker) if circuit_breaker is not None else None
 
     @property
@@ -526,8 +528,8 @@ class DistLLMClient(_BaseClient):
         payload = self._build_chat_payload(
             messages, model, temperature, top_p, max_tokens, stream, response_format, adapter, logprobs, include_usage,
         )
-        data = await self._request("POST", "/v1/chat/completions", json=payload, timeout=timeout)
         start = time.time()
+        data = await self._request("POST", "/v1/chat/completions", json=payload, timeout=timeout)
         choices = [
             ChatChoice(
                 index=c.get("index", 0),
@@ -589,8 +591,8 @@ class DistLLMClient(_BaseClient):
             "model": model, "prompt": prompt,
             "temperature": temperature, "top_p": top_p, "max_tokens": max_tokens,
         }
-        data = await self._request("POST", "/v1/completions", json=payload, timeout=timeout)
         start = time.time()
+        data = await self._request("POST", "/v1/completions", json=payload, timeout=timeout)
         choices = [CompletionChoice(index=c.get("index", 0), text=c.get("text", ""), finish_reason=c.get("finish_reason")) for c in data.get("choices", [])]
         elapsed = time.time() - start
         resp = CompletionResponse(
@@ -740,6 +742,8 @@ class DistLLMClient(_BaseClient):
             completion_tokens=usage.completion_tokens if usage else 0,
             status_code=200,
         ))
+        if len(self._stats.call_log) > self._max_call_log_size:
+            del self._stats.call_log[: len(self._stats.call_log) - self._max_call_log_size]
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         """Make an HTTP request with automatic retry and circuit breaker."""
@@ -774,7 +778,7 @@ class DistLLMClient(_BaseClient):
                 raise
         if self._circuit_breaker:
             self._circuit_breaker.record_failure()
-        raise last_exc  # type: ignore[misc]
+        raise last_exc  # type: ignore[misc]  # mypy: BaseException union narrowing
 
     async def _request_raw(self, method: str, path: str, **kwargs) -> httpx.Response:
         """Make a raw HTTP request (for binary responses) with circuit breaker."""
@@ -800,7 +804,7 @@ class DistLLMClient(_BaseClient):
                 raise
         if self._circuit_breaker:
             self._circuit_breaker.record_failure()
-        raise last_exc  # type: ignore[misc]
+        raise last_exc  # type: ignore[misc]  # mypy: BaseException union narrowing
 
     @staticmethod
     async def _sleep(delay: float):
@@ -876,8 +880,8 @@ class DistLLMClientSync(_BaseClient):
         payload = self._build_chat_payload(
             messages, model, temperature, top_p, max_tokens, stream, response_format, adapter, logprobs, include_usage,
         )
-        data = self._request("POST", "/v1/chat/completions", json=payload, timeout=timeout)
         start = time.time()
+        data = self._request("POST", "/v1/chat/completions", json=payload, timeout=timeout)
         choices = [
             ChatChoice(
                 index=c.get("index", 0),
@@ -934,8 +938,8 @@ class DistLLMClientSync(_BaseClient):
             "model": model, "prompt": prompt,
             "temperature": temperature, "top_p": top_p, "max_tokens": max_tokens,
         }
-        data = self._request("POST", "/v1/completions", json=payload, timeout=timeout)
         start = time.time()
+        data = self._request("POST", "/v1/completions", json=payload, timeout=timeout)
         choices = [CompletionChoice(index=c.get("index", 0), text=c.get("text", ""), finish_reason=c.get("finish_reason")) for c in data.get("choices", [])]
         elapsed = time.time() - start
         resp = CompletionResponse(
@@ -1085,6 +1089,8 @@ class DistLLMClientSync(_BaseClient):
             completion_tokens=usage.completion_tokens if usage else 0,
             status_code=200,
         ))
+        if len(self._stats.call_log) > self._max_call_log_size:
+            del self._stats.call_log[: len(self._stats.call_log) - self._max_call_log_size]
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
         """Make an HTTP request with automatic retry and circuit breaker."""
@@ -1119,7 +1125,7 @@ class DistLLMClientSync(_BaseClient):
                 raise
         if self._circuit_breaker:
             self._circuit_breaker.record_failure()
-        raise last_exc  # type: ignore[misc]
+        raise last_exc  # type: ignore[misc]  # mypy: BaseException union narrowing
 
     def _request_raw(self, method: str, path: str, **kwargs) -> httpx.Response:
         """Make a raw HTTP request (for binary responses) with circuit breaker."""
@@ -1145,4 +1151,5 @@ class DistLLMClientSync(_BaseClient):
                 raise
         if self._circuit_breaker:
             self._circuit_breaker.record_failure()
-        raise last_exc  # type: ignore[misc]
+        raise last_exc  # type: ignore[misc]  # mypy: BaseException union narrowing
+

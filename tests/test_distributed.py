@@ -42,11 +42,15 @@ def start_worker_node_in_thread(
             dtype=dtype,
         )
         node.load_model()
-        servicer = __import__("distllm.communication.grpc", fromlist=["NodeService"]).NodeService(
+        try:
+            grpc_mod = __import__("distllm.communication.grpc", fromlist=["NodeService", "GRPCServer"])
+        except ImportError:
+            raise RuntimeError("distllm.communication.grpc module removed")
+        servicer = grpc_mod.NodeService(
             node_id=node_id,
             forward_fn=node.forward_fn,
         )
-        server = __import__("distllm.communication.grpc", fromlist=["GRPCServer"]).GRPCServer(
+        server = grpc_mod.GRPCServer(
             port=port, servicer=servicer
         )
         server.start()

@@ -19,6 +19,7 @@ from enum import Enum
 
 import torch
 from loguru import logger
+from distllm.security import hf_revision
 
 
 @dataclass
@@ -141,7 +142,7 @@ class AdapterPool:
                 props = torch.cuda.get_device_properties(0)
                 return int(props.total_memory * 0.3)  # Use 30% of VRAM for adapters
         except Exception:
-            pass
+            logger.debug("Adapter VRAM detection failed, using default")
         return 4 * 1024 ** 3  # Default: 4GB
 
     def add_adapter(self, adapter_id: str, path: str, vram_bytes: int = 0, rank: int = 0, tenant_id: str = "") -> None:
@@ -309,20 +310,46 @@ class AdapterManager:
             info.state = "offloaded"
 
     def quantize_adapter(self, adapter_id: str) -> None:
-        """Quantize adapter weights to int8 to fit more adapters in VRAM."""
+        """Quantize adapter weights with symmetric absmax int8 metadata.
+
+        PyTorch parameters cannot be blindly reassigned to ``torch.int8``
+        without breaking downstream modules.  Keep compatible floating-point
+        parameters in the live model and retain the int8 backing state for
+        export/custom kernels.
+        """
         if adapter_id not in self._loaded_models:
             logger.warning(f"Cannot quantize '{adapter_id}': not on GPU")
             return
 
         logger.info(f"Quantizing adapter '{adapter_id}' to int8")
         model = self._loaded_models[adapter_id]
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                param.data = param.data.to(torch.int8)
+        quantized_state = {}
+        converted = 0
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if not torch.is_floating_point(param.data):
+                    continue
+                max_abs = param.data.detach().abs().max()
+                if max_abs == 0:
+                    scale = torch.tensor(1.0, device=param.device, dtype=torch.float32)
+                    quantized = torch.zeros_like(param.data, dtype=torch.int8)
+                else:
+                    scale = (max_abs / 127).to(torch.float32)
+                    quantized = torch.clamp(torch.round(param.data / scale), -127, 127).to(torch.int8)
+                quantized_state[name] = {
+                    "weight": quantized.detach().cpu(),
+                    "scale": float(scale.detach().cpu()),
+                    "shape": tuple(param.shape),
+                    "dtype": str(param.dtype),
+                }
+                param.data.copy_((quantized.to(param.device).to(torch.float32) * scale).to(param.dtype))
+                converted += 1
+        model._distllm_quantized_adapter_state = quantized_state
         info = self._pool.get_adapter(adapter_id)
         if info:
-            info.vram_bytes //= 2
-            info.quantized = True
+            info.quantized = converted > 0
+        if converted == 0:
+            logger.warning(f"Adapter '{adapter_id}' had no floating-point parameters to quantize")
 
     def prepare_batch_adapters(self, adapter_ids: list[str | None]) -> float:
         """Ensure all needed adapters are on GPU for a batch.
@@ -435,6 +462,7 @@ class AdapterManager:
             self.base_model,
             adapter_path,
             adapter_name=adapter_id,
+            revision=hf_revision(),
         )
         self._loaded_models[adapter_id] = model
 

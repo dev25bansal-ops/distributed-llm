@@ -46,22 +46,20 @@ class TestSelectForNode:
         info = NodeVRAMInfo(device_type="cuda", available_memory=6e9)
         assert select_for_node(info, 4e9) == "bnb_8bit"
 
-    def test_low_vram_4bit(self):
-        # VRAM < model * 1.2 → 4-bit
+    def test_low_vram_gptq(self):
+        # VRAM < model * 1.1 → GPTQ 4-bit (most aggressive)
         info = NodeVRAMInfo(device_type="cuda", available_memory=4e9)
-        assert select_for_node(info, 4e9) == "bnb_4bit"
+        assert select_for_node(info, 4e9) == "gptq"
 
-    def test_very_low_vram_4bit(self):
-        # VRAM much less than model → still 4-bit (most aggressive)
+    def test_very_low_vram_gptq(self):
+        # VRAM much less than model → GPTQ 4-bit
         info = NodeVRAMInfo(device_type="cuda", available_memory=1e9)
-        assert select_for_node(info, 4e9) == "bnb_4bit"
+        assert select_for_node(info, 4e9) == "gptq"
 
-    def test_boundary_1_2x(self):
-        # Exactly at 1.2x boundary → should be 8-bit (strictly less triggers 4-bit)
+    def test_boundary_1_5x(self):
+        # 6e9 < 5e9 * 1.5 = 7.5e9 → AWQ 4-bit
         info = NodeVRAMInfo(device_type="cuda", available_memory=6e9)
-        # 6e9 == 5e9 * 1.2, so it's not < 1.2x
-        # 6e9 < 5e9 * 1.8 = 9e9, so it's 8-bit
-        assert select_for_node(info, 5e9) == "bnb_8bit"
+        assert select_for_node(info, 5e9) == "awq"
 
     def test_target_latency_unused(self):
         # target_latency_ms is reserved for future use
@@ -118,6 +116,12 @@ class TestBuildQuantizationConfig:
         assert config.bnb_4bit_quant_type == "nf4"
         assert config.bnb_4bit_use_double_quant is True
 
-    def test_unknown_method(self):
+    def test_gptq_method_returns_config_dict(self):
         config = build_quantization_config("gptq")
+        assert isinstance(config, dict)
+        assert config["method"] == "gptq"
+        assert config["bits"] == 4
+
+    def test_unknown_method_returns_none(self):
+        config = build_quantization_config("unknown_method_xyz")
         assert config is None

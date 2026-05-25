@@ -301,15 +301,13 @@ class TestCoordinatorHealthIntegration:
 
     def test_health_check_triggers_circuit_breaker_metrics(self, mock_coordinator_with_nodes):
         """Health check should record circuit breaker states."""
-        # Mock metrics exporter
         mock_exporter = MagicMock()
-        mock_coordinator_with_nodes.metrics_exporter = mock_exporter
         mock_exporter.circuit_breaker_state = MagicMock()
         mock_exporter.circuit_breaker_state.labels.return_value = MagicMock()
+        mock_coordinator_with_nodes._health_svc.metrics_exporter = mock_exporter
 
         mock_coordinator_with_nodes.health_check()
 
-        # Should have recorded circuit breaker state for each node
         assert mock_exporter.circuit_breaker_state.labels.call_count >= 2
 
 

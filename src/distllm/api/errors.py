@@ -22,11 +22,22 @@ def error_response(
 
     OpenAI error format:
     {"error": {"message": "...", "type": "...", "param": null, "code": "..."}}
+
+    OpenAI error codes (mapped from status):
+    401 -> "invalid_api_key"
+    429 -> "rate_limit_exceeded"
+    504 -> "timeout"
+    503 -> "service_unavailable"
+    400 -> "invalid_request_error"
+    500 -> "internal_error"
     """
+    code_map = {401: "invalid_api_key", 429: "rate_limit_exceeded", 504: "timeout",
+                503: "service_unavailable", 400: "invalid_request_error", 500: "internal_error"}
     error_body: dict = {
         "message": message,
         "type": type,
-        "code": str(status_code),
+        "param": None,
+        "code": code_map.get(status_code, str(status_code)),
     }
     if retry_after is not None:
         error_body["retry_after"] = retry_after

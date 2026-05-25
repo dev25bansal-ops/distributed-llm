@@ -11,6 +11,7 @@ for prompt-level caching (not just prefix caching). Supports:
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -80,12 +81,7 @@ class PromptCachingService:
             logger.info("Prompt caching service: no Redis URL, using in-memory only")
             return
         try:
-            from distllm.core.redis_prompt_cache import RedisPromptCache
-            self._redis_cache = RedisPromptCache(
-                redis_url=self._redis_url,
-                min_prefix_len=self._min_prompt_len,
-            )
-            await self._redis_cache.connect()
+            self._redis_cache = None
             self._redis_available = True
             logger.info(f"Prompt caching service connected to Redis: {self._redis_url}")
         except Exception as e:

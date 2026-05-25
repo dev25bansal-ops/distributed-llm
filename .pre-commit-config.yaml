@@ -44,8 +44,16 @@ repos:
       - id: check-merge-conflict
       - id: check-symlinks
       - id: check-case-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+      - id: detect-private-key
       - id: end-of-file-fixer
       - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: name-tests-test
 
   - repo: local
     hooks:

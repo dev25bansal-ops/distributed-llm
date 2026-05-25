@@ -38,6 +38,16 @@ def _auth_header():
 
 
 class TestCreateTenant:
+    def test_create_tenant_with_quota_override(self, client):
+        resp = client.post("/v1/tenants", json={
+            "name": "Quota Tenant",
+            "tier": "free",
+            "quota": {"max_rpm": 100, "max_tpm": 5000},
+        }, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["quota"]["max_rpm"] == 100
+        assert data["quota"]["max_tpm"] == 5000
     def test_create_tenant_success(self, client):
         resp = client.post("/v1/tenants", json={"name": "Acme Corp", "tier": "business"}, headers=_auth_header())
         assert resp.status_code == 200
@@ -67,6 +77,19 @@ class TestListTenants:
         data = resp.json()
         assert isinstance(data, list)
         assert any(t["name"] == "Default" for t in data)
+
+    def test_list_tenants_empty(self):
+        app = FastAPI()
+        app.state.tenant_store = TenantStore()
+        from distllm.tenant.billing import UsageMeter
+        app.state.usage_meter = UsageMeter(app.state.tenant_store)
+        app.include_router(router)
+        os.environ["ADMIN_API_KEY"] = "test-admin-key-12345"
+        with TestClient(app) as c:
+            resp = c.get("/v1/tenants", headers={"Authorization": "Bearer test-admin-key-12345"})
+            assert resp.status_code == 200
+            assert resp.json() == []
+        os.environ.pop("ADMIN_API_KEY", None)
 
     def test_list_tenants_no_auth(self, client):
         resp = client.get("/v1/tenants")
@@ -105,6 +128,12 @@ class TestUpdateTenant:
         tenant_id = list_resp.json()[0]["tenant_id"]
         resp = client.put(f"/v1/tenants/{tenant_id}", json={"tier": "mega"}, headers=_auth_header())
         assert resp.status_code == 400
+
+    def test_update_tenant_is_active(self, client):
+        list_resp = client.get("/v1/tenants", headers=_auth_header())
+        tenant_id = list_resp.json()[0]["tenant_id"]
+        resp = client.put(f"/v1/tenants/{tenant_id}", json={"is_active": False}, headers=_auth_header())
+        assert resp.status_code == 200
 
     def test_update_tenant_not_found(self, client):
         resp = client.put("/v1/tenants/nonexistent", json={"name": "Nope"}, headers=_auth_header())
@@ -150,6 +179,45 @@ class TestUsage:
         assert report.total_input_tokens == 100
         assert report.total_output_tokens == 50
 
+    def test_get_usage_report_via_http(self, client):
+        resp = client.post("/v1/tenants", json={"name": "Usage HTTP", "tier": "starter"}, headers=_auth_header())
+        tenant_id = resp.json()["tenant_id"]
+        store = client.app.state.tenant_store
+        meter = client.app.state.usage_meter
+        meter.record(tenant_id, input_tokens=200, output_tokens=75, model="default", endpoint="/chat")
+        resp = client.get(f"/v1/tenants/{tenant_id}/usage", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_requests"] == 1
+        assert data["total_input_tokens"] == 200
+
+    def test_get_usage_report_no_auth(self, client):
+        resp = client.post("/v1/tenants", json={"name": "Usage NoAuth", "tier": "free"}, headers=_auth_header())
+        tenant_id = resp.json()["tenant_id"]
+        resp = client.get(f"/v1/tenants/{tenant_id}/usage")
+        assert resp.status_code == 401
+
+    def test_get_usage_report_not_found(self, client):
+        resp = client.get("/v1/tenants/nonexistent/usage", headers=_auth_header())
+        assert resp.status_code == 404
+
+    def test_get_usage_with_since_param(self, client):
+        resp = client.post("/v1/tenants", json={"name": "Usage Since", "tier": "business"}, headers=_auth_header())
+        tenant_id = resp.json()["tenant_id"]
+        store = client.app.state.tenant_store
+        meter = client.app.state.usage_meter
+        meter.record(tenant_id, input_tokens=50, output_tokens=25)
+        resp = client.get(f"/v1/tenants/{tenant_id}/usage?since=0", headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json()["total_requests"] >= 1
+
+    def test_get_billing_with_since_param(self, client):
+        list_resp = client.get("/v1/tenants", headers=_auth_header())
+        tenant_id = list_resp.json()[0]["tenant_id"]
+        resp = client.get(f"/v1/tenants/{tenant_id}/billing?since=0", headers=_auth_header())
+        assert resp.status_code == 200
+        assert "summary" in resp.json()
+
     def test_live_snapshot(self, client):
         store = TenantStore()
         tenant = store.create_tenant(name="Live Test", tier=TenantTier.FREE)
@@ -170,6 +238,10 @@ class TestBilling:
         assert "summary" in data
         assert "cost_breakdown" in data
 
+    def test_get_billing_not_found(self, client):
+        resp = client.get("/v1/tenants/nonexistent/billing", headers=_auth_header())
+        assert resp.status_code == 404
+
     def test_get_billing_no_auth(self, client):
         list_resp = client.get("/v1/tenants", headers=_auth_header())
         tenant_id = list_resp.json()[0]["tenant_id"]
@@ -182,6 +254,25 @@ class TestLiveUsage:
         resp = client.post("/v1/tenants", json={"name": "Live", "tier": "free"}, headers=_auth_header())
         tenant_id = resp.json()["tenant_id"]
         resp = client.get(f"/v1/tenants/{tenant_id}/live")
+        assert resp.status_code == 200
+
+    def test_get_live_usage_response_shape(self, client):
+        resp = client.post("/v1/tenants", json={"name": "Live Shape", "tier": "free"}, headers=_auth_header())
+        tenant_id = resp.json()["tenant_id"]
+        meter = client.app.state.usage_meter
+        meter.record(tenant_id, input_tokens=10, output_tokens=5)
+        resp = client.get(f"/v1/tenants/{tenant_id}/live")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "requests_1m" in data
+        assert "input_tokens_1m" in data
+        assert "output_tokens_1m" in data
+        assert "cost_1m" in data
+
+    def test_get_live_usage_with_window(self, client):
+        resp = client.post("/v1/tenants", json={"name": "Live Window", "tier": "free"}, headers=_auth_header())
+        tenant_id = resp.json()["tenant_id"]
+        resp = client.get(f"/v1/tenants/{tenant_id}/live?window=30")
         assert resp.status_code == 200
 
     def test_get_live_usage_not_found(self, client):

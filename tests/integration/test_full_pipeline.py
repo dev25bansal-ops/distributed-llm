@@ -168,7 +168,7 @@ class TestMockGeneration:
             # But it needs input_ids etc.
             coord.node_order = ["worker-0", "worker-1"]
 
-            with pytest.raises(Exception):
+            with pytest.raises((RuntimeError, ValueError, TypeError, AttributeError)):
                 # Will fail at encoding since tokenizer.encode returns [1,2,3] which
                 # creates tensors that can't actually be run through mock pipeline
                 coord.generate("test prompt", max_new_tokens=5)

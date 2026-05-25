@@ -23,11 +23,11 @@ configMapGenerator:
       - DISTLLM_DEGRADATION_ENABLED=true
 
 patches:
-  - path: operator-patch.yaml
+  - path: coordinator-patch.yaml
     target:
       kind: Deployment
       name: distllm-coordinator
-  - path: operator-patch.yaml
+  - path: worker-patch.yaml
     target:
       kind: StatefulSet
       name: distllm-worker

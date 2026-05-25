@@ -11,6 +11,16 @@ interface HealthResponse {
   node_health?: Record<string, { healthy: boolean }>;
 }
 
+interface CompletionsResponse {
+  choices?: Array<{ text: string }>;
+  usage?: { completion_tokens?: number };
+}
+
+interface ChatCompletionsResponse {
+  choices?: Array<{ message: { content: string } }>;
+  usage?: { completion_tokens?: number };
+}
+
 interface MetricsResponse {
   latency?: { avg?: number };
   throughput?: { tokens_per_sec_avg?: number };
@@ -192,7 +202,7 @@ async function sendToModel(
     {
       url: `${apiUrl}/v1/completions`,
       body: { model: modelName, prompt: text, max_tokens: maxTokens, temperature },
-      extract: (d: any) => d.choices?.[0]?.text || "",
+      extract: (d: CompletionsResponse) => d.choices?.[0]?.text ?? "",
     },
     {
       url: `${apiUrl}/v1/chat/completions`,
@@ -202,7 +212,7 @@ async function sendToModel(
         max_tokens: maxTokens,
         temperature,
       },
-      extract: (d: any) => d.choices?.[0]?.message?.content || "",
+      extract: (d: ChatCompletionsResponse) => d.choices?.[0]?.message?.content ?? "",
     },
   ];
 

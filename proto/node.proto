@@ -1,261 +1,83 @@
 syntax = "proto3";
 
-package distributed_llm;
+package distllm;
 
-option java_package = "com.distributedllm";
-option java_multiple_files = true;
-
-// Single tensor (activations, embeddings, logits)
-message Tensor {
-  repeated float data = 1;    // Legacy: float list (backward compatible)
-  repeated int32 shape = 2;
-  string dtype = 3;
-  bytes raw_data = 4;         // Efficient: raw bytes (numpy tobytes)
+message TensorProto {
+  repeated int32 shape = 1;
+  string dtype = 2;
+  bytes raw_data = 3;
+  repeated float data = 4;
 }
 
-// KV cache for a single layer (key and value states)
-message KVLayerCache {
-  Tensor key_states = 1;
-  Tensor value_states = 2;
+message KVCacheProto {
+  message LayerCache {
+    TensorProto key_states = 1;
+    TensorProto value_states = 2;
+  }
+  repeated LayerCache layers = 1;
 }
 
-// Full KV cache across all layers for a request
-message KVCache {
-  repeated KVLayerCache layers = 1;
-}
-
-// GPU information
-message GPUInfo {
-  int32 gpu_id = 1;
-  string name = 2;
-  int64 total_memory = 3;
-  int64 used_memory = 4;
-  int64 free_memory = 5;
-  float utilization = 6;
-}
-
-// Forward pass request - covers all pipeline stages
 message ForwardPassRequest {
   string request_id = 1;
-
-  // For first node: token IDs to embed
   repeated int32 input_ids = 2;
-  int32 batch_size = 3;
-  int32 seq_len = 4;
-
-  // For middle/last nodes: hidden state activations
-  Tensor hidden_states = 5;
-
-  // Attention context
-  Tensor attention_mask = 6;
-  Tensor position_ids = 7;
-
-  // KV cache from previous generation steps
-  KVCache kv_cache = 8;
-  bool use_cache = 9;
-
-  // Pipeline role flags
-  bool is_first_pass = 10;
-
-  // Speculative decoding
-  repeated int32 draft_tokens = 11;    // Draft tokens to verify (speculative mode)
-
-  // Multi-model serving
-  string model_name = 12;              // Which model's layers to execute
+  TensorProto hidden_states = 3;
+  TensorProto attention_mask = 4;
+  TensorProto position_ids = 5;
+  KVCacheProto kv_cache = 6;
+  bool use_cache = 7;
+  bool is_first_pass = 8;
+  repeated int32 draft_tokens = 9;
+  int32 batch_size = 10;
+  int32 seq_len = 11;
+  bool is_last_pass = 12;
+  string model_name = 13;
 }
 
-// Error codes for structured error handling
-enum ErrorCode {
-  UNKNOWN = 0;
-  MODEL_ERROR = 1;
-  OOM = 2;
-  TIMEOUT = 3;
-  INVALID_INPUT = 4;
-  NODE_UNREACHABLE = 5;
-  CIRCUIT_BREAKER_OPEN = 6;
-}
-
-// Forward pass response
 message ForwardPassResponse {
   string request_id = 1;
-
-  // Output from the node
-  Tensor output = 2;
-
-  // Updated KV cache (for middle/last nodes)
-  KVCache kv_cache = 3;
-
+  TensorProto output = 2;
+  KVCacheProto kv_cache = 3;
   bool success = 4;
   string error_message = 5;
-  ErrorCode error_code = 7;
-
-  // For last node: logits
-  bool is_logits = 6;
-
-  // Speculative decoding
-  repeated int32 verified_tokens = 8;  // Verified token IDs from target model
-  float speculative_score = 9;          // Acceptance confidence [0,1]
-
-  // Performance metrics
-  float processing_time_ms = 10;       // Layer execution time
+  int32 error_code = 6;
+  bool is_logits = 7;
+  float processing_time_ms = 8;
 }
 
-// Node registration
-message NodeInfo {
+message HealthCheckRequest {
   string node_id = 1;
-  string host = 2;
-  int32 port = 3;
-  int64 total_memory = 4;
-  int64 available_memory = 5;
-  string device_type = 6;
-  string device_name = 7;
-  string cluster_id = 8;  // Cluster/region identifier for federation
 }
-
-message NodeRegistration {
-  NodeInfo node_info = 1;
-  int32 num_layers = 2;
-  repeated GPUInfo gpus = 3;           // GPU topology
-  repeated int32 expert_ids = 4;       // Expert IDs this node hosts (MoE)
-}
-
-message RegistrationResponse {
-  bool accepted = 1;
-  int32 assigned_start_layer = 2;
-  int32 assigned_end_layer = 3;
-  string model_name = 4;
-  bool is_first_node = 5;
-  bool is_last_node = 6;
-  QuantizationConfig quantization = 7;
-  repeated ExpertInfo expert_assignments = 8;  // MoE expert assignments
-}
-
-// MoE expert information
-message ExpertInfo {
-  int32 expert_id = 1;
-  int32 layer_idx = 2;
-  string node_id = 3;
-}
-
-// MoE forward pass
-message MoEForwardRequest {
-  Tensor hidden_states = 1;
-  repeated int32 expert_ids = 2;
-  repeated float routing_weights = 3;
-  string request_id = 4;
-}
-
-message MoEForwardResponse {
-  Tensor output = 1;
-  bool success = 2;
-  string error_message = 3;
-  float processing_time_ms = 4;
-}
-
-// Quantization configuration for model loading
-message QuantizationConfig {
-  string method = 1;                           // "none", "bnb_4bit", "bnb_8bit"
-  string bnb_4bit_compute_dtype = 2;           // "float16", "bfloat16", "float32"
-  string bnb_4bit_quant_type = 3;              // "nf4", "fp4"
-  bool bnb_4bit_use_double_quant = 4;          // Use nested quantization
-  float llm_int8_threshold = 5;                // Outlier threshold for 8-bit
-}
-
-// Health check
-message HealthCheckRequest {}
 
 message HealthCheckResponse {
-  string node_id = 1;
-  bool healthy = 2;
-  int64 memory_used = 3;
-  int64 memory_total = 4;
+  bool healthy = 1;
+  string node_id = 2;
+  int64 memory_used_bytes = 3;
+  int64 memory_total_bytes = 4;
   float gpu_utilization = 5;
-  float temperature = 6;
-  repeated GPUInfo gpus = 7;           // Per-GPU breakdown
+  int32 start_layer = 6;
+  int32 end_layer = 7;
+  int32 total_layers = 8;
+  string gpu_name = 9;
+  int64 gpu_memory_total = 10;
+  int32 num_layers_loaded = 11;
 }
 
-// Cross-cluster latency ping
-message PingRequest {
-  string source_cluster_id = 1;
-  int64 timestamp = 2;
-}
-
-message PingResponse {
+message ProfileRequest {
   string node_id = 1;
-  string cluster_id = 2;
-  int64 timestamp = 3;
-  float latency_ms = 4;
 }
 
-// Inference request from client to coordinator
-message InferenceRequest {
-  string request_id = 1;
-  string prompt = 2;
-  int32 max_tokens = 3;
-  float temperature = 4;
-  float top_p = 5;
-  bool stream = 6;
-  int32 priority = 7;                  // 0=critical, 1=high, 2=normal, 3=low
-}
-
-// Streaming token response
-message TokenResponse {
-  string request_id = 1;
-  string token = 2;
-  bool is_final = 3;
-  string full_text = 4;
-}
-
-// Logits response (for non-streaming)
-message LogitsResponse {
-  string request_id = 1;
-  string generated_text = 2;
-  bool success = 3;
-  string error_message = 4;
-  ErrorCode error_code = 5;
-}
-
-message ModelListResponse {
-  repeated string models = 1;
-  string default_model = 2;
-}
-
-// P2P KV cache gossip
-message GossipAdvertisement {
+message ProfileResponse {
   string node_id = 1;
-  repeated string cache_prefixes = 2;
-  int64 total_cache_entries = 3;
-  int64 timestamp = 4;
+  string gpu_name = 2;
+  int64 total_memory_bytes = 3;
+  int64 free_memory_bytes = 4;
+  float compute_tflops = 5;
+  float memory_bandwidth_gbps = 6;
+  int32 sm_count = 7;
 }
 
-message GossipRequest {
-  string requester_id = 1;
-  string target_node_id = 2;
-  repeated string requested_prefixes = 3;
-}
-
-message GossipResponse {
-  bool success = 1;
-  string error_message = 2;
-  map<string, KVCache> cache_entries = 3;
-  int64 entries_returned = 4;
-}
-
-// Node service - each worker node implements this
 service NodeService {
   rpc ForwardPass(ForwardPassRequest) returns (ForwardPassResponse);
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-  rpc GetNodeInfo(HealthCheckRequest) returns (NodeInfo);
-  rpc GossipExchange(GossipAdvertisement) returns (GossipAdvertisement);
-  rpc RequestCache(GossipRequest) returns (GossipResponse);
-  rpc MoEForward(MoEForwardRequest) returns (MoEForwardResponse);
-  rpc Ping(PingRequest) returns (PingResponse);
-}
-
-// Coordinator service
-service CoordinatorService {
-  rpc RegisterNode(NodeRegistration) returns (RegistrationResponse);
-  rpc Infer(InferenceRequest) returns (LogitsResponse);
-  rpc StreamInfer(InferenceRequest) returns (stream TokenResponse);
-  rpc ListModels(HealthCheckRequest) returns (ModelListResponse);
+  rpc Profile(ProfileRequest) returns (ProfileResponse);
 }

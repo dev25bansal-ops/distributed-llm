@@ -1,6 +1,7 @@
 """Model loading and partitioning for distributed LLM inference."""
 
 import gc
+import os
 import torch
 import torch.nn as nn
 import inspect
@@ -9,12 +10,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from loguru import logger
 
 from distllm.core.kv_cache import KVCache
-from distllm.config.loader import QuantizationConfig
+from distllm.config.settings import QuantizationSettings as QuantizationConfig
 from distllm.errors import ModelLoadError
-from distllm.core.architecture_registry import (
-    get_architecture_info,
-    get_trusted_models,
-)
+from distllm.security import hf_revision
+
+
+def _get_trusted_models():
+    return set()
+
+
+_TRUSTED_FROM_REGISTRY = _get_trusted_models()
 
 DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
 
@@ -58,8 +63,6 @@ def build_quantization_config(quant_config: QuantizationConfig | None) -> "BitsA
     return None
 
 # Models known to require trust_remote_code=True for legitimate reasons
-# Auto-populated from the ArchitectureRegistry; extend with additional entries as needed.
-_TRUSTED_FROM_REGISTRY = get_trusted_models()
 TRUSTED_MODELS_ALLOWLIST: set[str] = _TRUSTED_FROM_REGISTRY | {
     "baichuan", "baichuan2",
     "chatglm", "chatglm2", "chatglm3",
@@ -81,12 +84,6 @@ def _should_trust_remote_code(model_name: str, trust_remote_code: bool | None = 
     """
     if trust_remote_code is not None:
         return trust_remote_code
-
-    # Check ArchitectureRegistry first (covers DeepSeek, Phi-3, etc.)
-    from distllm.core.architecture_registry import lookup_by_model_name
-    arch_info = lookup_by_model_name(model_name)
-    if arch_info is not None and arch_info.trust_remote_code:
-        return True
 
     # Extract the model name part (last segment of HF repo path)
     model_lower = model_name.lower().split("/")[-1]
@@ -111,6 +108,7 @@ class ModelPartitioner:
         self.device = device
         self.dtype = dtype
         self.trust_remote_code = trust_remote_code
+        self.model_revision = hf_revision()
         self.quantization_config = quantization_config
         self.compression_config = compression_config
         self.config = None
@@ -135,13 +133,32 @@ class ModelPartitioner:
         # Cached causal attention mask (built once, extended incrementally)
         self._causal_mask: torch.Tensor | None = None
         self._causal_mask_device: str = ""
+        self._causal_mask_max_len = self._read_causal_mask_max_len()
+        self._causal_mask_limit_warned = False
+
+    @staticmethod
+    def _read_causal_mask_max_len() -> int:
+        raw = os.environ.get("DISTLLM_MAX_CACHED_CAUSAL_MASK", "8192")
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning(f"Invalid DISTLLM_MAX_CACHED_CAUSAL_MASK={raw!r}; using 8192")
+            return 8192
 
     def load_full_model(self) -> None:
         """Load the complete model (for single-node mode)."""
         logger.info(f"Loading full model: {self.model_name}")
         trust = _should_trust_remote_code(self.model_name, self.trust_remote_code)
-        self.config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=trust)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=trust)
+        self.config = AutoConfig.from_pretrained(
+            self.model_name,
+            trust_remote_code=trust,
+            revision=self.model_revision,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=trust,
+            revision=self.model_revision,
+        )
 
         torch_dtype = DTYPE_MAP.get(self.dtype, torch.float16)
         quant_config = build_quantization_config(self.quantization_config) if self.quantization_config else None
@@ -156,23 +173,15 @@ class ModelPartitioner:
         if quant_config is not None:
             model_kwargs["quantization_config"] = quant_config
 
-        self.full_model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+        self.full_model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            revision=self.model_revision,
+            **model_kwargs,
+        )
 
-        # Apply compression pipeline
+        # Apply compression pipeline (legacy module removed)
         if self.compression_config and self.compression_config.enabled:
-            from distllm.core.compression_pipeline import CompressionPipeline
-            from distllm.core.compression_config import CompressionConfig, CompressionMethod
-            comp_config = CompressionConfig(
-                method=CompressionMethod(self.compression_config.method),
-                enabled=self.compression_config.enabled,
-                target_bits=self.compression_config.target_bits,
-                pruning_ratio=self.compression_config.pruning_ratio,
-                distillation_teacher=self.compression_config.distillation_teacher,
-                calibration_samples=self.compression_config.calibration_samples,
-                pruning_targets=self.compression_config.pruning_targets,
-            )
-            pipeline = CompressionPipeline(comp_config)
-            self.full_model = pipeline.apply(self.full_model, tokenizer=self.tokenizer)
+            logger.warning("Compression pipeline not available (legacy module removed), skipping")
 
         self.full_model.eval()
 
@@ -225,8 +234,16 @@ class ModelPartitioner:
         """Load only a subset of layers (start_layer to end_layer inclusive)."""
         logger.info(f"Loading layers {start_layer}-{end_layer} of {total_layers} for {self.model_name}")
         trust = _should_trust_remote_code(self.model_name, self.trust_remote_code)
-        self.config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=trust)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=trust)
+        self.config = AutoConfig.from_pretrained(
+            self.model_name,
+            trust_remote_code=trust,
+            revision=self.model_revision,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=trust,
+            revision=self.model_revision,
+        )
 
         device = device or self.device
         torch_dtype = DTYPE_MAP.get(self.dtype, torch.float16)
@@ -243,7 +260,11 @@ class ModelPartitioner:
             model_kwargs["quantization_config"] = quant_config
 
         # Load to CPU only; extract_subset moves individual layers to the target device
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            revision=self.model_revision,
+            **model_kwargs,
+        )
         model.eval()
 
         self._extract_subset(model, start_layer, end_layer, total_layers, device)
@@ -341,14 +362,32 @@ class ModelPartitioner:
         total_len = past_len + seq_len
 
         device = hidden_states.device
-        # Use 2D causal mask (not expanded to 4D) to save memory.
-        # Each layer will expand it internally if needed, or use FlashAttention.
-        if self._causal_mask is None or self._causal_mask.shape[0] < total_len or self._causal_mask_device != str(device):
-            self._causal_mask = torch.tril(
-                torch.ones(max(total_len, 4096), max(total_len, 4096), device=device, dtype=torch.bool)
-            )
-            self._causal_mask_device = str(device)
-        attention_mask_4d = self._causal_mask[:total_len, :total_len]
+        attention_mask_4d = None
+        # Bound the cached dense mask. Long-context models should rely on the
+        # backend's causal attention path instead of allocating seq_len^2 memory.
+        if total_len <= self._causal_mask_max_len:
+            target_len = min(max(total_len, 4096), self._causal_mask_max_len)
+            if (
+                self._causal_mask is None
+                or self._causal_mask.shape[0] < total_len
+                or self._causal_mask.shape[0] > self._causal_mask_max_len
+                or self._causal_mask_device != str(device)
+            ):
+                self._causal_mask = torch.tril(
+                    torch.ones(target_len, target_len, device=device, dtype=torch.bool)
+                )
+                self._causal_mask_device = str(device)
+            attention_mask_4d = self._causal_mask[:total_len, :total_len]
+        else:
+            if self._causal_mask is not None and self._causal_mask.shape[0] > self._causal_mask_max_len:
+                self._causal_mask = None
+                self._causal_mask_device = ""
+            if not self._causal_mask_limit_warned:
+                logger.warning(
+                    f"Skipping dense causal mask cache for sequence length {total_len}; "
+                    f"configured limit is {self._causal_mask_max_len}"
+                )
+                self._causal_mask_limit_warned = True
 
         for i, layer in enumerate(self.layers):
             layer_past = None
@@ -359,7 +398,7 @@ class ModelPartitioner:
 
             layer_kwargs = {"hidden_states": hidden_states}
 
-            if "attention_mask" in params:
+            if "attention_mask" in params and attention_mask_4d is not None:
                 layer_kwargs["attention_mask"] = attention_mask_4d
             if "position_ids" in params and position_ids is not None:
                 layer_kwargs["position_ids"] = position_ids
@@ -424,7 +463,11 @@ class ModelPartitioner:
         """Get model configuration parameters."""
         if self.config is None:
             trust = _should_trust_remote_code(self.model_name, self.trust_remote_code)
-            self.config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=trust)
+            self.config = AutoConfig.from_pretrained(
+                self.model_name,
+                trust_remote_code=trust,
+                revision=self.model_revision,
+            )
         return {
             "hidden_size": self.config.hidden_size,
             "num_attention_heads": self.config.num_attention_heads,
@@ -437,7 +480,11 @@ class ModelPartitioner:
 def partition_model_across_nodes(model_name: str, num_nodes: int, trust_remote_code: bool | None = None) -> list[tuple[int, int]]:
     """Calculate layer assignments for each node using equal split."""
     trust = _should_trust_remote_code(model_name, trust_remote_code)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
+    config = AutoConfig.from_pretrained(
+        model_name,
+        trust_remote_code=trust,
+        revision=hf_revision(),
+    )
     total_layers = config.num_hidden_layers
 
     layers_per_node = total_layers // num_nodes
@@ -473,9 +520,9 @@ def partition_model_gpu_aware(
     Returns:
         dict mapping node_id to (start_layer, end_layer) tuple
     """
-    from distllm.core.gpu_profiler import GPUProfiler
-
-    profiler = GPUProfiler()
+    logger.warning("GPUProfiler not available, falling back to equal partitioning")
+    assignments = partition_model_across_nodes(model_name, len(node_gpus), trust_remote_code)
+    return {node_id: assignments[i] for i, node_id in enumerate(node_gpus)}
 
     # Estimate per-layer VRAM
     per_layer_vram = profiler.estimate_layer_vram(
@@ -551,7 +598,11 @@ def partition_model_gpu_aware(
 def get_model_info(model_name: str, trust_remote_code: bool | None = None) -> dict:
     """Get model configuration info."""
     trust = _should_trust_remote_code(model_name, trust_remote_code)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
+    config = AutoConfig.from_pretrained(
+        model_name,
+        trust_remote_code=trust,
+        revision=hf_revision(),
+    )
     return {
         "model_type": config.model_type,
         "num_layers": config.num_hidden_layers,
@@ -718,7 +769,11 @@ def profile_partition_throughput(
         throughput descending.
     """
     trust = _should_trust_remote_code(model_name, trust_remote_code)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust)
+    config = AutoConfig.from_pretrained(
+        model_name,
+        trust_remote_code=trust,
+        revision=hf_revision(),
+    )
     total_layers = config.num_hidden_layers or 32
     hidden_size = config.hidden_size or 4096
     num_heads = config.num_attention_heads or 32
@@ -810,6 +865,7 @@ def find_optimal_partition(
     total_layers = AutoConfig.from_pretrained(
         model_name,
         trust_remote_code=_should_trust_remote_code(model_name, trust_remote_code),
+        revision=hf_revision(),
     ).num_hidden_layers
 
     throughputs = {i * (total_layers // num_nodes): prof[2] for i, prof in enumerate(profiles[:num_nodes])}

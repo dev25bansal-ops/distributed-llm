@@ -71,14 +71,19 @@ def _type_to_rule(prop_schema: dict, name: str | None = None) -> str:
 
 
 def _primitive_rule(prop_type: str) -> str:
+    """Return a GBNF grammar rule matching the given JSON primitive type.
+
+    Produces real grammar rules rather than literal example values so that
+    constrained generation (e.g. via llama.cpp) produces valid JSON output.
+    """
     if prop_type == "string":
-        return '"string"'
+        return '"\\"" ([^"\\\\] | "\\\\" .)* "\\""'
     elif prop_type == "integer":
-        return '"0"'
+        return '("-"? [0-9]+)'
     elif prop_type == "number":
-        return '"0.0"'
+        return '("-"? ([0-9]+ "."[0-9]+ | [0-9]+))'
     elif prop_type == "boolean":
-        return '"true"'
+        return '("true" | "false")'
     return '"null"'
 
 
@@ -89,6 +94,6 @@ def _primitive_example(prop_type: str) -> str:
 def _extra_rules(schema: dict) -> list[str]:
     rules = []
     defs = schema.get("$defs", {})
-    for name, def_schema in defs.items():
+    for name, _def_schema in defs.items():
         rules.append(f"{name} ::= value")
     return rules

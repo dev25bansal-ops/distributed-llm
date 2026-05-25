@@ -425,6 +425,81 @@ class TestGenerateTextStream:
         assert len(texts) == 0
 
 
+class TestGenerateBackpressure:
+    """Tests for backpressure handling in generate()."""
+
+    @pytest.mark.asyncio
+    async def test_small_max_buffer_size_works(self):
+        config = StreamingConfig(max_buffer_size=2, stream_chunk_size=1)
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.decode.return_value = "tok"
+        tokens_yielded = []
+
+        async def mock_generate_fn(prompt):
+            for i in range(5):
+                tokens_yielded.append(i)
+                yield (i, False)
+            yield (5, True)
+
+        gen = StreamingGenerator(tokenizer=mock_tokenizer, config=config)
+        chunks = []
+        async for chunk in gen.generate("test", mock_generate_fn):
+            chunks.append(chunk)
+
+        data_chunks = [c for c in chunks if isinstance(c, StreamChunk)
+                       and c.choices[0]["delta"].get("content", "")]
+        assert len(data_chunks) == 6
+
+    @pytest.mark.asyncio
+    async def test_backpressure_cancel_while_waiting(self):
+        config = StreamingConfig(max_buffer_size=1, stream_chunk_size=5)
+        cancel_event = asyncio.Event()
+
+        async def mock_generate_fn(prompt):
+            for i in range(10):
+                yield (i, False)
+            yield (10, True)
+
+        async def delayed_cancel():
+            await asyncio.sleep(0.01)
+            cancel_event.set()
+
+        gen = StreamingGenerator(config=config)
+        chunks = []
+
+        async def consume():
+            async for chunk in gen.generate("test", mock_generate_fn, cancel_event=cancel_event):
+                chunks.append(chunk)
+
+        await asyncio.gather(consume(), delayed_cancel())
+
+        assert len(chunks) > 0
+        # Should have a done chunk
+        done_chunks = [c for c in chunks if isinstance(c, str)]
+        assert len(done_chunks) >= 1
+
+    @pytest.mark.asyncio
+    async def test_backpressure_buffer_clears_on_yield(self):
+        config = StreamingConfig(max_buffer_size=3, stream_chunk_size=2)
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.decode.return_value = "tok"
+        tokens_yielded = []
+
+        async def mock_generate_fn(prompt):
+            for i in range(4):
+                tokens_yielded.append(i)
+                yield (i, i == 3)
+
+        gen = StreamingGenerator(tokenizer=mock_tokenizer, config=config)
+        chunks = []
+        async for chunk in gen.generate("test", mock_generate_fn):
+            chunks.append(chunk)
+
+        data_chunks = [c for c in chunks if isinstance(c, StreamChunk)
+                       and c.choices[0]["delta"].get("content", "")]
+        assert len(data_chunks) >= 2
+
+
 # --- Static method tests ---
 
 

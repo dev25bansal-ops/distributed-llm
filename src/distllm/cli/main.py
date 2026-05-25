@@ -14,7 +14,7 @@ console = Console()
 
 # --- Command groups ---
 models_app = typer.Typer(help="Manage models (list, load, unload, info)")
-cluster_app = typer.Typer(help="Manage cluster (status, scale, drain, rebalance)")
+cluster_app = typer.Typer(help="Manage cluster (start, join, status, leave, scale, drain, rebalance)")
 adapters_app = typer.Typer(help="Manage adapters (list, load, set, unload)")
 logs_app = typer.Typer(help="Stream and filter logs")
 benchmark_app = typer.Typer(help="Run and compare benchmarks")
@@ -71,7 +71,7 @@ def validate_config():
         DistLLMSettings.validate_startup()
         console.print("[green]Config validation passed[/green]")
     except SystemExit:
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -172,6 +172,61 @@ def cluster_rebalance(
     """Rebalance load across cluster nodes."""
     from distllm.cli.cluster import _cluster_rebalance
     _cluster_rebalance(host, port, strategy)
+
+
+@cluster_app.command("start")
+def cluster_start(
+    model: str = typer.Option(..., "--model", "-m", help="Model name or path"),
+    port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
+    api_port: int = typer.Option(8000, "--api-port", help="REST API port"),
+    local: bool = typer.Option(False, "--local", "-l", help="Run full model locally"),
+    dtype: str = typer.Option("float16", "--dtype", help="Data type"),
+    debug: bool = typer.Option(False, "--debug", help="Enable debug logging"),
+):
+    """Start a coordinator node and begin accepting workers."""
+    from distllm.cli.cluster import _cluster_start
+    _cluster_start(model, port, api_port, local, dtype, debug)
+
+
+@cluster_app.command("join")
+def cluster_join(
+    coordinator_host: str = typer.Option("localhost", "--coordinator", "-c", help="Coordinator hostname or IP"),
+    coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
+    node_id: str = typer.Option(None, "--node-id", help="Unique node ID (auto-generated if omitted)"),
+    start_layer: int = typer.Option(None, "--start-layer", help="First layer to serve"),
+    end_layer: int = typer.Option(None, "--end-layer", help="Last layer to serve"),
+    total_layers: int = typer.Option(None, "--total-layers", help="Total model layers"),
+    port: int = typer.Option(50051, "--listen-port", help="This node's gRPC port"),
+    device: str = typer.Option("auto", "--device", help="Device (auto, cuda, cpu)"),
+    cluster_key: str = typer.Option(None, "--cluster-key", help="Shared cluster authentication key"),
+):
+    """Join an existing cluster as a worker node."""
+    from distllm.cli.cluster import _cluster_join
+    _cluster_join(
+        coordinator_host, coordinator_port, node_id,
+        start_layer, end_layer, total_layers, port, device, cluster_key,
+    )
+
+
+@cluster_app.command("leave")
+def cluster_leave(
+    node_id: str = typer.Argument(..., help="Node ID to remove from cluster"),
+    coordinator_host: str = typer.Option("localhost", "--coordinator", "-c", help="Coordinator hostname"),
+    coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator port"),
+):
+    """Gracefully leave the cluster and shut down worker."""
+    from distllm.cli.cluster import _cluster_leave
+    _cluster_leave(node_id, coordinator_host, coordinator_port)
+
+
+@cluster_app.command("list-nodes")
+def cluster_list_nodes(
+    coordinator_host: str = typer.Option("localhost", "--coordinator", "-c", help="Coordinator hostname"),
+    coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
+):
+    """List registered worker nodes in the cluster."""
+    from distllm.cli.cluster import _cluster_list_nodes
+    _cluster_list_nodes(coordinator_host, coordinator_port)
 
 
 # --- adapters group ---
@@ -343,47 +398,9 @@ def chat(
 
 
 @app.command()
-def node(
-    node_id: str = typer.Option(..., "--node-id", help="Unique node identifier"),
-    model: str = typer.Option(..., "--model", "-m", help="HuggingFace model name or path"),
-    start_layer: int = typer.Option(..., "--start-layer", help="First layer to run"),
-    end_layer: int = typer.Option(..., "--end-layer", help="Last layer to run"),
-    total_layers: int = typer.Option(..., "--total-layers", help="Total layers in model"),
-    port: int = typer.Option(50051, "--port", help="gRPC port"),
-    coordinator_host: str = typer.Option("localhost", "--coordinator-host", help="Coordinator host"),
-    coordinator_port: int = typer.Option(50050, "--coordinator-port", help="Coordinator port"),
-    device: str = typer.Option("auto", "--device", help="Device (auto, cuda, cpu)"),
-    dtype: str = typer.Option("float16", "--dtype", help="Data type"),
-    debug: bool = typer.Option(False, "--debug", help="Enable debug mode with tensor shape logging"),
-):
-    """Start a worker node that runs a subset of model layers."""
-    from distllm.core.node import WorkerNode
-    from distllm.communication.grpc import set_debug_mode
-    from loguru import logger
-
-    if debug:
-        set_debug_mode(True)
-        logger.info("Debug mode enabled: tensor shape logging active")
-
-    n = WorkerNode(
-        node_id=node_id,
-        model_name=model,
-        start_layer=start_layer,
-        end_layer=end_layer,
-        total_layers=total_layers,
-        port=port,
-        coordinator_host=coordinator_host,
-        coordinator_port=coordinator_port,
-        device=device,
-        dtype=dtype,
-    )
-    n.start()
-
-
-@app.command()
 def coordinator(
     model: str = typer.Option(..., "--model", "-m", help="Model name"),
-    port: int = typer.Option(50050, "--port", help="Coordinator gRPC port"),
+    port: int = typer.Option(50050, "--port", help="Coordinator port"),
     dtype: str = typer.Option("float16", "--dtype", help="Data type"),
     local: bool = typer.Option(False, "--local", "-l", help="Run full model locally"),
     chat_mode: bool = typer.Option(False, "--chat", help="Interactive chat mode (requires --local)"),
@@ -392,7 +409,7 @@ def coordinator(
 ):
     """Start the coordinator facade for distributed inference."""
     from distllm.core.coordinator import Coordinator
-    from distllm.communication.grpc import set_debug_mode
+    from distllm.core.debug import set_debug_mode
     from loguru import logger
 
     if debug:
@@ -425,7 +442,7 @@ def coordinator(
 @app.command()
 def api(
     model: str = typer.Option(..., "--model", "-m", help="Model name"),
-    host: str = typer.Option("0.0.0.0", "--host", help="API server host"),
+    host: str = typer.Option("127.0.0.1", "--host", help="API server host"),
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
     dtype: str = typer.Option("float16", "--dtype", help="Data type"),
     local: bool = typer.Option(False, "--local", "-l", help="Load model locally"),
@@ -433,7 +450,7 @@ def api(
 ):
     """Start the OpenAI-compatible REST API server."""
     from distllm.api.server import app, create_coordinator
-    from distllm.communication.grpc import set_debug_mode
+    from distllm.core.debug import set_debug_mode
     from loguru import logger
     import uvicorn
 
@@ -447,106 +464,8 @@ def api(
 
 
 @app.command()
-def client(
-    model: str = typer.Option("roneneldan/TinyStories-1M", "--model", "-m", help="Model name"),
-    chat_mode: bool = typer.Option(False, "--chat", help="Interactive chat mode"),
-    prompt: str | None = typer.Option(None, "--prompt", help="Single prompt"),
-    health: bool = typer.Option(False, "--health", help="Show node health"),
-    max_tokens: int = typer.Option(128, "--max-tokens", help="Max tokens"),
-    temperature: float = typer.Option(0.7, "--temperature", help="Sampling temperature"),
-    dtype: str = typer.Option("float32", "--dtype", help="Data type"),
-    local: bool = typer.Option(False, "--local", "-l", help="Load model locally"),
-):
-    """Client for distributed LLM inference (chat, prompts, health)."""
-    import time
-    from distllm.core.coordinator import Coordinator
-
-    coordinator = Coordinator(model_name=model, dtype=dtype)
-
-    if local:
-        print(f"Loading model locally: {model}")
-        coordinator.load_local_model()
-    else:
-        print(f"Client ready for model: {model}")
-
-    if health:
-        if not coordinator.nodes:
-            print("No remote nodes registered.")
-        else:
-            print("Node Health Status:")
-            print("-" * 50)
-            health_data = coordinator.health_check()
-            for node_id, status in health_data.items():
-                node = coordinator.nodes[node_id]
-                h = "HEALTHY" if status.get("healthy") else "UNHEALTHY"
-                print(f"  {node_id}: {h} (layers {node.start_layer}-{node.end_layer})")
-    elif prompt:
-        print(f"Model: {model}\nPrompt: {prompt}\n\nGenerating...\n")
-        start = time.time()
-        result = coordinator.generate(prompt, max_new_tokens=max_tokens, temperature=temperature)
-        elapsed = time.time() - start
-        print(result)
-        tokens = len(coordinator.tokenizer.encode(result))
-        print(f"\n---\nGenerated {tokens} tokens in {elapsed:.1f}s ({tokens/elapsed:.1f} tok/s)")
-    elif chat_mode:
-        print("=" * 60)
-        print("Distributed LLM - Interactive Chat")
-        print(f"Model: {model}")
-        print("Type 'quit' or 'exit' to stop")
-        print("=" * 60)
-        conversation = []
-        while True:
-            try:
-                user_input = input("\nYou: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nGoodbye!")
-                break
-            if user_input.lower() in ('quit', 'exit', 'q'):
-                print("Goodbye!")
-                break
-            if not user_input:
-                continue
-            conversation.append({"role": "user", "content": user_input})
-            full_prompt = "\n".join(f"{m['role']}: {m['content']}" for m in conversation)
-            print("\nAssistant: ", end="", flush=True)
-            start = time.time()
-            result = coordinator.generate(full_prompt, max_new_tokens=256, temperature=0.7, top_p=0.9)
-            response = result[len(full_prompt):] if result.startswith(full_prompt) else result
-            print(response.strip())
-            elapsed = time.time() - start
-            tokens = len(coordinator.tokenizer.encode(response))
-            print(f"\n[{tokens} tokens in {elapsed:.1f}s | {tokens/elapsed:.1f} tok/s]")
-            conversation.append({"role": "assistant", "content": response.strip()})
-    else:
-        print("\nUsage:")
-        print(f"  distllm client --model {model} --local --chat")
-        print(f"  distllm client --model {model} --local --prompt \"Hello world\"")
-        print(f"  distllm client --model {model} --health")
-
-
-@app.command()
-def tp(
-    model: str = typer.Option(..., "--model", "-m", help="Model name"),
-    num_gpus: int = typer.Option(2, "--num-gpus", help="Number of GPUs"),
-    dtype: str = typer.Option("float16", "--dtype", help="Data type"),
-    trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="Trust remote code"),
-    port: int = typer.Option(29500, "--port", help="Master port for NCCL"),
-):
-    """Launch tensor parallel workers for multi-GPU inference."""
-    from distllm.core.tp_launcher import launch_tp_workers
-
-    launch_tp_workers(
-        model_name=model,
-        num_gpus=num_gpus,
-        dtype=dtype,
-        trust_remote_code=trust_remote_code,
-        port=port,
-    )
-
-
-@app.command()
 def dashboard(
-    host: str = typer.Option("0.0.0.0", "--host", help="Dashboard host"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Dashboard host"),
     port: int = typer.Option(8500, "--port", "-p", help="Dashboard port"),
     api_url: str | None = typer.Option(None, "--api-url", help="DistLLM API server URL"),
 ):

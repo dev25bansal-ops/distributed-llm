@@ -1,0 +1,1 @@
+{"id": "req-ok", "custom_id": "req-ok", "response": {"status_code": 200, "body": {"id": "chatcmpl-batch_63c69458", "object": "chat.completion", "model": "distributed-llm", "choices": [{"index": 0, "message": {"role": "assistant", "content": "tok-1 tok-2 tok-3"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1}}}, "error": null}

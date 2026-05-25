@@ -20,7 +20,7 @@ def run_inference(
 ):
     """Run inference with the specified parameters."""
     if debug:
-        from distllm.communication.grpc import set_debug_mode
+        from distllm.core.debug import set_debug_mode
         set_debug_mode(True)
         console.print("[yellow]Debug mode enabled: tensor shape logging active[/yellow]")
 
@@ -50,7 +50,7 @@ def run_inference(
         console.print(f"Open http://localhost:{port}/docs for API documentation\n")
 
         # Start server
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
     except KeyboardInterrupt:
         console.print("\nShutting down...")

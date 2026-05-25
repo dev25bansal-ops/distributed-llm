@@ -17,7 +17,7 @@ from distllm.errors.types import (
     ConfigValidationError, NodeUnreachableError, OOMError,
     InputValidationError, GRPCTimeoutError,
 )
-from distllm.communication.transport import TensorTransport, TransportBackend
+from distllm.core.pipeline_orchestrator import TensorTransport, TransportBackend
 
 
 @pytest.fixture

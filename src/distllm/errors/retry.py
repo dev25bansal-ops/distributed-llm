@@ -5,6 +5,7 @@ and asynchronous operations.
 """
 
 import asyncio
+import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Callable, TypeVar, Optional, Type
@@ -45,16 +46,23 @@ def with_retry(policy: RetryPolicy):
         Decorated function with retry support.
     """
     def decorator(fn: Callable[..., T]) -> Callable[..., T]:
-        if asyncio.iscoroutinefunction(fn):
+        fn_name = getattr(fn, "__name__", fn.__class__.__name__)
+        if inspect.iscoroutinefunction(fn):
             raise TypeError(
-                f"{fn.__name__} is async — use @with_retry_async for async functions, "
+                f"{fn_name} is async — use @with_retry_async for async functions, "
                 f"or wrap the sync call in @with_retry for blocking functions."
             )
         def wrapper(*args, **kwargs) -> T:
             last_exception: Optional[Exception] = None
             for attempt in range(policy.max_retries + 1):
                 try:
-                    return fn(*args, **kwargs)
+                    result = fn(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        raise TypeError(
+                            f"{fn_name} returned a coroutine — use @with_retry_async "
+                            f"for async functions, or wrap the sync call in @with_retry."
+                        )
+                    return result
                 except policy.retryable as e:
                     last_exception = e
                     if attempt == policy.max_retries:
@@ -64,11 +72,11 @@ def with_retry(policy: RetryPolicy):
                         policy.max_delay,
                     )
                     logger.warning(
-                        f"{fn.__name__} failed (attempt {attempt + 1}/{policy.max_retries + 1}): "
+                        f"{fn_name} failed (attempt {attempt + 1}/{policy.max_retries + 1}): "
                         f"{e}, retrying in {delay:.1f}s"
                     )
                     time.sleep(delay)
-            raise last_exception  # type: ignore[misc]
+            raise last_exception  # type: ignore[misc]  # mypy: BaseException union narrowing
         return wrapper
     return decorator
 
@@ -101,7 +109,7 @@ def with_retry_async(policy: RetryPolicy):
                         f"{e}, retrying in {delay:.1f}s"
                     )
                     await asyncio.sleep(delay)
-            raise last_exception  # type: ignore[misc]
+            raise last_exception  # type: ignore[misc]  # mypy: BaseException union narrowing
         return wrapper
     return decorator
 
@@ -157,4 +165,4 @@ def retry_grpc_call(
             )
             time.sleep(delay)
 
-    raise last_exception  # type: ignore[misc]
+    raise last_exception  # type: ignore[misc]  # mypy: BaseException union narrowing

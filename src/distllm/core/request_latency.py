@@ -121,6 +121,39 @@ class RequestLatencyTracker:
                 for c in self._completed[-limit:]
             ]
 
+    def get_urgency_score(self, request_id: str) -> float:
+        """Return a normalized urgency score (0=not urgent, 1=critical).
+
+        Used by the scheduler to reorder active decode sequences:
+        sequences closer to their SLO deadline get higher urgency.
+        """
+        with self._lock:
+            info = self._requests.get(request_id)
+            if not info:
+                return 0.0
+            ratio = info.elapsed_ms / max(info.sla_target_ms, 1)
+            return min(1.0, ratio)
+
+    def get_overdue_request_ids(self) -> list[str]:
+        """Return all request IDs that have exceeded their SLA."""
+        with self._lock:
+            return [rid for rid, info in self._requests.items() if info.is_overdue]
+
+    def get_requests_sorted_by_deadline(self) -> list[tuple[str, float]]:
+        """Return (request_id, elapsed_ratio) pairs sorted by urgency (most urgent first).
+
+        Used by the scheduler to prioritize active decode sequences
+        that are closest to their SLO deadline.
+        """
+        with self._lock:
+            items = []
+            for rid, info in self._requests.items():
+                if info.first_token_at is not None:
+                    ratio = info.elapsed_ms / max(info.sla_target_ms, 1)
+                    items.append((rid, ratio))
+            items.sort(key=lambda x: -x[1])  # Most urgent first
+            return items
+
     @property
     def tracked_count(self) -> int:
         with self._lock:

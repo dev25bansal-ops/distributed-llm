@@ -9,23 +9,36 @@ ARG DISTLLM_VERSION=0.4.0
 LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distributed-llm"
 LABEL org.opencontainers.image.version="${DISTLLM_VERSION}"
 LABEL org.opencontainers.image.title="Distributed LLM (CUDA 12.6)"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
-    python3-pip python3-distutils curl && rm -rf /var/lib/apt/lists/* \
+    python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
+    libnccl2 curl ca-certificates && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python
 
-FROM python:3.10-slim AS builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
+ARG PYTHON_VERSION=3.10
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 WORKDIR /build
-RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
+    python3-pip python3-setuptools python3-wheel \
+    gcc g++ ninja-build git curl libnccl-dev libnccl2 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 COPY requirements.lock .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
 COPY pyproject.toml .
+COPY README.md .
 COPY src/ src/
-RUN pip install --no-cache-dir --prefix=/install -e . --no-deps
+RUN pip install --no-cache-dir --prefix=/install . --no-deps
 
 FROM runtime-base
 COPY --from=builder /install /usr/local

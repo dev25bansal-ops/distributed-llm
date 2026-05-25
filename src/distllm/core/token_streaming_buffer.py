@@ -61,12 +61,14 @@ class TokenStreamingBuffer:
         flush_interval_ms: float = 50.0,
         compress_threshold_bytes: int = 4096,
         flush_on_special: set[str] | None = None,
+        max_total_tokens: int = 10_000_000,
     ):
         self._flush_handler = flush_handler
         self._max_batch_size = max_batch_size
         self._flush_interval = flush_interval_ms / 1000.0
         self._compress_threshold = compress_threshold_bytes
         self._flush_on_special = flush_on_special or {"\n", ".", "!"}
+        self._max_total_tokens = max_total_tokens
 
         self._batch = TokenBatch()
         self._last_flush = time.time()
@@ -94,6 +96,11 @@ class TokenStreamingBuffer:
             if logprob is not None:
                 self._batch.logprobs.append(logprob)
             self._total_tokens += 1
+
+            # Cap stats counters to prevent unbounded memory growth
+            if self._total_tokens > self._max_total_tokens:
+                self._total_tokens = self._max_total_tokens
+                self._total_batches = min(self._total_batches, self._max_total_tokens // self._max_batch_size)
 
             # Flush triggers
             if self._batch.token_count >= self._max_batch_size:

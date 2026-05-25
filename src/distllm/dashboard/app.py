@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
@@ -22,28 +23,37 @@ from loguru import logger
 
 from distllm.dashboard.ws_handler import manager, metrics_broadcaster, parse_client_message
 
-dashboard_app = FastAPI(title="DistLLM Dashboard", version="0.4.0")
+@asynccontextmanager
+async def lifespan(app):
+    """Startup/shutdown lifecycle for the dashboard app."""
+    global coordinator, _broadcast_task
+    if coordinator is not None:
+        _broadcast_task = asyncio.create_task(metrics_broadcaster(coordinator))
+    yield
+    if _broadcast_task:
+        _broadcast_task.cancel()
+
+dashboard_app = FastAPI(title="DistLLM Dashboard", version="0.4.0", lifespan=lifespan)
+
+# CORS hardening: restrict to known origins
+from fastapi.middleware.cors import CORSMiddleware
+ALLOWED_DASHBOARD_ORIGINS = os.environ.get(
+    "DISTLLM_DASHBOARD_CORS",
+    "http://localhost:8501,http://localhost:8000",
+).split(",")
+dashboard_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in ALLOWED_DASHBOARD_ORIGINS if o.strip()],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=600,
+)
 
 # Global coordinator reference (set by main())
 coordinator: object | None = None
 monitor: object | None = None
 _broadcast_task = None
-
-
-@dashboard_app.on_event("startup")
-async def startup_event():
-    """Start the metrics broadcaster background task."""
-    global coordinator, _broadcast_task
-    if coordinator is not None:
-        _broadcast_task = asyncio.create_task(metrics_broadcaster(coordinator))
-
-
-@dashboard_app.on_event("shutdown")
-async def shutdown_event():
-    """Cancel the metrics broadcaster."""
-    global _broadcast_task
-    if _broadcast_task:
-        _broadcast_task.cancel()
 
 
 # --- HTML Pages ---
@@ -154,7 +164,7 @@ async def api_nodes():
 
 @dashboard_app.get("/api/metrics")
 async def api_metrics():
-    """Return detailed metrics."""
+    """Return detailed metrics (unauthenticated, read-only)."""
     global coordinator
     if coordinator is None:
         return {}
@@ -183,23 +193,31 @@ async def api_waterfall(limit: int = Query(50, ge=1, le=200)):
         return []
 
 
-@dashboard_app.post("/api/config")
-async def api_update_config(config: dict):
-    """Update runtime configuration (requires coordinator).
+from pydantic import BaseModel, Field
 
-    Supported keys: batch_size, max_tokens, temperature
+
+class ConfigUpdateRequest(BaseModel):
+    """Validated config update payload."""
+    batch_size: int | None = Field(default=None, ge=1, le=1024)
+    max_tokens: int | None = Field(default=None, ge=1, le=65536)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+@dashboard_app.post("/api/config")
+async def api_update_config(config: ConfigUpdateRequest):
+    """Update runtime configuration with input validation.
+
+    Supported keys: batch_size, max_tokens, temperature, top_p
     """
     global coordinator
     if coordinator is None:
         raise HTTPException(status_code=503, detail="No coordinator connected")
 
     updated = {}
-    try:
-        if "batch_size" in config and coordinator.scheduler:
-            coordinator.scheduler.max_batch_size = int(config["batch_size"])
-            updated["batch_size"] = config["batch_size"]
-    except (ValueError, TypeError) as e:
-        logger.debug(f"Config update error: {e}")
+    if config.batch_size is not None and coordinator.scheduler:
+        coordinator.scheduler.max_batch_size = config.batch_size
+        updated["batch_size"] = config.batch_size
 
     return {"status": "ok", "updated": updated}
 
@@ -207,7 +225,7 @@ async def api_update_config(config: dict):
 def main():
     """CLI entry point for the dashboard."""
     parser = argparse.ArgumentParser(description="DistLLM Web Dashboard")
-    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8501)
     parser.add_argument("--api-url", type=str, default=None,
                         help="URL of the DistLLM API server (default: localhost:8000)")

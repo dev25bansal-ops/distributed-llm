@@ -8,6 +8,7 @@ import pytest
 from distllm.chaos.injector import ChaosInjector, ChaosEvent
 from distllm.chaos.scenario import ChaosScenario, ChaosStep, ScenarioRunner, ScenarioResult
 from distllm.chaos.resilience import ResilienceScorer, ResilienceScore
+from distllm.chaos.dashboard import render_scenario_summary, render_events, render_resilience_summary, _render_table
 from distllm.chaos.dashboard import render_scenario_summary, render_events, render_resilience_summary
 
 
@@ -264,3 +265,139 @@ class TestDashboard:
         output = render_resilience_summary(scores)
         assert "Average resilience score: 90.0" in output
         assert "Best scenario: good" in output
+
+    def test_render_table_empty(self):
+        output = _render_table(["A", "B"], [])
+        assert "A" in output
+
+    def test_render_scenario_summary_empty(self):
+        output = render_scenario_summary([], [])
+        assert "Scenario" in output
+
+    def test_render_events_single(self):
+        event = ChaosEvent(event_type="kill", node_id="n1", timestamp=time.time(), params={}, result="success", duration_s=0.5)
+        output = render_events([event])
+        assert "kill" in output
+        assert "n1" in output
+        assert "success" in output
+
+    def test_render_events_empty(self):
+        output = render_events([])
+        assert "Type" in output
+
+    def test_render_resilience_summary_no_scores(self):
+        output = render_resilience_summary([])
+        assert "No chaos scenarios have been executed yet" in output
+
+
+# ===========================================================================
+# Injector — delay injection
+# ===========================================================================
+
+
+class TestChaosInjectorDelay:
+    def test_add_latency_stores_delay(self):
+        injector = ChaosInjector(MagicMock(), max_latency_ms=5000)
+        injector.add_latency("node-1", delay_ms=200)
+        assert injector.get_latency_for_node("node-1") == 200
+
+    def test_add_latency_capped_at_max(self):
+        injector = ChaosInjector(MagicMock(), max_latency_ms=1000)
+        injector.add_latency("node-1", delay_ms=5000)
+        assert injector.get_latency_for_node("node-1") == 1000
+
+    def test_clear_latency_removes(self):
+        injector = ChaosInjector(MagicMock())
+        injector.add_latency("node-1", delay_ms=200)
+        injector.clear_latency("node-1")
+        assert injector.get_latency_for_node("node-1") == 0.0
+
+    def test_default_latency_zero(self):
+        injector = ChaosInjector(MagicMock())
+        assert injector.get_latency_for_node("nonexistent") == 0.0
+
+    def test_latency_records_event(self):
+        injector = ChaosInjector(MagicMock())
+        event = injector.add_latency("node-1", delay_ms=150)
+        assert event.event_type == "add_latency"
+        assert event.node_id == "node-1"
+        assert event.result == "success"
+
+
+# ===========================================================================
+# Injector — error injection (fake exception via kill_node)
+# ===========================================================================
+
+
+class TestChaosInjectorError:
+    def test_kill_node_records_event(self):
+        rm = MagicMock()
+        injector = ChaosInjector(rm)
+        event = injector.kill_node("node-fail")
+        assert event.event_type == "kill_node"
+        assert event.node_id == "node-fail"
+        rm.simulate_node_failure.assert_called_with("node-fail")
+
+    def test_kill_triggers_circuit_breaker(self):
+        rm = MagicMock()
+        injector = ChaosInjector(rm)
+        injector.kill_node("node-bad")
+        assert len(injector.events) == 1
+
+    def test_drop_message_records_event(self):
+        injector = ChaosInjector(MagicMock())
+        event = injector.drop_message("node-1", ".*error.*")
+        assert event.event_type == "drop_message"
+        assert event.result == "success"
+
+    def test_should_drop_message_matches_pattern(self):
+        injector = ChaosInjector(MagicMock())
+        injector.drop_message("node-1", ".*timeout.*")
+        assert injector.should_drop_message("node-1", "request timeout") is True
+        assert injector.should_drop_message("node-1", "normal message") is False
+
+    def test_clear_drop_pattern_removes(self):
+        injector = ChaosInjector(MagicMock())
+        injector.drop_message("node-1", ".*drop.*")
+        injector.clear_drop_pattern("node-1")
+        assert injector.should_drop_message("node-1", "this should drop") is False
+
+    def test_drop_without_pattern_returns_false(self):
+        injector = ChaosInjector(MagicMock())
+        assert injector.should_drop_message("node-x", "any message") is False
+
+    def test_corrupt_data_records_event(self):
+        injector = ChaosInjector(MagicMock())
+        event = injector.corrupt_data("node-1", corruption_rate=0.5)
+        assert event.event_type == "corrupt_data"
+        assert event.result == "success"
+
+    def test_corrupt_data_zero_rate_no_corruption(self):
+        injector = ChaosInjector(MagicMock())
+        injector.corrupt_data("node-1", corruption_rate=0.0)
+        assert injector.should_corrupt("node-1") is False
+
+    def test_clear_corruption_rate(self):
+        injector = ChaosInjector(MagicMock())
+        injector.corrupt_data("node-1", corruption_rate=0.5)
+        injector.clear_corruption_rate("node-1")
+        assert injector.should_corrupt("node-1") is False
+
+    def test_corrupt_tensor_flips_bits(self):
+        injector = ChaosInjector(MagicMock())
+        original = b"hello world"
+        corrupted = injector.corrupt_tensor(original)
+        assert corrupted != original
+        assert len(corrupted) == len(original)
+
+    def test_corrupt_empty_data(self):
+        injector = ChaosInjector(MagicMock())
+        result = injector.corrupt_tensor(b"")
+        assert result == b""
+
+    def test_multiple_events_recorded(self):
+        injector = ChaosInjector(MagicMock())
+        injector.add_latency("n1", 100)
+        injector.drop_message("n2", "pattern")
+        injector.corrupt_data("n3", 0.1)
+        assert len(injector.events) == 3

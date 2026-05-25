@@ -28,7 +28,7 @@ class TestKVCacheInit:
     """Tests for KVCache initialization."""
 
     def test_init_cache_creates_tensors(self):
-        """init_cache should create zero tensors for each layer."""
+        """init_cache should create zero tensors with correct shape and dtype."""
         cache = KVCache()
         cache.init_cache(num_layers=2, batch_size=1, num_heads=4, head_dim=8, device="cpu")
 
@@ -36,6 +36,8 @@ class TestKVCacheInit:
         for k, v in cache.cache:
             assert k.shape == (1, 4, 1, 8)  # (batch, heads, seq_len, head_dim)
             assert v.shape == (1, 4, 1, 8)
+            assert k.dtype == torch.float32
+            assert v.dtype == torch.float32
             assert k.device.type == "cpu"
 
     def test_init_cache_sets_num_layers(self):
@@ -103,6 +105,42 @@ class TestKVCacheGet:
         """get should return None for invalid layer index."""
         result = sample_kv_cache.get(100)
         assert result is None
+
+    def test_store_and_retrieve_roundtrip(self):
+        """Store via update, retrieve via get, verify element-wise equality."""
+        cache = KVCache()
+        cache.init_cache(num_layers=2, batch_size=1, num_heads=4, head_dim=8, device="cpu")
+
+        layer0_k = torch.randn(1, 4, 5, 8)
+        layer0_v = torch.randn(1, 4, 5, 8)
+        layer1_k = torch.randn(1, 4, 3, 8)
+        layer1_v = torch.randn(1, 4, 3, 8)
+
+        cache.update(0, layer0_k, layer0_v)
+        cache.update(1, layer1_k, layer1_v)
+
+        retrieved_0k, retrieved_0v = cache.get(0)
+        assert torch.equal(retrieved_0k, layer0_k)
+        assert torch.equal(retrieved_0v, layer0_v)
+
+        retrieved_1k, retrieved_1v = cache.get(1)
+        assert torch.equal(retrieved_1k, layer1_k)
+        assert torch.equal(retrieved_1v, layer1_v)
+
+    def test_store_and_retrieve_accumulated(self):
+        """Multiple updates to same layer retrieved correctly via get."""
+        cache = KVCache()
+        cache.init_cache(num_layers=1, batch_size=1, num_heads=2, head_dim=4, device="cpu")
+
+        first = torch.randn(1, 2, 2, 4)
+        second = torch.randn(1, 2, 3, 4)
+        cache.update(0, first, first)
+        cache.update(0, second, second)
+
+        k, v = cache.get(0)
+        assert k.shape == (1, 2, 5, 4)
+        assert torch.equal(k[:, :, :2, :], first)
+        assert torch.equal(k[:, :, 2:5, :], second)
 
     def test_get_all(self, sample_kv_cache):
         """get_all should return all layer caches."""

@@ -41,7 +41,7 @@ COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-RUN pip install --no-cache-dir --prefix=/install -e "." --no-deps
+RUN pip install --no-cache-dir --prefix=/install "./src" --no-deps
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
@@ -56,7 +56,7 @@ LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distri
 LABEL org.opencontainers.image.version="${DISTLLM_VERSION}"
 LABEL org.opencontainers.image.title="Distributed LLM"
 LABEL org.opencontainers.image.description="Distributed LLM Inference System — production image"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
@@ -69,7 +69,7 @@ WORKDIR /app
 
 # Install ONLY runtime dependencies (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
+    python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
     libnccl2 \
     curl ca-certificates \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \

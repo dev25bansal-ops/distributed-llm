@@ -53,6 +53,18 @@ class ModelSpec:
     vram_per_gpu_gb: float        # approximate VRAM for inference
 
 MODEL_REGISTRY: dict[str, ModelSpec] = {
+    "smol135m": ModelSpec(
+        key="smol135m",
+        hf_name="HuggingFaceTB/SmolLM-135M",
+        param_count_b=0.135,
+        hidden_dim=576,
+        num_layers=30,
+        num_heads=9,
+        vocab_size=49152,
+        single_gpu_tok_s=280.0,
+        single_gpu_ttft_ms=15.0,
+        vram_per_gpu_gb=0.5,
+    ),
     "llama8b": ModelSpec(
         key="llama8b",
         hf_name="meta-llama/Llama-3.1-8B-Instruct",
@@ -298,9 +310,12 @@ def _run_live_single(
     prompt: str,
     max_tokens: int,
     temperature: float = 0.0,
+    api_key: str = "",
 ) -> dict:
     """Run a single generation against the API server and return timing."""
     import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     payload = {
         "model": model_name,
@@ -312,7 +327,7 @@ def _run_live_single(
 
     start = time.perf_counter()
     with httpx.Client(timeout=300.0) as client:
-        resp = client.post(f"{api_url}/v1/completions", json=payload)
+        resp = client.post(f"{api_url}/v1/completions", json=payload, headers=headers)
         resp.raise_for_status()
         elapsed = time.perf_counter() - start
 
@@ -335,9 +350,12 @@ def _run_live_streaming_single(
     model_name: str,
     prompt: str,
     max_tokens: int,
+    api_key: str = "",
 ) -> dict:
     """Run a streaming generation to capture TTFT."""
     import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     payload = {
         "model": model_name,
@@ -352,7 +370,7 @@ def _run_live_streaming_single(
     tok_count = 0
 
     with httpx.Client(timeout=300.0) as client:
-        with client.stream("POST", f"{api_url}/v1/completions", json=payload) as resp:
+        with client.stream("POST", f"{api_url}/v1/completions", json=payload, headers=headers) as resp:
             for line in resp.iter_lines():
                 if not line.startswith("data: "):
                     continue
@@ -378,10 +396,13 @@ def _run_live_concurrent(
     prompt: str,
     max_tokens: int,
     concurrency: int,
+    api_key: str = "",
 ) -> float:
     """Fire *concurrency* requests simultaneously, return aggregate tok/s."""
     import concurrent.futures
     import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     payload = {
         "model": model_name,
@@ -395,7 +416,7 @@ def _run_live_concurrent(
         try:
             start = time.perf_counter()
             with httpx.Client(timeout=300.0) as cli:
-                r = cli.post(f"{api_url}/v1/completions", json=payload, timeout=300.0)
+                r = cli.post(f"{api_url}/v1/completions", json=payload, headers=headers, timeout=300.0)
                 r.raise_for_status()
             elapsed = time.perf_counter() - start
             data = r.json()
@@ -416,6 +437,7 @@ def benchmark_live(
     models: list[str],
     clusters: list[str],
     config: BenchConfig,
+    api_key: str = "",
 ) -> list[ClusterMetrics]:
     """Run benchmarks against a live API server."""
     results: list[ClusterMetrics] = []
@@ -428,7 +450,7 @@ def benchmark_live(
 
         # Warmup
         for _ in range(config.num_warmup):
-            _run_live_single(api_url, model.hf_name, prompt[:128], 16)
+            _run_live_single(api_url, model.hf_name, prompt[:128], 16, api_key=api_key)
 
         for cspec in CLUSTER_REGISTRY:
             clabel = cspec.label.split(" (")[0]
@@ -438,14 +460,14 @@ def benchmark_live(
             # Measure tok/s (non-streaming)
             tok_s_list = []
             for _ in range(config.num_runs):
-                r = _run_live_single(api_url, model.hf_name, prompt, config.max_new_tokens)
+                r = _run_live_single(api_url, model.hf_name, prompt, config.max_new_tokens, api_key=api_key)
                 tok_s_list.append(r["tok_s"])
             avg_tok_s = sum(tok_s_list) / max(len(tok_s_list), 1)
 
             # Measure TTFT (streaming)
             ttft_list = []
             for _ in range(config.num_runs):
-                r = _run_live_streaming_single(api_url, model.hf_name, prompt, config.max_new_tokens)
+                r = _run_live_streaming_single(api_url, model.hf_name, prompt, config.max_new_tokens, api_key=api_key)
                 ttft_list.append(r["ttft_ms"])
             avg_ttft = sum(ttft_list) / max(len(ttft_list), 1)
 
@@ -461,7 +483,7 @@ def benchmark_live(
             concurrency_results = []
             for cl in config.concurrency_levels:
                 conc_tok_s = _run_live_concurrent(
-                    api_url, model.hf_name, prompt, config.max_new_tokens, cl
+                    api_url, model.hf_name, prompt, config.max_new_tokens, cl, api_key=api_key
                 )
                 concurrency_results.append(conc_tok_s)
 
@@ -693,6 +715,9 @@ def main() -> None:
     parser.add_argument(
         "--api-url", default="http://localhost:8000", help="API server URL"
     )
+    parser.add_argument(
+        "--api-key", default="", help="API key for authenticated endpoints"
+    )
     parser.add_argument("--save", type=str, default="", help="Save results to JSON file")
     parser.add_argument("--load", type=str, default="", help="Load and display results from JSON")
     parser.add_argument(
@@ -728,7 +753,7 @@ def main() -> None:
 
     if args.live:
         print(f"Benchmarking live API at {args.api_url} ...")
-        results = benchmark_live(args.api_url, args.models, cluster_labels, config)
+        results = benchmark_live(args.api_url, args.models, cluster_labels, config, api_key=args.api_key)
     else:
         print("Running analytical estimates (use --live for real hardware)...")
         results = benchmark_analytical(args.models, cluster_labels, config)

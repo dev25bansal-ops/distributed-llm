@@ -124,6 +124,39 @@ class TestSchemaConverter:
         text = str(grammar)
         assert "root ::=" in text
 
+    def test_enum_mixed_types(self):
+        converter = SchemaConverter()
+        schema = {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "enum": ["red", 42, True, None],
+                },
+            },
+        }
+        grammar = converter.convert(schema)
+        text = str(grammar)
+        assert "red" in text
+
+    def test_enum_integer_values(self):
+        converter = SchemaConverter()
+        schema = {
+            "enum": [1, 2, 3],
+        }
+        grammar = converter.convert(schema)
+        text = str(grammar)
+        assert "root ::=" in text
+
+    def test_enum_single_value(self):
+        converter = SchemaConverter()
+        schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string", "enum": ["active"]}},
+        }
+        grammar = converter.convert(schema)
+        text = str(grammar)
+        assert "active" in text
+
     def test_all_of_merges(self):
         converter = SchemaConverter()
         schema = {
@@ -167,6 +200,41 @@ class TestSchemaConverter:
             "items": {"type": "string"},
             "minItems": 1,
             "maxItems": 3,
+        }
+        grammar = converter.convert(schema)
+        text = str(grammar)
+        assert "root ::=" in text
+
+    def test_array_min_items_zero(self):
+        converter = SchemaConverter()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+            "maxItems": 3,
+        }
+        grammar = converter.convert(schema)
+        text = str(grammar)
+        assert "root ::=" in text
+
+    def test_array_exact_count(self):
+        converter = SchemaConverter()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2,
+        }
+        grammar = converter.convert(schema)
+        text = str(grammar)
+        assert "root ::=" in text
+
+    def test_array_max_items_zero(self):
+        converter = SchemaConverter()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 0,
         }
         grammar = converter.convert(schema)
         text = str(grammar)
@@ -393,6 +461,23 @@ class TestSchemaValidator:
         result = validator.validate({"color": "red"}, schema)
         assert result.valid
 
+    def test_enum_null_value(self):
+        validator = SchemaValidator()
+        schema = {
+            "properties": {"flag": {"enum": [None, "active"]}},
+        }
+        result = validator.validate({"flag": None}, schema)
+        assert result.valid
+
+    def test_enum_mixed_rejects_invalid(self):
+        validator = SchemaValidator()
+        schema = {
+            "enum": [1, "two", True],
+        }
+        result = validator.validate("three", schema)
+        assert not result.valid
+        assert "enum" in str(result.errors).lower()
+
     def test_const_valid(self):
         validator = SchemaValidator()
         schema = {
@@ -425,6 +510,49 @@ class TestSchemaValidator:
             "minItems": 1,
         }
         result = validator.validate(["a", "b"], schema)
+        assert result.valid
+
+    def test_array_too_few_items(self):
+        validator = SchemaValidator()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+        }
+        result = validator.validate(["a"], schema)
+        assert not result.valid
+        assert "too few" in str(result.errors).lower() or "minimum" in str(result.errors).lower()
+
+    def test_array_too_many_items(self):
+        validator = SchemaValidator()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 2,
+        }
+        result = validator.validate(["a", "b", "c"], schema)
+        assert not result.valid
+        assert "too many" in str(result.errors).lower() or "maximum" in str(result.errors).lower()
+
+    def test_array_exact_count_validation(self):
+        validator = SchemaValidator()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2,
+        }
+        result = validator.validate(["a", "b"], schema)
+        assert result.valid
+
+    def test_array_min_items_zero_succeeds(self):
+        validator = SchemaValidator()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+        }
+        result = validator.validate([], schema)
         assert result.valid
 
     def test_array_wrong_item_type(self):
@@ -791,3 +919,85 @@ class TestStructuredOutputEngine:
         async for chunk in engine.stream_structured(token_stream(), None):
             chunks.append(chunk)
         assert len(chunks) >= 1
+
+    @pytest.mark.asyncio
+    async def test_stream_structured_with_constraint(self):
+        engine = StructuredOutputEngine()
+        async def token_stream():
+            for ch in '{"valid": true}':
+                yield ch
+
+        chunks = []
+        async for chunk in engine.stream_structured(
+            token_stream(),
+            {"type": "json_schema", "schema": {}},
+        ):
+            chunks.append(chunk)
+        assert len(chunks) > 0
+        # Final chunk should be marked final
+        assert chunks[-1].is_final
+
+    @pytest.mark.asyncio
+    async def test_stream_structured_partial_at_each_step(self):
+        engine = StructuredOutputEngine()
+        tokens = list('{"valid": true}')
+
+        all_chunks = []
+        for i in range(1, len(tokens) + 1):
+            async def partial_stream(prefix=tokens[:i]):
+                for ch in prefix:
+                    yield ch
+
+            chunks = []
+            async for chunk in engine.stream_structured(
+                partial_stream(),
+                {"type": "json_schema", "schema": {}},
+            ):
+                chunks.append(chunk)
+            all_chunks.append(chunks)
+            last = chunks[-1]
+            assert last.is_final
+        assert len(all_chunks) == len(tokens)
+
+
+# ─── Invalid/Impossible Constraint Tests ──────────────────────────────────
+
+
+class TestInvalidConstraints:
+    """Test behavior with contradictory or impossible constraints."""
+
+    def test_contradictory_min_max_items(self):
+        """minItems > maxItems makes validation impossible."""
+        validator = SchemaValidator()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 5,
+            "maxItems": 3,
+        }
+        result = validator.validate(["a", "b", "c", "d"], schema)
+        assert not result.valid
+
+    def test_contradictory_min_max_items_empty(self):
+        """Empty array fails with contradictory min/max."""
+        validator = SchemaValidator()
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 0,
+        }
+        result = validator.validate([], schema)
+        assert not result.valid
+
+    def test_contradictory_range_no_fallback(self):
+        """Schema that cannot match any data still produces error, not crash."""
+        validator = SchemaValidator()
+        schema = {
+            "type": "object",
+            "properties": {
+                "val": {"type": "integer", "minimum": 10, "maximum": 5},
+            },
+        }
+        result = validator.validate({"val": 7}, schema)
+        assert not result.valid

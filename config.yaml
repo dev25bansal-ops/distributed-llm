@@ -1,36 +1,29 @@
 # Distributed LLM Configuration
 
-# =============================================================================
-# Base configuration (applied to all profiles)
-# =============================================================================
-
 model:
-  # HuggingFace model name or local path
   name: "HuggingFaceTB/SmolLM-135M"
-  # Data type for model weights
-  dtype: "float16"  # float16, float32, bfloat16
+  dtype: "float16"
 
 coordinator:
-  host: "localhost"
+  host: "0.0.0.0"
   port: 50050
-  # API server
   api_port: 8000
 
-# Worker nodes configuration
+# Distributed worker nodes — each device runs a subset of layers
 nodes:
   - node_id: "node_0"
     host: "localhost"
     port: 50051
     start_layer: 0
     end_layer: 3
-    device: "cuda"
+    device: "cuda:0"
 
   - node_id: "node_1"
     host: "localhost"
     port: 50052
     start_layer: 4
     end_layer: 7
-    device: "cuda"
+    device: "cuda:1"
 
 # Generation settings
 generation:
@@ -38,117 +31,60 @@ generation:
   temperature: 0.7
   top_p: 0.9
 
-# Logging settings
-logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  format: "json"  # json or text
-
-# Network settings
-network:
-  # gRPC timeout (seconds)
-  grpc_timeout: 30
-  # Retry settings
+# Pipeline parallelism settings
+pipeline:
+  timeout_seconds: 30.0
   max_retries: 3
   retry_delay: 1.0
 
-# vLLM backend (replaces legacy pipeline parallelism)
+# Logging
+logging:
+  level: "INFO"
+  format: "json"
+
+# vLLM backend (use on each worker node for GPU inference)
 vllm:
-  # Security: vLLM uses PagedAttention, FlashAttention, continuous batching
-  enabled: false
+  enabled: true
   tensor_parallel_size: 1
   gpu_memory_utilization: 0.9
   max_num_seqs: 256
-  dtype: "auto"
 
-# llama.cpp backend (lightweight alternative to vLLM, supports CPU/GPU/ROCm/Metal)
+# llama.cpp backend (lighter alternative for CPU/AGPU)
 llamacpp:
   enabled: false
-  model_path: ""
   n_gpu_layers: 0
   n_ctx: 2048
-  n_threads: null
-  n_batch: 512
-  seed: 0
-  verbose: false
 
-# TLS/Security
+# Wide-area network settings (for cross-internet connections)
+wide_area:
+  enabled: false
+  p2p_forwarding: true
+  tokens_before_forward: 10
+  wan_timeout_seconds: 60.0
+  max_retries: 3
+  backoff_base_seconds: 1.0
+
+# TLS / Security
 tls:
-  # Security: TLS disabled by default — enable and provide certs for production.
-  # When enabled without cert_file/key_file, self-signed certs are auto-generated
-  # into cert_dir (suitable for development/testing only).
   enabled: false
   cert_dir: "certs"
-  # cert_file: "/path/to/server.crt"   # Override auto-generated cert
-  # key_file: "/path/to/server.key"     # Override auto-generated key
-  # ca_cert_file: "/path/to/ca.crt"     # CA cert for client verification
 
-# =============================================================================
-# Profile-specific overrides
-# =============================================================================
-
+# Profiles
 dev:
-  coordinator:
-    api_port: 8000
-  llamacpp:
+  wide_area:
     enabled: true
-    model_path: "models/smollm-135m.Q4_K_M.gguf"
-    n_gpu_layers: 0
-    n_ctx: 2048
-  batching:
-    max_batch_size: 8
-    max_tokens_per_batch: 1024
-  monitoring:
-    enabled: false
-  rate_limit:
-    enabled: true
-    default_rpm: 60
-  tls:
-    enabled: false
-  prefix_cache:
-    enabled: false
+    tokens_before_forward: 5
+    wan_timeout_seconds: 120.0
 
 staging:
-  batching:
-    max_batch_size: 16
-    max_tokens_per_batch: 2048
   vllm:
     enabled: true
     gpu_memory_utilization: 0.85
-    max_num_seqs: 128
-  rate_limit:
-    enabled: true
-    default_rpm: 30
-  monitoring:
-    enabled: true
-  prefix_cache:
-    enabled: true
-    radix_tree_enabled: true
 
 production:
-  batching:
-    max_batch_size: 64
-    max_tokens_per_batch: 8192
   vllm:
     enabled: true
     gpu_memory_utilization: 0.95
-    max_num_seqs: 256
     tensor_parallel_size: 1
-  rate_limit:
-    enabled: true
-    default_rpm: 120
-    auth_rpm_multiplier: 2.0
   tls:
     enabled: true
-  monitoring:
-    enabled: true
-  prefix_cache:
-    enabled: true
-    radix_tree_enabled: true
-    memory_budget_bytes: 1073741824  # 1 GiB
-  cache_persistence:
-    enabled: true
-    ttl_hours: 24
-    max_size_bytes: 1073741824  # 1 GiB cap to prevent unbounded growth
-  priority:
-    enabled: true
-    preemption_enabled: true

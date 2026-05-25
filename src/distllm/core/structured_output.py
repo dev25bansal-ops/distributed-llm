@@ -1,5 +1,6 @@
 """Structured output: JSON schema-constrained decoding."""
 
+from loguru import logger
 import string
 
 import torch
@@ -22,6 +23,7 @@ class JSONSchemaConstraint:
     # Class-level cache: tokenizer id -> token_first_chars dict
     # Avoids rebuilding the expensive token index for every new constraint
     _token_index_cache: dict = {}
+    _token_ord_cache: dict = {}
 
     def __init__(self, schema: dict | None = None):
         self.schema = schema
@@ -31,6 +33,7 @@ class JSONSchemaConstraint:
         self._escape_next = False
         self._generated = ""
         self._token_first_chars: dict[int, str] | None = None
+        self._mask_cache: dict[tuple, torch.Tensor] = {}
 
     @classmethod
     def from_response_format(cls, response_format: dict, tokenizer=None):
@@ -55,17 +58,8 @@ class JSONSchemaConstraint:
             schema = response_format.get("schema", {})
             return cls(schema=schema)
 
-        # For grammar/regex, delegate to SchemaConstrainedDecoder
+        # For grammar/regex, SchemaConstrainedDecoder not available; fallback to simple JSON
         if fmt_type in ("grammar", "regex"):
-            try:
-                from distllm.core.constrained_decoder import SchemaConstrainedDecoder
-                if tokenizer:
-                    return SchemaConstrainedDecoder.from_response_format(
-                        response_format, tokenizer
-                    )
-            except Exception:
-                pass
-            # Fallback: simple JSON constraint
             return cls(schema={})
 
         return cls(schema=None)
@@ -117,18 +111,33 @@ class JSONSchemaConstraint:
             for ch in ' \t\n\r':
                 valid_ords.add(ord(ch))
 
+        eos_token_id = getattr(tokenizer, 'eos_token_id', None)
+        cache_key = (
+            self._state,
+            self._in_string,
+            self._escape_next,
+            tuple(sorted(valid_ords)),
+            vocab_size,
+            eos_token_id,
+        )
+        cached = self._mask_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         # Build token index on first call, then reuse
         if self._token_first_chars is None:
             self._token_first_chars = self._build_token_index(tokenizer)
 
         # GPU-side: collect all token ordinals as a tensor
         n = min(vocab_size, len(self._token_first_chars))
-        token_ids = torch.arange(n)
-        first_chars = [self._token_first_chars.get(tid, '') for tid in range(n)]
-        # Map each token to its first character ordinal (0 for empty)
-        first_ords = torch.tensor(
-            [ord(c) if c else 0 for c in first_chars], dtype=torch.long
-        )
+        ord_cache_key = (id(tokenizer), n)
+        first_ords = self._token_ord_cache.get(ord_cache_key)
+        if first_ords is None:
+            first_chars = [self._token_first_chars.get(tid, '') for tid in range(n)]
+            first_ords = torch.tensor(
+                [ord(c) if c else 0 for c in first_chars], dtype=torch.long
+            )
+            self._token_ord_cache[ord_cache_key] = first_ords
 
         # Create mask: token is allowed if its first char is in valid_ords
         valid_ord_tensor = torch.tensor(list(valid_ords), dtype=torch.long)
@@ -139,9 +148,10 @@ class JSONSchemaConstraint:
         mask[:n] = is_valid
 
         # Always allow EOS token
-        if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
-            mask[tokenizer.eos_token_id] = True
+        if eos_token_id is not None:
+            mask[eos_token_id] = True
 
+        self._mask_cache[cache_key] = mask
         return mask
 
     def update(self, token_str: str) -> None:
@@ -151,6 +161,7 @@ class JSONSchemaConstraint:
             token_str: The decoded token string.
         """
         self._generated += token_str
+        self._mask_cache.clear()
         for ch in token_str:
             self._state = self._transition(self._state, ch)
 

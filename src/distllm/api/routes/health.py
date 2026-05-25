@@ -231,7 +231,10 @@ async def update_generation_params(request_id: str, params: ParamUpdateRequest):
     if coord is None:
         raise HTTPException(status_code=503, detail="Coordinator not initialized")
 
-    updated = coord._param_update_channel.update(
+    puc = getattr(coord, '_param_update_channel', None)
+    if puc is None:
+        return {"status": "error", "detail": "param_update_channel not available"}
+    updated = puc.update(
         request_id,
         temperature=params.temperature if params.temperature is not None else None,
         top_p=params.top_p if params.top_p is not None else None,

@@ -13,7 +13,30 @@ from typing import Callable
 
 from loguru import logger
 
-from distllm.core.model_registry import ModelEntry, ModelRegistry
+class ModelEntry:
+    def __init__(self, name='', path='', total_layers=0):
+        self.name = name
+        self.path = path
+        self.total_layers = total_layers
+
+class ModelRegistry:
+    def __init__(self, max_models=4):
+        self._models = {}
+        self.default_model = None
+        self.max_models = max_models
+
+        def register(self, name, path, total_layers):
+            self._models[name] = ModelEntry(name, path, total_layers)
+            return self._models[name]
+
+        def get(self, name):
+            return self._models.get(name)
+
+        def remove(self, name):
+            return self._models.pop(name, None)
+
+        def list_models(self):
+            return list(self._models.keys())
 
 
 @dataclass
@@ -149,8 +172,6 @@ class ModelHotSwapManager:
         if memory_budget_gb > 0:
             self.memory_budget.set_budget(name, memory_budget_gb)
 
-        # Bypass registry max check since we manage our own loaded limit
-        from distllm.core.model_registry import ModelEntry
         entry = ModelEntry(name=name, path=path, total_layers=total_layers)
         self.registry._models[name] = entry
         if self.registry.default_model is None:

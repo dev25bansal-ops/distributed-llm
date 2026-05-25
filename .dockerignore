@@ -58,6 +58,8 @@ Thumbs.db
 # Docs
 *.md
 LICENSE
+!README.md
+!LICENSE
 
 # Config
 config.yaml
@@ -67,6 +69,3 @@ scripts/
 
 # Examples
 examples/
-
-# Proto
-proto/

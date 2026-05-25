@@ -7,11 +7,11 @@ resources:
   - ../base
 
 patches:
-  - path: resource-patch.yaml
+  - path: coordinator-resource-patch.yaml
     target:
       kind: Deployment
       name: distllm-coordinator
-  - path: resource-patch.yaml
+  - path: worker-resource-patch.yaml
     target:
       kind: StatefulSet
       name: distllm-worker

@@ -6,15 +6,14 @@ delimiter "__" (e.g., DISTLLM__MODEL__NAME).
 """
 
 from enum import Enum
-from typing import Any
+import os
+from typing import Any, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator, SecretStr, SecretStr
+from pydantic import BaseModel, Field, field_validator, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from distllm.core.optimization.config import OptimizationConfig as _OptimizationConfig
-from distllm.core.predictive_migration.config import PredictiveMigrationConfig as _PredictiveMigrationConfig
-from distllm.core.auto_partition.config import AutoPartitionConfig as _AutoPartitionConfig
-from distllm.core.structured_output.config import StructuredOutputConfig as _StructuredOutputConfig
+if TYPE_CHECKING:
+    pass
 
 
 class NodeRole(str, Enum):
@@ -29,6 +28,17 @@ class ModelSettings(BaseModel):
     name: str = Field(default="", description="Model name or path. Must be explicitly set.")
     dtype: str = "float16"
     trust_remote_code: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError(
+                "model.name must be set — specify a HuggingFace model ID (e.g. "
+                "'meta-llama/Llama-2-7b') or a local path, or set the "
+                "DISTLLM__MODEL__NAME environment variable."
+            )
+        return v.strip()
 
     @field_validator("dtype")
     @classmethod
@@ -278,12 +288,12 @@ class PartitioningSettings(BaseModel):
     safety_margin: float = 0.1  # leave 10% VRAM free
 
     def to_auto_partition_config(self):
-        """Convert to the new AutoPartitionConfig."""
-        return _AutoPartitionConfig(
-            enabled=self.strategy != "equal",
-            strategy=self.strategy if self.strategy != "gpu_aware" else "auto",
-            safety_margin=self.safety_margin,
-        )
+        """Convert to dict (legacy AutoPartitionConfig)."""
+        return {
+            "enabled": self.strategy != "equal",
+            "strategy": self.strategy if self.strategy != "gpu_aware" else "auto",
+            "safety_margin": self.safety_margin,
+        }
 
     @field_validator("strategy")
     @classmethod
@@ -322,10 +332,15 @@ class PrioritySettings(BaseModel):
 
 
 class MultiModelSettings(BaseModel):
-    """Multi-model serving configuration."""
+    """Multi-model serving configuration.
+
+    The ``max_models`` limit is a safety cap — actual capacity depends on
+    available GPU memory and model sizes.  A single large model may not fit
+    even when ``max_models > 1``.
+    """
     models: dict[str, str] = Field(default_factory=dict)  # name -> path
     default_model: str = ""
-    max_models: int = 4
+    max_models: int = Field(default=4, ge=1, description="Maximum number of models to load concurrently. Actual capacity depends on GPU memory.")
 
 
 class TensorParallelSettings(BaseModel):
@@ -644,12 +659,10 @@ class SelfOptimizingSettings(BaseModel):
 
     def to_optimization_config(self):
         """Convert to the new Bayesian OptimizationConfig."""
-        from distllm.core.optimization.config import OptimizationConfig
-
-        return OptimizationConfig(
-            enabled=self.enabled,
-            runner={"warmup_seconds": self.warmup_seconds},
-        )
+        return {
+            "enabled": self.enabled,
+            "runner": {"warmup_seconds": self.warmup_seconds},
+        }
 
 
 class CudaGraphSettings(BaseModel):
@@ -699,13 +712,39 @@ class DisaggSettings(BaseModel):
 
     def to_full_config(self):
         """Convert to the package-level DisaggFullConfig."""
-        from distllm.core.disagg.config import DisaggFullConfig
+        return {
+            "enabled": self.enabled,
+            "prefill_nodes": self.prefill_nodes,
+            "decode_nodes": self.decode_nodes,
+        }
 
-        return DisaggFullConfig(
-            enabled=self.enabled,
-            prefill_nodes=self.prefill_nodes,
-            decode_nodes=self.decode_nodes,
-        )
+
+class WideAreaSettings(BaseModel):
+    """Wide-area network distributed inference configuration.
+
+    Enables P2P node forwarding to reduce coordinator round trips
+    across high-latency links (geographically distributed nodes).
+    """
+    enabled: bool = False
+    p2p_forwarding: bool = True
+    tokens_before_forward: int = 10
+    wan_timeout_seconds: int = 60
+    max_retries: int = 3
+    backoff_base_seconds: float = 1.0
+
+    @field_validator("tokens_before_forward")
+    @classmethod
+    def validate_tokens_before_forward(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"tokens_before_forward must be >= 1, got {v}")
+        return v
+
+    @field_validator("wan_timeout_seconds")
+    @classmethod
+    def validate_timeout(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"wan_timeout_seconds must be >= 1, got {v}")
+        return v
 
 
 class VLLMSettings(BaseModel):
@@ -888,7 +927,7 @@ class DistLLMSettings(BaseSettings):
     quantization: QuantizationSettings = Field(default_factory=QuantizationSettings)
     speculative: SpeculativeSettings = Field(default_factory=SpeculativeSettings)
     partitioning: PartitioningSettings = Field(default_factory=PartitioningSettings)
-    auto_partition: _AutoPartitionConfig = Field(default_factory=_AutoPartitionConfig)
+    auto_partition: dict = Field(default_factory=lambda: {"enabled": False, "strategy": "auto", "safety_margin": 0.1})
     rebalancer: RebalancerSettings = Field(default_factory=RebalancerSettings)
     cache_persistence: CachePersistenceSettings = Field(default_factory=CachePersistenceSettings)
     priority: PrioritySettings = Field(default_factory=PrioritySettings)
@@ -913,10 +952,10 @@ class DistLLMSettings(BaseSettings):
     zero_copy: ZeroCopySettings = Field(default_factory=ZeroCopySettings)
     adaptive_precision: AdaptivePrecisionSettings = Field(default_factory=AdaptivePrecisionSettings)
     predictive_cache: PredictiveCacheSettings = Field(default_factory=PredictiveCacheSettings)
-    predictive_migration: _PredictiveMigrationConfig = Field(default_factory=_PredictiveMigrationConfig)
-    structured_output: _StructuredOutputConfig = Field(default_factory=_StructuredOutputConfig)
+    predictive_migration: dict = Field(default_factory=lambda: {"enabled": False})
+    structured_output: dict = Field(default_factory=lambda: {"enabled": False})
     self_optimizing: SelfOptimizingSettings = Field(default_factory=SelfOptimizingSettings)
-    optimization: _OptimizationConfig = Field(default_factory=_OptimizationConfig)
+    optimization: dict = Field(default_factory=lambda: {"enabled": False})
     cuda_graph: CudaGraphSettings = Field(default_factory=CudaGraphSettings)
     compile: CompileSettings = Field(default_factory=CompileSettings)
     slora: SloRaSettings = Field(default_factory=SloRaSettings)
@@ -927,6 +966,44 @@ class DistLLMSettings(BaseSettings):
     hardware: HardwareSettings = Field(default_factory=HardwareSettings)
     vllm: VLLMSettings = Field(default_factory=VLLMSettings)
     llamacpp: LlamacppSettings = Field(default_factory=LlamacppSettings)
+    wide_area: WideAreaSettings = Field(default_factory=WideAreaSettings)
+
+    @classmethod
+    def from_yaml(
+        cls,
+        config_path: str | None = None,
+        cli_overrides: dict[str, Any] | None = None,
+    ) -> "DistLLMSettings":
+        """Load settings with full precedence: CLI > env vars > YAML > defaults.
+
+        Environment variables are handled automatically by pydantic-settings
+        using the ``DISTLLM__`` prefix and ``__`` nested delimiter
+        (e.g. ``DISTLLM__MODEL__NAME=my-model``).
+
+        Args:
+            config_path: Path to a YAML config file. ``None`` to skip YAML.
+            cli_overrides: Flat or nested dict of CLI overrides applied last.
+
+        Returns:
+            Validated DistLLMSettings instance.
+        """
+        import yaml
+
+        data: dict[str, Any] = {}
+
+        if config_path and os.path.exists(config_path):
+            with open(config_path) as f:
+                data = yaml.safe_load(f) or {}
+
+        # Construct with YAML as base — pydantic-settings applies env vars on
+        # top (env > YAML), so YAML cannot override env vars.
+        settings = cls(**data)
+
+        if cli_overrides:
+            merged = cls._apply_cli_overrides(settings.model_dump(), cli_overrides)
+            settings = cls.model_validate(merged)
+
+        return settings
 
     @classmethod
     def from_profile(cls, config_path: str, profile: str | None = None) -> "DistLLMSettings":
@@ -944,9 +1021,36 @@ class DistLLMSettings(BaseSettings):
         merged = ProfileConfig.load(config_path, profile)
         return cls.model_validate(merged)
 
+    @staticmethod
+    def _apply_cli_overrides(data: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+        """Apply flat or nested CLI overrides into a config dict."""
+        result = dict(data)
+        for key, value in overrides.items():
+            if isinstance(value, dict):
+                result.setdefault(key, {})
+                if isinstance(result[key], dict):
+                    result[key].update(value)
+                else:
+                    result[key] = value
+            else:
+                result[key] = value
+        return result
+
     @classmethod
-    def validate_startup(cls) -> "DistLLMSettings":
+    def validate_startup(
+        cls,
+        config_path: str | None = None,
+        cli_overrides: dict[str, Any] | None = None,
+    ) -> "DistLLMSettings":
         """Load and validate configuration at startup.
+
+        Accepts an optional YAML path and CLI overrides for the full
+        precedence chain.  Simple usage without arguments validates only
+        environment-variable and default-based configuration.
+
+        Args:
+            config_path: Optional path to a YAML config file.
+            cli_overrides: Optional dict of CLI argument overrides.
 
         Returns:
             Validated DistLLMSettings instance.
@@ -957,6 +1061,8 @@ class DistLLMSettings(BaseSettings):
         from pydantic import ValidationError
 
         try:
+            if config_path or cli_overrides:
+                return cls.from_yaml(config_path=config_path, cli_overrides=cli_overrides)
             return cls()
         except ValidationError as e:
             errors = []
@@ -973,4 +1079,4 @@ class DistLLMSettings(BaseSettings):
             for err in errors:
                 print(err)
             print()
-            raise SystemExit(1)
+            raise SystemExit(1) from e

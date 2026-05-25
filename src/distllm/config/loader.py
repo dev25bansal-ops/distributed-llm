@@ -214,8 +214,9 @@ def load_config(
 ) -> DistLLMSettings:
     """Load configuration with full precedence: env > CLI > YAML > defaults.
 
-    Deprecated: Use DistLLMSettings directly with pydantic-settings env var
-    support, or use server._load_settings() for the full precedence chain.
+    Deprecated: Use ``DistLLMSettings()`` directly for env-var-based config,
+    or ``DistLLMSettings.from_yaml(config_path, cli_overrides)`` for the full
+    precedence chain including YAML and CLI overrides.
 
     Args:
         config_path: Path to YAML config file. If None, looks for config.yaml
@@ -226,11 +227,11 @@ def load_config(
         DistLLMSettings with all overrides applied.
     """
     warnings.warn(
-        "load_config is deprecated; use DistLLMSettings directly or server._load_settings()",
+        "load_config is deprecated; use DistLLMSettings.from_yaml() or "
+        "DistLLMSettings() for env-var-only config",
         DeprecationWarning,
         stacklevel=2,
     )
-    data = {}
 
     if config_path is None:
         for candidate in ["config.yaml", os.path.join(os.path.dirname(__file__), "..", "..", "..", "config.yaml")]:
@@ -238,13 +239,4 @@ def load_config(
                 config_path = candidate
                 break
 
-    if config_path and os.path.exists(config_path):
-        yaml_data = load_config_file(config_path)
-        data.update(yaml_data)
-
-    if cli_args:
-        data = apply_cli_overrides(data, cli_args)
-
-    data = apply_env_overrides(data)
-
-    return dict_to_config(data)
+    return DistLLMSettings.from_yaml(config_path=config_path, cli_overrides=cli_args)

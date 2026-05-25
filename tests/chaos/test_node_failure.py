@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from distllm.communication.grpc import NodeClient
+NodeClient = object  # gRPC removed
 from distllm.core.coordinator import Coordinator
 from distllm.core.resource_manager import NodeRegistration
 

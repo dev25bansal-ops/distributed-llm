@@ -11,9 +11,16 @@ from __future__ import annotations
 import argparse
 from loguru import logger
 
-from distllm.communication.grpc_client import GRPCServer
-from distllm.communication.node_service import NodeService
 from distllm.core.vllm_backend import VLLMNodeAdapter
+
+try:
+    from distllm.communication.grpc_client import GRPCServer
+except ImportError:
+    GRPCServer = None
+try:
+    from distllm.communication.node_service import NodeService
+except ImportError:
+    NodeService = None
 
 
 class VLLMWorkerNode:

@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: distributed-llm
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: 100Gi
@@ -19,7 +19,7 @@ metadata:
     app.kubernetes.io/name: distributed-llm
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: 10Gi

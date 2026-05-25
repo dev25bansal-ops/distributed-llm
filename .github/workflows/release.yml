@@ -21,7 +21,7 @@ jobs:
       - run: ruff check src/
       - run: black --check src/
       - run: mypy src/
-      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=75 -m "not e2e and not slow"
+      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=85 -m "not e2e and not slow"
 
   build-docker:
     runs-on: ubuntu-latest
@@ -39,6 +39,24 @@ jobs:
           else
             echo "file=Dockerfile.cuda${{ matrix.cuda }}" >> $GITHUB_OUTPUT
           fi
+      - name: Set image tags
+        id: image_tags
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/${{ github.repository_owner }}/coordinator:${{ github.ref_name }}-cuda${{ matrix.cuda }}"
+            echo "ghcr.io/${{ github.repository_owner }}/coordinator:${version}-cuda${{ matrix.cuda }}"
+            echo "ghcr.io/${{ github.repository_owner }}/coordinator:latest-cuda${{ matrix.cuda }}"
+            if [ "${{ matrix.cuda }}" = "12.8" ]; then
+              echo "ghcr.io/${{ github.repository_owner }}/coordinator:${version}"
+              echo "ghcr.io/${{ github.repository_owner }}/coordinator:latest"
+              echo "ghcr.io/${{ github.repository_owner }}/operator:${version}"
+              echo "ghcr.io/${{ github.repository_owner }}/operator:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -49,21 +67,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ steps.dockerfile.outputs.file }}
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}/coordinator:${{ github.ref_name }}-cuda${{ matrix.cuda }}
-            ghcr.io/${{ github.repository }}/coordinator:latest-cuda${{ matrix.cuda }}
+          tags: ${{ steps.image_tags.outputs.tags }}
           build-args: |
             CUDA_VERSION=${{ matrix.cuda }}.0
             DISTLLM_VERSION=${{ github.ref_name }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ github.ref_name }}
+      - name: Sign image with cosign
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          IMAGE_TAGS: ${{ steps.image_tags.outputs.tags }}
+        run: |
+          while IFS= read -r image; do
+            [ -z "$image" ] && continue
+            cosign sign "$image" --yes
+          done <<< "$IMAGE_TAGS"
 
   publish-pypi:
     runs-on: ubuntu-latest
@@ -75,7 +102,7 @@ jobs:
           python-version: "3.10"
       - run: pip install build twine
       - run: python -m build
-      - run: twine upload dist/* --non-interactive
+      - run: twine upload dist/* --non-interactive --skip-existing
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

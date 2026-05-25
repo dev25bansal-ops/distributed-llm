@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distllm-worker
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: worker
+          resources:
+            requests:
+              cpu: 2
+              memory: 4Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: 8
+              memory: 16Gi
+              nvidia.com/gpu: 1

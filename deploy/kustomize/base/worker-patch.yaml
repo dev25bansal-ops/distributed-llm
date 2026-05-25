@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distllm-worker
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/distributed-llm/coordinator:0.4.0
+          resources:
+            requests:
+              cpu: 1
+              memory: 16Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: 4
+              memory: 32Gi
+              nvidia.com/gpu: 1

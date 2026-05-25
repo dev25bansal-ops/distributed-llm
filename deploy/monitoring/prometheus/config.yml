@@ -10,10 +10,11 @@ scrape_configs:
 
   - job_name: "distllm-nodes"
     metrics_path: "/metrics"
-    static_configs:
-      - targets:
-          - "distllm-worker-0.distllm-worker:50051"
-          - "distllm-worker-1.distllm-worker:50051"
+    dns_sd_configs:
+      - names:
+          - "distllm-worker-headless"
+        type: "A"
+        port: 9091
 
   - job_name: "prometheus"
     static_configs:

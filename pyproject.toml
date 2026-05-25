@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "distributed-llm"
 version = "0.4.0"
-description = "Run large language models across multiple GPU-equipped machines using pipeline parallelism"
+description = "Distributed LLM inference — pool GPUs across multiple devices to run models no single machine can handle"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -14,13 +14,12 @@ authors = [
 ]
 keywords = [
     "llm",
-    "distributed",
     "inference",
+    "distributed",
     "pipeline-parallelism",
-    "gpu",
-    "grpc",
-    "transformers",
-    "pytorch",
+    "gpu-sharing",
+    "peer-to-peer",
+    "open-source",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -35,33 +34,45 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
 ]
 dependencies = [
-    "torch>=2.5.0",
-    "transformers>=4.48.0",
-    "grpcio>=1.60.0",
-    "grpcio-tools>=1.60.0",
-    "accelerate>=1.0.0",
-    "safetensors>=0.4.0",
-    "pyyaml>=6.0",
-    "loguru>=0.7.0",
-    "numpy>=1.26.0",
-    "huggingface-hub>=0.20.0",
-    "sentencepiece>=0.1.99",
-    "protobuf>=4.25.0",
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.0.0",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "loguru>=0.7.0",
+    "numpy>=1.26.0",
+    "psutil>=5.9.0",
+    "prometheus-client>=0.20",
     "opentelemetry-api>=1.21.0",
     "opentelemetry-sdk>=1.21.0",
     "opentelemetry-exporter-prometheus>=0.42b0",
-    "opentelemetry-instrumentation-grpc>=0.42b0",
-    "psutil>=5.9.0",
-    "nvidia-ml-py>=12.0",
-    "prometheus-client>=0.20",
-    "httpx>=0.27",
-]
+    "typer[all]>=0.9.0",
+    "rich>=13.7.0",
+    ]
 
 [project.optional-dependencies]
+self-hosted = [
+    "torch>=2.5.0",
+    "transformers>=4.48.0",
+    "accelerate>=1.0.0",
+    "safetensors>=0.4.0",
+    "huggingface-hub>=0.20.0",
+    "sentencepiece>=0.1.99",
+    "nvidia-ml-py>=12.0",
+]
+ray = [
+    "ray[default]>=2.30.0",
+]
+vllm = [
+    "vllm>=0.7.0",
+]
+sglang = [
+    "sglang>=0.4.0",
+]
+llamacpp = [
+    "llama-cpp-python>=0.3.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
@@ -70,10 +81,7 @@ dev = [
     "mypy>=1.8",
     "opentelemetry-test-utils>=0.42b0",
 ]
-infra = [
-    "kopf>=1.37",
-    "kubernetes>=29.0",
-]
+
 sdk = [
     "httpx>=0.27.0",
 ]
@@ -102,20 +110,21 @@ lora = [
     "peft>=0.14.0",
 ]
 rocm = [
-    "torch>=2.5.0 --index-url https://download.pytorch.org/whl/rocm6.2",
+    "torch>=2.5.0",
     "llama-cpp-python>=0.3.0",
 ]
 metal = [
-    "torch>=2.5.0 --index-url https://download.pytorch.org/whl/mps",
+    "torch>=2.5.0",
 ]
 xpu = [
-    "torch>=2.5.0 --index-url https://download.pytorch.org/whl/xpu",
+    "torch>=2.5.0",
     "oneapi>=2025.0",
 ]
 cpu = [
     "llama-cpp-python>=0.3.0",
 ]
 all = [
+    "distributed-llm[self-hosted,dev,ray,tls,testing,ui,vllm,sglang,llamacpp]",
     "distributed-llm[rocm,metal,xpu,cpu]",
 ]
 
@@ -130,12 +139,9 @@ testing = [
 
 [project.scripts]
 distllm = "distllm.cli.main:main"
-distllm-node = "distllm.core.node:main"
 distllm-coordinator = "distllm.core.coordinator:main"
 distllm-api = "distllm.api.server:main"
-distllm-ui = "distllm.ui.app:main"
-distllm-tp = "distllm.core.tp_launcher:main"
-distllm-dashboard = "distllm.dashboard.app:main"
+distllm-node = "distllm.dist.worker:main"
 
 [project.urls]
 Homepage = "https://github.com/distributed-llm/distributed-llm"
@@ -155,9 +161,60 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "N", "UP", "YTT", "ANN", "BLE", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "N"]
+"examples/*" = ["ANN", "N"]
 
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
+ignore_missing_imports = true
+disallow_any_unimported = false
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+no_implicit_optional = true
+show_error_codes = true
+exclude = [
+    "build/",
+    "dist/",
+    "proto/",
+    "tests/",
+    "benchmarks/",
+    "extensions/",
+    "integrations/",
+    "examples/",
+    '.git',
+ ]
+
+[[tool.mypy.overrides]]
+# Strict checking for core distributed modules
+module = [
+    "distllm.dist.pipeline",
+    "distllm.dist.worker",
+    "distllm.dist.recovery",
+    "distllm.dist.straggler",
+    "distllm.api.middleware",
+    "distllm.config.settings",
+    "distllm.security",
+]
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# Relaxed checking for legacy/large modules
+module = [
+    "distllm.core.coordinator",
+    "distllm.core.request_pipeline",
+    "distllm.models.partitioner",
+    "distllm.api.server",
+]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+check_untyped_defs = false

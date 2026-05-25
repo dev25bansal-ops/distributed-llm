@@ -11,11 +11,11 @@ spec:
           image: ghcr.io/distributed-llm/coordinator:0.4.0
           resources:
             requests:
-              cpu: 500m
-              memory: 512Mi
-            limits:
               cpu: 2
-              memory: 2Gi
+              memory: 8Gi
+            limits:
+              cpu: 4
+              memory: 16Gi
 ---
 # Patch worker StatefulSet for production readiness
 apiVersion: apps/v1
@@ -27,11 +27,13 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/distributed-llm/worker:0.4.0
+          image: ghcr.io/distributed-llm/coordinator:0.4.0
           resources:
             requests:
               cpu: 1
-              memory: 1Gi
+              memory: 16Gi
+              nvidia.com/gpu: 1
             limits:
               cpu: 4
-              memory: 8Gi
+              memory: 32Gi
+              nvidia.com/gpu: 1

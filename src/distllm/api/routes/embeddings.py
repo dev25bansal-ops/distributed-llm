@@ -36,7 +36,7 @@ class EmbeddingRequest(BaseModel):
 class EmbeddingObject(BaseModel):
     index: int = Field(..., description="Index of the embedding in the input list")
     object: str = "embedding"
-    embedding: list[float] = Field(..., description="The embedding vector")
+    embedding: list[float] | str = Field(..., description="The embedding vector, or base64 string when encoding_format=base64")
 
 
 class EmbeddingResponse(BaseModel):
@@ -131,7 +131,7 @@ def _reciprocal_rank_fusion(
 
 def _encode_base64(values: list[float]) -> bytes:
     """Encode a list of floats as base64 (32-bit float, little-endian)."""
-    return base64.b64encode(struct.pack(f"{len(values)}f", *values))
+    return base64.b64encode(struct.pack(f"{len(values)}f", *values)).decode("ascii")
 
 
 @router.post(
@@ -190,7 +190,7 @@ async def create_embeddings(request: EmbeddingRequest):
         device = next(model.parameters()).device
         normalize = request.normalize
 
-        for idx, text in enumerate(request.input):
+        for _idx, text in enumerate(request.input):
             input_ids = coord.tokenizer.encode(text, return_tensors="pt").to(device)
 
             with torch.no_grad():

@@ -20,8 +20,12 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from distllm.communication.grpc import GRPCServer, NodeService
-from distllm.communication.serializers import kv_cache_to_proto, proto_to_kv_cache, proto_to_tensor, tensor_to_proto
+try:
+    from distllm.communication.grpc import GRPCServer, NodeService
+    from distllm.communication.serializers import kv_cache_to_proto, proto_to_kv_cache, proto_to_tensor, tensor_to_proto
+except ImportError:
+    pass
+
 from distllm.core.coordinator import Coordinator
 from distllm.core.kv_cache import KVCache
 from distllm.models.partitioner import ModelPartitioner, get_model_info

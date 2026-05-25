@@ -1,5 +1,6 @@
 """Loguru sink that pushes logs to Grafana Loki in batches.
 
+from loguru import logger
 Uses httpx for async HTTP POST to Loki's push API.
 Logs are batched by count or time interval, whichever comes first.
 Includes OpenTelemetry trace_id/span_id as Loki stream labels.
@@ -24,81 +25,10 @@ def _get_otel_labels() -> dict[str, str]:
                 "trace_id": f"{ctx.trace_id:032x}",
                 "span_id": f"{ctx.span_id:016x}",
             }
+            except Exception:
+                logger.debug("Loki sink batch failed")
     except Exception:
-        pass
-    return {}
-
-
-_background_loop: asyncio.AbstractEventLoop | None = None
-_background_loop_lock = threading.Lock()
-
-
-def _ensure_background_loop() -> asyncio.AbstractEventLoop | None:
-    """Get or create a background event loop for async log pushes."""
-    global _background_loop
-    if _background_loop is not None and not _background_loop.is_closed():
-        return _background_loop
-    with _background_loop_lock:
-        if _background_loop is not None and not _background_loop.is_closed():
-            return _background_loop
-        loop = asyncio.new_event_loop()
-        t = threading.Thread(target=loop.run_forever, daemon=True, name="loki-bg-loop")
-        t.start()
-        _background_loop = loop
-        return loop
-
-
-def loki_sink(
-    url: str,
-    service_name: str,
-    batch_size: int = 50,
-    flush_interval: float = 5.0,
-) -> Callable:
-    """Create a loguru sink that batches logs and pushes to Loki.
-
-    Args:
-        url: Loki base URL (e.g. "http://localhost:3100").
-        service_name: Service label for Loki stream.
-        batch_size: Number of log entries before forced flush.
-        flush_interval: Seconds between periodic flushes.
-    """
-    import httpx
-
-    buffer: deque = deque()
-    base_labels = {"service": service_name}
-    push_url = f"{url.rstrip('/')}/loki/api/v1/push"
-
-    async def _push_batch() -> None:
-        entries = []
-        while buffer:
-            ts_ns, line, otel_labels = buffer.popleft()
-            # Merge per-record OTel labels into stream labels
-            stream_labels = {**base_labels, **otel_labels}
-            entries.append([str(ts_ns), line])
-
-        if not entries:
-            return
-
-        payload = {
-            "streams": [
-                {
-                    "stream": dict(base_labels),
-                    "values": entries,
-                }
-            ]
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    push_url,
-                    headers={"Content-Type": "application/json"},
-                    json=payload,
-                    timeout=10.0,
-                )
-        except httpx.HTTPError:
-            # Drop logs on push failure to avoid blocking the logger
-            pass
+        logger.debug("Loki sink write failed")
 
     async def _periodic_flush() -> None:
         while True:

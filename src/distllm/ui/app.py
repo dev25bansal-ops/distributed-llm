@@ -72,7 +72,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="DistLLM Web UI")
-    parser.add_argument("--host", default="0.0.0.0", help="UI server host")
+    parser.add_argument("--host", default="127.0.0.1", help="UI server host")
     parser.add_argument("--port", type=int, default=8500, help="UI server port")
     parser.add_argument("--api-url", default="http://localhost:8000", help="API server URL")
 

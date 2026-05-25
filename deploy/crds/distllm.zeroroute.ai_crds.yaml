@@ -1,3 +1,5 @@
+# Canonical source: deploy/helm/crds/distllm.zeroroute.ai_crds.yaml
+# This file is a copy — make changes in the Helm chart CRDs directory.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:

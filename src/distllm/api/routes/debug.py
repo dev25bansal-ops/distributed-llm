@@ -1,11 +1,28 @@
 """Debug and replay routes: GET /v1/debug/recent, POST /v1/debug/replay."""
 
-from fastapi import APIRouter, HTTPException
+import hmac
+import os
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..api_state import g
 
 router = APIRouter(tags=["debug"])
+
+
+def _verify_debug_access(request: Request, authorization: str = Header("")) -> None:
+    enabled = os.environ.get("DISTLLM_ENABLE_DEBUG_ROUTES") == "1"
+    if not enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    admin_key = os.environ.get("DISTLLM_ADMIN_KEY")
+    if not admin_key:
+        raise HTTPException(status_code=503, detail="Debug admin API not configured")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    if not hmac.compare_digest(authorization[7:], admin_key):
+        raise HTTPException(status_code=401, detail="Invalid admin key")
 
 
 class ReplayRequest(BaseModel):
@@ -26,7 +43,7 @@ class DeterministicModeRequest(BaseModel):
         503: {"description": "No coordinator available or replay buffer not available"},
     },
 )
-async def get_recent_requests(n: int = 10):
+async def get_recent_requests(n: int = 10, _admin=Depends(_verify_debug_access)):  # noqa: B008
     """Get the N most recent requests stored in the replay buffer."""
     coord = g.coordinator
     if coord is None:
@@ -62,7 +79,7 @@ async def get_recent_requests(n: int = 10):
         503: {"description": "No coordinator available"},
     },
 )
-async def get_request_detail(request_id: str):
+async def get_request_detail(request_id: str, _admin=Depends(_verify_debug_access)):  # noqa: B008
     """Get full details of a stored request."""
     coord = g.coordinator
     if coord is None:
@@ -95,7 +112,7 @@ async def get_request_detail(request_id: str):
         503: {"description": "No coordinator available"},
     },
 )
-async def replay_request(body: ReplayRequest):
+async def replay_request(body: ReplayRequest, _admin=Depends(_verify_debug_access)):  # noqa: B008
     """Replay a stored request through the model."""
     coord = g.coordinator
     if coord is None:
@@ -117,7 +134,7 @@ async def replay_request(body: ReplayRequest):
         503: {"description": "No coordinator available"},
     },
 )
-async def set_deterministic_mode(body: DeterministicModeRequest):
+async def set_deterministic_mode(body: DeterministicModeRequest, _admin=Depends(_verify_debug_access)):  # noqa: B008
     """Enable or disable deterministic debug mode."""
     coord = g.coordinator
     if coord is None:
@@ -136,7 +153,7 @@ async def set_deterministic_mode(body: DeterministicModeRequest):
         503: {"description": "No coordinator available"},
     },
 )
-async def export_replay_buffer():
+async def export_replay_buffer(_admin=Depends(_verify_debug_access)):  # noqa: B008
     """Export all requests from the replay buffer for external debugging."""
     coord = g.coordinator
     if coord is None:

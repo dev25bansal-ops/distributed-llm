@@ -19,18 +19,27 @@ spec:
         app.kubernetes.io/name: distributed-llm
         app.kubernetes.io/component: worker
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
         - name: cache-storage
-          persistentVolumeClaim:
-            claimName: distllm-cache
-            readOnly: false
+          emptyDir: {}
       containers:
         - name: worker
-          image: ghcr.io/distributed-llm/worker:0.4.0
+          image: ghcr.io/distributed-llm/coordinator:0.4.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
           ports:
             - containerPort: 50051
               name: grpc
-            - containerPort: 9090
+            - containerPort: 9091
               name: metrics
           volumeMounts:
             - name: cache-storage
@@ -47,10 +56,12 @@ spec:
           resources:
             requests:
               cpu: 1
-              memory: 1Gi
+              memory: 16Gi
+              nvidia.com/gpu: 1
             limits:
               cpu: 4
-              memory: 8Gi
+              memory: 32Gi
+              nvidia.com/gpu: 1
           livenessProbe:
             tcpSocket:
               port: 50051
@@ -61,6 +72,10 @@ spec:
               port: 50051
             initialDelaySeconds: 5
             periodSeconds: 10
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
 ---
 apiVersion: v1
 kind: Service
@@ -78,6 +93,6 @@ spec:
       port: 50051
       targetPort: 50051
     - name: metrics
-      port: 9090
-      targetPort: 9090
+      port: 9091
+      targetPort: 9091
   clusterIP: None

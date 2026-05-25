@@ -44,14 +44,33 @@ class CircuitBreakerError(NodeError):
         self.recovery_in = recovery_in
 
 
-# Communication errors
+# Gateway errors (Path A: routing and provider errors)
+
+class GatewayError(DistLLMError):
+    """Error from the multi-provider gateway (routing, fallback, upstream)."""
+
+    def __init__(self, provider: str, model: str, status_code: int = 0, detail: str = ""):
+        message = f"Gateway error from {provider} for {model}"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message, context={"provider": provider, "model": model, "status_code": status_code})
+        self.provider = provider
+        self.model = model
+        self.status_code = status_code
+
+
+class ProviderTimeoutError(GatewayError):
+    """Upstream provider request timed out."""
+
+
+# Communication errors (legacy gRPC)
 
 class CommunicationError(DistLLMError):
-    """Error related to gRPC communication."""
+    """Error related to inter-node communication (legacy gRPC)."""
 
 
 class SerializationError(CommunicationError):
-    """Failed to serialize or deserialize protobuf messages."""
+    """Failed to serialize or deserialize protobuf messages (legacy)."""
 
     def __init__(self, message: str, field: Optional[str] = None):
         ctx = {"field": field} if field else {}
@@ -59,7 +78,7 @@ class SerializationError(CommunicationError):
 
 
 class GRPCTimeoutError(CommunicationError):
-    """gRPC call timed out."""
+    """gRPC call timed out (legacy)."""
 
     def __init__(self, node_id: str, timeout: float, host: str | None = None, port: int | None = None):
         target = f"{node_id} at {host}:{port}" if host is not None and port is not None else node_id

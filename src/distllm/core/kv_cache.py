@@ -2,10 +2,9 @@
 
 import threading
 
+import numpy as np
 import torch
 from loguru import logger
-
-from distllm.communication.serializers import tensor_to_proto
 
 
 class PagedKVCacheBackend:
@@ -166,13 +165,8 @@ class KVCache:
         """
         with self._lock:
             if use_fp8:
-                from distllm.core.fp8_engine import FP8_AVAILABLE
-                if not FP8_AVAILABLE:
-                    logger.warning("FP8 not available, falling back to int8 quantization")
-                    bits = 8
-                else:
-                    self._quant_fp8 = True
-                    return
+                logger.warning("FP8 quantization not available, falling back to int8")
+                bits = 8
             if bits not in (4, 8):
                 raise ValueError(f"KV cache quantization bits must be 4 or 8, got {bits}")
             self._quantized = True
@@ -253,33 +247,19 @@ class KVCache:
         return key, value
 
     def _update_fp8(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Update KV cache with FP8 quantization for 2x capacity.
-
-        Stores FP8 quantized segments with per-tensor scales.
-        """
-        from distllm.core.fp8_engine import quantize_kv_fp8, dequantize_kv_fp8
-
-        # Quantize new tensors to FP8
-        fp8_k, scale_k = quantize_kv_fp8(new_key)
-        fp8_v, scale_v = quantize_kv_fp8(new_value)
-
-        # Store FP8 segment (append-only)
-        while len(self._fp8_segments) <= layer_idx:
-            self._fp8_segments.append([])
-        self._fp8_segments[layer_idx].append((fp8_k, fp8_v, scale_k, scale_v))
-
-        # Maintain dequantized cache incrementally
-        new_k = dequantize_kv_fp8(fp8_k, scale_k)
-        new_v = dequantize_kv_fp8(fp8_v, scale_v)
-
-        if layer_idx >= len(self.cache):
-            self.cache.append((new_k, new_v))
-            return new_k, new_v
-
+        """FP8 not available; fall back to non-quantized cat."""
         old_k, old_v = self.cache[layer_idx]
-        key = torch.cat([old_k, new_k], dim=-2)
-        value = torch.cat([old_v, new_v], dim=-2)
+        cur_len = self._seq_lens[layer_idx]
+        new_len = new_key.shape[-2]
+        if self._max_seq_len and cur_len + new_len <= self._max_seq_len:
+            old_k[:, :, cur_len:cur_len + new_len] = new_key
+            old_v[:, :, cur_len:cur_len + new_len] = new_value
+            self._seq_lens[layer_idx] = cur_len + new_len
+            return old_k[:, :, :cur_len + new_len], old_v[:, :, :cur_len + new_len]
+        key = torch.cat([old_k[:, :, :cur_len], new_key], dim=-2)
+        value = torch.cat([old_v[:, :, :cur_len], new_value], dim=-2)
         self.cache[layer_idx] = (key, value)
+        self._seq_lens[layer_idx] = cur_len + new_len
         return key, value
 
     def get_quantized(self, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -311,72 +291,16 @@ class KVCache:
 
         return quantized_mem / max(unquantized_mem, 1)
 
-    def to_proto(self):
-        """Serialize KVCache to protobuf format.
-
-        Handles both quantized and unquantized caches.
-        Quantized caches serialize from stored segments.
-        """
-        from distllm.communication.node_pb2 import KVCache as ProtoKVCache, KVLayerCache
-
-        with self._lock:
-            layers = []
-            if self._quantized:
-                for segs in self._qsegments:
-                    layer_msg = KVLayerCache()
-                    if segs:
-                        all_qk = torch.cat([s[0] for s in segs], dim=-2)
-                        all_qv = torch.cat([s[1] for s in segs], dim=-2)
-                        all_sk = torch.cat([s[2] for s in segs], dim=-2)
-                        all_sv = torch.cat([s[3] for s in segs], dim=-2)
-                        pk = tensor_to_proto(all_qk)
-                        pk.scale.extend(all_sk.flatten().tolist())
-                        pv = tensor_to_proto(all_qv)
-                        pv.scale.extend(all_sv.flatten().tolist())
-                        layer_msg.key_states.CopyFrom(pk)
-                        layer_msg.value_states.CopyFrom(pv)
-                    layers.append(layer_msg)
-            elif self._quant_fp8:
-                for segs in self._fp8_segments:
-                    layer_msg = KVLayerCache()
-                    if segs:
-                        all_fp8k = torch.cat([s[0] for s in segs], dim=-2)
-                        all_fp8v = torch.cat([s[1] for s in segs], dim=-2)
-                        all_sk = torch.cat([s[2] for s in segs], dim=-2)
-                        all_sv = torch.cat([s[3] for s in segs], dim=-2)
-                        pk = tensor_to_proto(all_fp8k.to(torch.float16))
-                        pk.scale.extend(all_sk.flatten().tolist())
-                        pv = tensor_to_proto(all_fp8v.to(torch.float16))
-                        pv.scale.extend(all_sv.flatten().tolist())
-                        layer_msg.key_states.CopyFrom(pk)
-                        layer_msg.value_states.CopyFrom(pv)
-                    layers.append(layer_msg)
-            else:
-                for k, v in self.cache:
-                    layer_msg = KVLayerCache()
-                    layer_msg.key_states.CopyFrom(tensor_to_proto(k))
-                    layer_msg.value_states.CopyFrom(tensor_to_proto(v))
-                    layers.append(layer_msg)
-            proto = ProtoKVCache(layers=layers)
-            if self._quantized:
-                proto.quant_bits = self._quant_bits
-            return proto
-
     @staticmethod
     def from_proto(proto, device: str = "cpu"):
-        """Deserialize KVCache from protobuf format.
-
-        Restores quantization state if the serialized cache was quantized.
-        """
-        from distllm.communication.serializers import proto_to_tensor
-
+        """Deserialize KVCache from protobuf format (legacy, gRPC removed)."""
         cache = KVCache()
         if hasattr(proto, 'quant_bits') and proto.quant_bits > 0:
             cache._quantized = True
             cache._quant_bits = proto.quant_bits
         for layer in proto.layers:
-            k = proto_to_tensor(layer.key_states, device)
-            v = proto_to_tensor(layer.value_states, device)
+            k = _proto_to_tensor(layer.key_states, device)
+            v = _proto_to_tensor(layer.value_states, device)
             if cache._quantized and layer.key_states.scale:
                 sk = torch.tensor(list(layer.key_states.scale), device=device)
                 sv = torch.tensor(list(layer.value_states.scale), device=device)
@@ -494,3 +418,22 @@ def load_kv_cache_from_disk(path: str) -> KVCache:
     """Load KV cache from a .pt file."""
     data = torch.load(path, weights_only=True)
     return deserialize_kv_cache(data)
+
+
+# ── Inline helpers (tensor transport) ────────────────────────────────────
+
+def _tensor_to_bytes(tensor):
+    """Convert torch.Tensor to bytes for transport."""
+    t = tensor.detach().cpu().contiguous()
+    return t.view(torch.uint8).numpy(force=True).tobytes(), list(tensor.shape), str(tensor.dtype)
+
+
+def _bytes_to_tensor(data, shape, dtype_str, device="cpu"):
+    """Convert bytes back to torch.Tensor."""
+    dtype_map = {"torch.float32": torch.float32, "torch.float16": torch.float16,
+                 "torch.bfloat16": torch.bfloat16, "torch.int64": torch.int64,
+                 "torch.int32": torch.int32, "torch.uint8": torch.uint8,
+                 "torch.bool": torch.bool}
+    torch_dtype = dtype_map.get(dtype_str, torch.float32)
+    arr = np.frombuffer(data, dtype=np.uint8)
+    return torch.from_numpy(arr).view(torch_dtype).reshape(shape).clone().to(device)

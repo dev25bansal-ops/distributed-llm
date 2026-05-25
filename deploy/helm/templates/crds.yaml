@@ -1,7 +1,0 @@
-{{/*
-Install CRDs from the existing deploy/crds/ directory.
-These are managed separately from the release lifecycle.
-*/}}
-{{- if .Files.Get "crds/distllm.zeroroute.ai_crds.yaml" }}
-{{ .Files.Get "crds/distllm.zeroroute.ai_crds.yaml" }}
-{{- end }}

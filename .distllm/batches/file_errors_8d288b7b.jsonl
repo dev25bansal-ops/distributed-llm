@@ -1,0 +1,1 @@
+{"id": "req-bad", "custom_id": "req-bad", "error": {"message": "chat batch request body must include non-empty messages", "code": "internal_error"}}

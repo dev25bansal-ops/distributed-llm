@@ -6,6 +6,8 @@ Extracted from the Coordinator class.
 
 import asyncio
 import concurrent.futures
+import json
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -13,9 +15,9 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from distllm.communication.grpc import NodeClient, AsyncNodeClient
-from distllm.config.loader import NodeRole
+from distllm.config.settings import NodeRole
 from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError
+from distllm.dist.node_client import create_node_client, NodeClient
 
 
 @dataclass
@@ -27,7 +29,7 @@ class CircuitBreakerConfig:
 
 
 class NodeRegistration:
-    """Tracks a registered node's assignment."""
+    """Tracks a registered node's assignment with GPU capabilities."""
 
     def __init__(
         self,
@@ -54,6 +56,7 @@ class NodeRegistration:
         self.start_layer = start_layer
         self.end_layer = end_layer
         self.healthy = True
+        self.last_health_time: float = time.time()
         self.role = role
         self.expert_ids = expert_ids or []
         self.cluster_id = cluster_id
@@ -61,27 +64,100 @@ class NodeRegistration:
         self.instance_type = instance_type
         self.cost_per_hour = cost_per_hour
         self.is_spot = is_spot
-        self.client = NodeClient(
-            host, port,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
-            use_tls=use_tls,
-            ca_cert=ca_cert,
-        )
-        self.async_client = AsyncNodeClient(
-            host, port,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
-            use_tls=use_tls,
-            ca_cert=ca_cert,
-        )
+        self.client: NodeClient | None = None
+        self.async_client = None
+
+        # GPU capabilities (populated by init_client via Profile RPC)
+        self.gpu_name: str = ""
+        self.gpu_memory_total: int = 0
+        self.gpu_memory_free: int = 0
+        self.gpu_sm_count: int = 0
+        self.gpu_profile_raw: dict | None = None
+
+    def init_client(self, timeout_s: float = 10.0,
+                    cluster_key: str | None = None) -> None:
+        """Initialize the gRPC client connection and fetch GPU capabilities.
+
+        Creates a gRPC channel, then calls the Profile RPC to populate
+        GPU capability fields for the auto-partitioner.
+
+        Args:
+            timeout_s: Connection timeout in seconds.
+            cluster_key: Optional shared secret for node authentication.
+
+        Raises:
+            NodeUnreachableError: If the node cannot be reached.
+        """
+        try:
+            self.client = create_node_client(
+                host=self.host,
+                port=self.port,
+                use_tls=hasattr(self, 'use_tls') and self.use_tls,
+                ca_cert=self.ca_cert if hasattr(self, 'ca_cert') else None,
+                timeout_s=timeout_s,
+                cluster_key=cluster_key,
+            )
+            self.healthy = True
+            self._fetch_capabilities()
+            logger.info(
+                f"gRPC client connected to {self.node_id} at {self.host}:{self.port}"
+                f" — GPU: {self.gpu_name}, VRAM: {self.gpu_memory_total // (1024**3)}GB"
+            )
+        except Exception as e:
+            self.healthy = False
+            raise NodeUnreachableError(
+                node_id=self.node_id,
+                host=self.host,
+                port=self.port,
+                original_error=e,
+            ) from e
+
+    def _fetch_capabilities(self) -> None:
+        """Fetch GPU capabilities from the node via Profile RPC."""
+        from distllm.dist import node_pb2
+        try:
+            profile = self.client.stub.Profile(
+                node_pb2.ProfileRequest(node_id=self.node_id),
+            )
+            self.gpu_name = profile.gpu_name
+            self.gpu_memory_total = profile.total_memory_bytes
+            self.gpu_memory_free = profile.free_memory_bytes
+            self.gpu_sm_count = profile.sm_count
+            self.gpu_profile_raw = {
+                "gpu_name": profile.gpu_name,
+                "total_memory_bytes": profile.total_memory_bytes,
+                "free_memory_bytes": profile.free_memory_bytes,
+                "sm_count": profile.sm_count,
+            }
+        except Exception as e:
+            logger.warning(f"Failed to fetch GPU capabilities from {self.node_id}: {e}")
+
+    def health_check(self) -> bool:
+        """Ping the node via HealthCheck RPC. Returns True if healthy."""
+        from distllm.dist import node_pb2
+        if self.client is None:
+            self.healthy = False
+            return False
+        try:
+            resp = self.client.stub.HealthCheck(
+                node_pb2.HealthCheckRequest(node_id=self.node_id),
+            )
+            self.healthy = resp.healthy
+            self.last_health_time = time.time()
+            self.gpu_memory_free = resp.memory_total_bytes - resp.memory_used_bytes
+            return resp.healthy
+        except Exception:
+            self.healthy = False
+            return False
 
     def close(self) -> None:
-        """Close gRPC clients and release resources."""
-        try:
-            self.client.close()
-        except Exception:
-            pass
+        """Close connections and release resources."""
+        if self.client is not None:
+            try:
+                self.client.close()
+                self.client = None
+            except Exception:
+                logger.debug("Resource cleanup failed (non-fatal)")
 
 
 class ResourceManager:
@@ -192,6 +268,30 @@ class ResourceManager:
 
     # -- Health Checks --
 
+    @staticmethod
+    def _tcp_health_check(host: str, port: int, timeout: float = 5.0) -> bool:
+        """Perform a simple TCP connectivity health check."""
+        try:
+            sock = socket.create_connection((host, port), timeout=timeout)
+            sock.close()
+            return True
+        except (OSError, ConnectionError):
+            return False
+
+    @staticmethod
+    async def _tcp_health_check_async(host: str, port: int, timeout: float = 5.0) -> bool:
+        """Perform an async TCP connectivity health check."""
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=timeout,
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (OSError, ConnectionError, asyncio.TimeoutError):
+            return False
+
     def health_check_all(self, nodes: dict[str, NodeRegistration]) -> dict:
         """Check health of all registered nodes in parallel.
 
@@ -211,11 +311,11 @@ class ResourceManager:
                     "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
                 }
             try:
-                health = node.client.health_check()
+                healthy = self._tcp_health_check(node.host, node.port)
                 return node_id, {
-                    "healthy": health.healthy,
-                    "memory_used": health.memory_used,
-                    "memory_total": health.memory_total,
+                    "healthy": healthy,
+                    "memory_used": 0,
+                    "memory_total": 0,
                 }
             except (NodeUnreachableError, GRPCTimeoutError, ConnectionError, OSError) as e:
                 self.record_failure(node_id)
@@ -248,11 +348,11 @@ class ResourceManager:
                     "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
                 }
             try:
-                health = await node.async_client.health_check()
+                healthy = await self._tcp_health_check_async(node.host, node.port)
                 return node_id, {
-                    "healthy": health.healthy,
-                    "memory_used": health.memory_used,
-                    "memory_total": health.memory_total,
+                    "healthy": healthy,
+                    "memory_used": 0,
+                    "memory_total": 0,
                 }
             except (NodeUnreachableError, GRPCTimeoutError, ConnectionError, OSError) as e:
                 self.record_failure(node_id)
@@ -282,16 +382,12 @@ class ResourceManager:
                 logger.debug(f"Error closing node {node.node_id}: {e}")
 
     async def close_all_async(self, nodes: dict[str, NodeRegistration]) -> None:
-        """Close all node connections (both async and sync clients)."""
-        async def close_node(node: NodeRegistration):
+        """Close all node connections."""
+        for node in nodes.values():
             try:
-                await node.async_client.close()
-            except Exception:
-                pass
-            node.close()
-
-        tasks = [close_node(node) for node in nodes.values()]
-        await asyncio.gather(*tasks)
+                node.close()
+            except Exception as e:
+                logger.debug(f"Error closing node {node.node_id}: {e}")
 
     # -- Metrics --
 
@@ -331,3 +427,32 @@ class ResourceManager:
             self._node_failure_counts[node_id] = self.cb_config.threshold
             self._node_recovery_time[node_id] = time.time() + 3600  # 1 hour
             self._metrics["node_failures"] += 1
+
+    def save_state(self, path: str = ".distllm_circuit_breakers.json") -> None:
+        """Persist circuit breaker state to survive restarts."""
+        with self._lock:
+            data = {
+                "node_failure_counts": dict(self._node_failure_counts),
+                "node_recovery_time": dict(self._node_recovery_time),
+                "metrics": dict(self._metrics),
+            }
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except (OSError, PermissionError):
+            pass
+
+    def load_state(self, path: str = ".distllm_circuit_breakers.json") -> None:
+        """Restore circuit breaker state from disk."""
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        with self._lock:
+            for nid, count in data.get("node_failure_counts", {}).items():
+                self._node_failure_counts[nid] = int(count)
+            for nid, t in data.get("node_recovery_time", {}).items():
+                self._node_recovery_time[nid] = float(t)
+            for k, v in data.get("metrics", {}).items():
+                self._metrics[k] = int(v)

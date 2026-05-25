@@ -9,9 +9,14 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 import torch
 
+try:
+    from distllm.communication.grpc import NodeClient, AsyncNodeClient
+    _grpc_available = True
+except ImportError:
+    _grpc_available = False
+
 from distllm.core.coordinator import Coordinator
 from distllm.core.resource_manager import NodeRegistration
-from distllm.communication.grpc import NodeClient, AsyncNodeClient
 
 
 @pytest.fixture
@@ -37,7 +42,10 @@ def mock_model_partitioner():
 @pytest.fixture
 def mock_tensor_serializer():
     """Create a mock tensor serializer/deserializer."""
-    from distllm.communication.serializers import tensor_to_proto, proto_to_tensor
+    try:
+        from distllm.communication.serializers import tensor_to_proto, proto_to_tensor
+    except ImportError:
+        pytest.skip("distllm.communication.serializers module removed")
 
     return tensor_to_proto, proto_to_tensor
 

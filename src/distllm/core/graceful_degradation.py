@@ -172,9 +172,10 @@ class GracefulDegradation:
         with self._lock:
             recent = self._history[-10:] if self._history else []
             avg_score = sum(s for _, s in recent) / max(len(recent), 1) if recent else 0.0
+            level = self._score_to_level(avg_score)
             return {
                 "enabled": self._enabled,
-                "current_level": self.current_level.value,
+                "current_level": level.value,
                 "current_score": avg_score,
                 "history_size": len(self._history),
                 "thresholds": {
