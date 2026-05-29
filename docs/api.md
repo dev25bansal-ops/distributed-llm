@@ -24,7 +24,7 @@ export DISTLLM_API_KEY=sk-your-master-key
 POST /v1/chat/completions
 ```
 
-OpenAI-compatible chat endpoint with additional routing options.
+OpenAI-compatible chat endpoint for distributed inference.
 
 **Request body:**
 ```json
@@ -37,17 +37,13 @@ OpenAI-compatible chat endpoint with additional routing options.
 }
 ```
 
-**Routing options (DistLLM-specific):**
-- `provider` — routing strategy: `"cheapest"`, `"fastest"`, or leave unset for default
-- `provider_fallbacks` — list of fallback providers: `["together", "fireworks"]`
-
 ### Completions
 
 ```
 POST /v1/completions
 ```
 
-Standard text completion. Same routing options as chat.
+Standard text completion. Supports the same distributed pipeline execution as chat.
 
 ### Models
 
@@ -55,7 +51,7 @@ Standard text completion. Same routing options as chat.
 GET /v1/models
 ```
 
-List all available models across all configured providers.
+List all available models loaded in the distributed cluster.
 
 ### Embeddings
 
@@ -63,7 +59,7 @@ List all available models across all configured providers.
 POST /v1/embeddings
 ```
 
-Generate embeddings from configured embedding providers.
+Generate embeddings using the distributed pipeline's embedding model.
 
 ### Health
 
@@ -81,14 +77,6 @@ GET /metrics
 
 Prometheus-format metrics.
 
-### Cost Tracking
-
-```
-GET /v1/costs
-```
-
-Returns per-tenant and per-model cost breakdown.
-
 ## SDK Usage
 
 ### Python (OpenAI SDK)
@@ -101,11 +89,9 @@ client = openai.Client(
     api_key="sk-your-master-key",
 )
 
-# Route to cheapest provider
 response = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="meta-llama/Llama-3.2-7B",
     messages=[{"role": "user", "content": "Hello!"}],
-    extra_body={"provider": "cheapest"},
 )
 ```
 
@@ -133,4 +119,4 @@ const response = await client.chat.completions.create({
 | 429 | auth_rate_limit | Too many failed auth attempts |
 | 429 | rate_limit | Rate limit exceeded |
 | 504 | timeout_error | Request exceeded timeout |
-| 503 | provider_error | Upstream provider unavailable |
+| 503 | node_unavailable | Worker node unavailable or unreachable |

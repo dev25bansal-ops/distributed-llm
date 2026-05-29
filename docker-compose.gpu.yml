@@ -1,0 +1,145 @@
+# Docker Compose for DistLLM GPU Cluster
+#
+# Usage:
+#   docker compose -f docker-compose.gpu.yml up -d
+#   docker compose -f docker-compose.gpu.yml up -d --scale worker=4
+#   docker compose -f docker-compose.gpu.yml down
+#
+# Prerequisites:
+#   - NVIDIA Container Toolkit installed
+#   - Docker Compose v2.x+
+#   - nvidia-smi working on host
+
+version: "3.8"
+
+x-common: &common
+  image: distllm:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file: .env
+  restart: unless-stopped
+  networks:
+    - distllm-net
+
+services:
+  # ── Coordinator ──────────────────────────────────────────────────
+  coordinator:
+    <<: *common
+    container_name: distllm-coordinator
+    command: >
+      distllm system coordinator
+        --host 0.0.0.0
+        --port 50050
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --total-layers ${TOTAL_LAYERS:-32}
+    ports:
+      - "50050:50050"  # gRPC
+      - "8000:8000"    # REST API
+      - "9090:9090"    # Metrics
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── GPU Workers (scalable) ───────────────────────────────────────
+  worker:
+    <<: *common
+    command: >
+      distllm system worker
+        --coordinator coordinator:50050
+        --port 50051
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --device cuda
+        --dtype ${DTYPE:-float16}
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+      replicas: ${WORKER_REPLICAS:-2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Prometheus Metrics ───────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: distllm-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - distllm-net
+    profiles:
+      - monitoring
+
+  # ── Grafana Dashboard ────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: distllm-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    networks:
+      - distllm-net
+    profiles:
+      - monitoring
+
+  # ── Loki Log Aggregation ─────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: distllm-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./deploy/logging/loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    networks:
+      - distllm-net
+    profiles:
+      - monitoring
+
+volumes:
+  model-cache:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+
+networks:
+  distllm-net:
+    driver: bridge

@@ -10,15 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from distllm.core.auto_partition.cost_model import NodeCost, PartitionCostModel
-from distllm.core.auto_partition.optimizer import (
+from distllm.dist.partition.cost_model import NodeCost, PartitionCostModel
+from distllm.dist.partition.optimizer import (
     PartitionOptimizer,
     PartitionPoint,
     PartitionSolution,
 )
-from distllm.core.auto_partition.partitioner import HardwareAwarePartitioner
-from distllm.core.auto_partition.profiles import GPUProfile, GPUProfiler, LayerWeights
-from distllm.core.auto_partition.topology import LinkProfile, TopologyGraph, TopologyProber
+from distllm.dist.partition.partitioner import HardwareAwarePartitioner
+from distllm.dist.partition.profiles import GPUProfile, GPUProfiler, LayerWeights
+from distllm.dist.partition.topology import LinkProfile, TopologyGraph, TopologyProber
 
 
 # ─── GPUProfile / LayerWeights ────────────────────────────────────────────────

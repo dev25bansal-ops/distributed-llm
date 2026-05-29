@@ -63,6 +63,7 @@ def run_benchmarks(
     names = benchmark_names or [
         "throughput-small", "latency-ttft", "latency-itl",
         "memory-efficiency", "kv-cache-hit-rate", "spec-accept-rate",
+        "defrag-frag-ratio", "defrag-compaction-speed", "defrag-memory-recovery",
     ]
 
     results = {}

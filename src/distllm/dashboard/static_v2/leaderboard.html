@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DistLLM Benchmark Leaderboard</title>
+<style>
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-card: #21262d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --border-color: #30363d;
+  --accent-green: #2ea043;
+  --accent-red: #da3633;
+  --accent-blue: #388bfd;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  background: var(--bg-primary); color: var(--text-primary);
+  margin: 0; padding: 16px; min-height: 100vh;
+}
+.container { max-width: 1600px; margin: 0 auto; }
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap; gap: 8px;
+}
+header h1 { font-size: 1.4rem; color: var(--accent-blue); }
+.header-right { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.btn {
+  padding: 6px 14px; border: 1px solid var(--border-color); border-radius: 6px;
+  cursor: pointer; font-size: 0.8rem; font-weight: 500;
+  background: var(--bg-card); color: var(--text-primary);
+  transition: background 0.15s;
+}
+.btn:hover { background: #30363d; }
+.btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+.btn-primary:hover { background: #58a6ff; }
+.btn-green { background: var(--accent-green); border-color: var(--accent-green); color: #fff; }
+.btn-green:hover { background: #3fb950; }
+.btn-sm { padding: 4px 10px; font-size: 0.75rem; }
+
+input, select {
+  padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px;
+  background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent-blue); }
+
+/* Summary cards */
+.summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.summary-card {
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: 8px; padding: 14px; text-align: center;
+}
+.summary-card .value { font-size: 1.6rem; font-weight: 700; color: var(--accent-blue); }
+.summary-card .label { font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* Filter bar */
+.filter-bar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: 8px; padding: 12px; margin-bottom: 16px;
+}
+.filter-bar label { font-size: 0.75rem; color: var(--text-secondary); }
+.filter-bar input, .filter-bar select { min-width: 120px; }
+
+/* Table */
+.table-wrap {
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: 8px; overflow-x: auto; margin-bottom: 16px;
+}
+table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+thead { background: var(--bg-secondary); }
+th {
+  padding: 10px 8px; text-align: left; font-weight: 600; color: var(--text-secondary);
+  white-space: nowrap; cursor: pointer; user-select: none; position: relative;
+}
+th:hover { color: var(--text-primary); }
+th.sorted { color: var(--accent-blue); }
+th .sort-icon { margin-left: 4px; font-size: 0.65rem; }
+td { padding: 8px; border-top: 1px solid var(--border-color); white-space: nowrap; }
+tr:hover { background: rgba(56,139,253,0.06); }
+
+.verified-badge {
+  display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+}
+.verified-badge.yes { background: rgba(46,160,67,0.2); color: var(--accent-green); }
+.verified-badge.no { background: rgba(218,54,51,0.2); color: var(--accent-red); }
+
+.framework-tag {
+  display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+  background: rgba(56,139,253,0.15); color: var(--accent-blue);
+}
+
+.rank-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%; font-size: 0.7rem; font-weight: 700;
+}
+.rank-1 { background: #d4af37; color: #000; }
+.rank-2 { background: #a8a8a8; color: #000; }
+.rank-3 { background: #cd7f32; color: #000; }
+.rank-default { background: var(--bg-secondary); color: var(--text-secondary); }
+
+/* Top results */
+.top-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.top-card {
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: 8px; padding: 14px; position: relative;
+}
+.top-card .top-model { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
+.top-card .top-hardware { font-size: 0.75rem; color: var(--text-secondary); }
+.top-card .top-throughput { font-size: 1.3rem; font-weight: 700; color: var(--accent-green); margin: 6px 0; }
+.top-card .top-throughput-label { font-size: 0.7rem; color: var(--text-secondary); }
+.top-card .top-rank {
+  position: absolute; top: 8px; right: 8px;
+  font-size: 0.7rem; padding: 2px 6px; border-radius: 4px;
+  background: rgba(56,139,253,0.15); color: var(--accent-blue);
+}
+
+/* Pagination */
+.pagination {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0; color: var(--text-secondary); font-size: 0.8rem;
+}
+.pagination .page-btns { display: flex; gap: 4px; }
+
+/* Modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: 12px; padding: 24px; max-width: 600px; width: 90%;
+  max-height: 85vh; overflow-y: auto;
+}
+.modal h2 { font-size: 1.1rem; color: var(--text-primary); margin-bottom: 16px; }
+.modal .close-btn {
+  float: right; background: none; border: none; color: var(--text-secondary);
+  font-size: 1.4rem; cursor: pointer;
+}
+.modal .close-btn:hover { color: var(--text-primary); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-group { margin-bottom: 12px; }
+.form-group.full { grid-column: 1/-1; }
+.form-group label { display: block; font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 4px; }
+.form-group input, .form-group select {
+  width: 100%; padding: 8px 10px;
+  border: 1px solid var(--border-color); border-radius: 6px;
+  background: var(--bg-primary); color: var(--text-primary); font-size: 0.8rem;
+}
+.form-group input:focus, .form-group select:focus { border-color: var(--accent-blue); }
+.form-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+.loading {
+  text-align: center; padding: 40px; color: var(--text-secondary); font-size: 0.9rem;
+}
+.error-msg { text-align: center; padding: 20px; color: var(--accent-red); }
+
+.toggle-label { font-size: 0.75rem; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.toggle-label input { accent-color: var(--accent-blue); }
+
+@media (max-width: 768px) {
+  .filter-bar { flex-direction: column; align-items: stretch; }
+  .filter-bar input, .filter-bar select { min-width: auto; }
+  .form-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Benchmark Leaderboard</h1>
+    <div class="header-right">
+      <label class="toggle-label">
+        <input type="checkbox" id="auto-refresh" checked> Auto-refresh
+      </label>
+      <button class="btn btn-primary" id="refresh-btn" onclick="fetchLeaderboard()">Refresh</button>
+      <button class="btn btn-green" onclick="openSubmitModal()">+ Submit Result</button>
+    </div>
+  </header>
+
+  <div class="summary-grid" id="summary-cards">
+    <div class="summary-card"><div class="value" id="stat-submissions">--</div><div class="label">Submissions</div></div>
+    <div class="summary-card"><div class="value" id="stat-models">--</div><div class="label">Models</div></div>
+    <div class="summary-card"><div class="value" id="stat-hardware">--</div><div class="label">Hardware Configs</div></div>
+    <div class="summary-card"><div class="value" id="stat-verified">--</div><div class="label">Verified</div></div>
+  </div>
+
+  <div class="filter-bar">
+    <label>Model</label>
+    <input type="text" id="filter-model" placeholder="Filter model..." oninput="fetchLeaderboard()">
+    <label>Hardware</label>
+    <select id="filter-hardware" onchange="fetchLeaderboard()">
+      <option value="">All Hardware</option>
+    </select>
+    <label>Sort By</label>
+    <select id="filter-metric" onchange="fetchLeaderboard()">
+      <option value="">Default</option>
+      <option value="throughput_tok_s">Throughput</option>
+      <option value="ttft_ms">TTFT</option>
+      <option value="itl_ms">ITL</option>
+      <option value="latency_p50_ms">P50 Latency</option>
+      <option value="memory_peak_mb">Memory</option>
+    </select>
+    <label>Per page</label>
+    <select id="filter-limit" onchange="fetchLeaderboard()">
+      <option value="10">10</option>
+      <option value="25">25</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
+  </div>
+
+  <div class="table-wrap" id="table-wrap">
+    <div class="loading" id="table-loading">Loading leaderboard...</div>
+  </div>
+
+  <h2 style="font-size:1rem;color:var(--text-secondary);margin-bottom:12px;">Top Results by Throughput</h2>
+  <div class="top-grid" id="top-grid"></div>
+</div>
+
+<!-- Submit Modal -->
+<div class="modal-overlay" id="submit-modal">
+  <div class="modal">
+    <button class="close-btn" onclick="closeSubmitModal()">&times;</button>
+    <h2>Submit Benchmark Result</h2>
+    <div class="form-grid">
+      <div class="form-group"><label>Model name</label><input id="sub-model" placeholder="e.g. Qwen/Qwen2-1.5B-Instruct"></div>
+      <div class="form-group"><label>Hardware (GPU)</label><input id="sub-hardware" placeholder="e.g. NVIDIA A100"></div>
+      <div class="form-group"><label>Framework</label><select id="sub-framework"><option>DistLLM</option><option>vLLM</option><option>SGLang</option><option>TensorRT-LLM</option><option>Other</option></select></div>
+      <div class="form-group"><label>Backend</label><select id="sub-backend"><option>native</option><option>api</option></select></div>
+      <div class="form-group"><label>Throughput (tok/s)</label><input id="sub-throughput" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>TTFT (ms)</label><input id="sub-ttft" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>ITL (ms)</label><input id="sub-itl" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>P50 Latency (ms)</label><input id="sub-lat50" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>P95 Latency (ms)</label><input id="sub-lat95" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>P99 Latency (ms)</label><input id="sub-lat99" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>Peak Memory (MB)</label><input id="sub-mem" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>Memory Efficiency (%)</label><input id="sub-mem-eff" type="number" step="0.01" placeholder="0"></div>
+      <div class="form-group"><label>Num Nodes</label><input id="sub-nodes" type="number" value="1" min="1"></div>
+      <div class="form-group"><label>GPUs per Node</label><input id="sub-gpus" type="number" value="1" min="1"></div>
+      <div class="form-group"><label>Precision</label><select id="sub-precision"><option>float16</option><option>float32</option><option>bfloat16</option><option>int8</option><option>int4</option></select></div>
+      <div class="form-group"><label>Batch Size</label><input id="sub-batch" type="number" value="1" min="1"></div>
+      <div class="form-group"><label>Seq Length</label><input id="sub-seq-len" type="number" value="512" min="1"></div>
+      <div class="form-group"><label>Max Tokens</label><input id="sub-max-tokens" type="number" value="256" min="1"></div>
+      <div class="form-group"><label>Concurrency</label><input id="sub-concurrency" type="number" value="1" min="1"></div>
+      <div class="form-group"><label>Spec Decode</label><select id="sub-spec"><option value="false">No</option><option value="true">Yes</option></select></div>
+      <div class="form-group full"><label>Submitted By</label><input id="sub-by" placeholder="your-name"></div>
+    </div>
+    <div class="form-footer">
+      <button class="btn" onclick="closeSubmitModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitResult()">Submit</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, function(m) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; }); }
+
+  function fmt(v, d) {
+    if (v === null || v === undefined || v === '') return '--';
+    var n = Number(v);
+    if (isNaN(n)) return String(v);
+    if (d !== undefined) return n.toFixed(d);
+    return n < 10 ? n.toFixed(2) : n < 100 ? n.toFixed(1) : n.toFixed(0);
+  }
+
+  var state = { offset: 0, total: 0 };
+  var refreshInterval = null;
+
+  function el(id) { return document.getElementById(id); }
+
+  function fetchLeaderboard() {
+    var model = el('filter-model').value;
+    var hardware = el('filter-hardware').value;
+    var metric = el('filter-metric').value;
+    var limit = parseInt(el('filter-limit').value) || 50;
+    var offset = state.offset;
+
+    var params = '?limit=' + limit + '&offset=' + offset;
+    if (model) params += '&model=' + encodeURIComponent(model);
+    if (hardware) params += '&hardware=' + encodeURIComponent(hardware);
+    if (metric) params += '&metric=' + encodeURIComponent(metric);
+
+    el('table-loading').style.display = 'block';
+    el('table-loading').textContent = 'Loading...';
+
+    fetch('/v1/leaderboard' + params)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        state.total = data.total;
+        renderTable(data.results, data.total, data.limit, data.offset);
+        updateSummary(data.results, data.total);
+      })
+      .catch(function(err) {
+        el('table-loading').style.display = 'block';
+        el('table-loading').textContent = 'Error loading data: ' + err.message;
+      });
+
+    fetchTopResults();
+    fetchSummary();
+  }
+
+  function fetchTopResults() {
+    fetch('/v1/leaderboard/top')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        renderTopResults(data.top_results || []);
+      })
+      .catch(function() {});
+  }
+
+  function fetchSummary() {
+    fetch('/v1/leaderboard/summary')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        renderSummaryStats(data.summaries || []);
+      })
+      .catch(function() {});
+  }
+
+  function updateSummary(results, total) {
+    var models = {}, hw = {}, verified = 0;
+    results.forEach(function(r) {
+      models[r.model] = true;
+      hw[r.hardware] = true;
+      if (r.verified) verified++;
+    });
+    el('stat-submissions').textContent = total;
+    el('stat-models').textContent = Object.keys(models).length;
+    el('stat-hardware').textContent = Object.keys(hw).length;
+    el('stat-verified').textContent = verified;
+  }
+
+  function renderSummaryStats(summaries) {
+    var hwSelect = el('filter-hardware');
+    var currentVal = hwSelect.value;
+    var seen = {};
+    while (hwSelect.options.length > 1) hwSelect.remove(1);
+    summaries.forEach(function(s) {
+      if (seen[s.hardware]) return;
+      seen[s.hardware] = true;
+      var opt = document.createElement('option');
+      opt.value = s.hardware;
+      opt.textContent = s.hardware;
+      hwSelect.appendChild(opt);
+    });
+    hwSelect.value = currentVal;
+  }
+
+  function renderTable(results, total, limit, offset) {
+    var wrap = el('table-wrap');
+    var loading = el('table-loading');
+    loading.style.display = 'none';
+
+    var existing = wrap.querySelector('table');
+    if (existing) existing.remove();
+    var existingPag = wrap.querySelector('.pagination');
+    if (existingPag) existingPag.remove();
+
+    if (!results.length) {
+      var empty = document.createElement('div');
+      empty.className = 'loading';
+      empty.textContent = 'No benchmark results found.';
+      wrap.appendChild(empty);
+      return;
+    }
+
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var headerRow = document.createElement('tr');
+    var cols = ['Rank','Model','Hardware','Framework','Throughput','TTFT','ITL','P50','P95','P99','Memory','Config','Submitted','Verified'];
+    cols.forEach(function(c) {
+      var th = document.createElement('th');
+      th.textContent = c;
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    results.forEach(function(r, i) {
+      var tr = document.createElement('tr');
+      var rank = offset + i + 1;
+
+      // Rank
+      var tdRank = document.createElement('td');
+      var badge = document.createElement('span');
+      badge.className = 'rank-badge';
+      if (rank === 1) badge.className += ' rank-1';
+      else if (rank === 2) badge.className += ' rank-2';
+      else if (rank === 3) badge.className += ' rank-3';
+      else badge.className += ' rank-default';
+      badge.textContent = rank;
+      tdRank.appendChild(badge);
+      tr.appendChild(tdRank);
+
+      // Model
+      var tdModel = document.createElement('td');
+      tdModel.textContent = r.model;
+      tr.appendChild(tdModel);
+
+      // Hardware
+      var tdHw = document.createElement('td');
+      tdHw.textContent = r.hardware;
+      tr.appendChild(tdHw);
+
+      // Framework
+      var tdFw = document.createElement('td');
+      var tag = document.createElement('span');
+      tag.className = 'framework-tag';
+      tag.textContent = r.framework;
+      tdFw.appendChild(tag);
+      tr.appendChild(tdFw);
+
+      var m = r.metrics || {};
+      // Throughput
+      var tdTput = document.createElement('td');
+      tdTput.textContent = fmt(m.throughput_tok_s);
+      tr.appendChild(tdTput);
+
+      // TTFT
+      var tdTtft = document.createElement('td');
+      tdTtft.textContent = fmt(m.ttft_ms);
+      tr.appendChild(tdTtft);
+
+      // ITL
+      var tdItl = document.createElement('td');
+      tdItl.textContent = fmt(m.itl_ms);
+      tr.appendChild(tdItl);
+
+      // P50
+      var tdP50 = document.createElement('td');
+      tdP50.textContent = fmt(m.latency_p50_ms);
+      tr.appendChild(tdP50);
+
+      // P95
+      var tdP95 = document.createElement('td');
+      tdP95.textContent = fmt(m.latency_p95_ms);
+      tr.appendChild(tdP95);
+
+      // P99
+      var tdP99 = document.createElement('td');
+      tdP99.textContent = fmt(m.latency_p99_ms);
+      tr.appendChild(tdP99);
+
+      // Memory
+      var tdMem = document.createElement('td');
+      tdMem.textContent = fmt(m.memory_peak_mb);
+      tr.appendChild(tdMem);
+
+      // Config
+      var cfg = r.config || {};
+      var tdCfg = document.createElement('td');
+      tdCfg.textContent = cfg.num_nodes + 'n\u00b7' + (cfg.gpus_per_node || 1) + 'g ' + (cfg.precision || '');
+      tr.appendChild(tdCfg);
+
+      // Submitted
+      var tdSub = document.createElement('td');
+      var subDiv = document.createElement('div');
+      subDiv.textContent = r.submitted_by || '--';
+      var dateDiv = document.createElement('div');
+      dateDiv.style.cssText = 'font-size:0.65rem;color:var(--text-secondary);';
+      if (r.submitted_at) {
+        try { dateDiv.textContent = new Date(r.submitted_at).toLocaleDateString(); }
+        catch(e) { dateDiv.textContent = r.submitted_at.split('T')[0]; }
+      }
+      tdSub.appendChild(subDiv);
+      tdSub.appendChild(dateDiv);
+      tr.appendChild(tdSub);
+
+      // Verified
+      var tdVer = document.createElement('td');
+      var verBadge = document.createElement('span');
+      verBadge.className = 'verified-badge ' + (r.verified ? 'yes' : 'no');
+      verBadge.textContent = r.verified ? 'Verified' : 'Pending';
+      tdVer.appendChild(verBadge);
+      tr.appendChild(tdVer);
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+
+    // Pagination
+    var pag = document.createElement('div');
+    pag.className = 'pagination';
+    var info = document.createElement('span');
+    var end = Math.min(offset + limit, total);
+    info.textContent = (total > 0) ? (offset + 1) + ' \u2013 ' + end + ' of ' + total : '0 results';
+    pag.appendChild(info);
+
+    var btnWrap = document.createElement('div');
+    btnWrap.className = 'page-btns';
+
+    var prevBtn = document.createElement('button');
+    prevBtn.className = 'btn btn-sm';
+    prevBtn.textContent = '\u2190 Prev';
+    prevBtn.disabled = offset === 0;
+    prevBtn.addEventListener('click', function() {
+      if (state.offset > 0) {
+        state.offset = Math.max(0, state.offset - limit);
+        fetchLeaderboard();
+      }
+    });
+    btnWrap.appendChild(prevBtn);
+
+    var nextBtn = document.createElement('button');
+    nextBtn.className = 'btn btn-sm';
+    nextBtn.textContent = 'Next \u2192';
+    nextBtn.disabled = (offset + limit) >= total;
+    nextBtn.addEventListener('click', function() {
+      if ((state.offset + limit) < total) {
+        state.offset = state.offset + limit;
+        fetchLeaderboard();
+      }
+    });
+    btnWrap.appendChild(nextBtn);
+
+    pag.appendChild(btnWrap);
+    wrap.appendChild(pag);
+  }
+
+  function renderTopResults(tops) {
+    var grid = el('top-grid');
+    grid.textContent = '';
+    if (!tops.length) {
+      grid.textContent = 'No top results yet.';
+      return;
+    }
+    var shown = tops.slice(0, 6);
+    shown.forEach(function(r, i) {
+      var card = document.createElement('div');
+      card.className = 'top-card';
+
+      var rank = document.createElement('div');
+      rank.className = 'top-rank';
+      rank.textContent = '#' + (i + 1);
+      card.appendChild(rank);
+
+      var modelDiv = document.createElement('div');
+      modelDiv.className = 'top-model';
+      modelDiv.textContent = r.model;
+      card.appendChild(modelDiv);
+
+      var hwDiv = document.createElement('div');
+      hwDiv.className = 'top-hardware';
+      hwDiv.textContent = r.hardware;
+      card.appendChild(hwDiv);
+
+      var tputDiv = document.createElement('div');
+      tputDiv.className = 'top-throughput';
+      tputDiv.textContent = fmt((r.metrics || {}).throughput_tok_s) + ' tok/s';
+      card.appendChild(tputDiv);
+
+      var meta = document.createElement('div');
+      meta.style.cssText = 'font-size:0.7rem;color:var(--text-secondary);';
+      var cfg = r.config || {};
+      meta.textContent = r.framework + ' \u00b7 ' + cfg.num_nodes + ' node(s) \u00b7 ' + (cfg.precision || 'float16');
+      card.appendChild(meta);
+
+      grid.appendChild(card);
+    });
+  }
+
+  function openSubmitModal() {
+    el('submit-modal').classList.add('active');
+  }
+
+  function closeSubmitModal() {
+    el('submit-modal').classList.remove('active');
+  }
+
+  function submitResult() {
+    function val(id) { return document.getElementById(id).value; }
+    function numVal(id) { var v = parseFloat(val(id)); return isNaN(v) ? null : v; }
+    function intVal(id, def) { var v = parseInt(val(id), 10); return isNaN(v) ? (def || null) : v; }
+    function boolVal(id) { return val(id) === 'true'; }
+
+    var body = {
+      model: val('sub-model') || 'unknown',
+      hardware: val('sub-hardware') || 'unknown',
+      framework: val('sub-framework'),
+      backend: val('sub-backend'),
+      metrics: {
+        throughput_tok_s: numVal('sub-throughput'),
+        ttft_ms: numVal('sub-ttft'),
+        itl_ms: numVal('sub-itl'),
+        latency_p50_ms: numVal('sub-lat50'),
+        latency_p95_ms: numVal('sub-lat95'),
+        latency_p99_ms: numVal('sub-lat99'),
+        memory_peak_mb: numVal('sub-mem'),
+        memory_efficiency: numVal('sub-mem-eff')
+      },
+      config: {
+        num_nodes: intVal('sub-nodes', 1),
+        gpus_per_node: intVal('sub-gpus', 1),
+        precision: val('sub-precision'),
+        batch_size: intVal('sub-batch', 1),
+        seq_len: intVal('sub-seq-len', 512),
+        max_tokens: intVal('sub-max-tokens', 256),
+        concurrency: intVal('sub-concurrency', 1),
+        spec_decode: boolVal('sub-spec')
+      },
+      submitted_by: val('sub-by') || 'anonymous'
+    };
+
+    var btn = document.querySelector('#submit-modal .btn-primary');
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+
+    fetch('/v1/leaderboard/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function() {
+      closeSubmitModal();
+      state.offset = 0;
+      fetchLeaderboard();
+    })
+    .catch(function(err) {
+      alert('Submit failed: ' + err.message);
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = 'Submit';
+    });
+  }
+
+  // Auto-refresh
+  function startAutoRefresh() {
+    if (refreshInterval) clearInterval(refreshInterval);
+    refreshInterval = setInterval(fetchLeaderboard, 15000);
+  }
+
+  function stopAutoRefresh() {
+    if (refreshInterval) {
+      clearInterval(refreshInterval);
+      refreshInterval = null;
+    }
+  }
+
+  el('auto-refresh').addEventListener('change', function() {
+    if (this.checked) startAutoRefresh();
+    else stopAutoRefresh();
+  });
+
+  // Modal click outside
+  el('submit-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeSubmitModal();
+  });
+
+  // Initial load
+  fetchLeaderboard();
+  startAutoRefresh();
+
+  window.fetchLeaderboard = fetchLeaderboard;
+  window.openSubmitModal = openSubmitModal;
+  window.closeSubmitModal = closeSubmitModal;
+  window.submitResult = submitResult;
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "distllm.fullname" . }}
+  labels:
+    {{- include "distllm.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "distllm.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "distllm.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- if .Values.redis.enabled }}
+      initContainers:
+        - name: wait-for-redis
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z {{ .Values.redis.address | default (printf "%s-redis" (include "distllm.fullname" .)) }} 6379; do echo waiting for redis; sleep 2; done;']
+      {{- end }}
+      containers:
+        - name: distllm
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.rest.port }}
+              name: http
+            - containerPort: {{ .Values.service.grpc.port }}
+              name: grpc
+            - containerPort: {{ .Values.service.metrics.port }}
+              name: metrics
+          env:
+            - name: DISTLLM_CONFIG
+              value: /etc/distllm/distllm.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/distllm
+            {{- if .Values.persistence.models.enabled }}
+            - name: models
+              mountPath: /data/models
+            {{- end }}
+            {{- if .Values.persistence.cache.enabled }}
+            - name: cache
+              mountPath: /data/cache
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "distllm.fullname" . }}-config
+        {{- if .Values.persistence.models.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "distllm.fullname" . }}-models
+        {{- end }}
+        {{- if .Values.persistence.cache.enabled }}
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ include "distllm.fullname" . }}-cache
+        {{- end }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.image.pullSecrets | nindent 8 }}
+      {{- end }}

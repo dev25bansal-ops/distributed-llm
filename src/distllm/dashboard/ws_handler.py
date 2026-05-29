@@ -395,6 +395,57 @@ async def collect_metrics_snapshot(coordinator) -> dict:
     except Exception as e:
         logger.warning(f"Failed to collect request latency metrics: {e}")
 
+    # Real-time scheduling metrics (5.4)
+    try:
+        scheduler = getattr(coordinator, '_batch_scheduler', None) or getattr(coordinator, 'scheduler', None)
+        if scheduler:
+            sched_stats = scheduler.stats() if hasattr(scheduler, 'stats') else {}
+            pressure_tracker = getattr(scheduler, '_pressure_tracker', None)
+            pressure = pressure_tracker.pressure if pressure_tracker else 0.0
+
+            # TTFT/TPOT histogram by priority level
+            latency_tracker = getattr(scheduler, '_latency_tracker', None)
+            priority_histograms: dict[str, dict] = {}
+            if latency_tracker and hasattr(latency_tracker, '_requests'):
+                for rid, info in latency_tracker._requests.items():
+                    pri = getattr(info, 'priority', 2) if hasattr(info, 'priority') else 2
+                    pri_key = f"P{pri}"
+                    if pri_key not in priority_histograms:
+                        priority_histograms[pri_key] = {"ttft": [], "tpot": []}
+                    ttft = info.ttft_ms if hasattr(info, 'ttft_ms') and info.ttft_ms else None
+                    tpot = info.tpot_ms if hasattr(info, 'tpot_ms') and info.tpot_ms else None
+                    if ttft:
+                        priority_histograms[pri_key]["ttft"].append(ttft)
+                    if tpot:
+                        priority_histograms[pri_key]["tpot"].append(tpot)
+
+            # Starvation warnings
+            starvation_warns = []
+            last_warns = getattr(scheduler, '_last_starvation_warn', set())
+            if last_warns:
+                starvation_warns = list(last_warns)
+
+            data["scheduling"] = {
+                "active": sched_stats.get("active_requests", 0),
+                "pending": sched_stats.get("pending_requests", 0),
+                "preempted": sched_stats.get("preempted_requests", 0),
+                "decode_pressure": round(pressure, 3),
+                "prefill_tokens": sched_stats.get("total_prefill_tokens", 0),
+                "decode_tokens": sched_stats.get("total_decode_tokens", 0),
+                "iteration": sched_stats.get("iteration", 0),
+                "starvation_warnings": starvation_warns,
+                "priority_histograms": {
+                    k: {
+                        "ttft_p50": sorted(v["ttft"])[len(v["ttft"])//2] if v["ttft"] else 0,
+                        "tpot_p50": sorted(v["tpot"])[len(v["tpot"])//2] if v["tpot"] else 0,
+                        "count": len(v["ttft"]) + len(v["tpot"]),
+                    }
+                    for k, v in priority_histograms.items()
+                },
+            }
+    except Exception as e:
+        logger.debug(f"Failed to collect scheduling metrics: {e}")
+
     return data
 
 
@@ -443,6 +494,7 @@ KNOWN_METRIC_CATEGORIES = {
     "active_requests", "scheduler", "nodes", "gpu",
     "prefix_cache", "spec_decoder", "topology", "tenants",
     "per_request_latency",
+    "scheduling",  # Real-time scheduling metrics (5.4)
 }
 
 _CATEGORY_MAP = {

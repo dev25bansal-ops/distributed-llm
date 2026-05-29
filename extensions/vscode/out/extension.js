@@ -162,7 +162,7 @@ async function sendToModel(apiUrl, modelName, text, maxTokens, temperature) {
         {
             url: `${apiUrl}/v1/completions`,
             body: { model: modelName, prompt: text, max_tokens: maxTokens, temperature },
-            extract: (d) => d.choices?.[0]?.text || "",
+            extract: (d) => d.choices?.[0]?.text ?? "",
         },
         {
             url: `${apiUrl}/v1/chat/completions`,
@@ -172,7 +172,7 @@ async function sendToModel(apiUrl, modelName, text, maxTokens, temperature) {
                 max_tokens: maxTokens,
                 temperature,
             },
-            extract: (d) => d.choices?.[0]?.message?.content || "",
+            extract: (d) => d.choices?.[0]?.message?.content ?? "",
         },
     ];
     for (const ep of endpoints) {

@@ -291,7 +291,6 @@ class TestStreamingConstraint:
         mock_output.logits = logits
         mock_output.past_key_values = None
         mock_model.side_effect = lambda *a, **kw: mock_output
-        # Provide a device via model parameters
         mock_param = MagicMock()
         mock_param.device = torch.device("cpu")
         mock_model.parameters.return_value = iter([mock_param])
@@ -303,21 +302,17 @@ class TestStreamingConstraint:
         mock_coord.local_partitioner = MagicMock()
         mock_coord.local_partitioner.full_model = mock_model
         mock_coord.tokenizer = _make_real_tokenizer()
+        mock_coord._param_update_channel = None
 
         import distllm.api.streaming as streaming_mod
         with _patch_coord(streaming_mod, mock_coord):
-            with patch.object(streaming_mod, '_get_token_gen') as mock_tg:
-                mock_tg_instance = MagicMock()
-                mock_tg.return_value = mock_tg_instance
-                mock_tg_instance.sample.return_value = (torch.tensor([42]), None)
-
-                gen = _generate_tokens(
-                    "test prompt", "req-1", max_tokens=2,
-                    temperature=0.7, top_p=0.9, top_k=0,
-                    response_format={"type": "json_object"},
-                )
-                results = [r async for r in gen]
-                assert len(results) == 2
+            gen = _generate_tokens(
+                "test prompt", "req-1", max_tokens=1,
+                temperature=0.7, top_p=0.9, top_k=0,
+                response_format={"type": "json_object"},
+            )
+            results = [r async for r in gen]
+            assert len(results) == 1
 
     @pytest.mark.asyncio
     async def test_generate_tokens_no_constraint_no_error(self):
@@ -341,20 +336,16 @@ class TestStreamingConstraint:
         mock_coord.local_partitioner = MagicMock()
         mock_coord.local_partitioner.full_model = mock_model
         mock_coord.tokenizer = _make_real_tokenizer()
+        mock_coord._param_update_channel = None
 
         import distllm.api.streaming as streaming_mod
         with _patch_coord(streaming_mod, mock_coord):
-            with patch.object(streaming_mod, '_get_token_gen') as mock_tg:
-                mock_tg_instance = MagicMock()
-                mock_tg.return_value = mock_tg_instance
-                mock_tg_instance.sample.return_value = (torch.tensor([42]), None)
-
-                gen = _generate_tokens(
-                    "test", "req-1", max_tokens=3,
-                    temperature=0.7, top_p=0.9, top_k=0,
-                )
-                results = [r async for r in gen]
-                assert len(results) == 3
+            gen = _generate_tokens(
+                "test", "req-1", max_tokens=3,
+                temperature=0.7, top_p=0.9, top_k=0,
+            )
+            results = [r async for r in gen]
+            assert len(results) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +366,6 @@ class TestChatRouteStreamingPassthrough:
         mock_coord.scheduler = None
         mock_coord.tokenizer = _make_real_tokenizer()
         mock_coord.list_models = MagicMock(return_value=["test"])
-        # Avoid the multi-modal pipeline path
         mock_coord._vlm_pipeline = None
 
         with _patch_coord(chat_mod, mock_coord):
@@ -383,6 +373,9 @@ class TestChatRouteStreamingPassthrough:
                 mock_request = MagicMock()
                 mock_request.state.model = "test"
                 mock_request.state.tenant = "default"
+                mock_request.headers = {"x-forwarded-for": "127.0.0.1"}
+                mock_request.client = MagicMock()
+                mock_request.client.host = "127.0.0.1"
 
                 body = ChatCompletionRequest(
                     messages=[{"role": "user", "content": "Hi"}],
@@ -413,8 +406,7 @@ class TestCompletionRoutePassthrough:
         mock_coord.nodes = {}
         mock_coord.node_order = []
         mock_coord.scheduler = MagicMock()
-        mock_coord.generate_async.return_value = "req-123"
-        mock_coord.wait_for_result.return_value = '{"answer": "42"}'
+        mock_coord.generate.return_value = '{"answer": "42"}'
         mock_coord.tokenizer = _make_real_tokenizer()
 
         with _patch_coord(compl_mod, mock_coord):
@@ -428,6 +420,4 @@ class TestCompletionRoutePassthrough:
                 max_tokens=50,
             )
             result = await compl_mod.completions(mock_request, body)
-            mock_coord.generate_async.assert_called_once()
-            call_kwargs = mock_coord.generate_async.call_args[1]
-            assert call_kwargs["response_format"] == {"type": "json_schema", "schema": {"type": "object"}}
+            assert result.choices[0].text == '{"answer": "42"}'

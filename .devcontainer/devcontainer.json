@@ -1,0 +1,53 @@
+{
+  "name": "DistLLM Development",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "features": {
+    "ghcr.io/devcontainers/features/nvidia-cuda:1": {
+      "installCudnn": true,
+      "installToolkit": true,
+      "cudaVersion": "12.4"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.21"
+    },
+    "ghcr.io/devcontainers/features/rust:1": {}
+  },
+  "hostRequirements": {
+    "gpu": "optional"
+  },
+  "forwardPorts": [8000, 3000, 9090, 9093],
+  "portsAttributes": {
+    "8000": { "label": "API Server", "onAutoForward": "notify" },
+    "3000": { "label": "Dashboard", "onAutoForward": "notify" },
+    "9090": { "label": "Prometheus", "onAutoForward": "notify" },
+    "9093": { "label": "Alertmanager", "onAutoForward": "notify" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "biome.biome",
+        "golang.go",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "redhat.vscode-yaml",
+        "GitHub.copilot",
+        "GitHub.copilot-chat"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/python/current/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "python.terminal.activateEnvInCurrentTerminal": true,
+        "[python]": {
+          "editor.formatOnSave": true,
+          "editor.defaultFormatter": "ms-python.python"
+        }
+      }
+    }
+  },
+  "postCreateCommand": "pip install -e '.[dev,grpc]' && cd sdk && pip install -e '.[grpc]' && cd ../extensions/vscode && npm ci",
+  "remoteUser": "codespace"
+}

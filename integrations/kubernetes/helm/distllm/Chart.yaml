@@ -1,0 +1,16 @@
+apiVersion: v2
+name: distllm
+description: A Helm chart for deploying DistLLM on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+home: https://github.com/distributed-llm/distributed-llm
+sources:
+  - https://github.com/distributed-llm/distributed-llm
+keywords:
+  - distllm
+  - llm
+  - distributed
+  - inference
+maintainers:
+  - name: DistLLM Contributors

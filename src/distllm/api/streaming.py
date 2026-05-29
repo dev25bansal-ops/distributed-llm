@@ -12,12 +12,14 @@ Supports:
 
 import asyncio
 import hashlib
-import json
 import os
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
+
+from distllm.core.streaming_generator import StreamChunk
+from distllm.core.token_streaming_buffer import TokenStreamingBuffer
 
 
 def _get_client_id(request: Any) -> str:
@@ -52,84 +54,42 @@ def _get_token_gen() -> TokenGenerator:
     return _token_gen
 
 
-def _stream_event(
+def _build_chunk(
     request_id: str,
     object_type: str,
     model: str,
-    token_text: str,
+    token_text: str = "",
+    finish_reason: str | None = None,
     logprob_data: dict | None = None,
-) -> str:
-    """Format a single streaming SSE event for chat or completion."""
-    d: dict[str, Any] = {
-        "id": request_id,
-        "object": object_type,
-        "created": int(time.time()),
-        "model": model,
-    }
+    include_role: bool = False,
+) -> StreamChunk:
+    """Build a StreamChunk for a streaming SSE event."""
     if object_type == "chat.completion.chunk":
-        choice = {"index": 0, "delta": {"content": token_text}}
-        if logprob_data:
-            choice["logprobs"] = {"content": [logprob_data]}
-        d["choices"] = [choice]
+        delta: dict[str, Any] = {}
+        if include_role:
+            delta["role"] = "assistant"
+        if token_text:
+            delta["content"] = token_text
+        choice: dict[str, Any] = {
+            "index": 0,
+            "delta": delta,
+            "finish_reason": finish_reason,
+        }
     else:
-        choice = {"index": 0, "text": token_text}
-        if logprob_data:
-            choice["logprobs"] = logprob_data
-        d["choices"] = [choice]
-    return f"data: {json.dumps(d)}\n\n"
-
-
-def _stream_usage_event(
-    request_id: str,
-    object_type: str,
-    model: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-) -> str:
-    """Format usage data as a streaming SSE event (final chunk when include_usage=true)."""
-    d: dict[str, Any] = {
-        "id": request_id,
-        "object": object_type,
-        "created": int(time.time()),
-        "model": model,
-        "choices": [],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        },
-    }
-    return f"data: {json.dumps(d)}\n\n"
-
-
-def _stream_start_event(request_id: str, object_type: str, model: str) -> str:
-    """Format the initial streaming SSE event with role/text start."""
-    d: dict[str, Any] = {
-        "id": request_id,
-        "object": object_type,
-        "created": int(time.time()),
-        "model": model,
-    }
-    if object_type == "chat.completion.chunk":
-        d["choices"] = [{"index": 0, "delta": {"role": "assistant"}}]
-    else:
-        d["choices"] = [{"index": 0, "text": ""}]
-    return f"data: {json.dumps(d)}\n\n"
-
-
-def _stream_stop_event(request_id: str, object_type: str, model: str) -> str:
-    """Format the final streaming SSE stop event."""
-    d: dict[str, Any] = {
-        "id": request_id,
-        "object": object_type,
-        "created": int(time.time()),
-        "model": model,
-    }
-    if object_type == "chat.completion.chunk":
-        d["choices"] = [{"index": 0, "finish_reason": "stop", "delta": {}}]
-    else:
-        d["choices"] = [{"index": 0, "finish_reason": "stop", "text": ""}]
-    return f"data: {json.dumps(d)}\n\n"
+        choice = {
+            "index": 0,
+            "text": token_text,
+            "finish_reason": finish_reason,
+        }
+    if logprob_data:
+        choice["logprobs"] = logprob_data
+    return StreamChunk(
+        id=request_id,
+        object=object_type,
+        created=int(time.time()),
+        model=model,
+        choices=[choice],
+    )
 
 
 async def _generate_tokens(
@@ -334,19 +294,29 @@ async def _stream_response(
     local_tokenizer = getattr(local_coord, 'tokenizer', None) if local_coord else None
     prompt_len = len(local_tokenizer.encode(prompt)) if local_tokenizer else 0
 
+    # Initialize streaming cost tracking
+    cost_helper = None
+    try:
+        from distllm.api.cost_middleware import StreamingCostMiddleware
+        cost_helper = StreamingCostMiddleware()
+        cost_helper.start_request(request_id, prompt_len, model_name)
+    except ImportError:
+        pass
+
     from distllm.observability.spans import async_span_generation, record_ttft
 
     stream_start = time.monotonic()
     ttft_recorded = None
 
     async with async_span_generation(request_id, model_name, prompt_len, user_id) as gen_span:
-        yield _stream_start_event(request_id, object_type, model_name)
+        yield _build_chunk(request_id, object_type, model_name, include_role=True).to_sse()
 
         if not local_coord:
-            yield _stream_stop_event(request_id, object_type, model_name)
-            yield "data: [DONE]\n\n"
+            yield _build_chunk(request_id, object_type, model_name, finish_reason="stop").to_sse()
+            yield StreamChunk.data_done()
             return
 
+        token_buffer = TokenStreamingBuffer(max_batch_size=1)
         completion_tokens = 0
         async for token_text, logprob_data, ttft in _generate_tokens(
             prompt, request_id, request.max_tokens,
@@ -355,20 +325,64 @@ async def _stream_response(
         ):
             completion_tokens += 1
 
+            # Track streaming cost
+            cost_event = None
+            if cost_helper:
+                cost_event = cost_helper.record_token(request_id)
+
             if ttft is not None:
                 ttft_recorded = ttft
                 record_ttft(gen_span, ttft)
                 gen_span.set_attribute("generation.ttft_s", ttft)
 
-            yield _stream_event(request_id, object_type, model_name, token_text, logprob_data)
+            batch = token_buffer.add_token(token_text)
+            if batch:
+                chunk = _build_chunk(
+                    request_id, object_type, model_name,
+                    token_text=batch.text,
+                    logprob_data=logprob_data,
+                )
+                # Inject cost data into chunk metadata
+                if cost_event and hasattr(chunk, 'usage'):
+                    chunk.usage = {**(chunk.usage or {}), "_cost": cost_event}
+                yield chunk.to_sse()
 
-        yield _stream_stop_event(request_id, object_type, model_name)
+        batch = token_buffer.finish()
+        if batch:
+            yield _build_chunk(
+                request_id, object_type, model_name,
+                token_text=batch.text,
+                finish_reason="stop",
+            ).to_sse()
+        else:
+            yield _build_chunk(request_id, object_type, model_name, finish_reason="stop").to_sse()
+
+        # Final cost summary in usage chunk
+        cost_summary = None
+        if cost_helper:
+            cost_summary = cost_helper.finish_request(request_id)
 
         if include_usage and local_tokenizer:
             prompt_tokens = len(local_tokenizer.encode(prompt))
-            yield _stream_usage_event(request_id, object_type, model_name, prompt_tokens, completion_tokens)
+            usage_data = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            }
+            # Merge cost summary into usage
+            if cost_summary:
+                usage_data["cost"] = cost_summary
+            usage_chunk = StreamChunk(
+                id=request_id,
+                object=object_type,
+                created=int(time.time()),
+                model=model_name,
+                choices=[],
+                usage=usage_data,
+            )
+            yield usage_chunk.to_sse()
 
-        yield "data: [DONE]\n\n"
+        yield StreamChunk.data_done()
 
         duration = time.monotonic() - stream_start
         gen_span.set_attribute("generation.duration_s", duration)

@@ -1,7 +1,8 @@
 """Structured output: JSON schema-constrained decoding."""
 
-from loguru import logger
 import string
+import threading
+from loguru import logger
 
 import torch
 
@@ -24,6 +25,8 @@ class JSONSchemaConstraint:
     # Avoids rebuilding the expensive token index for every new constraint
     _token_index_cache: dict = {}
     _token_ord_cache: dict = {}
+    _building_keys: set = set()
+    _build_lock: threading.Lock = threading.Lock()
 
     def __init__(self, schema: dict | None = None):
         self.schema = schema
@@ -67,23 +70,46 @@ class JSONSchemaConstraint:
     def _build_token_index(self, tokenizer) -> dict[int, str]:
         """Precompute the first character of every token ID.
 
-        Uses class-level cache keyed by tokenizer id to avoid rebuilding
-        for the same tokenizer across multiple constraint instances.
+        Uses class-level cache keyed by ``tokenizer.name_or_path`` to avoid
+        rebuilding for the same model across multiple constraint instances.
+        Falls back to ``id(tokenizer)`` if ``name_or_path`` is not available.
+
+        If the index is not yet cached, kicks off a background thread to
+        build it so the first request is not blocked by 32K decode calls.
+        Returns an empty dict immediately if building is in progress; the
+        mask generation will fall back to allowing all tokens until the
+        index is ready.
 
         Returns dict mapping token_id -> first_char (or '' for empty).
         """
-        # Use tokenizer object id as cache key
-        tok_id = id(tokenizer)
-        if tok_id in self._token_index_cache:
-            return self._token_index_cache[tok_id]
+        tok_key = getattr(tokenizer, 'name_or_path', None) or str(id(tokenizer))
+        if tok_key in self._token_index_cache:
+            return self._token_index_cache[tok_key]
 
-        # Build index using dict comprehension (faster than loop with setitem)
-        index = {
-            token_id: (tokenizer.decode([token_id])[0] if tokenizer.decode([token_id]) else '')
-            for token_id in range(tokenizer.vocab_size)
-        }
-        self._token_index_cache[tok_id] = index
-        return index
+        # If another thread is already building this index, don't block
+        with self._build_lock:
+            if tok_key in self._building_keys:
+                return {}
+            self._building_keys.add(tok_key)
+
+        def _build() -> None:
+            try:
+                vocab_size = getattr(tokenizer, 'vocab_size', 32000)
+                index: dict[int, str] = {}
+                for token_id in range(vocab_size):
+                    decoded = tokenizer.decode([token_id])
+                    index[token_id] = decoded[0] if decoded else ''
+                self._token_index_cache[tok_key] = index
+                logger.debug(f"Token index built: {vocab_size} tokens for {tok_key}")
+            except Exception as e:
+                logger.warning(f"Failed to build token index for {tok_key}: {e}")
+            finally:
+                with self._build_lock:
+                    self._building_keys.discard(tok_key)
+
+        thread = threading.Thread(target=_build, daemon=True, name=f"token-index-{tok_key[:20]}")
+        thread.start()
+        return {}
 
     def get_logits_mask(self, vocab_size: int, tokenizer) -> torch.Tensor:
         """Return a boolean mask: True for allowed token IDs, False for blocked.
@@ -254,3 +280,61 @@ class JSONSchemaConstraint:
     @property
     def generated_text(self) -> str:
         return self._generated
+
+
+def validate_structured_output(text: str, schema: dict | None = None) -> dict | None:
+    """Validate generated text against a JSON schema.
+
+    Args:
+        text: The generated text to validate.
+        schema: JSON schema dict. If None or empty, only validates JSON syntax.
+
+    Returns:
+        Parsed JSON object if valid, None if invalid.
+    """
+    import json
+
+    # Parse JSON
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    # If no schema, just validate JSON syntax
+    if not schema:
+        return obj
+
+    # Validate against schema using jsonschema if available
+    try:
+        import jsonschema
+        jsonschema.validate(obj, schema)
+        return obj
+    except ImportError:
+        # jsonschema not installed — basic type validation only
+        pass
+    except jsonschema.ValidationError:
+        return None
+
+    # Fallback: basic type checking against schema
+    expected_type = schema.get("type")
+    if expected_type == "object" and not isinstance(obj, dict):
+        return None
+    if expected_type == "array" and not isinstance(obj, list):
+        return None
+    if expected_type == "string" and not isinstance(obj, str):
+        return None
+    if expected_type == "number" and not isinstance(obj, (int, float)):
+        return None
+    if expected_type == "integer" and not isinstance(obj, int):
+        return None
+    if expected_type == "boolean" and not isinstance(obj, bool):
+        return None
+
+    # Check required fields for objects
+    if expected_type == "object" and isinstance(obj, dict):
+        required = schema.get("required", [])
+        for field in required:
+            if field not in obj:
+                return None
+
+    return obj

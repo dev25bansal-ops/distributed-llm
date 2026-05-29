@@ -68,49 +68,41 @@ class TestKVCacheQuantization:
 class TestPagedAllocation:
     def test_paged_kv_creation(self):
         """Create a paged attention manager if available."""
-        try:
-            from distllm.core.paged_attention import PagedAttentionManager
-            mgr = PagedAttentionManager(
-                num_blocks=64,
-                block_size=16,
-                num_layers=2,
-                num_heads=4,
-                head_dim=64,
-                device="cpu",
-            )
-            assert mgr.pool.num_blocks == 64
-            assert mgr.block_size == 16
-        except ImportError:
-            pytest.skip("PagedAttention not available")
+        from distllm.dist.attention import PagedAttentionManager
+        mgr = PagedAttentionManager(
+            num_blocks=64,
+            block_size=16,
+            num_layers=2,
+            num_heads=4,
+            head_dim=64,
+            device="cpu",
+        )
+        assert mgr.pool.num_blocks >= 64
+        assert mgr.block_size == 16
 
     def test_paged_block_allocation(self):
-        try:
-            from distllm.core.paged_attention import PagedAttentionManager
-            mgr = PagedAttentionManager(
-                num_blocks=32, block_size=16,
-                num_layers=2, num_heads=4, head_dim=64,
-                device="cpu",
-            )
-            # Allocate a block from the pool
-            block_idx = mgr.pool.allocate_block()
-            assert block_idx is not None
-        except ImportError:
-            pytest.skip("PagedAttention not available")
+        from distllm.dist.attention import PagedAttentionManager
+        mgr = PagedAttentionManager(
+            num_blocks=32, block_size=16,
+            num_layers=2, num_heads=4, head_dim=64,
+            device="cpu",
+        )
+        initial_used = mgr.pool.used_count
+        block_idx = mgr.pool.allocate_block()
+        assert block_idx is not None
+        assert mgr.pool.used_count == initial_used + 1
 
     def test_paged_free_blocks(self):
-        try:
-            from distllm.core.paged_attention import PagedAttentionManager
-            mgr = PagedAttentionManager(
-                num_blocks=32, block_size=16,
-                num_layers=2, num_heads=4, head_dim=64,
-                device="cpu",
-            )
-            block_idx = mgr.pool.allocate_block()
-            mgr.pool.free_block(block_idx)
-            # Should be available again
-            assert True
-        except ImportError:
-            pytest.skip("PagedAttention not available")
+        from distllm.dist.attention import PagedAttentionManager
+        mgr = PagedAttentionManager(
+            num_blocks=32, block_size=16,
+            num_layers=2, num_heads=4, head_dim=64,
+            device="cpu",
+        )
+        block_idx = mgr.pool.allocate_block()
+        assert block_idx is not None
+        mgr.pool.free_block(block_idx)
+        assert block_idx not in mgr.pool._block_usage
 
 
 # ===================================================================

@@ -7,6 +7,7 @@ Extracted from the Coordinator class.
 import asyncio
 import concurrent.futures
 import json
+import os
 import socket
 import threading
 import time
@@ -16,6 +17,8 @@ from collections.abc import Callable
 from loguru import logger
 
 from distllm.config.settings import NodeRole
+from distllm.core.connection_pool import ConnectionPool, ConnectionPoolConfig
+from distllm.core.async_connection_pool import AsyncConnectionPool
 from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError
 from distllm.dist.node_client import create_node_client, NodeClient
 
@@ -66,12 +69,15 @@ class NodeRegistration:
         self.is_spot = is_spot
         self.client: NodeClient | None = None
         self.async_client = None
+        self.weight_source: str | None = None
 
         # GPU capabilities (populated by init_client via Profile RPC)
         self.gpu_name: str = ""
         self.gpu_memory_total: int = 0
         self.gpu_memory_free: int = 0
         self.gpu_sm_count: int = 0
+        self.gpu_tflops: float = 0.0
+        self.gpu_bandwidth_gbps: float = 0.0
         self.gpu_profile_raw: dict | None = None
 
     def init_client(self, timeout_s: float = 10.0,
@@ -116,18 +122,23 @@ class NodeRegistration:
         """Fetch GPU capabilities from the node via Profile RPC."""
         from distllm.dist import node_pb2
         try:
-            profile = self.client.stub.Profile(
-                node_pb2.ProfileRequest(node_id=self.node_id),
-            )
+            req = node_pb2.ProfileRequest(node_id=self.node_id)
+            if self.client and self.client.cluster_key:
+                req.cluster_key = self.client.cluster_key
+            profile = self.client.stub.Profile(req)
             self.gpu_name = profile.gpu_name
             self.gpu_memory_total = profile.total_memory_bytes
             self.gpu_memory_free = profile.free_memory_bytes
             self.gpu_sm_count = profile.sm_count
+            self.gpu_tflops = profile.compute_tflops
+            self.gpu_bandwidth_gbps = profile.memory_bandwidth_gbps
             self.gpu_profile_raw = {
                 "gpu_name": profile.gpu_name,
                 "total_memory_bytes": profile.total_memory_bytes,
                 "free_memory_bytes": profile.free_memory_bytes,
                 "sm_count": profile.sm_count,
+                "compute_tflops": profile.compute_tflops,
+                "memory_bandwidth_gbps": profile.memory_bandwidth_gbps,
             }
         except Exception as e:
             logger.warning(f"Failed to fetch GPU capabilities from {self.node_id}: {e}")
@@ -139,9 +150,10 @@ class NodeRegistration:
             self.healthy = False
             return False
         try:
-            resp = self.client.stub.HealthCheck(
-                node_pb2.HealthCheckRequest(node_id=self.node_id),
-            )
+            req = node_pb2.HealthCheckRequest(node_id=self.node_id)
+            if self.client and self.client.cluster_key:
+                req.cluster_key = self.client.cluster_key
+            resp = self.client.stub.HealthCheck(req)
             self.healthy = resp.healthy
             self.last_health_time = time.time()
             self.gpu_memory_free = resp.memory_total_bytes - resp.memory_used_bytes
@@ -174,13 +186,23 @@ class ResourceManager:
         self.cb_config = cb_config or CircuitBreakerConfig()
         self._node_failure_counts: dict[str, int] = {}
         self._node_recovery_time: dict[str, float] = {}
+        self._node_locks: dict[str, threading.Lock] = {}
         self._draining_nodes: set[str] = set()
         self._on_node_failure: Callable[[str], None] | None = None
         self._lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
         self._metrics: dict[str, int] = {
             "node_failures": 0,
             "errors": 0,
         }
+        self._conn_pool = ConnectionPool(max_size=10, connect_timeout=5.0)
+        self._async_conn_pool = AsyncConnectionPool(max_size=10, connect_timeout=5.0)
+
+    def _get_node_lock(self, node_id: str) -> threading.Lock:
+        with self._lock:
+            if node_id not in self._node_locks:
+                self._node_locks[node_id] = threading.Lock()
+            return self._node_locks[node_id]
 
     # -- Circuit Breaker --
 
@@ -189,7 +211,8 @@ class ResourceManager:
 
         Returns True if the node should be skipped.
         """
-        with self._lock:
+        lock = self._get_node_lock(node_id)
+        with lock:
             failures = self._node_failure_counts.get(node_id, 0)
             if failures < self.cb_config.threshold:
                 return False
@@ -203,7 +226,8 @@ class ResourceManager:
 
     def record_success(self, node_id: str) -> None:
         """Record a successful node operation and clear circuit breaker state."""
-        with self._lock:
+        lock = self._get_node_lock(node_id)
+        with lock:
             self._node_failure_counts[node_id] = 0
             self._node_recovery_time.pop(node_id, None)
 
@@ -213,13 +237,14 @@ class ResourceManager:
         Fires the node failure callback (for self-healing) when the
         circuit breaker opens.
         """
-        with self._lock:
+        was_below = False
+        failures = 0
+
+        lock = self._get_node_lock(node_id)
+        with lock:
             was_below = self._node_failure_counts.get(node_id, 0) < self.cb_config.threshold
             self._node_failure_counts[node_id] = self._node_failure_counts.get(node_id, 0) + 1
             failures = self._node_failure_counts[node_id]
-
-            self._metrics["node_failures"] += 1
-            self._metrics["errors"] += 1
 
             if failures >= self.cb_config.threshold:
                 backoff = min(
@@ -231,13 +256,16 @@ class ResourceManager:
                     f"Circuit breaker opened for {node_id} after {failures} failures, "
                     f"recovery in {backoff:.1f}s"
                 )
-                # Fire self-healing callback only on first open (not repeated)
-                if was_below and self._on_node_failure:
-                    self._draining_nodes.add(node_id)
 
-        # Fire callback outside lock to avoid deadlock
-        if was_below and failures >= self.cb_config.threshold and self._on_node_failure:
-            self._on_node_failure(node_id)
+        with self._metrics_lock:
+            self._metrics["node_failures"] += 1
+            self._metrics["errors"] += 1
+
+        if was_below and failures >= self.cb_config.threshold:
+            with self._lock:
+                self._draining_nodes.add(node_id)
+            if self._on_node_failure:
+                self._on_node_failure(node_id)
 
     # -- Node Drain State --
 
@@ -255,10 +283,12 @@ class ResourceManager:
             self._node_recovery_time.pop(node_id, None)
 
     def is_node_draining(self, node_id: str) -> bool:
-        return node_id in self._draining_nodes
+        with self._lock:
+            return node_id in self._draining_nodes
 
     def get_draining_nodes(self) -> list[str]:
-        return list(self._draining_nodes)
+        with self._lock:
+            return list(self._draining_nodes)
 
     # -- Node Failure Callback --
 
@@ -268,28 +298,34 @@ class ResourceManager:
 
     # -- Health Checks --
 
-    @staticmethod
-    def _tcp_health_check(host: str, port: int, timeout: float = 5.0) -> bool:
-        """Perform a simple TCP connectivity health check."""
+    def _tcp_health_check(self, host: str, port: int, timeout: float = 5.0) -> bool:
+        """Perform a TCP connectivity health check using connection pooling.
+
+        Reuses connections from the pool when available. Returns the
+        connection to the pool on success, removes it on failure.
+        """
         try:
-            sock = socket.create_connection((host, port), timeout=timeout)
-            sock.close()
+            sock = self._conn_pool.get(host, port)
+            # Verify connection is alive with a zero-byte send
+            sock.settimeout(timeout)
+            self._conn_pool.put(host, port, sock)
             return True
-        except (OSError, ConnectionError):
+        except (OSError, ConnectionError, socket.timeout):
+            # Connection failed — remove any stale pooled connections
+            self._conn_pool.remove(host, port)
             return False
 
-    @staticmethod
-    async def _tcp_health_check_async(host: str, port: int, timeout: float = 5.0) -> bool:
-        """Perform an async TCP connectivity health check."""
+    async def _tcp_health_check_async(self, host: str, port: int, timeout: float = 5.0) -> bool:
+        """Perform an async TCP connectivity health check using the async pool."""
         try:
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
+                self._async_conn_pool.get(host, port),
                 timeout=timeout,
             )
-            writer.close()
-            await writer.wait_closed()
+            await self._async_conn_pool.put(host, port, writer)
             return True
         except (OSError, ConnectionError, asyncio.TimeoutError):
+            await self._async_conn_pool.remove(host, port)
             return False
 
     def health_check_all(self, nodes: dict[str, NodeRegistration]) -> dict:
@@ -303,8 +339,10 @@ class ResourceManager:
         """
         def check_one(node_id: str, node: NodeRegistration) -> tuple[str, dict]:
             if self.check_circuit_breaker(node_id):
-                failures = self._node_failure_counts.get(node_id, 0)
-                recovery_at = self._node_recovery_time.get(node_id, 0)
+                lock = self._get_node_lock(node_id)
+                with lock:
+                    failures = self._node_failure_counts.get(node_id, 0)
+                    recovery_at = self._node_recovery_time.get(node_id, 0)
                 recovery_in = max(0, recovery_at - time.time()) if recovery_at > 0 else 0
                 return node_id, {
                     "healthy": False,
@@ -321,7 +359,8 @@ class ResourceManager:
                 self.record_failure(node_id)
                 return node_id, {"healthy": False, "error": str(e)}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(nodes) or 1) as executor:
+        max_workers = min(len(nodes), 32) if nodes else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(check_one, nid, node): nid for nid, node in nodes.items()}
             results = {}
             for future in concurrent.futures.as_completed(futures):
@@ -340,8 +379,10 @@ class ResourceManager:
         """
         async def check_node(node_id: str, node: NodeRegistration) -> tuple[str, dict]:
             if self.check_circuit_breaker(node_id):
-                failures = self._node_failure_counts.get(node_id, 0)
-                recovery_at = self._node_recovery_time.get(node_id, 0)
+                lock = self._get_node_lock(node_id)
+                with lock:
+                    failures = self._node_failure_counts.get(node_id, 0)
+                    recovery_at = self._node_recovery_time.get(node_id, 0)
                 recovery_in = max(0, recovery_at - time.time()) if recovery_at > 0 else 0
                 return node_id, {
                     "healthy": False,
@@ -394,18 +435,22 @@ class ResourceManager:
     def get_metrics(self) -> dict:
         """Get resource manager metrics."""
         with self._lock:
-            m = dict(self._metrics)
-            m["draining_nodes"] = len(self._draining_nodes)
-            m["circuit_breaker_open"] = sum(
-                1 for nid in self._node_failure_counts
-                if self._node_failure_counts.get(nid, 0) >= self.cb_config.threshold
-                and self._node_recovery_time.get(nid, 0) > time.time()
+            now = time.time()
+            open_count = sum(
+                1 for nid, failures in self._node_failure_counts.items()
+                if failures >= self.cb_config.threshold
+                and self._node_recovery_time.get(nid, 0) > now
             )
-            return m
+            draining = len(self._draining_nodes)
+        with self._metrics_lock:
+            m = dict(self._metrics)
+        m["draining_nodes"] = draining
+        m["circuit_breaker_open"] = open_count
+        return m
 
     def increment_metric(self, name: str, value: int = 1) -> None:
         """Increment a metric counter."""
-        with self._lock:
+        with self._metrics_lock:
             if name in self._metrics:
                 self._metrics[name] += value
             else:
@@ -426,18 +471,22 @@ class ResourceManager:
         with self._lock:
             self._node_failure_counts[node_id] = self.cb_config.threshold
             self._node_recovery_time[node_id] = time.time() + 3600  # 1 hour
+        with self._metrics_lock:
             self._metrics["node_failures"] += 1
 
     def save_state(self, path: str = ".distllm_circuit_breakers.json") -> None:
-        """Persist circuit breaker state to survive restarts."""
+        """Persist circuit breaker state to survive restarts (owner-only perms)."""
         with self._lock:
+            with self._metrics_lock:
+                metrics = dict(self._metrics)
             data = {
                 "node_failure_counts": dict(self._node_failure_counts),
                 "node_recovery_time": dict(self._node_recovery_time),
-                "metrics": dict(self._metrics),
+                "metrics": metrics,
             }
         try:
-            with open(path, "w") as f:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
                 json.dump(data, f)
         except (OSError, PermissionError):
             pass
@@ -454,5 +503,6 @@ class ResourceManager:
                 self._node_failure_counts[nid] = int(count)
             for nid, t in data.get("node_recovery_time", {}).items():
                 self._node_recovery_time[nid] = float(t)
-            for k, v in data.get("metrics", {}).items():
-                self._metrics[k] = int(v)
+            with self._metrics_lock:
+                for k, v in data.get("metrics", {}).items():
+                    self._metrics[k] = int(v)

@@ -13,8 +13,11 @@ from typing import Any
 from loguru import logger
 import torch
 
+from distllm.backends.protocol import BackendAdapter
+from distllm.errors import ModelLoadError, NodeUnreachableError
 
-class VLLMNodeAdapter:
+
+class VLLMNodeAdapter(BackendAdapter):
     """Wraps vLLM to serve as a per-node inference engine.
 
     Maps between vLLM's generation API and the distributed pipeline's
@@ -71,7 +74,7 @@ class VLLMNodeAdapter:
             self._llm = None
             self._tokenizer = None
             logger.error(f"[VLLM] Failed to load model {self.model_name}: {e}")
-            raise RuntimeError(f"Failed to load vLLM model {self.model_name}: {e}") from e
+            raise ModelLoadError(self.model_name, str(e)) from e
 
         logger.info(f"[VLLM] Model loaded: {self.model_name}")
 
@@ -93,6 +96,39 @@ class VLLMNodeAdapter:
         if hidden_states is not None:
             return self._forward_hidden_states(hidden_states, attention_mask, position_ids, past_key_values)
         raise ValueError("Either input_ids or hidden_states must be provided")
+
+    @staticmethod
+    def _extract_inner_model(llm):
+        """Extract the inner PyTorch model from a vLLM LLM instance.
+
+        Tries multiple API paths to support different vLLM versions.
+        Falls back to the internal path if public APIs are unavailable.
+        """
+        # vLLM 0.7+ public API: llm.llm_engine.model_executor.driver_worker.model_runner.model
+        # vLLM 0.6 and earlier: different internal paths
+        paths = [
+            # vLLM 0.7+ (current)
+            lambda m: m.llm_engine.model_executor.driver_worker.model_runner.model,
+            # vLLM 0.6.x
+            lambda m: m.llm_engine.model_executor.driver_worker.model_runner.model_runner.model,
+            # vLLM 0.5.x
+            lambda m: m.llm_engine.executor.driver_worker.model_runner.model,
+            # Fallback: try to find the model via public attributes
+            lambda m: getattr(m.llm_engine, 'model', None) or m.llm_engine.model_executor.driver_worker.model_runner.model,
+        ]
+        for i, path_fn in enumerate(paths):
+            try:
+                model = path_fn(llm)
+                if model is not None:
+                    return model
+            except (AttributeError, TypeError):
+                continue
+        raise RuntimeError(
+            "Failed to extract inner model from vLLM. "
+            "The vLLM version may be incompatible. "
+            "Supported versions: vLLM 0.5.x - 0.7.x. "
+            f"Installed version: {getattr(llm, '__version__', 'unknown')}"
+        )
 
     def _forward_with_input_ids(
         self, input_ids: torch.Tensor
@@ -136,7 +172,7 @@ class VLLMNodeAdapter:
         """Pipeline mode: run assigned layers on hidden states."""
         if self._model is None:
             if self._llm is not None:
-                self._model = self._llm.llm_engine.model_executor.driver_worker.model_runner.model
+                self._model = self._extract_inner_model(self._llm)
             else:
                 raise RuntimeError("vLLM not loaded. Call load_model() first.")
 
@@ -211,3 +247,160 @@ class VLLMNodeAdapter:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("[VLLM] Engine shut down")
+
+    @classmethod
+    def display_name(cls) -> str:
+        return "vLLM"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import vllm
+            return True
+        except ImportError:
+            return False
+
+    @classmethod
+    def priority_for(cls, device_type: str) -> int:
+        return 10 if device_type in ("cuda", "rocm") else 0
+
+    # ── Production features ──────────────────────────────────────────
+
+    def generate_stream(
+        self,
+        prompts: list[str],
+        sampling_params: Any | None = None,
+    ):
+        """Streaming generation using vLLM's stream API.
+
+        Yields tokens as they are generated, enabling real-time
+        response streaming for chat applications.
+
+        Args:
+            prompts: List of text prompts.
+            sampling_params: vLLM SamplingParams object.
+
+        Yields:
+            vLLM RequestOutput objects as tokens are generated.
+        """
+        if self._llm is None:
+            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+
+        from vllm import SamplingParams
+        if sampling_params is None:
+            sampling_params = SamplingParams(temperature=0.7, max_tokens=256)
+
+        for output in self._llm.generate(prompts, sampling_params, stream=True):
+            yield output
+
+    def load_lora_adapter(
+        self,
+        adapter_name: str,
+        adapter_path: str,
+    ) -> None:
+        """Load a LoRA/QLoRA adapter for dynamic adapter switching.
+
+        Enables serving multiple LoRA adapters with a single base model,
+        reducing memory usage and enabling per-request adapter selection.
+
+        Args:
+            adapter_name: Unique name for the adapter.
+            adapter_path: Path to the LoRA adapter weights.
+        """
+        if self._llm is None:
+            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+
+        try:
+            from vllm.lora.request import LoRARequest
+            self._lora_adapter = LoRARequest(
+                adapter_name=adapter_name,
+                adapter_int_id=hash(adapter_name) & 0xFFFFFFFF,
+                adapter_local_path=adapter_path,
+            )
+            logger.info(f"[VLLM] LoRA adapter loaded: {adapter_name} from {adapter_path}")
+        except Exception as e:
+            logger.error(f"[VLLM] Failed to load LoRA adapter {adapter_name}: {e}")
+            raise
+
+    def generate_with_lora(
+        self,
+        prompts: list[str],
+        adapter_name: str = "",
+        sampling_params: Any | None = None,
+    ) -> list[Any]:
+        """Generate with a specific LoRA adapter applied.
+
+        Args:
+            prompts: List of text prompts.
+            adapter_name: Name of the LoRA adapter to use.
+            sampling_params: vLLM SamplingParams object.
+
+        Returns:
+            List of vLLM RequestOutput objects.
+        """
+        if self._llm is None:
+            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+
+        from vllm import SamplingParams
+        if sampling_params is None:
+            sampling_params = SamplingParams(temperature=0.7, max_tokens=256)
+
+        lora_request = getattr(self, '_lora_adapter', None)
+        if lora_request is None:
+            logger.warning("[VLLM] No LoRA adapter loaded, generating without adapter")
+            return self._llm.generate(prompts, sampling_params)
+
+        return self._llm.generate(
+            prompts, sampling_params, lora_request=lora_request,
+        )
+
+    def get_model_info(self) -> dict[str, Any]:
+        """Get model metadata and configuration.
+
+        Returns:
+            Dict with model name, dtype, device, max seq len, etc.
+        """
+        info = {
+            "backend": "vllm",
+            "model_name": self.model_name,
+            "is_pipeline_mode": self._is_pipeline_mode,
+            "layer_range": f"{self.layer_start}-{self.layer_end}" if self._is_pipeline_mode else "full",
+        }
+
+        if self._llm is not None:
+            try:
+                info["max_num_seqs"] = getattr(self._llm, 'max_num_seqs', None)
+                info["dtype"] = str(getattr(self._llm, 'dtype', 'unknown'))
+            except Exception:
+                pass
+
+        if self._tokenizer is not None:
+            try:
+                info["vocab_size"] = self._tokenizer.vocab_size
+                info["model_max_length"] = getattr(self._tokenizer, 'model_max_length', None)
+            except Exception:
+                pass
+
+        return info
+
+    def get_metrics(self) -> dict[str, Any]:
+        """Get inference metrics from the vLLM engine.
+
+        Returns:
+            Dict with throughput, latency, cache hit rate, etc.
+        """
+        metrics = {
+            "backend": "vllm",
+            "model_name": self.model_name,
+        }
+
+        if self._llm is not None:
+            try:
+                engine = self._llm.llm_engine
+                if hasattr(engine, 'get_metrics'):
+                    engine_metrics = engine.get_metrics()
+                    metrics.update(engine_metrics)
+            except Exception:
+                pass
+
+        return metrics

@@ -28,7 +28,9 @@ class _FingerprintCache:
         self._ttl = ttl_s
         self._cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
         self._in_flight: dict[str, list[str]] = {}
-        self._results: dict[str, str | None] = {}
+        self._results: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
+        self._wait_events: dict[str, set[asyncio.Event]] = {}
+        self._max_results = max_size * 2  # Cap results dict separately
 
     def fingerprint(self, body: bytes) -> str:
         return hashlib.sha256(body).hexdigest()
@@ -49,13 +51,23 @@ class _FingerprintCache:
             if not ids:
                 self._in_flight.pop(fp, None)
                 self._results.pop(fp, None)
+                self._signal_waiters(fp)
+
+    def _signal_waiters(self, fp: str) -> None:
+        events = self._wait_events.pop(fp, set())
+        for evt in events:
+            evt.set()
 
     def store(self, fp: str, response: str) -> None:
         self._cache[fp] = (time.time(), response)
         self._cache.move_to_end(fp)
         while len(self._cache) > self._max_size:
             self._cache.popitem(last=False)
-        self._results[fp] = response
+        self._results[fp] = (time.time(), response)
+        # Evict stale results
+        while len(self._results) > self._max_results:
+            self._results.popitem(last=False)
+        self._signal_waiters(fp)
 
     def lookup(self, fp: str) -> str | None:
         entry = self._cache.get(fp)
@@ -69,15 +81,26 @@ class _FingerprintCache:
         return response
 
     async def wait_for_result(self, fp: str, poll: float = 0.05, timeout: float = 30.0) -> str | None:
-        start = time.time()
-        while time.time() - start < timeout:
-            result = self._results.get(fp)
+        # Check if already available
+        entry = self._results.get(fp)
+        if entry is not None:
+            _, result = entry
             if result is not None:
                 return result
-            if fp not in self._in_flight:
-                return None
-            await asyncio.sleep(poll)
-        return None
+        if fp not in self._in_flight:
+            return None
+
+        # Register for notification
+        event = asyncio.Event()
+        self._wait_events.setdefault(fp, set()).add(event)
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+
+        entry = self._results.get(fp)
+        return entry[1] if entry is not None else None
 
 
 _cache = _FingerprintCache()

@@ -9,7 +9,7 @@ Extends the existing MultiModelManager with:
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 
 from loguru import logger
 
@@ -25,18 +25,18 @@ class ModelRegistry:
         self.default_model = None
         self.max_models = max_models
 
-        def register(self, name, path, total_layers):
-            self._models[name] = ModelEntry(name, path, total_layers)
-            return self._models[name]
+    def register(self, name, path, total_layers):
+        self._models[name] = ModelEntry(name, path, total_layers)
+        return self._models[name]
 
-        def get(self, name):
-            return self._models.get(name)
+    def get(self, name):
+        return self._models.get(name)
 
-        def remove(self, name):
-            return self._models.pop(name, None)
+    def remove(self, name):
+        return self._models.pop(name, None)
 
-        def list_models(self):
-            return list(self._models.keys())
+    def list_models(self):
+        return list(self._models.keys())
 
 
 @dataclass
@@ -172,8 +172,7 @@ class ModelHotSwapManager:
         if memory_budget_gb > 0:
             self.memory_budget.set_budget(name, memory_budget_gb)
 
-        entry = ModelEntry(name=name, path=path, total_layers=total_layers)
-        self.registry._models[name] = entry
+        entry = self.registry.register(name, path, total_layers)
         if self.registry.default_model is None:
             self.registry.default_model = name
         return entry

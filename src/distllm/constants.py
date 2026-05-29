@@ -23,6 +23,45 @@ class Device(str, Enum):
     AUTO = "auto"
     ROCM = "rocm"
     MPS = "mps"
+    XPU = "xpu"
+    VULKAN = "vulkan"
+
+
+class DeviceFamily(str, Enum):
+    """GPU architecture families for heterogeneous scheduling."""
+    NVIDIA = "nvidia"
+    AMD = "amd"
+    APPLE = "apple"
+    INTEL = "intel"
+    CPU = "cpu"
+    UNKNOWN = "unknown"
+
+
+DEVICE_FAMILY_MAP: dict[str, DeviceFamily] = {
+    "cuda": DeviceFamily.NVIDIA,
+    "rocm": DeviceFamily.AMD,
+    "mps": DeviceFamily.APPLE,
+    "xpu": DeviceFamily.INTEL,
+    "cpu": DeviceFamily.CPU,
+}
+
+
+PLATFORM_BACKEND_PRIORITY: dict[str, dict[str, int]] = {
+    "nvidia": {"vllm": 10, "exllama": 8, "pytorch": 5, "llamacpp": 4, "onnx": 6},
+    "amd": {"llamacpp": 9, "pytorch": 7, "onnx": 6, "vllm": 5, "exllama": 0},
+    "apple": {"llamacpp": 9, "pytorch": 8, "onnx": 2, "vllm": 0, "exllama": 0},
+    "intel": {"onnx": 9, "pytorch": 7, "llamacpp": 6, "vllm": 0, "exllama": 0},
+    "cpu": {"llamacpp": 9, "onnx": 6, "pytorch": 5, "vllm": 0, "exllama": 0},
+}
+
+DEVICE_TO_FAMILY: dict[str, DeviceFamily] = {
+    "cuda": DeviceFamily.NVIDIA,
+    "rocm": DeviceFamily.AMD,
+    "mps": DeviceFamily.APPLE,
+    "xpu": DeviceFamily.INTEL,
+    "cpu": DeviceFamily.CPU,
+    "vulkan": DeviceFamily.UNKNOWN,
+}
 
 
 class Provider(str, Enum):
@@ -69,6 +108,12 @@ MAX_CLIENTS: int = 10000
 TENSOR_MAX_DIMS: int = 8
 TENSOR_MAX_DIM_SIZE: int = 2_000_000_000
 TENSOR_MAX_TOTAL_BYTES: int = 4 * 1024 * 1024 * 1024
+
+# --- Hardware detection fallbacks ---
+INTEL_XPU_BANDWIDTH_GBPS: float = 50.0
+MPS_DEFAULT_MEMORY_BYTES: int = 8 * 1024 ** 3
+MPS_DEFAULT_GPU_CORES: int = 8
+MPS_DEFAULT_TFLOPS_FP16: float = 2.0
 
 def get_tensor_max_bytes() -> int:
     """Return TENSOR_MAX_TOTAL_BYTES, overridable via environment variable."""

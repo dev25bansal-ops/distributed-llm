@@ -402,6 +402,23 @@ class CompressionSettings(BaseModel):
         return v
 
 
+class AdaptiveCompressionSettings(BaseModel):
+    """Adaptive compression during idle periods.
+
+    When cluster utilization falls below ``idle_threshold_pct`` for at least
+    ``idle_duration_s`` seconds, a background compression job is triggered
+    on the currently loaded model. The compressed variant is registered with
+    the hot-swap manager so it can be swapped in during high load.
+    """
+    enabled: bool = False
+    idle_threshold_pct: float = 30.0
+    idle_duration_s: int = 60
+    check_interval_s: int = 15
+    compression_method: str = "int4"
+    calibration_samples: int = 128
+    output_dir: str = "/tmp/distllm-compress"
+
+
 class AlertingSettings(BaseModel):
     """Prometheus alerting rules configuration."""
     enabled: bool = False
@@ -522,19 +539,21 @@ class ModelHubSettings(BaseModel):
 
     @field_validator("hf_token")
     @classmethod
-    def warn_if_plain_text(cls, v: SecretStr | None) -> SecretStr | None:
-        """Log a warning if token is set (reminds users to use env vars)."""
+    def reject_plain_text_token(cls, v: SecretStr | None) -> SecretStr | None:
+        """Reject token set directly in config to prevent secret leakage.
+
+        Raises ValueError if the token is set in config rather than
+        environment variable. This prevents accidental commits of
+        secrets to config files.
+        """
         if v is not None:
             import os
             env_token = os.environ.get("DISTLLM__MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
             if env_token is None:
-                import warnings
-                warnings.warn(
-                    "hf_token is set in config rather than environment variable. "
-                    "Consider using DISTLLM__MODEL_HUB__HF_TOKEN or HF_TOKEN env var to avoid "
-                    "committing secrets to config files.",
-                    UserWarning,
-                    stacklevel=2,
+                raise ValueError(
+                    "hf_token cannot be set in config file. "
+                    "Use DISTLLM__MODEL_HUB__HF_TOKEN or HF_TOKEN environment variable instead. "
+                    "This prevents accidental commits of secrets to config files."
                 )
         return v
 
@@ -600,7 +619,7 @@ class VersionSettings(BaseModel):
 
 class PluginSettings(BaseModel):
     """Plugin system configuration."""
-    enabled: bool = False
+    enabled: bool = True
     plugins: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("plugins")
@@ -648,6 +667,46 @@ class PredictiveCacheSettings(BaseModel):
     pattern_decay_hours: float = 24.0
     min_prefix_len: int = 8
     background_compress_interval_s: int = 300
+
+
+class CacheSettings(BaseModel):
+    """E15: Unified cache configuration.
+
+    Consolidates PrefixCacheSettings, CachePersistenceSettings,
+    PredictiveCacheSettings, and GossipSettings into a single section.
+    Individual sub-configs remain for backward compatibility.
+    """
+    # Prefix cache
+    prefix_enabled: bool = True
+    prefix_max_entries: int = 1024
+    prefix_min_prefix_len: int = 16
+    radix_tree_enabled: bool = True
+
+    # Persistence
+    persistence_enabled: bool = False
+    persistence_storage_path: str = ".distllm_cache"
+    persistence_max_disk_gb: float = 50.0
+    persistence_ttl_hours: float = 24.0
+    background_compaction_enabled: bool = False
+    background_compaction_interval_s: float = 300.0
+
+    # Predictive
+    predictive_enabled: bool = False
+    predictive_gpu_cache_mb: int = 512
+    predictive_cpu_cache_mb: int = 4096
+    predictive_pattern_decay_hours: float = 24.0
+    predictive_min_prefix_len: int = 8
+
+    # Gossip
+    gossip_enabled: bool = False
+    gossip_interval: float = 10.0
+    gossip_max_peers: int = 16
+    gossip_cache_ttl: float = 300.0
+
+    # Eviction
+    eviction_strategy: str = "hybrid"  # "lru", "lfu", "hybrid"
+    size_aware_admission: bool = True
+    memory_adaptive_budget: bool = True
 
 
 class SelfOptimizingSettings(BaseModel):
@@ -901,6 +960,33 @@ class HardwareSettings(BaseModel):
         return v
 
 
+class DefragmentationSettings(BaseModel):
+    """GPU memory defragmentation configuration.
+
+    Compacts fragmented KV cache blocks to prevent OOM errors during
+    long-running inference sessions.
+    """
+    enabled: bool = False
+    policy: str = Field(default="balanced", description="Compaction policy: lazy, balanced, or aggressive")
+    interval_seconds: float = Field(default=60.0, ge=5.0, description="Seconds between background defrag checks")
+    max_blocks_per_pass: int = Field(default=0, ge=0, description="Max blocks per pass (0 = unlimited)")
+    threshold: float = Field(default=0.0, ge=0.0, le=1.0, description="Override policy threshold (0 = use policy default)")
+    tiered_compaction: bool = Field(default=False, description="Enable L2 (CPU swap) and L3 (NVMe) compaction")
+    l2_cpu_swap_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    l3_nvme_swap_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    cuda_stream_priority: int = Field(default=-1, description="CUDA stream priority for copy ops")
+    enable_predictive: bool = Field(default=False, description="Predictive (preemptive) defragmentation")
+    enable_prometheus: bool = Field(default=False, description="Export Prometheus defrag metrics")
+
+    @field_validator("policy")
+    @classmethod
+    def validate_policy(cls, v: str) -> str:
+        allowed = {"lazy", "balanced", "aggressive"}
+        if v not in allowed:
+            raise ValueError(f"policy must be one of {allowed}, got '{v}'")
+        return v
+
+
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
@@ -937,6 +1023,7 @@ class DistLLMSettings(BaseSettings):
     moe: MoESettings = Field(default_factory=MoESettings)
     gossip: GossipSettings = Field(default_factory=GossipSettings)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
+    adaptive_compression: AdaptiveCompressionSettings = Field(default_factory=AdaptiveCompressionSettings)
     alerting: AlertingSettings = Field(default_factory=AlertingSettings)
     chaos: ChaosSettings = Field(default_factory=ChaosSettings)
     canary: CanarySettings = Field(default_factory=CanarySettings)
@@ -952,6 +1039,7 @@ class DistLLMSettings(BaseSettings):
     zero_copy: ZeroCopySettings = Field(default_factory=ZeroCopySettings)
     adaptive_precision: AdaptivePrecisionSettings = Field(default_factory=AdaptivePrecisionSettings)
     predictive_cache: PredictiveCacheSettings = Field(default_factory=PredictiveCacheSettings)
+    cache: CacheSettings = Field(default_factory=CacheSettings)  # E15: Unified cache config
     predictive_migration: dict = Field(default_factory=lambda: {"enabled": False})
     structured_output: dict = Field(default_factory=lambda: {"enabled": False})
     self_optimizing: SelfOptimizingSettings = Field(default_factory=SelfOptimizingSettings)
@@ -967,6 +1055,7 @@ class DistLLMSettings(BaseSettings):
     vllm: VLLMSettings = Field(default_factory=VLLMSettings)
     llamacpp: LlamacppSettings = Field(default_factory=LlamacppSettings)
     wide_area: WideAreaSettings = Field(default_factory=WideAreaSettings)
+    defragmentation: DefragmentationSettings = Field(default_factory=DefragmentationSettings)
 
     @classmethod
     def from_yaml(

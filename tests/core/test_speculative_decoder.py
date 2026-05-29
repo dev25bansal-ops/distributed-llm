@@ -1,185 +1,168 @@
-"""Tests for speculative decoding."""
+"""Tests for speculative decoding using the current SpeculativeDecoder API."""
 
-import pytest
+import importlib.util
+import os
+
 import torch
-from unittest.mock import MagicMock
-
-from distllm.core.speculative_decoder import SpeculativeDecoder
 
 
-class MockTokenizer:
-    """Mock tokenizer for testing."""
-    def decode(self, tokens, **kwargs):
-        return " ".join(str(t) for t in tokens)
+def _get_module():
+    path = os.path.join("src", "distllm", "core", "speculative_decoder.py")
+    spec = importlib.util.spec_from_file_location("speculative_decoder", path)
+    mod = importlib.util.module_from_spec(spec)
+    import types
+    mod.torch = __import__("torch")
+    mod.F = __import__("torch.nn.functional", fromlist=["nn"])
+    mod.Any = __import__("typing").Any
+    mod.Callable = __import__("typing").Callable
+    logger = types.ModuleType("logger")
+    logger.info = lambda *a, **kw: None
+    logger.warning = lambda *a, **kw: None
+    mod.logger = logger
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _always_logit(token_id: int):
+    return torch.full((1, 1, 100), -10.0).scatter_(-1, torch.tensor([[[token_id]]]), 10.0)
+
+
+def _identity_target(input_ids, **kwargs):
+    batch, seq_len = input_ids.shape
+    logits = torch.full((batch, seq_len, 100), -10.0)
+    for i in range(seq_len - 1):
+        t = input_ids[0, i + 1].item()
+        if t < 100:
+            logits[0, i, t] = 10.0
+    last_t = input_ids[0, -1].item()
+    if last_t < 100:
+        logits[0, -1, last_t] = 10.0
+    return logits
 
 
 class TestSpeculativeDecoder:
-    """Tests for the SpeculativeDecoder class."""
-
-    @pytest.fixture
-    def decoder(self):
-        return SpeculativeDecoder(
-            num_assistant_tokens=3,
-            min_acceptance_rate=0.3,
-            warmup_steps=2,
-        )
+    @classmethod
+    def setup_class(cls):
+        cls.mod = _get_module()
+        cls.SD = cls.mod.SpeculativeDecoder
 
     def test_init_defaults(self):
-        decoder = SpeculativeDecoder()
-        assert decoder.num_assistant_tokens == 5
-        assert decoder.min_acceptance_rate == 0.3
-        assert decoder.warmup_steps == 10
-        assert decoder.is_enabled is True
-        assert decoder.acceptance_rate == 1.0
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100))
+        assert d._num_candidates == 5
+        assert d._top_k == 20
+        assert d._temperature == 1.0
 
     def test_init_custom(self):
-        decoder = SpeculativeDecoder(
-            num_assistant_tokens=7,
-            min_acceptance_rate=0.5,
-            warmup_steps=20,
-        )
-        assert decoder.num_assistant_tokens == 7
-        assert decoder.min_acceptance_rate == 0.5
-        assert decoder.warmup_steps == 20
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100),
+                     num_candidates=7, top_k=10, temperature=0.5)
+        assert d._num_candidates == 7
+        assert d._top_k == 10
+        assert d._temperature == 0.5
 
-    def test_verify_and_accept_empty_draft(self, decoder):
-        """When no draft tokens, sample directly from target."""
-        logits = torch.tensor([[0.1, 0.5, 0.3, 0.1]])  # vocab size 4
-        # Use greedy sampling for deterministic result
-        token = decoder._sample_token(logits, temperature=0)
-        assert token.item() == 1  # argmax of logits
+    def test_draft_forward_generates_correct_count(self):
+        def draft_fn(input_ids, **kwargs):
+            return _always_logit(42)
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=draft_fn,
+                     num_candidates=4, temperature=0)
+        prefix = torch.tensor([[1, 2, 3]])
+        tokens = d._draft_forward(prefix, num_tokens=3)
+        assert tokens.shape == (1, 3)
+        assert tokens[0, 0].item() == 42
 
-    def test_verify_and_accept_all_match(self, decoder):
-        """All draft tokens match target argmax."""
-        # Target logits where argmax matches draft tokens [5, 3]
-        logits = torch.zeros(1, 3, 10)  # [batch, seq_len, vocab]
-        logits[0, 0, 5] = 10.0  # draft token 5 is argmax
-        logits[0, 1, 3] = 10.0  # draft token 3 is argmax
-        logits[0, 2, 7] = 10.0  # next token would be 7
-
-        accepted, tokens, next_token = decoder.verify_and_accept(
-            [5, 3], logits, MockTokenizer()
-        )
+    def test_verify_tokens_all_accepted_greedy(self):
+        prefix = torch.tensor([[1, 2, 3]])
+        draft = torch.tensor([[10, 20]])
+        full = torch.cat([prefix, draft], dim=1)
+        target_logits = _identity_target(full)
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     temperature=0)
+        accepted = d._verify_tokens(prefix, full, draft, target_logits)
         assert accepted == 2
-        assert tokens == [5, 3]
-        assert next_token == 7
 
-    def test_verify_and_accept_partial_match(self, decoder):
-        """First draft token matches, second doesn't."""
-        logits = torch.zeros(1, 3, 10)
-        logits[0, 0, 5] = 10.0  # matches draft[0]
-        logits[0, 1, 8] = 10.0  # draft[1]=3, but target=8
-        logits[0, 2, 7] = 10.0
-
-        accepted, tokens, next_token = decoder.verify_and_accept(
-            [5, 3], logits, MockTokenizer()
-        )
-        assert accepted == 1  # only first token accepted
-        assert tokens == [5, 8]  # second position has target's token
-        assert next_token == 8  # rejection point
-
-    def test_verify_and_accept_none_match(self, decoder):
-        """No draft tokens match target."""
-        logits = torch.zeros(1, 3, 10)
-        logits[0, 0, 9] = 10.0  # draft[0]=5, but target=9
-
-        accepted, tokens, next_token = decoder.verify_and_accept(
-            [5, 3], logits, MockTokenizer()
-        )
+    def test_verify_tokens_none_accepted_greedy(self):
+        def target_fn(input_ids, **kw):
+            logits = torch.full((1, input_ids.shape[1], 100), -10.0)
+            logits[0, :, 99] = 10.0
+            return logits
+        prefix = torch.tensor([[1, 2, 3]])
+        draft = torch.tensor([[5]])
+        full = torch.cat([prefix, draft], dim=1)
+        d = self.SD(target_forward=target_fn,
+                     draft_forward=lambda x: _always_logit(5),
+                     temperature=0)
+        accepted = d._verify_tokens(prefix, full, draft, target_fn(full))
         assert accepted == 0
-        assert tokens == [9]  # target's token at position 0
-        assert next_token == 9
 
-    def test_verify_single_step(self, decoder):
-        """Single-step verification (2D logits)."""
-        logits = torch.tensor([[0.1, 0.8, 0.1]])  # [batch, vocab], argmax=1
-        accepted, tokens, next_token = decoder.verify_and_accept(
-            [1], logits, MockTokenizer()
-        )
-        assert accepted == 1
-        assert tokens == [1]
-        assert next_token == 1
+    def test_generate_full_acceptance(self):
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     num_candidates=5, temperature=0)
+        output = d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        assert output.shape[1] == 7
+        assert all(output[0, 3 + i].item() == 10 for i in range(4))
 
-    def test_verify_single_step_mismatch(self, decoder):
-        """Single-step mismatch."""
-        logits = torch.tensor([[0.1, 0.8, 0.1]])  # argmax=1
-        accepted, tokens, next_token = decoder.verify_and_accept(
-            [2], logits, MockTokenizer()
-        )
-        assert accepted == 0
-        assert next_token == 1  # target's token
+    def test_generate_respects_max_new_tokens(self):
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     num_candidates=10, temperature=0)
+        output = d.generate(torch.tensor([[1]]), max_new_tokens=2)
+        assert output.shape[1] == 3
 
-    def test_acceptance_rate_tracking(self, decoder):
-        """Acceptance rate updates after warmup."""
-        # First call during warmup - no EMA update
-        decoder._record_acceptance(3, 3)
-        assert decoder._step_count == 1
-        assert decoder._acceptance_rate == 1.0  # unchanged during warmup
+    def test_stats_tracking(self):
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     num_candidates=3, temperature=0)
+        d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=5)
+        stats = d.stats
+        assert stats["draft_calls"] > 0
+        assert stats["target_calls"] > 0
+        assert stats["accepted"] > 0
+        assert stats["total_proposed"] > 0
 
-        # Second call - still during warmup (warmup_steps=2)
-        decoder._record_acceptance(3, 3)
-        assert decoder._step_count == 2
+    def test_sample_greedy(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100),
+                     temperature=0)
+        logits = torch.full((1, 100), -10.0)
+        logits[0, 42] = 10.0
+        token = d._sample(logits)
+        assert token.item() == 42
 
-        # Third call - past warmup, EMA update
-        decoder._record_acceptance(3, 0)  # 0% acceptance
-        assert decoder._step_count == 3
-        assert decoder._acceptance_rate < 1.0  # EMA decreased
+    def test_sample_temperature(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100))
+        logits = torch.randn(1, 100)
+        token = d._sample(logits)
+        assert token.shape == (1, 1)
+        assert 0 <= token.item() < 100
 
-    def test_auto_disable_low_acceptance(self, decoder):
-        """Auto-disable when acceptance rate drops below threshold."""
-        # Pass warmup period and exceed the warmup_steps * 2 threshold
-        total_steps = decoder.warmup_steps * 2 + 5  # warmup_steps=2, so need > 4
-        for _ in range(total_steps):
-            decoder._record_acceptance(3, 0)  # 0% acceptance
+    def test_generate_with_kwargs(self):
+        def target_fn(input_ids, **kwargs):
+            assert "extra" in kwargs
+            return _identity_target(input_ids)
+        def draft_fn(input_ids, **kwargs):
+            assert "extra" in kwargs
+            return _always_logit(10)
+        d = self.SD(target_forward=target_fn,
+                     draft_forward=draft_fn,
+                     temperature=0)
+        output = d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=2, extra="value")
+        assert output.shape[1] == 5
 
-        assert decoder.is_enabled is False
+    def test_init_device_conversion(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100),
+                     device="cpu")
+        assert str(d._device) == "cpu"
 
-    def test_get_metrics(self, decoder):
-        metrics = decoder.get_metrics()
-        assert "acceptance_rate" in metrics
-        assert "total_draft_tokens" in metrics
-        assert "total_accepted" in metrics
-        assert "step_count" in metrics
-        assert "enabled" in metrics
-        assert metrics["step_count"] == 0
-        assert metrics["enabled"] is True
-
-    def test_reset(self, decoder):
-        decoder._total_draft_tokens = 100
-        decoder._total_accepted = 50
-        decoder._step_count = 20
-        decoder._acceptance_rate = 0.5
-        decoder._enabled = False
-
-        decoder.reset()
-
-        assert decoder._total_draft_tokens == 0
-        assert decoder._total_accepted == 0
-        assert decoder._step_count == 0
-        assert decoder._acceptance_rate == 1.0
-        assert decoder._enabled is True
-
-    def test_sample_token_greedy(self, decoder):
-        """Greedy sampling (temperature=0) returns argmax."""
-        logits = torch.tensor([[0.1, 0.5, 0.3, 0.1]])
-        token = decoder._sample_token(logits, temperature=0)
-        assert token.item() == 1
-
-    def test_sample_token_temperature(self, decoder):
-        """Temperature sampling returns valid token."""
-        logits = torch.tensor([[0.1, 0.5, 0.3, 0.1]])
-        token = decoder._sample_token(logits, temperature=1.0)
-        assert 0 <= token.item() <= 3
-
-    def test_draft_tokens_exceeds_target_length(self, decoder):
-        """Draft tokens longer than target output."""
-        logits = torch.zeros(1, 2, 10)  # Only 2 positions
-        logits[0, 0, 5] = 10.0
-        logits[0, 1, 3] = 10.0
-
-        accepted, tokens, next_token = decoder.verify_and_accept(
-            [5, 3, 7, 9], logits, MockTokenizer()  # 4 draft tokens
-        )
-        assert accepted == 2
-        assert tokens == [5, 3]
-        assert next_token == 3  # All accepted, need more
+    def test_stats_before_generate(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100))
+        stats = d.stats
+        assert stats["draft_calls"] == 0
+        assert stats["target_calls"] == 0
+        assert stats["accepted"] == 0

@@ -117,6 +117,7 @@ class MemorySnapshot:
     prompt: str = ""
     generated_tokens: int = 0
     memory: Dict[str, float] = field(default_factory=dict)
+    fragmentation_ratio: Optional[float] = None
 
 
 @dataclass
@@ -220,6 +221,7 @@ class MemoryProfiler:
         url: Optional[str] = None,
         local: bool = False,
         gpu_id: int = 0,
+        defrag_stats_url: Optional[str] = None,
     ):
         self.model = model
         self.url = url
@@ -228,6 +230,10 @@ class MemoryProfiler:
         self.cpu_sampler = CPUMemorySampler()
         self.snapshots: List[MemorySnapshot] = []
         self.start_time = time.time()
+        self._defrag_stats_url = defrag_stats_url or (
+            f"{url}/v1/defrag/stats" if url else None
+        )
+        self._last_frag_ratio: Optional[float] = None
 
     def _sample_memory(self) -> Dict[str, float]:
         """Sample both GPU and CPU memory."""
@@ -248,8 +254,22 @@ class MemoryProfiler:
                 prompt=prompt[:100] if prompt else "",
                 generated_tokens=generated_tokens,
                 memory=mem,
+                fragmentation_ratio=self._last_frag_ratio,
             )
         )
+
+    async def _fetch_frag_ratio(self, client: httpx.AsyncClient) -> Optional[float]:
+        """Fetch fragmentation ratio from the defrag stats endpoint."""
+        if not self._defrag_stats_url:
+            return None
+        try:
+            resp = await client.get(self._defrag_stats_url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("fragmentation_ratio")
+        except Exception:
+            pass
+        return None
 
     async def profile_remote(
         self,
@@ -261,14 +281,16 @@ class MemoryProfiler:
         self.start_time = time.time()
         client = httpx.AsyncClient(timeout=60)
 
-        # Initial idle snapshot
+        # Initial idle snapshot (with defrag metrics)
+        self._last_frag_ratio = await self._fetch_frag_ratio(client)
         self._snapshot(0, "idle")
 
         for cycle in range(num_cycles):
             for i, prompt in enumerate(prompts):
                 iteration = cycle * len(prompts) + i + 1
 
-                # Pre-generation snapshot
+                # Pre-generation snapshot (with defrag metrics)
+                self._last_frag_ratio = await self._fetch_frag_ratio(client)
                 self._snapshot(iteration, "idle", prompt=prompt)
                 await asyncio.sleep(idle_interval)
 
@@ -308,8 +330,9 @@ class MemoryProfiler:
 
                 await asyncio.sleep(idle_interval)
 
-        # Final idle snapshot
+        # Final idle snapshot (with defrag metrics)
         await asyncio.sleep(idle_interval * 2)
+        self._last_frag_ratio = await self._fetch_frag_ratio(client)
         self._snapshot(num_cycles * len(prompts) + 1, "idle")
 
         await client.aclose()
@@ -425,12 +448,13 @@ def print_report(report: ProfileReport):
 
     # Per-iteration breakdown
     print("\n--- Per-Iteration Memory ---")
-    print(f"  {'Iter':>4} | {'Phase':<12} | {'Tokens':>6} | {'Mem (MB)':>10} | {'Elapsed':>8}")
-    print(f"  {'-'*4}-+{'-'*14}-+{'-'*8}-+{'-'*12}-+{'-'*10}")
+    print(f"  {'Iter':>4} | {'Phase':<12} | {'Tokens':>6} | {'Mem (MB)':>10} | {'Frag%':>7} | {'Elapsed':>8}")
+    print(f"  {'-'*4}-+{'-'*14}-+{'-'*8}-+{'-'*12}-+{'-'*9}-+{'-'*10}")
     for s in report.snapshots:
         mem = s.memory.get("used_mb", s.memory.get("rss_mb", 0))
+        frag = f"{s.fragmentation_ratio*100:>5.1f}%" if s.fragmentation_ratio is not None else "  N/A "
         print(
-            f"  {s.iteration:>4} | {s.phase:<12} | {s.generated_tokens:>6} | {mem:>10.1f} | {s.elapsed_s:>7.1f}s"
+            f"  {s.iteration:>4} | {s.phase:<12} | {s.generated_tokens:>6} | {mem:>10.1f} | {frag:>7} | {s.elapsed_s:>7.1f}s"
         )
 
     print("\n" + "=" * 70)
@@ -459,6 +483,9 @@ def main():
     parser.add_argument(
         "--interval", type=float, default=2.0, help="Idle interval between requests (seconds)"
     )
+    parser.add_argument(
+        "--defrag-url", type=str, help="Defrag stats URL (defaults to <url>/v1/defrag/stats)"
+    )
 
     args = parser.parse_args()
 
@@ -473,6 +500,7 @@ def main():
         url=args.url,
         local=args.local,
         gpu_id=args.gpu,
+        defrag_stats_url=args.defrag_url,
     )
 
     if args.url:

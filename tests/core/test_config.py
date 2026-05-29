@@ -978,8 +978,8 @@ class TestConfigConverters:
         from distllm.config.settings import SelfOptimizingSettings
         s = SelfOptimizingSettings(enabled=True, tune_interval_seconds=120.0, warmup_seconds=60.0)
         opt = s.to_optimization_config()
-        assert opt.enabled is True
-        assert opt.runner.warmup_seconds == 60.0
+        assert opt["enabled"] is True
+        assert opt["runner"]["warmup_seconds"] == 60.0
 
     def test_partitioning_to_auto_partition_config(self):
         s = PartitioningSettings(strategy="gpu_aware")
@@ -989,7 +989,7 @@ class TestConfigConverters:
     def test_partitioning_equal_disables_auto(self):
         s = PartitioningSettings(strategy="equal")
         ap = s.to_auto_partition_config()
-        assert ap.enabled is False
+        assert ap["enabled"] is False
 
     def test_disagg_to_full_config(self):
         from distllm.config.settings import DisaggSettings

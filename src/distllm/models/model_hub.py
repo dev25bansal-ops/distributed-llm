@@ -5,13 +5,16 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
 from loguru import logger
 
 try:
     from huggingface_hub import (
-        snapshot_download,
-        hf_hub_download,
         HfApi,
+        hf_hub_download,
+        snapshot_download,
+    )
+    from huggingface_hub.utils import (
         RepositoryNotFoundError,
     )
     HAS_HF_HUB = True
@@ -57,9 +60,16 @@ class CachedModel:
 class ModelHub:
     """Manages model downloads from HuggingFace with caching, retry, and offline mode.
 
+    Supports both full-model downloads and **layer-aware** downloads
+    that fetch only the safetensors shards needed for a specific layer
+    range — critical for distributed inference where each node only
+    needs a subset of the model.
+
     Usage:
         hub = ModelHub()
         path = hub.download("roneneldan/TinyStories-1M")
+        # Layer-aware:
+        path = hub.download_layer_subset("meta-llama/Llama-3.1-8B", 0, 11)
         models = hub.list_cached()
     """
 
@@ -73,6 +83,195 @@ class ModelHub:
         self.max_retries = max_retries
         self.download_timeout_s = download_timeout_s
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Layer-aware download ----
+
+    def download_layer_subset(
+        self,
+        model_name: str,
+        start_layer: int,
+        end_layer: int,
+        revision: str | None = None,
+        token: str | None = None,
+    ) -> str:
+        """Download **only** the safetensors shards needed for a layer range.
+
+        Instead of downloading the entire 70B model (140 GB on disk),
+        this method downloads the single ``model.safetensors.index.json``
+        (a few KB), determines which shard files contain the requested
+        layers, and downloads only those shards.
+
+        Layers are downloaded into the HuggingFace shared cache
+        (``~/.cache/huggingface/hub/``) which deduplicates across
+        concurrent workers.  A lightweight manifest is written to the
+        ModelHub cache so that subsequent calls are instant.
+
+        Args:
+            model_name: HuggingFace model ID (e.g. ``"meta-llama/Llama-3.1-8B"``).
+            start_layer: First layer index (inclusive).
+            end_layer: Last layer index (inclusive).
+            revision: Git revision (branch, tag, or commit hash).
+            token: HuggingFace API token for gated models.
+
+        Returns:
+            Local path to the layer-scoped model directory.  The
+            directory contains ``model.safetensors.index.json`` plus
+            only the needed ``.safetensors`` shard files.
+
+        Raises:
+            ModelHubError: If ``huggingface-hub`` is not installed.
+            DownloadError: If the index download fails after retries.
+        """
+        if not HAS_HF_HUB:
+            raise ModelHubError(
+                "huggingface-hub is not installed. Run: pip install huggingface-hub"
+            )
+
+        revision = revision or "main"
+        model_cache_path = self.cache_dir / model_name / revision
+        layer_subdir = model_cache_path / f"layers_{start_layer}_{end_layer}"
+        manifest_path = layer_subdir / ".layer_manifest"
+
+        # --- Check if already cached ---
+        if manifest_path.exists():
+            logger.info(
+                f"Layer subset {start_layer}-{end_layer} for "
+                f"{model_name}@{revision} already cached at {layer_subdir}"
+            )
+            return str(layer_subdir)
+
+        # --- 1. Download & parse the index ---
+        from distllm.models.safetensors_index import SafetensorsIndex
+
+        last_error = None
+        index: SafetensorsIndex | None = None
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(
+                    f"Fetching safetensors index for {model_name}@{revision} "
+                    f"(attempt {attempt + 1}/{self.max_retries})"
+                )
+                index = SafetensorsIndex.from_hub(model_name, revision, token)
+                break
+            except Exception as e:
+                last_error = e
+                wait = 2**attempt
+                logger.warning(f"Index fetch failed: {e}. Retrying in {wait}s...")
+                from time import sleep
+                sleep(wait)
+
+        if index is None:
+            raise DownloadError(
+                f"Failed to download safetensors index for {model_name} "
+                f"after {self.max_retries} attempts: {last_error}"
+            )
+
+        needed_shards = index.get_shards_for_layer_range(start_layer, end_layer)
+        logger.info(
+            f"Layer range {start_layer}-{end_layer} needs "
+            f"{len(needed_shards)}/{len(index.all_shard_files)} shards "
+            f"({len(index.get_keys_for_layer_range(start_layer, end_layer))} params)"
+        )
+
+        if len(needed_shards) > 1 or (
+            len(needed_shards) == 1
+            and "index.json" not in next(iter(needed_shards))
+        ):
+            index_path = hf_hub_download(
+                repo_id=model_name,
+                filename="model.safetensors.index.json",
+                revision=revision,
+                token=token,
+            )
+            logger.debug(f"Index cached at {index_path}")
+
+            for shard in sorted(needed_shards):
+                if shard == "model.safetensors.index.json":
+                    continue
+                logger.debug(f"Downloading shard: {shard}")
+                hf_hub_download(
+                    repo_id=model_name,
+                    filename=shard,
+                    revision=revision,
+                    token=token,
+                )
+        else:
+            logger.info(
+                f"Model {model_name} uses a single safetensors file; "
+                f"falling back to standard download for non-shard files"
+            )
+            return self.download(
+                model_name,
+                revision=revision,
+                token=token,
+                allow_patterns=[
+                    "model.safetensors",
+                    "model.safetensors.index.json",
+                    "config.json",
+                    "*.json",
+                    "tokenizer*",
+                    "special_tokens_map*",
+                ],
+            )
+
+        # --- 2. Write layer-scoped manifest ---
+        layer_subdir.mkdir(parents=True, exist_ok=True)
+        import time as time_module
+
+        needed_keys = index.get_keys_for_layer_range(start_layer, end_layer)
+        manifest: dict = {
+            "model_id": model_name,
+            "revision": revision,
+            "start_layer": start_layer,
+            "end_layer": end_layer,
+            "downloaded_at": time_module.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time_module.gmtime()
+            ),
+            "shard_files": sorted(needed_shards),
+            "num_params": len(needed_keys),
+            "total_size": index.total_size,
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        logger.info(
+            f"Layer subset {start_layer}-{end_layer} for {model_name} "
+            f"cached ({len(needed_shards)} shards, {len(needed_keys)} params)"
+        )
+        return str(layer_subdir)
+
+    def resolve_layer_subset(
+        self,
+        model_name: str,
+        start_layer: int,
+        end_layer: int,
+        revision: str | None = None,
+        token: str | None = None,
+    ) -> str:
+        """Resolve a layer subset, downloading if necessary.
+
+        Like :meth:`download_layer_subset` but returns the standard
+        model cache path if the full model is already cached.
+        """
+        revision = revision or "main"
+        model_cache_path = self.cache_dir / model_name / revision
+        layer_subdir = model_cache_path / f"layers_{start_layer}_{end_layer}"
+        manifest_path = layer_subdir / ".layer_manifest"
+
+        if manifest_path.exists():
+            return str(layer_subdir)
+
+        if model_cache_path.exists() and (model_cache_path / ".manifest").exists():
+            logger.info(
+                f"Full model {model_name}@{revision} already cached; "
+                f"using it instead of layer subset"
+            )
+            return str(model_cache_path)
+
+        return self.download_layer_subset(
+            model_name, start_layer, end_layer,
+            revision=revision, token=token,
+        )
 
     @staticmethod
     def _default_cache_dir() -> Path:

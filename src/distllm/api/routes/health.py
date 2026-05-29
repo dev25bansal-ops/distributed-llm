@@ -58,16 +58,21 @@ async def list_models():
 
 
 @router.get(
-    "/health",
-    summary="Health check",
-    description="Return the current health status of the service, including model name, connected nodes, per-node health, and optional monitor metrics. Returns 503 if no model is loaded.",
+    "/v1/health",
+    summary="Health check (OpenAI-compatible)",
+    description="OpenAI-compatible health check endpoint. Returns the current health status of the service, including model name, connected nodes, per-node health, and optional monitor metrics. Returns 503 if no model is loaded.",
     response_description="Health status with node and model information",
     responses={
         503: {"description": "No model loaded or coordinator not initialized"},
     },
 )
+@router.get(
+    "/health",
+    summary="Health check (legacy)",
+    include_in_schema=False,
+)
 async def health_check(request: Request):
-    """Health check endpoint."""
+    """Health check endpoint (supports /health and /v1/health)."""
     coord = g.coordinator
     if coord is None:
         return error_response_from_request(503, "Service Unavailable", "No model loaded", "health_error", request)
@@ -130,6 +135,31 @@ async def liveness_check():
     Returns 200 if the process is alive and not deadlocked.
     """
     return {"status": "alive", "uptime_seconds": time.time() - g._startup_time}
+
+
+@router.post(
+    "/v1/models/{model_id}/warmup",
+    summary="Warm up a model (CUDA graphs, caches)",
+    description="Send dummy tokens through the model to warm CUDA graphs, kernel caches, and memory pools before production traffic arrives."
+                " This reduces first-token latency (TTFT) for subsequent requests.",
+    response_description="Warmup status",
+    responses={503: {"description": "Model not loaded or coordinator not initialized"}},
+)
+async def warmup_model(model_id: str, request: Request):
+    """Warm up a model by running a dummy forward pass."""
+    coord = g.coordinator
+    if coord is None:
+        return error_response_from_request(503, "Service Unavailable", "No coordinator", "warmup_error", request)
+    if coord.tokenizer is None:
+        return error_response_from_request(503, "Service Unavailable", "Tokenizer not loaded", "warmup_error", request)
+
+    dummy_prompt = "Hello"
+    warmup_tokens = 16
+    try:
+        result = coord.generate(dummy_prompt, max_new_tokens=warmup_tokens, temperature=0.0)
+        return {"status": "ok", "model": model_id, "warmup_tokens": warmup_tokens, "length": len(result)}
+    except Exception as e:
+        return error_response_from_request(503, "Warmup Failed", str(e), "warmup_error", request)
 
 
 @router.get(

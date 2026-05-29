@@ -1,15 +1,15 @@
 """Model loading and partitioning for distributed LLM inference."""
 
 import gc
+import inspect
 import os
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
-import inspect
-from dataclasses import dataclass
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from loguru import logger
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from distllm.core.kv_cache import KVCache
 from distllm.config.settings import QuantizationSettings as QuantizationConfig
 from distllm.errors import ModelLoadError
 from distllm.security import hf_revision
@@ -231,7 +231,11 @@ class ModelPartitioner:
         logger.info(f"Full model loaded: {self.model_name}")
 
     def load_layer_subset(self, start_layer: int, end_layer: int, total_layers: int, device: str | None = None) -> None:
-        """Load only a subset of layers (start_layer to end_layer inclusive)."""
+        """Load only a subset of layers (start_layer to end_layer inclusive).
+
+        Tries selective safetensors loading first (download only needed shard
+        files), falling back to full-model load + extract for legacy models.
+        """
         logger.info(f"Loading layers {start_layer}-{end_layer} of {total_layers} for {self.model_name}")
         trust = _should_trust_remote_code(self.model_name, self.trust_remote_code)
         self.config = AutoConfig.from_pretrained(
@@ -247,6 +251,14 @@ class ModelPartitioner:
 
         device = device or self.device
         torch_dtype = DTYPE_MAP.get(self.dtype, torch.float16)
+
+        # Try selective safetensors loading first
+        if self._try_load_selective(start_layer, end_layer, total_layers, device, torch_dtype, trust):
+            logger.info(f"Selectively loaded layers {start_layer}-{end_layer} on {device}")
+            return
+
+        # Fallback: load the entire model then extract subset
+        logger.warning("Falling back to full-model load for layer extraction")
         quant_config = build_quantization_config(self.quantization_config) if self.quantization_config else None
 
         d = torch.device(device)
@@ -259,14 +271,12 @@ class ModelPartitioner:
         if quant_config is not None:
             model_kwargs["quantization_config"] = quant_config
 
-        # Load to CPU only; extract_subset moves individual layers to the target device
         model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             revision=self.model_revision,
             **model_kwargs,
         )
         model.eval()
-
         self._extract_subset(model, start_layer, end_layer, total_layers, device)
         del model
         gc.collect()
@@ -275,10 +285,216 @@ class ModelPartitioner:
 
         logger.info(f"Loaded layers {start_layer}-{end_layer} on {device}")
 
+    def _try_load_selective(
+        self, start_layer: int, end_layer: int, total_layers: int,
+        device: str, torch_dtype: torch.dtype, trust: bool,
+    ) -> bool:
+        """Try to load only the needed shards using safetensors index.
+
+        Uses :class:`SafetensorsIndex` to map layers to shard files and
+        :class:`ModelHub.download_layer_subset` to fetch only those
+        shards.  Falls back to the full-model loading path on failure.
+
+        Returns:
+            ``True`` on success, ``False`` to trigger the full-model fallback.
+        """
+        try:
+            from accelerate import init_empty_weights
+            from safetensors import safe_open
+        except ImportError:
+            return False
+
+        from transformers import AutoModelForCausalLM as ModelBuilder
+
+        from distllm.models.model_hub import ModelHub
+        from distllm.models.safetensors_index import SafetensorsIndex
+
+        try:
+            target_device = torch.device(device)
+
+            # Step 1: resolve the index (from cache or Hub)
+            #         and determine which shards / keys are needed.
+            hub = ModelHub()
+            index = SafetensorsIndex.from_hub(
+                self.model_name, revision=self.model_revision,
+            )
+
+            needed_keys = index.get_keys_for_layer_range(start_layer, end_layer)
+            needed_shards = index.get_shards_for_layer_range(start_layer, end_layer)
+
+            # Single-file model → use the single-safetensors loader
+            if len(needed_shards) <= 1 and not needed_keys:
+                return self._try_load_single_safetensors(
+                    None, needed_keys, device, target_device,
+                    torch_dtype, trust=trust,
+                )
+
+            # Step 2: download only the needed shard files.
+            #         ``download_layer_subset`` ensures the index + shards
+            #         are in the HuggingFace shared cache.
+            hub.download_layer_subset(
+                self.model_name, start_layer, end_layer,
+                revision=self.model_revision,
+            )
+
+            # Step 3: resolve downloaded shard paths via hf_hub_download
+            #         (returns cached path if already downloaded).
+            from huggingface_hub import hf_hub_download
+
+            shard_paths: dict[str, str] = {}
+            for shard in sorted(needed_shards):
+                if shard == "model.safetensors.index.json":
+                    continue
+                path = hf_hub_download(
+                    self.model_name, shard,
+                    revision=self.model_revision,
+                )
+                shard_paths[shard] = path
+
+            # Step 4: create model skeleton on meta device (no memory allocated)
+            with init_empty_weights():
+                partial_model = ModelBuilder.from_config(
+                    self.config,
+                    trust_remote_code=trust,
+                    torch_dtype=torch_dtype,
+                )
+            partial_model.eval()
+
+            # Step 5: load only needed tensors from downloaded shards
+            state_dict: dict[str, torch.Tensor] = {}
+            for shard, path in shard_paths.items():
+                with safe_open(path, framework="pt", device="cpu") as f:
+                    for key in f.keys():
+                        if key in needed_keys:
+                            state_dict[key] = f.get_tensor(key)
+
+            if not state_dict:
+                logger.warning("No tensors loaded from safetensors shards")
+                return False
+
+            # Step 6: apply weights (only needed keys, rest stay on meta device)
+            partial_model.load_state_dict(state_dict, strict=False, assign=True)
+            del state_dict
+
+            # Step 7: extract subset and move to target device
+            self._extract_subset(
+                partial_model, start_layer, end_layer, total_layers, device,
+            )
+            del partial_model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return True
+
+        except Exception as e:
+            logger.warning(f"Selective safetensors loading failed: {e}")
+            return False
+
+    def _is_layer_in_range(self, param_key: str, start_layer: int, end_layer: int) -> bool:
+        """Check if a parameter key belongs to one of the target layers.
+
+        Matches keys like ``model.layers.5.self_attn.q_proj.weight``
+        and includes embedding/LM-head keys for first/last node.
+        """
+        import re
+        match = re.search(r'(?:\.layers|\.block|\.h)\.(\d+)\.', param_key)
+        if match:
+            layer_num = int(match.group(1))
+            return start_layer <= layer_num <= end_layer
+        return True  # Non-layer params (embeddings, norm, lm_head) always included
+
+    def _is_layer_in_range(self, param_key: str, start_layer: int, end_layer: int) -> bool:
+        """Check if a parameter key belongs to one of the target layers.
+
+        Matches keys like ``model.layers.5.self_attn.q_proj.weight``
+        and includes embedding/LM-head keys for first/last node.
+        """
+        import re
+        match = re.search(r'(?:\.layers|\.block|\.h)\.(\d+)\.', param_key)
+        if match:
+            layer_num = int(match.group(1))
+            return start_layer <= layer_num <= end_layer
+        return True  # Non-layer params (embeddings, norm, lm_head) always included
+
+    def _try_load_single_safetensors(
+        self, partial_model, needed_keys, device, target_device, torch_dtype,
+        trust: bool = False,
+    ) -> bool:
+        """Fallback: load from a single ``model.safetensors`` file."""
+        try:
+            from accelerate import init_empty_weights
+            from huggingface_hub import hf_hub_download
+            from safetensors import safe_open
+            from transformers import AutoModelForCausalLM as ModelBuilder
+
+            safetensors_path = hf_hub_download(
+                self.model_name, "model.safetensors",
+                revision=self.model_revision,
+            )
+
+            # Determine keys to load (all if needed_keys is empty/None)
+            with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+                available_keys = set(f.keys())
+                load_keys = needed_keys if needed_keys else available_keys
+
+            # Create model skeleton on meta device
+            with init_empty_weights():
+                if partial_model is None:
+                    partial_model = ModelBuilder.from_config(
+                        self.config,
+                        trust_remote_code=trust,
+                        torch_dtype=torch_dtype,
+                    )
+                partial_model.eval()
+
+            # Load only the needed tensors
+            state_dict = {}
+            with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    if key in load_keys:
+                        state_dict[key] = f.get_tensor(key)
+
+            if not state_dict:
+                return False
+
+            partial_model.load_state_dict(state_dict, strict=False, assign=True)
+            return True
+        except Exception:
+            return False
+
     def _extract_subset(self, full_model, start_layer: int, end_layer: int, total_layers: int, device: str) -> None:
-        """Extract specific layers and components from the full model."""
+        """Extract specific layers and components from the full model.
+
+        Supports:
+        - Decoder-only (GPT, Llama, Mistral)
+        - Encoder-decoder (T5, BART, vision-language models)
+        """
+        self._is_encoder_decoder = False
+
+        # Detect encoder-decoder architecture
+        if hasattr(full_model, 'encoder') and hasattr(full_model, 'decoder'):
+            self._is_encoder_decoder = True
+            self.encoder_module = full_model.encoder
+            self.decoder_module = full_model.decoder
+            logger.info("Detected encoder-decoder architecture")
+
+        # Extract encoder layers if this is an encoder-decoder model
+        if self._is_encoder_decoder and start_layer == 0:
+            encoder_layers = _find_attr(
+                self.encoder_module,
+                ['layers', 'block', 'layer', 'encoder_layer'],
+            ) or _find_attr(full_model, ['encoder_layers', 'encoder_layer'])
+            if encoder_layers is None:
+                # Fallback: look for 'layer' directly on the encoder
+                encoder_layers = getattr(self.encoder_module, 'layer', None) if hasattr(self.encoder_module, 'layer') else None
+            if encoder_layers is not None:
+                self.encoder_layers = nn.ModuleList()
+                for i in range(min(len(encoder_layers), total_layers)):
+                    self.encoder_layers.append(encoder_layers[i].to(device) if hasattr(encoder_layers[i], 'to') else encoder_layers[i])
+                logger.info(f"Loaded {len(self.encoder_layers)} encoder layers")
+
         base_model = None
-        for attr in ['model', 'transformer', 'encoder']:
+        for attr in ['model', 'transformer', 'decoder' if self._is_encoder_decoder else 'transformer', 'encoder']:
             if hasattr(full_model, attr):
                 base_model = getattr(full_model, attr)
                 break
@@ -288,10 +504,10 @@ class ModelPartitioner:
         self.is_first_node = (start_layer == 0)
         if self.is_first_node:
             embed_layer = _find_attr(base_model, ['embed_tokens', 'wte', 'word_embeddings'])
-            if embed_layer is None:
-                decoder = getattr(base_model, 'decoder', None)
-                if decoder:
-                    embed_layer = _find_attr(decoder, ['embed_tokens', 'wte', 'word_embeddings'])
+            if embed_layer is None and not self._is_encoder_decoder:
+                decoder_part = getattr(base_model, 'decoder', None)
+                if decoder_part:
+                    embed_layer = _find_attr(decoder_part, ['embed_tokens', 'wte', 'word_embeddings'])
             if embed_layer is not None:
                 self.embed_tokens = embed_layer.to(device)
                 logger.info("Loaded embedding layer")
@@ -510,80 +726,106 @@ def partition_model_gpu_aware(
 ) -> dict[str, tuple[int, int]]:
     """Calculate VRAM-aware layer assignments for each node.
 
+    Uses the GPUProfiler to estimate per-layer memory usage for the given
+    model, then assigns layers proportionally to each node's available VRAM.
+
     Args:
-        node_gpus: dict mapping node_id to list of GPUInfo objects
-        model_name: HuggingFace model identifier
-        total_layers: total number of transformer layers
-        trust_remote_code: whether to trust remote code
-        safety_margin: fraction of VRAM to leave free (default 0.1 = 10%)
+        node_gpus: dict mapping node_id to list of objects with
+            ``free_memory_bytes`` and ``total_memory_bytes`` attributes.
+            If empty, falls back to equal partitioning.
+        model_name: HuggingFace model identifier.
+        total_layers: total number of transformer layers.
+        trust_remote_code: whether to trust remote code.
+        safety_margin: fraction of VRAM to leave free (default 0.1 = 10%).
 
     Returns:
-        dict mapping node_id to (start_layer, end_layer) tuple
+        dict mapping node_id to (start_layer, end_layer) tuple.
     """
-    logger.warning("GPUProfiler not available, falling back to equal partitioning")
-    assignments = partition_model_across_nodes(model_name, len(node_gpus), trust_remote_code)
-    return {node_id: assignments[i] for i, node_id in enumerate(node_gpus)}
+    if not node_gpus or total_layers <= 0:
+        logger.warning("No GPU info provided, falling back to equal partitioning")
+        return _fallback_equal(node_gpus, model_name, trust_remote_code)
 
-    # Estimate per-layer VRAM
-    per_layer_vram = profiler.estimate_layer_vram(
-        model_name, 0, total_layers, trust_remote_code
-    )
+    try:
+        from distllm.dist.partition.profiles import GPUProfiler
 
-    if per_layer_vram == 0:
-        # Fallback to equal partitioning if estimation fails
-        logger.warning("VRAM estimation failed, falling back to equal partitioning")
-        assignments = partition_model_across_nodes(model_name, len(node_gpus), trust_remote_code)
-        return {node_id: assignments[i] for i, node_id in enumerate(node_gpus)}
+        # Get model config for layer memory estimation
+        trust = _should_trust_remote_code(model_name, trust_remote_code)
+        config = AutoConfig.from_pretrained(
+            model_name,
+            trust_remote_code=trust,
+            revision=hf_revision(),
+        )
+
+        profiler = GPUProfiler()
+        layer_estimates = profiler.estimate_layer_weights(
+            hidden_size=getattr(config, "hidden_size", 4096),
+            intermediate_size=getattr(config, "intermediate_size", 11008),
+            num_layers=total_layers,
+            num_heads=getattr(config, "num_attention_heads", 32),
+            head_dim=getattr(config, "hidden_size", 4096) // getattr(config, "num_attention_heads", 32),
+            vocab_size=getattr(config, "vocab_size", 32000),
+        )
+
+        # Estimate per-transformer-layer memory (average of all layers)
+        transformer_layers = [l for l in layer_estimates if l.layer_type == "transformer"]
+        if transformer_layers:
+            per_layer_weight = sum(l.weight_memory_bytes for l in transformer_layers) // len(transformer_layers)
+        else:
+            per_layer_weight = 1024 * 1024 * 100  # 100MB fallback
+
+    except Exception as e:
+        logger.warning(f"GPU-aware profiling failed ({e}), falling back to equal partitioning")
+        return _fallback_equal(node_gpus, model_name, trust_remote_code)
 
     # Calculate available VRAM per node (apply safety margin)
-    node_vram = {}
+    node_vram: dict[str, int] = {}
     for node_id, gpus in node_gpus.items():
-        total_free = sum(gpu.free_memory for gpu in gpus)
+        total_free = sum(
+            getattr(g, "free_memory_bytes", getattr(g, "free_memory", 0))
+            for g in (gpus if isinstance(gpus, list) else [gpus])
+        )
         available = int(total_free * (1 - safety_margin))
         node_vram[node_id] = available
 
-    # Assign layers proportional to available VRAM
     total_available = sum(node_vram.values())
-    if total_available == 0:
+    if total_available <= 0:
         logger.warning("No available VRAM, falling back to equal partitioning")
-        assignments = partition_model_across_nodes(model_name, len(node_gpus), trust_remote_code)
-        return {node_id: assignments[i] for i, node_id in enumerate(node_gpus)}
+        return _fallback_equal(node_gpus, model_name, trust_remote_code)
 
-    # Initial assignment: floor(vram_i / per_layer_vram)
-    node_layers = {}
-    assigned_total = 0
+    # Assign layers proportional to available VRAM
     node_ids = sorted(node_gpus.keys())
+    node_layers: dict[str, int] = {}
+    assigned_total = 0
 
     for node_id in node_ids:
-        raw_layers = node_vram[node_id] // per_layer_vram
-        node_layers[node_id] = max(1, raw_layers)  # at least 1 layer
+        raw_layers = node_vram[node_id] // per_layer_weight if per_layer_weight > 0 else 1
+        node_layers[node_id] = max(1, raw_layers)
         assigned_total += node_layers[node_id]
 
     # Normalize to match total_layers exactly
     if assigned_total != total_layers:
-        # Scale proportionally
-        scale = total_layers / assigned_total
-        scaled = {}
+        scale = total_layers / max(assigned_total, 1)
+        scaled_total = 0
         for node_id in node_ids:
-            scaled[node_id] = max(1, int(node_layers[node_id] * scale))
-        node_layers = scaled
+            scaled = max(1, int(node_layers[node_id] * scale))
+            node_layers[node_id] = scaled
+            scaled_total += scaled
 
-    # Distribute remainder
-    assigned_total = sum(node_layers.values())
-    remainder = total_layers - assigned_total
-    if remainder > 0:
-        # Give extra layers to nodes with most VRAM headroom
-        sorted_by_vram = sorted(node_ids, key=lambda n: node_vram[n], reverse=True)
-        for i in range(remainder):
-            node_layers[sorted_by_vram[i % len(sorted_by_vram)]] += 1
-    elif remainder < 0:
-        # Remove layers from nodes with least VRAM
-        sorted_by_vram = sorted(node_ids, key=lambda n: node_vram[n])
-        for i in range(abs(remainder)):
-            node_layers[sorted_by_vram[i % len(sorted_by_vram)]] = max(1, node_layers[sorted_by_vram[i % len(sorted_by_vram)]] - 1)
+        # Distribute remainder to nodes with most VRAM
+        remainder = total_layers - scaled_total
+        if remainder > 0:
+            sorted_by_vram = sorted(node_ids, key=lambda n: node_vram[n], reverse=True)
+            for i in range(remainder):
+                node_layers[sorted_by_vram[i % len(sorted_by_vram)]] += 1
+        elif remainder < 0:
+            sorted_by_vram = sorted(node_ids, key=lambda n: node_vram[n])
+            for i in range(abs(remainder)):
+                node_layers[sorted_by_vram[i % len(sorted_by_vram)]] = max(
+                    1, node_layers[sorted_by_vram[i % len(sorted_by_vram)]] - 1,
+                )
 
     # Convert to (start, end) tuples
-    result = {}
+    result: dict[str, tuple[int, int]] = {}
     start = 0
     for node_id in node_ids:
         count = node_layers[node_id]
@@ -591,8 +833,21 @@ def partition_model_gpu_aware(
         result[node_id] = (start, end)
         start = end + 1
 
-    logger.info(f"GPU-aware partitioning for {model_name}: {result}")
+    logger.info(
+        f"GPU-aware partitioning for {model_name}: "
+        f"{ {n: f'{s}-{e}' for n, (s, e) in result.items()} }"
+    )
     return result
+
+
+def _fallback_equal(
+    node_gpus: dict[str, list],
+    model_name: str,
+    trust_remote_code: bool | None = None,
+) -> dict[str, tuple[int, int]]:
+    """Fallback: assign layers equally across all nodes."""
+    assignments = partition_model_across_nodes(model_name, len(node_gpus), trust_remote_code)
+    return {node_id: assignments[i] for i, node_id in enumerate(node_gpus)}
 
 
 def get_model_info(model_name: str, trust_remote_code: bool | None = None) -> dict:

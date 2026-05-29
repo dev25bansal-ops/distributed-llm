@@ -5,12 +5,25 @@ Profile resolution order:
 1. Base config from top-level YAML keys
 2. Profile-specific overrides (e.g. "production:" section)
 3. Environment variables (DISTLLM__*) — always take final precedence
+
+Production profile enforces secure defaults:
+- host: 0.0.0.0 (listen on all interfaces)
+- tls: enabled
 """
 
 from __future__ import annotations
 
 import os
 from typing import Any
+
+
+# Hardened defaults applied when running in production profile.
+# These are merged UNDER the user's profile overrides, so explicit
+# config still wins.
+_PRODUCTION_SECURE_DEFAULTS: dict[str, Any] = {
+    "coordinator": {"host": "0.0.0.0"},
+    "tls": {"enabled": True},
+}
 
 
 class ProfileConfig:
@@ -45,7 +58,14 @@ class ProfileConfig:
         base = {k: v for k, v in raw.items() if k not in ProfileConfig.SUPPORTED_PROFILES}
         overrides = raw.get(profile_name, {})
 
-        return ProfileConfig._deep_merge(base, overrides)
+        merged = ProfileConfig._deep_merge(base, overrides)
+
+        # Apply secure defaults for production — these fill in missing
+        # values but never override explicit user config.
+        if profile_name == "production":
+            merged = ProfileConfig._deep_merge(merged, _PRODUCTION_SECURE_DEFAULTS)
+
+        return merged
 
     @staticmethod
     def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

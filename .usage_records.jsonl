@@ -1,0 +1,1 @@
+{"record_id": "usage-1779919140-1", "tenant_id": "t1", "key_id": "", "model_name": "llama-70b", "input_tokens": 100, "output_tokens": 50, "total_tokens": 150, "request_duration_ms": 500, "timestamp": 1779919140.822525, "cost": 0.001, "endpoint": "", "labels": {}}

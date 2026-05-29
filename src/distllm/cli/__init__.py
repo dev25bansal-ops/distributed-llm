@@ -1,7 +1,12 @@
-"""DistLLM CLI module.
+"""DistLLM CLI module — organized into logical command groups.
 
-Commands: run, setup, status, models, cluster, adapters, logs,
-compress, benchmark, chat, deploy, profile, dashboard.
+Groups:
+  cluster   — cluster management (status, scale, start, join, deploy)
+  model     — model lifecycle (list, load, compress, adapters)
+  benchmark — benchmarking and profiling (run, compare, profile, verify)
+  config    — configuration (setup, validate, webhook, quota, backup)
+  security  — TLS certificates (cert)
+  system    — daemons, diagnostics, logs, notifications (run, api, doctor, logs)
 """
 
 from distllm.cli.main import app, main

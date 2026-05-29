@@ -1,0 +1,411 @@
+{
+  "title": "Distributed LLM Incident Response Dashboard",
+  "uid": "distllm-incidents",
+  "version": 1,
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "10s",
+  "tags": ["distributed-llm", "incidents", "operations"],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(distllm_node_healthy, node)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "label": "Node"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Node Failure Events",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Rate of node failure events detected by health probes. Spikes indicate infrastructure issues.",
+      "targets": [
+        {
+          "expr": "rate(distllm_node_failures_total[$__rate_interval])",
+          "legendFormat": "{{node}} failures/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Node Health State",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Node health state over time (1=healthy, 0=unhealthy/down). Drops indicate incidents.",
+      "targets": [
+        {
+          "expr": "distllm_node_healthy{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 3,
+            "fillOpacity": 30,
+            "showPoints": "always",
+            "pointSize": 4
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 1.0 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Circuit Breaker State",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Circuit breaker state per node (1=closed/active, 0=open/tripped). Open breakers indicate repeated failures.",
+      "targets": [
+        {
+          "expr": "distllm_circuit_breaker_closed{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 3,
+            "fillOpacity": 20,
+            "showPoints": "always",
+            "pointSize": 4
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Recovery Latency",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Time taken for nodes to recover from failure. High values indicate recovery process bottlenecks.",
+      "targets": [
+        {
+          "expr": "distllm_node_recovery_seconds{node=~\"$node\"}",
+          "legendFormat": "{{node}} recovery time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "pointSize": 3
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Straggler Events",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Straggler detection events. Nodes flagged as stragglers slow down overall pipeline throughput.",
+      "targets": [
+        {
+          "expr": "rate(distllm_straggler_events_total{node=~\"$node\"}[$__rate_interval])",
+          "legendFormat": "{{node}} straggler/s"
+        },
+        {
+          "expr": "distllm_straggler_active",
+          "legendFormat": "active stragglers"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    },
+    {
+      "title": "Request Error Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Rate of failed/slow requests. Correlate with node failures and circuit breaker events.",
+      "targets": [
+        {
+          "expr": "rate(distllm_errors_total[$__rate_interval])",
+          "legendFormat": "errors/s"
+        },
+        {
+          "expr": "rate(distllm_errors_total{error_type=\"timeout\"}[$__rate_interval])",
+          "legendFormat": "timeouts/s"
+        },
+        {
+          "expr": "rate(distllm_errors_total{error_type=\"node_unreachable\"}[$__rate_interval])",
+          "legendFormat": "unreachable/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
+    },
+    {
+      "title": "Peak Token Throughput",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Token generation throughput. Drop-offs indicate degraded service; compare with baseline.",
+      "targets": [
+        {
+          "expr": "rate(distllm_tokens_per_second[$__rate_interval])",
+          "legendFormat": "tok/s"
+        },
+        {
+          "expr": "avg_over_time(rate(distllm_tokens_per_second[5m])[30m:])",
+          "legendFormat": "30m baseline"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tok/s",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 }
+    },
+    {
+      "title": "KV Cache Hit Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Prefix cache hit ratio. Sudden drops indicate cache invalidation or traffic pattern changes.",
+      "targets": [
+        {
+          "expr": "rate(distllm_cache_hits_total[5m]) / (rate(distllm_cache_hits_total[5m]) + rate(distllm_cache_misses_total[5m])) * 100",
+          "legendFormat": "hit rate %"
+        },
+        {
+          "expr": "distllm_cache_evictions_total",
+          "legendFormat": "evictions"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 25,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "green", "value": 90 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 }
+    },
+    {
+      "title": "Active Draining Nodes",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "description": "Number of nodes currently in draining state (not accepting new requests).",
+      "targets": [
+        {
+          "expr": "count(distllm_node_draining == 1) or vector(0)",
+          "legendFormat": "draining"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 32 }
+    },
+    {
+      "title": "Unhealthy Nodes",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "description": "Number of nodes currently unhealthy or offline.",
+      "targets": [
+        {
+          "expr": "count(distllm_node_healthy == 0) or vector(0)",
+          "legendFormat": "unhealthy"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 32 }
+    },
+    {
+      "title": "Active Requests",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "description": "Currently in-flight requests. Spikes with errors indicate queuing problems.",
+      "targets": [
+        {
+          "expr": "distllm_active_requests",
+          "legendFormat": "active"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 32 }
+    },
+    {
+      "title": "Circuit Breakers Open",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "description": "Number of circuit breakers currently in open (tripped) state.",
+      "targets": [
+        {
+          "expr": "count(distllm_circuit_breaker_closed == 0) or vector(0)",
+          "legendFormat": "open"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 32 }
+    },
+    {
+      "title": "Incident Timeline",
+      "type": "state-timeline",
+      "datasource": "Prometheus",
+      "description": "Node state transitions over time. Shows when each node entered/exited failure, recovery, or draining states.",
+      "targets": [
+        {
+          "expr": "distllm_node_state{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 2 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 36 }
+    }
+  ]
+}

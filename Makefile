@@ -173,5 +173,18 @@ pre-commit-install: ## Install pre-commit hooks
 	pre-commit install
 	pre-commit install --hook-type pre-push
 
+# --- Tauri Desktop App ---
+tauri-icons: ## Generate Tauri app icons
+	cd tauri && python scripts/generate-icons.py
+
+tauri-dev: ## Run Tauri app in development mode
+	cd tauri && npm run tauri dev
+
+tauri-build: ## Build Tauri production binary
+	cd tauri && npm run tauri build
+
+tauri-install: ## Install Tauri frontend dependencies
+	cd tauri && npm install
+
 # --- Phony ---
-.PHONY: load-test-chat load-test-streaming load-test-embeddings load-test-batch load-test-mixed load-test-all chaos-test chaos-test-node-failure chaos-test-network chaos-test-corruption
+.PHONY: load-test-chat load-test-streaming load-test-embeddings load-test-batch load-test-mixed load-test-all chaos-test chaos-test-node-failure chaos-test-network chaos-test-corruption tauri-icons tauri-dev tauri-build tauri-install

@@ -69,6 +69,7 @@ class RequestFingerprinter:
         # In-flight tracking (for concurrent dedup)
         self._in_flight: dict[str, set[str]] = {}  # fingerprint -> set of request_ids
         self._in_flight_results: dict[str, str | None] = {}  # fingerprint -> response
+        self._wait_events: dict[str, set[threading.Event]] = {}  # fingerprint -> waiting threads
 
         # Response cache (fingerprint -> response)
         self._cache: OrderedDict[str, FingerprintEntry] = OrderedDict()
@@ -110,6 +111,13 @@ class RequestFingerprinter:
             ids = self._in_flight.get(fingerprint)
             return ids is not None and len(ids) > 0
 
+    def _signal_waiting(self, fingerprint: str) -> None:
+        """Signal all threads waiting on a fingerprint result."""
+        with self._lock:
+            waiters = self._wait_events.pop(fingerprint, set())
+        for evt in waiters:
+            evt.set()
+
     def store(
         self,
         fingerprint: str,
@@ -138,6 +146,8 @@ class RequestFingerprinter:
             while len(self._cache) > self._cache_size:
                 self._cache.popitem(last=False)
 
+        self._signal_waiting(fingerprint)
+
     def lookup(
         self,
         fingerprint: str,
@@ -165,18 +175,31 @@ class RequestFingerprinter:
     ) -> str | None:
         """Wait for an in-flight request to complete and return its result.
 
-        Polls until the result is available or timeout is reached.
+        Uses event-based notification rather than busy-polling.
         """
-        start = time.time()
-        while time.time() - start < timeout_s:
-            with self._lock:
-                result = self._in_flight_results.get(fingerprint)
-                if result is not None:
-                    return result
-                if fingerprint not in self._in_flight:
-                    return None
-            time.sleep(poll_interval_s)
-        return None
+        wait_event = threading.Event()
+        with self._lock:
+            # Check if result already available
+            result = self._in_flight_results.get(fingerprint)
+            if result is not None:
+                return result
+            # Register for notification
+            if fingerprint in self._in_flight:
+                self._wait_events.setdefault(fingerprint, set()).add(wait_event)
+
+        wait_event.wait(timeout=timeout_s)
+
+        # Clean up event registration
+        with self._lock:
+            events = self._wait_events.get(fingerprint)
+            if events:
+                events.discard(wait_event)
+                if not events:
+                    self._wait_events.pop(fingerprint, None)
+
+        with self._lock:
+            result = self._in_flight_results.get(fingerprint)
+            return result
 
     def popularity(self, top_n: int = 10) -> list[tuple[str, int]]:
         """Return the top N most popular fingerprints by hit count."""

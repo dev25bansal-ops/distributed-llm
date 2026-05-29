@@ -29,6 +29,13 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "property: marks tests as property-based tests")
     config.addinivalue_line("markers", "sdk: marks tests as SDK client tests")
     config.addinivalue_line("markers", "cli: marks tests as CLI tests")
+    config.addinivalue_line("markers", "docker: marks tests requiring Docker")
+    config.addinivalue_line("markers", "desktop: marks tests for desktop app")
+    config.addinivalue_line("markers", "gpu: marks tests requiring GPU hardware")
+    config.addinivalue_line("markers", "backends: marks tests for inference backends")
+    config.addinivalue_line("markers", "plugins: marks tests for plugin modules")
+    config.addinivalue_line("markers", "observability: marks tests for observability modules")
+    config.addinivalue_line("markers", "fuzz: marks fuzz tests")
 
 import pytest
 import torch

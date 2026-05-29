@@ -1,8 +1,4 @@
-"""PyTorch/HuggingFace backend adapter for distributed inference.
-
-Wraps the existing ModelPartitioner-based approach as a BackendAdapter,
-providing backward compatibility for deployments that don't use vLLM.
-"""
+"""PyTorch/HuggingFace backend adapter for distributed inference."""
 
 from __future__ import annotations
 
@@ -10,10 +6,12 @@ from typing import Any
 from loguru import logger
 import torch
 
+from distllm.backends.protocol import BackendAdapter
+from distllm.errors import ModelLoadError
 from distllm.models.partitioner import ModelPartitioner
 
 
-class PyTorchNodeAdapter:
+class PyTorchNodeAdapter(BackendAdapter):
     """Wraps ModelPartitioner to serve as a per-node inference engine.
 
     This is the original PyTorch-based backend used by the legacy WorkerNode.
@@ -60,7 +58,8 @@ class PyTorchNodeAdapter:
 
     def _get_device(self) -> str:
         if self.device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            from distllm.core.device_registry import detect_platform
+            return detect_platform()
         return self.device
 
     def load_model(self):
@@ -82,7 +81,7 @@ class PyTorchNodeAdapter:
         except Exception as e:
             self.partitioner = None
             logger.error(f"[PyTorch] Failed to load model {self.model_name}: {e}")
-            raise RuntimeError(f"Failed to load PyTorch model {self.model_name}: {e}") from e
+            raise ModelLoadError(self.model_name, str(e)) from e
 
         logger.info(
             f"[PyTorch] Model loaded: {self.model_name} "
@@ -125,9 +124,34 @@ class PyTorchNodeAdapter:
         return output, new_kv
 
     def shutdown(self):
-        """Release PyTorch model resources."""
+        """Release PyTorch model resources (cross-platform)."""
         if self.partitioner is not None:
             self.partitioner = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                from distllm.core.device_registry import detect_platform
+                plat = detect_platform()
+                if plat in ("cuda", "rocm"):
+                    torch.cuda.empty_cache()
+                elif plat == "mps" and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
+                elif plat == "xpu" and hasattr(torch.xpu, "empty_cache"):
+                    torch.xpu.empty_cache()
+            except Exception:
+                pass
             logger.info("[PyTorch] Engine shut down")
+
+    @classmethod
+    def display_name(cls) -> str:
+        return "PyTorch / HF Transformers"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import transformers
+            return True
+        except ImportError:
+            return False
+
+    @classmethod
+    def priority_for(cls, device_type: str) -> int:
+        return { "cuda": 5, "cpu": 5, "mps": 7, "rocm": 5, "xpu": 1 }.get(device_type, 3)

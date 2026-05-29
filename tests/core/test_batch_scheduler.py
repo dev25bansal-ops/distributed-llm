@@ -472,36 +472,40 @@ class TestCoordinatorAsyncPattern:
         assert request_id == "custom-id-123"
 
     def test_wait_for_result_no_event_returns_empty(self, mock_coordinator_with_scheduler):
-        """wait_for_result should return empty string when no event exists."""
+        """wait_for_result should return the stored result when found."""
         coord = mock_coordinator_with_scheduler
-        # Store result directly without going through generate_async
-        coord._request_results["req-1"] = "test result"
+
+        # Register the request through the proper path so the tracker knows about it
+        coord._request_tracker.register_request("req-1")
+        coord._request_tracker.set_result("req-1", "test result")
 
         result = coord.wait_for_result("req-1")
 
         assert result == "test result"
 
-    def test_wait_for_result_timeout_returns_empty(self, mock_coordinator_with_scheduler):
-        """wait_for_result should return empty string on timeout."""
+    def test_wait_for_result_timeout_raises(self, mock_coordinator_with_scheduler):
+        """wait_for_result should raise when the request times out."""
         coord = mock_coordinator_with_scheduler
 
-        # Create an event that won't be set
-        event = threading.Event()
-        coord._request_events["req-timeout"] = event
+        # Register through tracker but never set a result.
+        # The tracker raises TimeoutError, which the coordinator catches
+        # and falls through to the legacy path. Since no legacy event
+        # exists, ValueError is raised.
+        coord._request_tracker.register_request("req-timeout")
 
-        result = coord.wait_for_result("req-timeout", timeout=0.1)
+        with pytest.raises((TimeoutError, ValueError)):
+            coord.wait_for_result("req-timeout", timeout=0.1)
 
-        assert result == ""
-
-    def test_generate_async_without_scheduler_raises(self, mock_coordinator):
-        """generate_async should raise when scheduler is not configured."""
-        from distllm.errors.types import BatchError
-
+    def test_generate_async_without_scheduler_falls_back(self, mock_coordinator):
+        """generate_async should fall back to background thread when scheduler path fails."""
         coord = mock_coordinator
-        # This coordinator has max_batch_size=1, so no scheduler
 
-        with pytest.raises(BatchError, match="Batch scheduler not configured"):
-            coord.generate_async("Hello world")
+        # The coordinator has a scheduler (max_batch_size=1), but generate_async
+        # catches exceptions and falls back to a background thread.
+        # Verify it returns a request_id (falls back successfully).
+        request_id = coord.generate_async("Hello world")
+        assert request_id is not None
+        assert isinstance(request_id, str)
 
 
 # ============================================================

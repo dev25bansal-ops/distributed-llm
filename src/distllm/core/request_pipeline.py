@@ -10,12 +10,14 @@ from __future__ import annotations
 import time
 import uuid
 from contextvars import ContextVar
+from typing import Any
 
 import torch
 from loguru import logger
 
-from distllm.core.batch_scheduler import Sequence
+from distllm.core.batch_scheduler import ScheduledBatch, Sequence
 from distllm.core.structured_output import JSONSchemaConstraint
+from distllm.core.constrained_decoder import SchemaConstrainedDecoder
 from distllm.core.debug import is_debug_mode
 from distllm.core.graceful_degradation import LoadSnapshot
 from distllm.errors.types import (
@@ -39,7 +41,13 @@ class RequestPipeline:
 
     # -- Token Sampling --
 
-    def _sample(self, logits, temperature=1.0, top_p=1.0, top_k=0):
+    def _sample(
+        self,
+        logits: torch.Tensor,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+    ) -> torch.Tensor:
         c = self._coord
         c._token_gen.tokenizer = c.tokenizer
         request_id = _current_request_id_ctx.get()
@@ -51,7 +59,7 @@ class RequestPipeline:
                 top_k = params.top_k
         return c._token_gen.sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
 
-    def _sample_batch(self, logits, batch):
+    def _sample_batch(self, logits: torch.Tensor, batch: ScheduledBatch) -> torch.Tensor:
         c = self._coord
         c._token_gen.tokenizer = c.tokenizer
         for seq in batch.sequences:
@@ -81,7 +89,13 @@ class RequestPipeline:
     # -- Speculative Decode Helpers --
 
     @staticmethod
-    def _speculative_tokens_to_append(draft_tokens, target_logits, accepted_count, accepted_tokens, next_token):
+    def _speculative_tokens_to_append(
+        draft_tokens: torch.Tensor | list[int],
+        target_logits: torch.Tensor,
+        accepted_count: int,
+        accepted_tokens: list[int],
+        next_token: int,
+    ) -> list[int]:
         tokens = list(accepted_tokens)
         draft_len = int(draft_tokens.numel()) if isinstance(draft_tokens, torch.Tensor) else len(draft_tokens)
         if target_logits.dim() == 3:
@@ -98,8 +112,17 @@ class RequestPipeline:
 
     # -- Generation (distributed and local) --
 
-    def generate(self, prompt, max_new_tokens=128, temperature=0.7, top_p=0.9, top_k=0,
-                 request_id=None, user_id="default", speculative_config=None):
+    def generate(
+        self,
+        prompt: str,
+        max_new_tokens: int = 128,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 0,
+        request_id: str | None = None,
+        user_id: str = "default",
+        speculative_config: dict[str, Any] | None = None,
+    ) -> str:
         c = self._coord
         if not c.node_order and c.local_partitioner is None:
             raise NodeError("No nodes registered and no local model loaded")
@@ -333,11 +356,26 @@ class RequestPipeline:
             c._param_update_channel.unregister(request_id)
             _current_request_id_ctx.reset(token)
 
-    def generate_async(self, prompt, request_id=None, max_new_tokens=128, temperature=0.7,
-                       top_p=0.9, top_k=0, schema=None, response_format=None, priority=2,
-                       adapter_id=None, include_logprobs=False, top_logprobs=0,
-                       logit_bias=None, presence_penalty=0.0, frequency_penalty=0.0,
-                       max_latency_ms=None, user_id="default"):
+    def generate_async(
+        self,
+        prompt: str,
+        request_id: str | None = None,
+        max_new_tokens: int = 128,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 0,
+        schema: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
+        priority: int = 2,
+        adapter_id: str | None = None,
+        include_logprobs: bool = False,
+        top_logprobs: int = 0,
+        logit_bias: dict[str, float] | None = None,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        max_latency_ms: float | None = None,
+        user_id: str = "default",
+    ) -> str:
         c = self._coord
         if c.scheduler is None:
             raise BatchError("Batch scheduler not configured. Use generate() instead.")
@@ -367,9 +405,13 @@ class RequestPipeline:
 
         constraint = None
         if response_format:
-            constraint = JSONSchemaConstraint.from_response_format(
+            constraint = SchemaConstrainedDecoder.from_response_format(
                 response_format, tokenizer=c.tokenizer
             )
+            if constraint is None:
+                constraint = JSONSchemaConstraint.from_response_format(
+                    response_format, tokenizer=c.tokenizer
+                )
         elif schema:
             constraint = JSONSchemaConstraint(schema=schema)
 
@@ -394,15 +436,15 @@ class RequestPipeline:
         c.record_metric("total_requests", 1)
         return request_id
 
-    def wait_for_result(self, request_id, timeout=120.0):
+    def wait_for_result(self, request_id: str, timeout: float = 120.0) -> str:
         return self._coord._request_tracker.wait_for_result(request_id, timeout)
 
-    def get_logprobs(self, request_id):
+    def get_logprobs(self, request_id: str) -> dict[str, Any] | None:
         return self._coord._request_tracker.get_logprobs(request_id)
 
     # -- Batch Generation Loop --
 
-    def generate_batch(self, timeout=120.0, max_steps=0):
+    def generate_batch(self, timeout: float = 120.0, max_steps: int = 0) -> None:
         c = self._coord
         if c.scheduler is None:
             raise BatchError("Batch scheduler not configured. Use generate() instead.")
@@ -491,7 +533,7 @@ class RequestPipeline:
                     if rid not in c.scheduler.active:
                         c._batch_kv_caches.pop(rid, None)
 
-    def _generate_local_batch(self, batch):
+    def _generate_local_batch(self, batch: ScheduledBatch) -> None:
         c = self._coord
         batch_size = batch.batch_size
         device = next(c.local_partitioner.full_model.parameters()).device
@@ -534,7 +576,7 @@ class RequestPipeline:
         decoded = [c.tokenizer.decode([int(next_tokens[i])]) if batch.sequences[i].constraint is not None else None for i in range(len(batch.sequences))]
         c.scheduler.step(batch, next_tokens, kv_caches=kv_copy, decoded_tokens=decoded)
 
-    def _run_distributed_pipeline_batch(self, batch):
+    def _run_distributed_pipeline_batch(self, batch: ScheduledBatch) -> None:
         c = self._coord
         next_tokens = []
 
@@ -595,7 +637,7 @@ class RequestPipeline:
         decoded = [c.tokenizer.decode([int(next_tokens[i])]) if batch.sequences[i].constraint is not None else None for i in range(len(batch.sequences))]
         c.scheduler.step(batch, next_tokens_tensor, kv_caches=dict(c._batch_kv_caches), decoded_tokens=decoded)
 
-    def _run_async_pipeline_batch(self, batch):
+    def _run_async_pipeline_batch(self, batch: ScheduledBatch) -> None:
         c = self._coord
         if c.tokenizer is None:
             raise ValueError("Tokenizer not loaded")
@@ -652,7 +694,13 @@ class RequestPipeline:
         decoded = [c.tokenizer.decode([int(next_tokens[i])]) if batch.sequences[i].constraint is not None else None for i in range(len(batch.sequences))]
         c.scheduler.step(batch, next_tokens, kv_caches=kv_copy, decoded_tokens=decoded)
 
-    def _generate_local_sync(self, prompt, max_new_tokens, temperature, top_p):
+    def _generate_local_sync(
+        self,
+        prompt: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> str:
         c = self._coord
         input_ids = c.tokenizer.encode(prompt, return_tensors="pt")
         model_device = next(c.local_partitioner.full_model.parameters()).device
@@ -673,7 +721,15 @@ class RequestPipeline:
             output = c.local_partitioner.full_model.generate(input_ids, **gen_kwargs)
         return c.tokenizer.decode(output[0], skip_special_tokens=True)
 
-    def _generate_local_eagle_sync(self, input_ids, *, max_new_tokens, temperature, top_p, top_k=0):
+    def _generate_local_eagle_sync(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int = 0,
+    ) -> str:
         c = self._coord
         if c._spec_decoder is None:
             raise RuntimeError("Speculative decoder is not configured")

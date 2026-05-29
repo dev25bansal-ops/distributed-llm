@@ -22,6 +22,7 @@ class SystemMonitor:
         self._gpu_handle: Any = None
         self._last_metrics: dict[str, Any] = {}
         self._pynvml = None
+        self._last_cpu_times = None
 
         self._init_gpu()
 
@@ -55,10 +56,16 @@ class SystemMonitor:
         """Collect a snapshot of current system metrics."""
         import psutil
 
+        # Non-blocking CPU percent: compute from delta of CPU times
+        # instead of blocking with interval=N.  Returns 0.0 on first call.
+        cpu_times = psutil.cpu_times_percent(interval=None, percpu=False)
+        cpu_pct = 100.0 - cpu_times.idle
+        self._last_cpu_times = cpu_times
+
         metrics: dict[str, Any] = {
             "timestamp": time.time(),
             "cpu": {
-                "percent": psutil.cpu_percent(interval=0.1),
+                "percent": round(cpu_pct, 1),
                 "memory_percent": psutil.virtual_memory().percent,
                 "memory_available_mb": psutil.virtual_memory().available / 1024 / 1024,
                 "memory_total_mb": psutil.virtual_memory().total / 1024 / 1024,

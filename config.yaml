@@ -5,7 +5,7 @@ model:
   dtype: "float16"
 
 coordinator:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 50050
   api_port: 8000
 
@@ -36,6 +36,33 @@ pipeline:
   timeout_seconds: 30.0
   max_retries: 3
   retry_delay: 1.0
+
+# Speculative decoding — remote draft model
+speculative_decoding:
+  enabled: false
+  mode: "distributed"  # "local", "distributed", "fleet", "auto"
+  remote_draft:
+    endpoint: "http://draft-server:8000/v1/completions"
+    model_name: ""
+    api_key: ""  # redacted in logs
+    num_candidates: 5
+    transport: "http"  # "http" or "grpc"
+    prompt_format: "auto"  # "tokens", "text", "auto"
+    timeout: 30.0
+    max_retries: 2
+    verify_ssl: true
+  adaptive:
+    enabled: false
+    min_candidates: 2
+    max_candidates: 10
+  fleet:
+    endpoints: []  # List of {endpoint, model_name, hardware, cost_per_hour}
+  migration:
+    enabled: false
+    gpu_high_threshold_pct: 80.0
+    gpu_low_threshold_pct: 40.0
+    min_migration_interval_s: 60.0
+    prefer_gpu_for_latency: true
 
 # Logging
 logging:
@@ -69,22 +96,41 @@ tls:
   enabled: false
   cert_dir: "certs"
 
-# Profiles
-dev:
-  wide_area:
-    enabled: true
-    tokens_before_forward: 5
-    wan_timeout_seconds: 120.0
+# GPU memory defragmentation — compacts fragmented KV cache blocks
+# to prevent OOM during long-running inference
+defragmentation:
+  enabled: true
+  policy: "balanced"      # lazy | balanced | aggressive
+  interval_seconds: 60
+  max_blocks_per_pass: 128
+  threshold: 0.0          # 0 = use policy default
+  tiered_compaction: false
+  l2_cpu_swap_threshold: 0.60
+  l3_nvme_swap_threshold: 0.80
+  cuda_stream_priority: -1
+  enable_predictive: false
+  enable_prometheus: false
 
-staging:
-  vllm:
-    enabled: true
-    gpu_memory_utilization: 0.85
+# Environment profiles — loaded via DistLLMSettings.from_profile()
+# or overridden by DISTLLM_PROFILE env var
+profiles:
+  dev:
+    wide_area:
+      enabled: true
+      tokens_before_forward: 5
+      wan_timeout_seconds: 120.0
 
-production:
-  vllm:
-    enabled: true
-    gpu_memory_utilization: 0.95
-    tensor_parallel_size: 1
-  tls:
-    enabled: true
+  staging:
+    vllm:
+      enabled: true
+      gpu_memory_utilization: 0.85
+
+  production:
+    coordinator:
+      host: "0.0.0.0"
+    vllm:
+      enabled: true
+      gpu_memory_utilization: 0.95
+      tensor_parallel_size: 1
+    tls:
+      enabled: true

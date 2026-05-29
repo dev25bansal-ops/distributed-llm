@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import hmac
 import os
 import time
 from contextlib import asynccontextmanager
@@ -14,7 +15,10 @@ import uvicorn
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from distllm.core.coordinator import Coordinator
-from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware
+from distllm.core.plugin_system import PluginSystem
+from distllm.plugins.builtin import RateLimitPlugin, AuditLogPlugin, MetricsPlugin
+from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware, RequestRateLimitMiddleware
+from distllm.config.resolver import ConfigResolver
 from distllm.dashboard.ws_handler import (
     manager,
     metrics_broadcaster,
@@ -26,7 +30,6 @@ from distllm.dashboard.ws_handler import (
 from fastapi.responses import StreamingResponse
 from distllm.core.monitor import SystemMonitor
 from distllm.config.settings import DistLLMSettings
-from distllm.config.loader import load_config_file as _legacy_load_config_file
 from distllm.core.debug import set_debug_mode
 from distllm.observability.tracing import setup_tracing
 from distllm.observability.logging import setup_logging
@@ -39,10 +42,20 @@ from distllm.api.api_state import g as _g
 from distllm.api.errors import error_response, error_response_from_request
 from distllm.api.routes import (
     chat_router,
+    chat_v2_router,
     completion_router,
     embeddings_router,
     health_router,
     gossip_router,
+    admin_router,
+    marketplace_router,
+    federated_router,
+    webrtc_router,
+    leaderboard_router,
+    prompts_router,
+    model_registry_router,
+    router_admin_router,
+    defrag_router,
 )
 
 # Re-export models from route modules for backward compatibility
@@ -66,9 +79,7 @@ from distllm.api.routes.health import ModelInfo, ModelList, ParamUpdateRequest
 
 # Re-export streaming helpers for backward compatibility
 from distllm.api.streaming import (
-    _stream_event,
-    _stream_start_event,
-    _stream_stop_event,
+    _build_chunk,
     _generate_tokens,
     _stream_response,
 )
@@ -76,36 +87,61 @@ from distllm.api.streaming import (
 
 def _get_cors_origins() -> list[str]:
     """Get CORS origins from env var (falls back to settings default).
-    
+
     Security: Rejects wildcard origins unless DISTLLM_DEV_MODE=1 is set.
     Validates that all origins are well-formed URLs.
+    Returns safe defaults if configuration is invalid.
     """
+    DEFAULT_ORIGINS = ["http://localhost:3000", "http://localhost:8080"]
+
     raw = os.environ.get("DISTLLM_CORS_ORIGINS")
-    origins = []
+    origins: list[str] = []
     if raw:
         origins = [o.strip() for o in raw.split(",") if o.strip()]
     else:
-        origins = [o.strip() for o in DistLLMSettings().coordinator.cors_origins.split(",") if o.strip()]
+        try:
+            settings_val = DistLLMSettings().coordinator.cors_origins
+            origins = [o.strip() for o in settings_val.split(",") if o.strip()]
+        except Exception:
+            origins = list(DEFAULT_ORIGINS)
+
+    if not origins:
+        origins = list(DEFAULT_ORIGINS)
 
     valid = []
     for origin in origins:
         if origin == "*" and os.environ.get("DISTLLM_DEV_MODE") != "1":
-            allowed = "http://localhost:3000,http://localhost:8080"
-            valid.extend(o.strip() for o in allowed.split(",") if o.strip())
+            valid.extend(DEFAULT_ORIGINS)
             continue
         valid.append(origin)
     return valid
 
 
-ALLOWED_ORIGINS = _get_cors_origins()
+# Lazy-initialized CORS origins (avoids import-time side effects)
+_CORS_ORIGINS: list[str] | None = None
+
+
+def _get_cors_origins_lazy() -> list[str]:
+    """Get CORS origins, initializing on first call."""
+    global _CORS_ORIGINS
+    if _CORS_ORIGINS is None:
+        _CORS_ORIGINS = _get_cors_origins()
+    return _CORS_ORIGINS
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: initialize on startup, clean up on shutdown."""
     _init_observability()
+
+    # Initialize plugin system and register built-in plugins
+    state.plugin_system = PluginSystem()
+    _init_plugins(state.plugin_system)
+
     _start_ws_broadcaster()
     yield
+    if state.plugin_system:
+        state.plugin_system.stop_all()
     if state.ws_broadcast_task:
         state.ws_broadcast_task.cancel()
 
@@ -130,7 +166,7 @@ app = FastAPI(
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=_get_cors_origins_lazy(),
     allow_credentials=False,  # Security: Disable credentials for CORS
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Request-Timeout", "X-Priority"],
@@ -138,8 +174,30 @@ app.add_middleware(
 )
 
 # Security headers middleware
+_API_VERSIONS: dict[str, str] = {
+    "v1": "2024-01-01",
+    "v2": "2025-03-01",
+}
+_API_VERSION_HEADER = "X-API-Version"
+_API_SUNSET_HEADER = "Sunset"
+_API_DEPRECATION_HEADER = "X-API-Deprecation"
+# Map version -> sunset date (RFC 3339) when that version will be removed
+_API_SUNSET_DATES: dict[str, str | None] = {
+    "v1": None,         # current stable, no sunset
+    "v2": None,         # latest stable, no sunset
+}
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add security headers to all responses."""
+    """Add security headers and API versioning to all responses.
+
+    Version contract:
+      - Every versioned response includes ``X-API-Version`` with a date string.
+      - Endpoints under a deprecated version get ``Sunset`` and
+        ``X-API-Deprecation`` headers.
+      - Unversioned endpoints (``/health``, ``/dashboard``, ``/api/*``, etc.)
+        are considered internal and do not receive version headers.
+    """
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -147,12 +205,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"] = "1; mode=block"
-        # HSTS only makes sense when TLS is enabled
         tls_enabled = os.environ.get("DISTLLM_TLS_ENABLED", "false").lower() == "true"
         if tls_enabled:
             response.headers["Strict-Transport-Security"] = f"max-age={HSTS_MAX_AGE}; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+        # API versioning: tag versioned paths with the API version
+        path = request.url.path
+        for ver_prefix, ver_date in _API_VERSIONS.items():
+            if path.startswith(f"/{ver_prefix}/"):
+                response.headers[_API_VERSION_HEADER] = ver_date
+                sunset = _API_SUNSET_DATES.get(ver_prefix)
+                if sunset is not None:
+                    response.headers[_API_SUNSET_HEADER] = sunset
+                    response.headers[_API_DEPRECATION_HEADER] = (
+                        f"Version {ver_prefix} will be removed after {sunset}. "
+                        f"See https://docs.distllm.dev/api-versions for migration."
+                    )
+                break
+
         return response
 
 
@@ -175,9 +247,10 @@ def _error_response(
     message: str,
     type: str = "api_error",
     request: Request | None = None,
+    exc: Exception | None = None,
 ) -> JSONResponse:
     """Build a standardized error response."""
-    return error_response_from_request(status_code, error, message, type, request)
+    return error_response_from_request(status_code, error, message, type, request, exc=exc)
 
 
 @app.exception_handler(RequestValidationError)
@@ -218,26 +291,31 @@ async def general_exception_handler(request: Request, exc: Exception):
         message="An unexpected error occurred. Please try again later.",
         type="internal_error",
         request=request,
+        exc=exc,
     )
 
 
 # ── Single source of truth for application state ─────────────────────
-class AppState:
-    """Manages shared application state — single source of truth."""
-
-    def __init__(self):
-        self.coordinator: Coordinator | None = None
-        self.monitor: SystemMonitor | None = None
-        self.startup_time: float = time.time()
-        self.metrics_exporter: DistLLMPrometheusExporter | None = None
-        self.ws_broadcast_task = None
-
-    @property
-    def uptime_seconds(self) -> float:
-        return time.time() - self.startup_time
+# Routes use `g` from api_state.py. Server code uses `state` below.
+# Both MUST reference the same AppState instance to stay in sync.
+from distllm.api.api_state import _state as _shared_state
 
 
-state = AppState()
+class _ServerState:
+    """Server-side state proxy that delegates to the shared AppState.
+
+    This ensures ``state.coordinator`` and ``g.coordinator`` always
+    return the same object — no dual bookkeeping.
+    """
+
+    def __getattr__(self, name):
+        return getattr(_shared_state, name)
+
+    def __setattr__(self, name, value):
+        setattr(_shared_state, name, value)
+
+
+state = _ServerState()
 
 
 
@@ -301,6 +379,11 @@ app.add_middleware(AuthMiddleware)
 # on incoming requests, ensuring request.state.request_id is set before any
 # middleware that reads it (e.g. AuthMiddleware error responses).
 app.add_middleware(RequestIDMiddleware)
+
+# RequestRateLimitMiddleware — per-IP request rate limiting
+# Registered after RequestIDMiddleware so request.state.request_id is
+# available for rate-limit error responses.
+app.add_middleware(RequestRateLimitMiddleware)
 
 # DedupMiddleware — collapses identical concurrent POST requests
 # Only applies to /v1/chat/completions; uses content fingerprinting.
@@ -422,12 +505,105 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
 app.add_middleware(BackpressureMiddleware)
 
 
+# ── Plugin system ───────────────────────────────────────────────────────────
+
+def _init_plugins(ps: PluginSystem) -> None:
+    """Register + load + init + start built-in plugins."""
+    for cls in (RateLimitPlugin, AuditLogPlugin, MetricsPlugin):
+        ps.register(cls)
+    ps.load_all()
+    ps.init_all()
+    ps.start_all()
+    logger.info(f"Plugin system ready: {len(ps.list_plugins())} plugins active")
+
+
+class PluginHookMiddleware(BaseHTTPMiddleware):
+    """Dispatch plugin hooks around every request.
+
+    Runs after ``BackpressureMiddleware`` (outermost) and before all other
+    middleware.  Captures request context, dispatches ``on_request``,
+    delegates to the next handler, then dispatches ``on_response`` or
+    ``on_error`` based on the outcome.
+    """
+
+    SKIP_PATHS = {"/health", "/ready", "/live", "/metrics", "/docs", "/openapi.json",
+                  "/redoc", "/ws", "/dashboard"}
+
+    async def dispatch(self, request: Request, call_next):
+        plugin_sys: PluginSystem | None = getattr(state, "plugin_system", None)
+        if plugin_sys is None or request.url.path in self.SKIP_PATHS:
+            return await call_next(request)
+
+        # Build plugin context from the request
+        req_ctx = {
+            "method": request.method,
+            "path": request.url.path,
+            "request_id": getattr(request.state, "request_id", ""),
+            "tenant": getattr(request.state, "tenant", "default"),
+            "model": getattr(request.state, "model", ""),
+            "client_ip": request.client.host if request.client else "",
+            "user_agent": request.headers.get("user-agent", ""),
+        }
+
+        # Allow plugins to modify/reject the request
+        plugin_ctx = plugin_sys.dispatch_on_request(req_ctx)
+        reject = plugin_ctx.get("_reject")
+        if reject:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": {
+                        "message": reject.get("reason", "rate_limit_exceeded"),
+                        "type": "rate_limit",
+                        "retry_after": reject.get("retry_after", 60),
+                    },
+                },
+            )
+
+        # Process the request
+        start = time.time()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            plugin_sys.dispatch("on_error", req_ctx, exc)
+            raise
+
+        # Post-process: dispatch on_response for non-streaming responses
+        duration_ms = (time.time() - start) * 1000
+        resp_ctx = {
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        }
+        plugin_sys.dispatch("on_response", req_ctx, resp_ctx)
+
+        return response
+
+
+app.add_middleware(PluginHookMiddleware)
+
+
 # Include route routers
 app.include_router(chat_router)
+app.include_router(chat_v2_router)
 app.include_router(completion_router)
 app.include_router(embeddings_router)
 app.include_router(health_router)
 app.include_router(gossip_router)
+app.include_router(admin_router)
+app.include_router(marketplace_router)
+app.include_router(federated_router)
+app.include_router(webrtc_router)
+app.include_router(leaderboard_router)
+app.include_router(prompts_router)
+app.include_router(model_registry_router)
+app.include_router(router_admin_router)
+
+# Cost tracking middleware
+try:
+    from distllm.api.cost_middleware import CostTrackingMiddleware
+    app.add_middleware(CostTrackingMiddleware)
+except ImportError:
+    pass
 
 # --- Dashboard & WebSocket ---
 
@@ -472,6 +648,76 @@ async def dashboard_websocket(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+@app.websocket("/ws/metrics")
+async def metrics_websocket(websocket: WebSocket):
+    """Dedicated WebSocket endpoint for live metrics streaming.
+
+    Unlike /ws (which requires subscribe commands), this endpoint
+    auto-streams all metrics at a configurable interval.
+
+    Query params:
+        interval: Stream interval in seconds (default: 1.0)
+        categories: Comma-separated metric categories to include
+    """
+    await websocket.accept()
+    interval = float(websocket.query_params.get("interval", "1.0"))
+    categories = websocket.query_params.get("categories", "")
+    requested = [c.strip() for c in categories.split(",") if c.strip()] or None
+
+    collector = get_collector()
+    try:
+        while True:
+            coord = state.coordinator
+            if coord is None:
+                await websocket.send_json({"type": "status", "coordinator": "not_loaded"})
+                await asyncio.sleep(interval)
+                continue
+
+            # Build metrics snapshot
+            snapshot = {"type": "metrics", "timestamp": time.time()}
+
+            # Coordinator metrics
+            try:
+                coord_metrics = coord.get_metrics()
+                if not requested or "coordinator" in requested:
+                    snapshot["coordinator"] = coord_metrics
+            except Exception:
+                pass
+
+            # Scheduler metrics
+            try:
+                if coord.scheduler:
+                    sched_stats = coord.scheduler.stats()
+                    if not requested or "scheduler" in requested:
+                        snapshot["scheduler"] = sched_stats
+            except Exception:
+                pass
+
+            # Collector metrics
+            if collector:
+                if not requested or "latency" in requested:
+                    snapshot["latency"] = collector.summary()
+                if not requested or "kv_cache" in requested:
+                    snapshot["kv_cache"] = {"hit_rate": collector.kv_hit_rate()}
+                if not requested or "speculative" in requested:
+                    snapshot["speculative"] = {"acceptance_rate": collector.spec_acceptance_rate()}
+
+            # GPU metrics
+            try:
+                mon = state.monitor
+                if mon and (not requested or "gpu" in requested):
+                    sys_metrics = mon.collect()
+                    snapshot["gpu"] = sys_metrics.get("gpu", {})
+                    snapshot["cpu"] = sys_metrics.get("cpu", {})
+            except Exception:
+                pass
+
+            await websocket.send_json(snapshot)
+            await asyncio.sleep(interval)
+    except WebSocketDisconnect:
+        pass
+
+
 @app.get(
     "/dashboard",
     response_class=HTMLResponse,
@@ -486,6 +732,35 @@ async def dashboard_page():
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text())
     return HTMLResponse(content="<h1>Dashboard not found</h1>")
+
+
+@app.get(
+    "/dashboard/leaderboard",
+    response_class=HTMLResponse,
+    summary="Benchmark leaderboard page",
+    description="Serve the benchmark leaderboard HTML page for comparing results across models, hardware, and frameworks.",
+    include_in_schema=False,
+)
+async def dashboard_leaderboard_page():
+    """Serve the benchmark leaderboard HTML."""
+    html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "leaderboard.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse(content="<h1>Leaderboard not found</h1>")
+
+
+@app.get(
+    "/dashboard/models",
+    response_class=HTMLResponse,
+    summary="Model Registry page",
+    include_in_schema=False,
+)
+async def model_registry_page():
+    """Serve the model registry dashboard HTML."""
+    html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "models.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse(content="<h1>Model Registry not found</h1>")
 
 
 @app.get(
@@ -514,6 +789,98 @@ async def api_cluster_nodes():
             "gpu_sm_count": getattr(node, 'gpu_sm_count', 0),
         })
     return {"nodes": nodes_list, "total_layers": coord.total_layers}
+
+
+@app.post(
+    "/v1/federation/heartbeat",
+    summary="Federation heartbeat",
+    description="Receive heartbeat from a federated peer coordinator with load metrics. "
+                "Authenticated via cluster key in X-Cluster-Key header.",
+    include_in_schema=False,
+)
+async def federation_heartbeat(request: Request):
+    """Receive and store heartbeat from a federated peer.
+
+    Requires a valid ``X-Cluster-Key`` header matching the local coordinator's
+    cluster key.  Prevents spoofed heartbeats from untrusted sources.
+    """
+    coord = state.coordinator
+    if coord is None:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+    # Verify cluster key
+    local_key = getattr(coord.config, 'cluster_key', None)
+    if local_key:
+        received_key = request.headers.get("X-Cluster-Key", "")
+        if not received_key or not hmac.compare_digest(received_key, local_key):
+            return JSONResponse(
+                status_code=401,
+                content={"status": "unauthorized", "error": "invalid cluster key"},
+            )
+
+    body = await request.json()
+    if hasattr(coord, '_federation') and coord._federation:
+        try:
+            for pid, peer in coord._federation._peers.items():
+                if pid != coord._federation.config.cluster_id:
+                    coord._federation._load_balancer.report_load(
+                        cluster_id=pid,
+                        active_requests=body.get("active_requests", 0),
+                        pending_requests=body.get("pending_requests", 0),
+                        gpu_utilization=body.get("gpu_utilization", 0.0),
+                        queue_depth=body.get("pending_requests", 0),
+                    )
+        except Exception:
+            pass
+    return {"status": "ok"}
+
+
+@app.get(
+    "/api/pipeline/health",
+    summary="Pipeline orchestrator health and metrics",
+    description="Return pipeline health status, node execution metrics, transport info, and configuration.",
+    response_description="Pipeline health and metrics",
+)
+async def api_pipeline_health():
+    """Return pipeline orchestrator health and metrics."""
+    coord = state.coordinator
+    if coord is None:
+        return {"status": "no_coordinator"}
+    pipeline = getattr(coord, '_pipeline', None)
+    if pipeline is None:
+        return {"status": "no_pipeline"}
+    metrics = pipeline.get_pipeline_metrics()
+
+    # Add per-node health and latency
+    nodes = {}
+    latency_tracker = getattr(pipeline, '_latency_tracker', None)
+    for node_id, node in pipeline.nodes.items():
+        node_latency = None
+        if latency_tracker is not None:
+            node_latency = latency_tracker.get_avg(node_id) if hasattr(latency_tracker, 'get_avg') else None
+        nodes[node_id] = {
+            "healthy": getattr(node, 'healthy', False),
+            "latency_ms": node_latency,
+            "start_layer": getattr(node, 'start_layer', 0),
+            "end_layer": getattr(node, 'end_layer', 0),
+            "gpu_name": getattr(node, 'gpu_name', ''),
+        }
+    metrics["nodes"] = nodes
+    return metrics
+
+
+@app.get(
+    "/api/cluster/reputation",
+    summary="Node reputation scores",
+    description="Return reputation scores for all registered nodes based on reliability, speed, uptime, and health.",
+    response_description="Reputation scores per node",
+)
+async def api_cluster_reputation():
+    """Return node reputation scores."""
+    coord = state.coordinator
+    if coord is None or not hasattr(coord, '_reputation'):
+        return {"reputation": {}}
+    return coord._reputation.get_summary()
 
 
 @app.get(
@@ -573,82 +940,95 @@ async def api_metrics_stream(
     )
 
 
+@app.get(
+    "/api/requests/waterfall",
+    summary="Recent request waterfall data",
+    description="Return recent request lifecycle data (queue → prefill → decode) for the dashboard waterfall chart.",
+    response_description="List of request timing entries with elapsed_ms, ttft_ms, and request_id",
+)
+async def api_waterfall(limit: int = 50):
+    """Return recent request waterfall entries showing lifecycle phases."""
+    coord = state.coordinator
+    if coord is None:
+        return []
+    try:
+        scheduler = getattr(coord, "scheduler", None)
+        if scheduler is None:
+            return []
+        tracker = getattr(scheduler, "latency_tracker", None) or getattr(scheduler, "_latency_tracker", None)
+        if tracker is None:
+            return []
+        return tracker.get_recent_metrics(limit=limit)
+    except (AttributeError, RuntimeError):
+        return []
+
+
+@app.get(
+    "/api/continuum/stats",
+    summary="Edge-to-cloud continuum statistics",
+    description="Return statistics about the edge-to-cloud device continuum including device types, transports, and layer assignments.",
+    response_description="Continuum statistics",
+)
+async def api_continuum_stats():
+    """Return edge-to-cloud continuum statistics."""
+    continuum = getattr(state, "continuum", None)
+    if continuum is None:
+        return {"status": "not_initialized"}
+    return continuum.get_stats()
+
+
+@app.get(
+    "/api/cost/summary",
+    summary="Cost tracking summary",
+    description="Return cost tracking summary including per-request costs, savings vs cloud APIs, and throughput metrics.",
+    response_description="Cost summary",
+)
+async def api_cost_summary(tenant_id: str = ""):
+    """Return cost tracking summary."""
+    try:
+        from distllm.core.cost_tracker import get_cost_tracker
+        return get_cost_tracker().get_cost_summary(tenant_id)
+    except ImportError:
+        return {"status": "not_available"}
+
+
+@app.get(
+    "/api/cost/history",
+    summary="Cost history",
+    description="Return recent cost tracking history.",
+    response_description="Cost history entries",
+)
+async def api_cost_history(limit: int = 100):
+    """Return recent cost history."""
+    try:
+        from distllm.core.cost_tracker import get_cost_tracker
+        return get_cost_tracker().get_history(limit)
+    except ImportError:
+        return []
+
+
+@app.get(
+    "/api/streaming-cost/stats",
+    summary="Streaming cost statistics",
+    description="Return real-time streaming cost tracker statistics.",
+    response_description="Streaming cost stats",
+)
+async def api_streaming_cost_stats():
+    """Return streaming cost tracker statistics."""
+    try:
+        from distllm.core.streaming_cost import get_streaming_cost_tracker
+        return get_streaming_cost_tracker().get_stats()
+    except ImportError:
+        return {"status": "not_available"}
+
+
 def _start_ws_broadcaster():
     """Start the WebSocket metrics broadcaster background task."""
     if state.coordinator is not None:
         state.ws_broadcast_task = asyncio.create_task(metrics_broadcaster(state.coordinator))
 
 
-def _build_quantization_config(settings: DistLLMSettings):
-    """Build quantization config from settings for the Coordinator."""
-    q = settings.quantization
-    if q.method == "none":
-        return None
 
-    if q.method in ("gptq", "awq", "fp8"):
-        return build_quantization_config(
-            q.method,
-            gptq_bits=q.gptq_bits,
-            gptq_group_size=q.gptq_group_size,
-            gptq_desc_act=q.gptq_desc_act,
-            gptq_use_marlin=q.gptq_use_marlin,
-            awq_bits=q.awq_bits,
-            awq_group_size=q.awq_group_size,
-            fp8_scheme=q.fp8_scheme,
-            fp8_dynamic=q.fp8_dynamic,
-        )
-
-    # BitsAndBytes
-    try:
-        from transformers import BitsAndBytesConfig
-        import torch
-    except ImportError:
-        logger.warning("BitsAndBytes not available, skipping quantization config")
-        return None
-
-    if "4bit" in q.method:
-        compute_dtype = getattr(torch, q.bnb_4bit_compute_dtype, torch.float16)
-        return BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=compute_dtype,
-            bnb_4bit_quant_type=q.bnb_4bit_quant_type,
-            bnb_4bit_use_double_quant=q.bnb_4bit_use_double_quant,
-        )
-    elif "8bit" in q.method:
-        return BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=q.llm_int8_threshold)
-    return None
-
-
-def _build_speculative_config(settings: DistLLMSettings):
-    """Build speculative decoding config from settings."""
-    s = settings.speculative
-    if not s.draft_model and s.method == "draft_model":
-        return None
-    return {
-        "draft_model": s.draft_model,
-        "num_assistant_tokens": s.num_assistant_tokens,
-        "min_acceptance_rate": s.min_acceptance_rate,
-        "warmup_steps": s.warmup_steps,
-        "method": s.method,
-        "medusa_num_heads": s.medusa_num_heads,
-        "medusa_num_tokens_per_head": s.medusa_num_tokens_per_head,
-        "eagle_checkpoint": s.eagle_checkpoint,
-        "eagle_variant": s.eagle_variant,
-        "eagle_hidden_size": s.eagle_hidden_size,
-        "eagle_vocab_size": s.eagle_vocab_size,
-        "eagle_num_layers": s.eagle_num_layers,
-        "ngram_min_match": s.ngram_min_match,
-    }
-
-
-def _build_lora_config(settings: DistLLMSettings):
-    """Build LoRA config from settings."""
-    l = settings.lora
-    if not l.enabled:
-        return None
-    return {
-        "adapters": l.adapters,
-    }
 
 
 def create_coordinator(
@@ -657,27 +1037,12 @@ def create_coordinator(
     local: bool = False,
     max_batch_size: int = 1,
     max_tokens_per_batch: int = 4096,
-    prefix_cache_enabled: bool = False,
-    prefix_cache_max_entries: int = 1024,
-    prefix_cache_min_prefix_len: int = 16,
-    radix_tree_cache_enabled: bool = False,
-    chunked_prefill_enabled: bool = True,
-    chunked_prefill_chunk_size: int = 512,
-    quantization_config=None,
-    speculative_config=None,
-    lora_config=None,
     settings: DistLLMSettings | None = None,
 ) -> Coordinator:
-    """Create and configure the coordinator and monitor."""
+    """Create and configure the coordinator."""
     if settings:
         max_batch_size = settings.batching.max_batch_size
         max_tokens_per_batch = settings.batching.max_tokens_per_batch
-        prefix_cache_enabled = settings.prefix_cache.enabled
-        prefix_cache_max_entries = settings.prefix_cache.max_entries
-        prefix_cache_min_prefix_len = settings.prefix_cache.min_prefix_len
-        radix_tree_cache_enabled = settings.prefix_cache.radix_tree_enabled
-        chunked_prefill_enabled = settings.chunked_prefill.enabled
-        chunked_prefill_chunk_size = settings.chunked_prefill.chunk_size
 
     try:
         from distllm.dist.config import WideAreaConfig
@@ -701,19 +1066,9 @@ def create_coordinator(
         dtype=dtype,
         max_batch_size=max_batch_size,
         max_tokens_per_batch=max_tokens_per_batch,
-        prefix_cache_enabled=prefix_cache_enabled,
-        prefix_cache_max_entries=prefix_cache_max_entries,
-        prefix_cache_min_prefix_len=prefix_cache_min_prefix_len,
-        radix_tree_cache_enabled=radix_tree_cache_enabled,
-        chunked_prefill_enabled=chunked_prefill_enabled,
-        chunked_prefill_chunk_size=chunked_prefill_chunk_size,
-        quantization_config=quantization_config,
-        speculative_config=speculative_config,
-        lora_config=lora_config,
-        embedding_config=getattr(settings, "embedding", None) if settings else None,
-        version_config=getattr(settings, "version", None) if settings else None,
         metrics_exporter=state.metrics_exporter,
         wide_area_config=wide_area_config,
+        plugin_system=getattr(state, "plugin_system", None),
     )
 
     if local:
@@ -725,86 +1080,41 @@ def create_coordinator(
     monitor_inst = SystemMonitor()
     state.coordinator = coord
     state.monitor = monitor_inst
-    _g.coordinator = coord
-    _g.monitor = monitor_inst
 
     return coord
 
 
 def _load_settings(args) -> DistLLMSettings:
-    """Load settings with precedence: CLI > env > YAML > defaults.
+    """Load settings via :class:`ConfigResolver` with full precedence.
 
-    Precedence order (lowest to highest):
-    1. Pydantic defaults (lowest)
+    Precedence (lowest to highest):
+    1. Pydantic defaults
     2. YAML config file
-    3. Environment variables (DISTLLM_*)
+    3. Environment variables (``DISTLLM__*``) — handled by pydantic-settings
     4. CLI arguments (highest)
     """
-    # Find YAML config path
+    # Resolve config path
     config_path = args.config
     if config_path is None:
-        for candidate in ["config.yaml", os.path.join(os.path.dirname(__file__), "..", "..", "..", "config.yaml")]:
-            if os.path.exists(candidate):
-                config_path = candidate
-                break
+        config_path = ConfigResolver._resolve_config_path("api", args)
 
-    # Step 1: Start with pydantic defaults
-    base = DistLLMSettings().model_dump()
-
-    # Step 2: Layer YAML config on top of defaults
-    if config_path and os.path.exists(config_path):
-        yaml_data = load_config_file(config_path)
-        if yaml_data:
-            base = _deep_merge(base, yaml_data)
-
-    # Step 3: Layer environment variables on top (env > YAML)
-    # Parse DISTLLM_<KEY>=value into the top-level dict,
-    # and DISTLLM_<KEY>__<SUBKEY>=value into nested dicts
-    for env_key, env_val in os.environ.items():
-        if not env_key.startswith("DISTLLM_"):
-            continue
-        suffix = env_key[len("DISTLLM_"):]
-        if not suffix:
-            continue
-        parts = suffix.split("__")
-        target = base
-        for part in parts[:-1]:
-            key = part.lower()
-            if key not in target or not isinstance(target[key], dict):
-                target[key] = {}
-            target = target[key]
-        target[parts[-1].lower()] = _parse_env_value(env_val)
-
-    # Step 4: CLI overrides (highest precedence)
+    # Build CLI overrides
+    cli_overrides = {}
     if args.model:
-        base.setdefault("model", {})["name"] = args.model
+        cli_overrides.setdefault("model", {})["name"] = args.model
     if args.dtype:
-        base.setdefault("model", {})["dtype"] = args.dtype
+        cli_overrides.setdefault("model", {})["dtype"] = args.dtype
     if args.host:
-        base.setdefault("coordinator", {})["host"] = args.host
+        cli_overrides.setdefault("coordinator", {})["host"] = args.host
     if args.port:
-        base.setdefault("coordinator", {})["api_port"] = args.port
+        cli_overrides.setdefault("coordinator", {})["api_port"] = args.port
     if args.quantization and args.quantization != "none":
-        base.setdefault("quantization", {})["method"] = args.quantization
+        cli_overrides.setdefault("quantization", {})["method"] = args.quantization
 
-    return DistLLMSettings.model_validate(base)
-
-
-def _parse_env_value(value: str):
-    """Parse an environment variable string into an appropriate Python type."""
-    if value.lower() in ("true", "1", "yes"):
-        return True
-    if value.lower() in ("false", "0", "no"):
-        return False
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    return value
+    return DistLLMSettings.from_yaml(
+        config_path=config_path,
+        cli_overrides=cli_overrides or None,
+    )
 
 
 def main():
@@ -841,15 +1151,11 @@ def main():
         )
         logger.info("Debug mode enabled: tensor shape logging active")
 
-    # Settings is the source of truth (env + YAML + CLI already merged)
     coord = create_coordinator(
         model_name=settings.model.name,
         dtype=settings.model.dtype,
         local=args.local,
         settings=settings,
-        quantization_config=_build_quantization_config(settings),
-        speculative_config=_build_speculative_config(settings),
-        lora_config=_build_lora_config(settings),
     )
 
     # Register distributed nodes from CLI args
@@ -889,22 +1195,15 @@ def main():
         logger.info("Shutdown complete")
 
     app.add_event_handler("shutdown", _shutdown)
-    uvicorn.run(app, host=settings.coordinator.host, port=settings.coordinator.api_port, log_level="info")
 
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override dict into a copy of base dict.
-
-    Returns a new dict without mutating inputs.
-    """
-    result = {}
-    result.update(base)
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+    config = uvicorn.Config(
+        app,
+        host=settings.coordinator.host,
+        port=settings.coordinator.api_port,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 
 if __name__ == "__main__":

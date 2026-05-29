@@ -67,6 +67,25 @@ class DistLLMMetrics:
             unit="1",
         )
 
+        # Draft model metrics (speculative decoding)
+        self.draft_calls: Counter = meter.create_counter(
+            name="distllm_draft_calls_total",
+            description="Total remote draft model calls",
+            unit="1",
+        )
+
+        self.draft_latency: Histogram = meter.create_histogram(
+            name="distllm_draft_latency_seconds",
+            description="Latency of remote draft model calls",
+            unit="s",
+        )
+
+        self.draft_acceptance: Histogram = meter.create_histogram(
+            name="distllm_draft_acceptance_rate",
+            description="Draft token acceptance rate",
+            unit="1",
+        )
+
     def record_node_latency(self, node_id: str, duration: float):
         """Record latency for a node gRPC call."""
         self.node_latency.record(duration, {"node_id": node_id})
@@ -75,3 +94,18 @@ class DistLLMMetrics:
         """Record a complete generation event."""
         self.generation_duration.record(duration)
         self.tokens_generated.add(num_tokens)
+
+    def record_draft_call(self, duration: float, accepted: int, drafted: int, error: bool = False):
+        """Record a remote draft model call.
+
+        Args:
+            duration: Round-trip latency in seconds.
+            accepted: Number of tokens accepted by target.
+            drafted: Number of tokens drafted.
+            error: Whether the call failed.
+        """
+        result = "error" if error else "success"
+        self.draft_calls.add(1, {"result": result})
+        self.draft_latency.record(duration)
+        if drafted > 0:
+            self.draft_acceptance.record(accepted / drafted)

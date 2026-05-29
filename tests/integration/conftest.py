@@ -1,38 +1,84 @@
-"""Shared fixtures for integration tests.
+"""Shared fixtures for integration tests — uses direct file imports.
 
-Provides in-process gRPC servers and coordinators for real distributed pipeline testing
-without requiring GPU or model downloads.
+Injects fake package entries into sys.modules to prevent
+distllm/__init__.py from executing (circular import chain).
 """
 
-import asyncio
-import pytest
+import importlib.util
+import sys
+import types
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
+
+import pytest
 import torch
 
-try:
-    from distllm.communication.grpc import NodeClient, AsyncNodeClient
-    _grpc_available = True
-except ImportError:
-    _grpc_available = False
+SRC_DIR = Path(__file__).resolve().parent.parent.parent / "src"
 
-from distllm.core.coordinator import Coordinator
-from distllm.core.resource_manager import NodeRegistration
+
+def _make_fake_package(name: str, path: Path):
+    mod = types.ModuleType(name)
+    mod.__path__ = [str(path)]
+    mod.__package__ = name
+    sys.modules.setdefault(name, mod)
+    return mod
+
+
+# Inject fake packages to prevent real distllm/__init__.py from loading
+_make_fake_package("distllm", SRC_DIR / "distllm")
+_make_fake_package("distllm.core", SRC_DIR / "distllm/core")
+_make_fake_package("distllm.dist", SRC_DIR / "distllm/dist")
+_make_fake_package("distllm.dist.partition", SRC_DIR / "distllm/dist/partition")
+_make_fake_package("distllm.backends", SRC_DIR / "distllm/backends")
+
+
+def _load_module(rel_path: str):
+    filepath = SRC_DIR / rel_path
+    rel = filepath.relative_to(SRC_DIR)
+    parts = list(rel.parent.parts) + [filepath.stem]
+    if parts[0] == "distllm":
+        dotted = ".".join(parts)
+    else:
+        dotted = "distllm." + ".".join(parts)
+    if dotted in sys.modules:
+        return sys.modules[dotted]
+    spec = importlib.util.spec_from_file_location(dotted, filepath, submodule_search_locations=[])
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load {filepath}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[dotted] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Pre-load modules needed by fixtures
+_coord_mod = _load_module("distllm/core/coordinator.py")
+Coordinator = _coord_mod.Coordinator
+_rm_mod = _load_module("distllm/core/resource_manager.py")
+NodeRegistration = _rm_mod.NodeRegistration
+
+
+@pytest.fixture
+def mock_tokenizer():
+    tok = MagicMock()
+    tok.encode.return_value = [1, 2, 3]
+    tok.decode.return_value = "hello world"
+    tok.eos_token_id = 0
+    tok.pad_token_id = 0
+    tok.vocab_size = 100
+    return tok
 
 
 @pytest.fixture
 def mock_model_partitioner():
-    """Create a mock model partitioner that returns deterministic tensor outputs."""
     partitioner = MagicMock()
     mock_model = MagicMock()
-
-    # Mock model parameters for VRAM estimation
     mock_param = torch.randn(10, 10)
     mock_model.parameters.return_value = iter([mock_param])
     mock_model.config = MagicMock()
     mock_model.config.num_hidden_layers = 12
     mock_model.config.hidden_size = 768
     mock_model.config.num_attention_heads = 12
-
     partitioner.full_model = mock_model
     partitioner.start_layer = 0
     partitioner.end_layer = 11
@@ -40,25 +86,7 @@ def mock_model_partitioner():
 
 
 @pytest.fixture
-def mock_tensor_serializer():
-    """Create a mock tensor serializer/deserializer."""
-    try:
-        from distllm.communication.serializers import tensor_to_proto, proto_to_tensor
-    except ImportError:
-        pytest.skip("distllm.communication.serializers module removed")
-
-    return tensor_to_proto, proto_to_tensor
-
-
-@pytest.fixture
 def integration_coordinator(mock_tokenizer, mock_model_partitioner):
-    """Create a Coordinator with real gRPC infrastructure but mock model.
-
-    This sets up a coordinator with:
-    - Mock tokenizer and model partitioner (no GPU needed)
-    - Real batch scheduler and pipeline orchestrator
-    - Mock node clients that simulate gRPC communication
-    """
     coord = Coordinator(
         model_name="test-model",
         dtype="float32",
@@ -69,13 +97,11 @@ def integration_coordinator(mock_tokenizer, mock_model_partitioner):
     coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
     coord.total_layers = 12
     coord.local_partitioner = mock_model_partitioner
-
     return coord
 
 
 @pytest.fixture
 def integration_coordinator_with_nodes(mock_tokenizer, mock_model_partitioner):
-    """Coordinator with 2 mock node registrations using real gRPC client infrastructure."""
     coord = Coordinator(
         model_name="test-model",
         dtype="float32",
@@ -87,7 +113,6 @@ def integration_coordinator_with_nodes(mock_tokenizer, mock_model_partitioner):
     coord.total_layers = 12
     coord.local_partitioner = mock_model_partitioner
 
-    # Register mock nodes with real client infrastructure but mocked stubs
     for i in range(2):
         mock_client = MagicMock()
         mock_health = MagicMock()
@@ -97,7 +122,6 @@ def integration_coordinator_with_nodes(mock_tokenizer, mock_model_partitioner):
         mock_health.gpu_utilization = 0.5
         mock_client.health_check.return_value = mock_health
 
-        # Mock forward pass response
         mock_forward = MagicMock()
         mock_forward.success = True
         mock_forward.error_message = ""

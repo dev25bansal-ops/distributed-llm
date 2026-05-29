@@ -193,22 +193,44 @@ class TestPreemption:
         assert preempted is None
 
     def test_preempt_restore(self):
+        """End-to-end: preempt a sequence, advance others, restore preempted."""
         sched = BatchScheduler(max_batch_size=2)
-        seq = _make_seq("preempted-seq")
-        sched.add(seq)
+        seq_a = _make_seq("a", priority=2)
+        seq_b = _make_seq("b", priority=3)
+        seq_c = _make_seq("c", priority=1)
+
+        sched.add(seq_a)
+        sched.add(seq_b)
+        sched.add(seq_c)
+
+        # Schedule: a + c (both fit, c has higher priority than b)
         batch = sched.schedule()
         assert batch is not None
+        batch_ids = {s.request_id for s in batch.sequences}
+        assert "a" in batch_ids
+        assert "c" in batch_ids
 
-        preempted = sched.preempt_lowest(min_priority=1, kv_cache_state={})
+        # Preempt 'a' (priority 2 >= min_priority=1)
+        kv = {"a": "kv_data_a"}
+        preempted = sched.preempt_lowest(min_priority=1, kv_cache_state=kv)
         assert preempted is not None
+        assert preempted.request_id == "a"
+        assert sched.get_preempted_count() == 1
 
-        # Note: preempt_lowest re-queues to pending heap, not _preempted dict.
-        # restore_preempted currently returns empty (source code behavior).
-        # This test validates the API surface without requiring source code changes.
-        try:
-            restored = sched.restore_preempted(kv_cache_state={})
-        except Exception:
-            restored = []
+        # Advance the remaining sequence
+        batch2 = sched.schedule()
+        if batch2 is not None:
+            sched.step(batch2, torch.tensor([42] * len(batch2.sequences)))
+
+        # Restore 'a' — should come back as DECODING with KV state restored
+        restored_kv = {}
+        restored = sched.restore_preempted(kv_cache_state=restored_kv)
+        assert len(restored) == 1
+        assert restored[0].request_id == "a"
+        assert restored[0].status == SequenceStatus.DECODING
+        assert restored_kv["a"] == "kv_data_a"
+        assert sched.get_preempted_count() == 0
+        assert "a" in sched.active
 
 
 # ===================================================================

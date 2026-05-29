@@ -1,1 +1,0 @@
-INFO:     ::1:59023 - "POST /v1/chat/completions HTTP/1.1" 503 Service Unavailable

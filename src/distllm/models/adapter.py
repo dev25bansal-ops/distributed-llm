@@ -581,3 +581,185 @@ class AdapterManager:
             **pool_stats,
             "loaded_models": len(self._loaded_models),
         }
+
+    # ── Federated Training Integration ─────────────────────────────────
+
+    def export_adapter_weights(self, adapter_id: str) -> dict[str, torch.Tensor] | None:
+        """Export adapter weights for federated merging.
+
+        Returns the adapter's state dict suitable for federated averaging.
+        Used by FederatedMergeCoordinator to collect weights from nodes.
+
+        Args:
+            adapter_id: Adapter to export.
+
+        Returns:
+            State dict of adapter parameters, or None if not found.
+        """
+        model = self._loaded_models.get(adapter_id)
+        if model is None:
+            logger.warning(f"Cannot export adapter '{adapter_id}': not loaded")
+            return None
+
+        state = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                state[name] = param.data.detach().cpu().clone()
+        return state
+
+    def import_adapter_weights(
+        self,
+        adapter_id: str,
+        weights: dict[str, torch.Tensor],
+        path: str = "",
+    ) -> bool:
+        """Import merged adapter weights from federated averaging.
+
+        Loads merged weights into an existing adapter or creates a new one.
+
+        Args:
+            adapter_id: Adapter ID to load weights into.
+            weights: Merged state dict from federated averaging.
+            path: Optional path to save the merged weights.
+
+        Returns:
+            True on success.
+        """
+        import tempfile
+        import os
+
+        if not path:
+            path = os.path.join(
+                tempfile.gettempdir(),
+                "distllm-federated",
+                f"{adapter_id}.pt",
+            )
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        torch.save(weights, path)
+
+        # If adapter is already loaded, update its weights
+        model = self._loaded_models.get(adapter_id)
+        if model is not None:
+            model.load_state_dict(weights, strict=False)
+            logger.info(f"Updated adapter '{adapter_id}' with federated weights")
+            return True
+
+        # Otherwise register in the pool for later loading
+        vram_bytes = sum(p.numel() for p in weights.values()) * 2
+        self._pool.add_adapter(adapter_id, path, vram_bytes=vram_bytes)
+        logger.info(f"Registered federated adapter '{adapter_id}' at {path}")
+        return True
+
+    def start_federated_training(
+        self,
+        adapter_id: str,
+        local_data_path: str,
+        epochs: int = 3,
+        learning_rate: float = 2e-4,
+        batch_size: int = 4,
+    ) -> dict[str, Any]:
+        """Run local LoRA fine-tuning on a node's private data.
+
+        Trains the adapter locally and returns the updated weights
+        for submission to the federated merge coordinator.
+
+        Args:
+            adapter_id: Adapter to fine-tune.
+            local_data_path: Path to local training data.
+            epochs: Number of training epochs.
+            learning_rate: Learning rate.
+            batch_size: Training batch size.
+
+        Returns:
+            Dict with training metrics and exported weights.
+        """
+        model = self._loaded_models.get(adapter_id)
+        if model is None:
+            raise ValueError(f"Adapter '{adapter_id}' not loaded")
+
+        logger.info(
+            f"Starting local federated training for '{adapter_id}': "
+            f"epochs={epochs}, lr={learning_rate}, data={local_data_path}"
+        )
+
+        # Training loop
+        model.train()
+        optimizer = torch.optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad],
+            lr=learning_rate,
+        )
+
+        total_loss = 0.0
+        steps = 0
+
+        # Load training data
+        try:
+            training_data = self._load_training_data(local_data_path)
+        except Exception as e:
+            logger.error(f"Failed to load training data: {e}")
+            return {"error": str(e), "adapter_id": adapter_id}
+
+        for epoch in range(epochs):
+            for batch in training_data:
+                optimizer.zero_grad()
+                try:
+                    outputs = model(**batch)
+                    loss = outputs.loss if hasattr(outputs, "loss") else outputs[0]
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                    steps += 1
+                except Exception as e:
+                    logger.debug(f"Training step failed: {e}")
+                    continue
+
+        model.eval()
+        avg_loss = total_loss / max(steps, 1)
+
+        # Export trained weights
+        weights = self.export_adapter_weights(adapter_id)
+
+        logger.info(
+            f"Local training complete for '{adapter_id}': "
+            f"avg_loss={avg_loss:.4f}, steps={steps}"
+        )
+
+        return {
+            "adapter_id": adapter_id,
+            "avg_loss": avg_loss,
+            "steps": steps,
+            "epochs": epochs,
+            "weights": weights,
+        }
+
+    def _load_training_data(self, path: str) -> list[dict]:
+        """Load training data from path (JSONL or directory)."""
+        import json
+        data = []
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.strip():
+                        item = json.loads(line)
+                        data.append(item)
+        except Exception:
+            # Try as a single JSON file
+            with open(path) as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    data = [data]
+
+        # Convert to tokenized format
+        tokenized = []
+        for item in data[:100]:  # Limit batch size
+            text = item.get("text", "") or item.get("prompt", "") or str(item)
+            if self.tokenizer:
+                tokens = self.tokenizer(
+                    text, return_tensors="pt", truncation=True,
+                    max_length=512, padding=True,
+                )
+                tokens["labels"] = tokens["input_ids"].clone()
+                tokenized.append(tokens)
+
+        return tokenized

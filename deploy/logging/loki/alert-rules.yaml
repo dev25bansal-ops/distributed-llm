@@ -1,0 +1,148 @@
+# DistLLM Loki Alert Rules
+# Deploy with: kubectl apply -f deploy/logging/loki/alert-rules.yaml
+# Or via Grafana UI: Alerting > Alert rules > Import
+
+groups:
+  - name: distllm_critical
+    interval: 1m
+    rules:
+      # Node failure detection
+      - alert: NodeUnreachable
+        expr: |
+          count_over_time({job="distllm"} |= "NodeUnreachableError" [5m]) > 3
+        for: 2m
+        labels:
+          severity: critical
+          component: pipeline
+        annotations:
+          summary: "Node unreachable detected"
+          description: "Node {{ $labels.node_id }} has failed {{ $value }} times in 5 minutes"
+
+      # OOM detection
+      - alert: GPUOutOfMemory
+        expr: |
+          count_over_time({job="distllm"} |= "OOMError" [5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: gpu
+        annotations:
+          summary: "GPU OOM detected"
+          description: "Out of memory error on {{ $labels.node_id }}"
+
+      # Circuit breaker trips
+      - alert: CircuitBreakerTripped
+        expr: |
+          count_over_time({job="distllm"} |= "circuit breaker" |= "open" [10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: pipeline
+        annotations:
+          summary: "Circuit breaker tripped"
+          description: "Circuit breaker opened {{ $value }} times in 10 minutes"
+
+      # High error rate
+      - alert: HighErrorRate
+        expr: |
+          sum(rate({job="distllm"} |= "error" [5m])) / sum(rate({job="distllm"} [5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+  - name: distllm_performance
+    interval: 2m
+    rules:
+      # High latency
+      - alert: HighLatency
+        expr: |
+          avg_over_time({job="distllm"} |= "processing_time_ms" | json [5m]) > 5000
+        for: 5m
+        labels:
+          severity: warning
+          component: pipeline
+        annotations:
+          summary: "High inference latency"
+          description: "Average latency is {{ $value }}ms"
+
+      # Low throughput
+      - alert: LowThroughput
+        expr: |
+          sum(rate({job="distllm"} |= "tokens_generated" [5m])) < 10
+        for: 10m
+        labels:
+          severity: warning
+          component: pipeline
+        annotations:
+          summary: "Low throughput detected"
+          description: "Throughput is {{ $value }} tokens/sec"
+
+      # Pipeline overload
+      - alert: PipelineOverload
+        expr: |
+          count_over_time({job="distllm"} |= "BatchCapacityError" [5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: pipeline
+        annotations:
+          summary: "Pipeline overloaded"
+          description: "Batch capacity errors: {{ $value }} in 5 minutes"
+
+  - name: distllm_security
+    interval: 5m
+    rules:
+      # Authentication failures
+      - alert: AuthFailures
+        expr: |
+          count_over_time({job="distllm"} |= "authentication failed" [10m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value }} auth failures in 10 minutes"
+
+      # Rate limiting triggered
+      - alert: RateLimiting
+        expr: |
+          count_over_time({job="distllm"} |= "rate_limited" [10m]) > 50
+        for: 5m
+        labels:
+          severity: info
+          component: security
+        annotations:
+          summary: "Rate limiting active"
+          description: "Rate limited {{ $value }} requests in 10 minutes"
+
+  - name: distllm_federation
+    interval: 2m
+    rules:
+      # Federation peer down
+      - alert: FederationPeerDown
+        expr: |
+          count_over_time({job="distllm"} |= "federation" |= "failed" [10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: federation
+        annotations:
+          summary: "Federation peer unreachable"
+          description: "Federation communication failed {{ $value }} times"
+
+      # Spillover active
+      - alert: SpilloverActive
+        expr: |
+          count_over_time({job="distllm"} |= "spillover" [15m]) > 10
+        for: 10m
+        labels:
+          severity: info
+          component: federation
+        annotations:
+          summary: "Federation spillover active"
+          description: "Spillover triggered {{ $value }} times in 15 minutes"

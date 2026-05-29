@@ -16,37 +16,43 @@
     let reconnectTimer = null;
     let waterfallTimer = null;
 
+    function esc(str) {
+        if (str === null || str === undefined) return '';
+        const s = String(str);
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        return s.replace(/[&<>"']/g, c => map[c]);
+    }
+
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        const wsUrl = protocol + '//' + window.location.host + '/ws';
 
         wsStatus.textContent = 'Connecting...';
         wsStatus.className = 'status-badge connecting';
 
         ws = new WebSocket(wsUrl);
 
-        ws.onopen = () => {
+        ws.onopen = function () {
             wsStatus.textContent = 'Connected';
             wsStatus.className = 'status-badge connected';
         };
 
-        ws.onmessage = (event) => {
+        ws.onmessage = function (event) {
             try {
-                const data = JSON.parse(event.data);
+                var data = JSON.parse(event.data);
                 updateDashboard(data);
             } catch (e) {
                 console.error('Failed to parse WebSocket message:', e);
             }
         };
 
-        ws.onclose = () => {
+        ws.onclose = function () {
             wsStatus.textContent = 'Disconnected';
             wsStatus.className = 'status-badge disconnected';
-            // Reconnect after 5 seconds
             reconnectTimer = setTimeout(connect, 5000);
         };
 
-        ws.onerror = () => {
+        ws.onerror = function () {
             ws.close();
         };
     }
@@ -54,7 +60,7 @@
     function updateDashboard(data) {
         if (data.type !== 'metrics' || !data.data) return;
 
-        const d = data.data;
+        var d = data.data;
 
         // System overview
         if (d.model) modelName.textContent = d.model;
@@ -65,24 +71,59 @@
 
         // Node health
         if (d.nodes && typeof d.nodes === 'object') {
-            const html = Object.entries(d.nodes).map(([id, info]) => {
-                const status = info.healthy ? 'healthy' : 'unhealthy';
-                return `<div class="node-item">
-                    <span class="node-id">${id}</span>
-                    <span class="node-status ${status}">${status}</span>
-                </div>`;
-            }).join('');
-            nodeList.innerHTML = html || '<p class="placeholder">No nodes connected</p>';
+            nodeList.innerHTML = '';
+            var entries = Object.entries(d.nodes);
+            if (entries.length === 0) {
+                var p = document.createElement('p');
+                p.className = 'placeholder';
+                p.textContent = 'No nodes connected';
+                nodeList.appendChild(p);
+            } else {
+                entries.forEach(function (entry) {
+                    var id = entry[0];
+                    var info = entry[1];
+                    var status = info.healthy ? 'healthy' : 'unhealthy';
+
+                    var div = document.createElement('div');
+                    div.className = 'node-item';
+
+                    var idSpan = document.createElement('span');
+                    idSpan.className = 'node-id';
+                    idSpan.textContent = id;
+
+                    var statusSpan = document.createElement('span');
+                    statusSpan.className = 'node-status ' + status;
+                    statusSpan.textContent = status;
+
+                    div.appendChild(idSpan);
+                    div.appendChild(statusSpan);
+                    nodeList.appendChild(div);
+                });
+            }
         }
 
         // Scheduler stats
         if (d.scheduler) {
-            const s = d.scheduler;
-            schedulerStats.innerHTML = `
-                <div class="stat-row"><span class="stat-label">Active</span><span class="stat-value">${s.active || 0}</span></div>
-                <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-value">${s.pending || 0}</span></div>
-                <div class="stat-row"><span class="stat-label">Completed</span><span class="stat-value">${s.completed || 0}</span></div>
-            `;
+            var s = d.scheduler;
+            schedulerStats.innerHTML = '';
+            var stats = [
+                { label: 'Active', value: s.active || 0 },
+                { label: 'Pending', value: s.pending || 0 },
+                { label: 'Completed', value: s.completed || 0 }
+            ];
+            stats.forEach(function (stat) {
+                var row = document.createElement('div');
+                row.className = 'stat-row';
+                var label = document.createElement('span');
+                label.className = 'stat-label';
+                label.textContent = stat.label;
+                var value = document.createElement('span');
+                value.className = 'stat-value';
+                value.textContent = stat.value;
+                row.appendChild(label);
+                row.appendChild(value);
+                schedulerStats.appendChild(row);
+            });
         }
 
         // Raw metrics
@@ -95,39 +136,75 @@
     // Fetch waterfall data periodically
     function fetchWaterfall() {
         fetch('/api/requests/waterfall?limit=50')
-            .then(r => r.json())
-            .then(data => {
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
                 if (data && data.length > 0) {
-                    waterfallContainer.innerHTML = renderWaterfall(data);
+                    renderWaterfall(data);
                 }
             })
-            .catch(() => {});
+            .catch(function () {});
     }
 
     function renderWaterfall(items) {
-        const maxElapsed = Math.max(...items.map(i => i.elapsed_ms || 0), 1);
-        const rows = items.map(item => {
-            const ttft = item.ttft_ms || 0;
-            const elapsed = item.elapsed_ms || 0;
-            const ttftPct = Math.min((ttft / maxElapsed) * 100, 100);
-            const totalPct = Math.min((elapsed / maxElapsed) * 100, 100);
-            const decodePct = Math.max(totalPct - ttftPct, 0);
+        var maxElapsed = Math.max.apply(null, items.map(function (i) { return i.elapsed_ms || 0; }).concat([1]));
 
-            const statusClass = item.is_overdue ? 'waterfall-overdue' : 'waterfall-ok';
-            return `<div class="waterfall-row ${statusClass}">
-                <div class="waterfall-label" title="${item.request_id}">${item.request_id.substring(0, 12)}...</div>
-                <div class="waterfall-bar">
-                    <div class="waterfall-segment waterfall-prefill" style="width: ${ttftPct}%" title="Prefill: ${ttft.toFixed(0)}ms"></div>
-                    <div class="waterfall-segment waterfall-decode" style="width: ${decodePct}%" title="Decode: ${(elapsed - ttft).toFixed(0)}ms"></div>
-                </div>
-                <div class="waterfall-time">${elapsed.toFixed(0)}ms</div>
-            </div>`;
-        }).join('');
+        waterfallContainer.innerHTML = '';
+        var header = document.createElement('div');
+        header.className = 'waterfall-header';
+        var hStart = document.createElement('span');
+        hStart.textContent = '0ms';
+        var hEnd = document.createElement('span');
+        hEnd.textContent = maxElapsed.toFixed(0) + 'ms';
+        header.appendChild(hStart);
+        header.appendChild(hEnd);
+        waterfallContainer.appendChild(header);
 
-        return `<div class="waterfall-header">
-            <span>0ms</span><span>${maxElapsed.toFixed(0)}ms</span>
-        </div>
-        <div class="waterfall-rows">${rows}</div>`;
+        var rowsDiv = document.createElement('div');
+        rowsDiv.className = 'waterfall-rows';
+
+        items.forEach(function (item) {
+            var ttft = item.ttft_ms || 0;
+            var elapsed = item.elapsed_ms || 0;
+            var ttftPct = Math.min((ttft / maxElapsed) * 100, 100);
+            var totalPct = Math.min((elapsed / maxElapsed) * 100, 100);
+            var decodePct = Math.max(totalPct - ttftPct, 0);
+
+            var statusClass = item.is_overdue ? 'waterfall-overdue' : 'waterfall-ok';
+            var row = document.createElement('div');
+            row.className = 'waterfall-row ' + statusClass;
+
+            var label = document.createElement('div');
+            label.className = 'waterfall-label';
+            label.title = esc(item.request_id);
+            label.textContent = esc((item.request_id || '').substring(0, 12)) + '...';
+
+            var bar = document.createElement('div');
+            bar.className = 'waterfall-bar';
+
+            var prefill = document.createElement('div');
+            prefill.className = 'waterfall-segment waterfall-prefill';
+            prefill.style.width = ttftPct + '%';
+            prefill.title = 'Prefill: ' + ttft.toFixed(0) + 'ms';
+
+            var decode = document.createElement('div');
+            decode.className = 'waterfall-segment waterfall-decode';
+            decode.style.width = decodePct + '%';
+            decode.title = 'Decode: ' + (elapsed - ttft).toFixed(0) + 'ms';
+
+            bar.appendChild(prefill);
+            bar.appendChild(decode);
+
+            var time = document.createElement('div');
+            time.className = 'waterfall-time';
+            time.textContent = elapsed.toFixed(0) + 'ms';
+
+            row.appendChild(label);
+            row.appendChild(bar);
+            row.appendChild(time);
+            rowsDiv.appendChild(row);
+        });
+
+        waterfallContainer.appendChild(rowsDiv);
     }
 
     // Start waterfall polling

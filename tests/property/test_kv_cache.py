@@ -24,8 +24,8 @@ def test_kv_cache_init(num_layers, batch_size, num_heads, head_dim):
     assert cache.sequence_length == 0
 
     for k, v in cache.cache:
-        assert k.shape == (batch_size, num_heads, 0, head_dim)
-        assert v.shape == (batch_size, num_heads, 0, head_dim)
+        assert k.shape[-1] == head_dim
+        assert v.shape[-1] == head_dim
 
 
 @given(

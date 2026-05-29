@@ -1,0 +1,4 @@
+kopf>=1.37.0
+kubernetes>=27.0.0
+pyyaml>=6.0
+pydantic>=2.5.0

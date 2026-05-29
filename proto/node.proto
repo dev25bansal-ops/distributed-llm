@@ -13,6 +13,8 @@ message KVCacheProto {
   message LayerCache {
     TensorProto key_states = 1;
     TensorProto value_states = 2;
+    TensorProto key_scale = 3;
+    TensorProto value_scale = 4;
   }
   repeated LayerCache layers = 1;
 }
@@ -31,6 +33,7 @@ message ForwardPassRequest {
   int32 seq_len = 11;
   bool is_last_pass = 12;
   string model_name = 13;
+  string cluster_key = 14;
 }
 
 message ForwardPassResponse {
@@ -42,10 +45,18 @@ message ForwardPassResponse {
   int32 error_code = 6;
   bool is_logits = 7;
   float processing_time_ms = 8;
+  string cluster_key = 9;
 }
 
 message HealthCheckRequest {
   string node_id = 1;
+  string cluster_key = 2;
+}
+
+message PrivacySplitInfo {
+  bool enabled = 1;
+  int32 prefix_layers = 2;
+  int32 suffix_layers = 3;
 }
 
 message HealthCheckResponse {
@@ -60,10 +71,13 @@ message HealthCheckResponse {
   string gpu_name = 9;
   int64 gpu_memory_total = 10;
   int32 num_layers_loaded = 11;
+  string cluster_key = 12;
+  PrivacySplitInfo privacy_split = 13;
 }
 
 message ProfileRequest {
   string node_id = 1;
+  string cluster_key = 2;
 }
 
 message ProfileResponse {
@@ -74,10 +88,80 @@ message ProfileResponse {
   float compute_tflops = 5;
   float memory_bandwidth_gbps = 6;
   int32 sm_count = 7;
+  string cluster_key = 8;
+}
+
+message TransferWeightsRequest {
+  string model_name = 1;
+  int32 start_layer = 2;
+  int32 end_layer = 3;
+  string cluster_key = 4;
+  int32 chunk_index = 5;
+  int32 total_chunks = 6;
+}
+
+message TransferWeightsResponse {
+  string model_name = 1;
+  int32 start_layer = 2;
+  int32 end_layer = 3;
+  bytes state_dict_bytes = 4;
+  bool success = 5;
+  string error_message = 6;
+  int32 chunk_index = 7;
+  int32 total_chunks = 8;
+  bool is_final_chunk = 9;
+}
+
+message AdvertiseModelsRequest {
+  string node_id = 1;
+  string cluster_key = 2;
+}
+
+message ModelAdvertisement {
+  string model_name = 1;
+  int32 start_layer = 2;
+  int32 end_layer = 3;
+  int32 total_layers = 4;
+  string node_id = 5;
+  string host = 6;
+  int32 port = 7;
+}
+
+message AdvertiseModelsResponse {
+  repeated ModelAdvertisement models = 1;
 }
 
 service NodeService {
   rpc ForwardPass(ForwardPassRequest) returns (ForwardPassResponse);
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
   rpc Profile(ProfileRequest) returns (ProfileResponse);
+  rpc TransferWeights(TransferWeightsRequest) returns (TransferWeightsResponse);
+  rpc TransferWeightsStream(TransferWeightsRequest) returns (stream TransferWeightsResponse);
+  rpc AdvertiseModels(AdvertiseModelsRequest) returns (AdvertiseModelsResponse);
+}
+
+// ── Draft Model Service ────────────────────────────────────────────────
+
+message DraftRequest {
+  repeated int32 prompt_ids = 1;
+  int32 num_tokens = 2;
+  float temperature = 3;
+  int32 top_k = 4;
+  float top_p = 5;
+  string model_name = 6;
+  string request_id = 7;
+}
+
+message DraftResponse {
+  repeated int32 token_ids = 1;
+  repeated float logprobs = 2;
+  float processing_time_ms = 3;
+  bool success = 4;
+  string error_message = 5;
+  string model_name = 6;
+}
+
+service DraftModelService {
+  rpc GenerateDraftTokens(DraftRequest) returns (DraftResponse);
+  rpc GenerateDraftTokensStream(DraftRequest) returns (stream DraftResponse);
 }

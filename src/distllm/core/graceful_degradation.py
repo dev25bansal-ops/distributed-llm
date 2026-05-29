@@ -64,7 +64,15 @@ class DegradationPlan:
                 params.get("max_new_tokens", 2048), self.max_tokens
             )
         if self.truncate_prompt is not None and "prompt" in params:
-            params["prompt"] = params["prompt"][:self.truncate_prompt]
+            prompt = params["prompt"]
+            if isinstance(prompt, str) and "tokenizer" in params:
+                tokenizer = params["tokenizer"]
+                encoded = tokenizer.encode(prompt)
+                if len(encoded) > self.truncate_prompt:
+                    truncated = encoded[:self.truncate_prompt]
+                    params["prompt"] = tokenizer.decode(truncated)
+            elif isinstance(prompt, str):
+                params["prompt"] = prompt[:self.truncate_prompt * 4]
         return params
 
 
@@ -185,3 +193,61 @@ class GracefulDegradation:
                     "critical": self._critical_threshold,
                 },
             }
+
+
+# ── Recovery-aware degradation tiers ─────────────────────────────────────
+
+RECOVERY_DEGRADATION_TIERS = [
+    {
+        "name": "full",
+        "batch_size": 4,
+        "precision": "fp16",
+        "max_tokens": 2048,
+        "description": "Normal operation",
+    },
+    {
+        "name": "reduced",
+        "batch_size": 2,
+        "precision": "fp16",
+        "max_tokens": 1024,
+        "description": "Reduced batch after node loss",
+    },
+    {
+        "name": "minimal",
+        "batch_size": 1,
+        "precision": "int8",
+        "max_tokens": 512,
+        "description": "Minimal operation with degraded precision",
+    },
+    {
+        "name": "emergency",
+        "batch_size": 1,
+        "precision": "int4",
+        "max_tokens": 256,
+        "description": "Emergency mode — minimal quality",
+    },
+]
+
+
+def get_recovery_tier(nodes_remaining: int, nodes_total: int) -> dict:
+    """Return the appropriate degradation tier based on surviving node ratio.
+
+    Args:
+        nodes_remaining: Number of healthy nodes remaining.
+        nodes_total: Original total number of nodes.
+
+    Returns:
+        Tier dict with batch_size, precision, max_tokens.
+    """
+    if nodes_total <= 0:
+        return RECOVERY_DEGRADATION_TIERS[0]
+
+    ratio = nodes_remaining / nodes_total
+    if ratio > 0.75:
+        return RECOVERY_DEGRADATION_TIERS[0]  # full
+    elif ratio > 0.5:
+        return RECOVERY_DEGRADATION_TIERS[1]  # reduced
+    elif ratio > 0.25:
+        return RECOVERY_DEGRADATION_TIERS[2]  # minimal
+    else:
+        return RECOVERY_DEGRADATION_TIERS[3]  # emergency

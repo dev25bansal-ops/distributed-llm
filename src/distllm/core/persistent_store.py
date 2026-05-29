@@ -17,7 +17,33 @@ from loguru import logger
 
 
 # Schema version for migrations
+# Increment this when making schema changes and add a migration function below.
 _SCHEMA_VERSION = 1
+
+
+# Migration registry: maps target version -> migration function
+# Each function receives (conn, from_version, to_version) and applies changes.
+_SCHEMA_MIGRATIONS: dict[int, callable] = {}
+
+
+def _register_migration(version: int):
+    """Decorator to register a migration function for a specific schema version.
+
+    Usage when adding a new schema version:
+        1. Increment _SCHEMA_VERSION to the new version number.
+        2. Decorate a migration function with @_register_migration(NEW_VERSION).
+        3. The function receives (conn, from_version, to_version) and applies
+           ALTER TABLE / CREATE TABLE / UPDATE statements as needed.
+
+        Example:
+            @_register_migration(2)
+            def _migrate_to_v2(conn, from_version, to_version):
+                conn.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER DEFAULT 0")
+    """
+    def wrapper(func):
+        _SCHEMA_MIGRATIONS[version] = func
+        return func
+    return wrapper
 
 _CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -157,26 +183,57 @@ class PersistentStore:
     def initialize(self) -> int:
         """Initialize the database schema.
 
+        Creates tables if they don't exist, then runs any pending migrations.
+
         Returns:
-            Schema version number.
+            Current schema version number.
+
+        Raises:
+            RuntimeError: If the database is at a newer schema version than
+                this code supports (downgrade not supported).
         """
         with self._transaction() as conn:
             conn.executescript(_CREATE_TABLES)
-            # Check if version exists
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
-                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)",
+                    (_SCHEMA_VERSION,),
+                )
+                current_version = _SCHEMA_VERSION
             else:
-                current = row["version"]
-                if current < _SCHEMA_VERSION:
-                    self._migrate(conn, current, _SCHEMA_VERSION)
+                current_version = row["version"]
+                if current_version < _SCHEMA_VERSION:
+                    self._migrate(conn, current_version, _SCHEMA_VERSION)
+                    conn.execute(
+                        "UPDATE schema_version SET version=?",
+                        (_SCHEMA_VERSION,),
+                    )
+                elif current_version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"Database schema v{current_version} is newer than "
+                        f"code supports (v{_SCHEMA_VERSION}). "
+                        f"Upgrade the software before using this database."
+                    )
         logger.info(f"Persistent store initialized (schema v{_SCHEMA_VERSION})")
         return _SCHEMA_VERSION
 
     def _migrate(self, conn, from_version: int, to_version: int) -> None:
-        """Run migrations from current to target schema version."""
+        """Run migrations from current to target schema version.
+
+        Executes each registered migration in order. If a migration for a
+        version is missing, it is skipped with a warning.
+        """
         logger.info(f"Migrating schema from v{from_version} to v{to_version}")
-        # For now, v1 is the only version — add migration logic here for future versions
+        for version in range(from_version + 1, to_version + 1):
+            migration = _SCHEMA_MIGRATIONS.get(version)
+            if migration:
+                logger.info(f"Applying migration v{version}")
+                migration(conn, from_version, version)
+            else:
+                logger.warning(
+                    f"No migration registered for v{version}, skipping"
+                )
 
     # -- Jobs --
 

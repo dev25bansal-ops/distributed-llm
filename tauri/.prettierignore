@@ -1,0 +1,7 @@
+node_modules/
+dist/
+src-tauri/target/
+*.js
+!.eslintrc.js
+!svelte.config.js
+!vite.config.ts

@@ -23,6 +23,9 @@ env/
 *.swp
 *.swo
 
+# Node
+node_modules/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -32,8 +35,8 @@ Thumbs.db
 .huggingface/
 
 # Generated protobuf files (regenerate from .proto)
-src/*_pb2.py
-src/*_pb2_grpc.py
+**/*_pb2.py
+**/*_pb2_grpc.py
 
 # TLS certificates
 certs/
@@ -62,3 +65,15 @@ coverage.xml
 tmp/
 temp/
 *.tmp
+
+# Garbage artifacts in project root
+=2.0.0
+body*.json
+out.txt
+err.txt
+server_*.txt
+test_output.log
+_find_unpack.py
+
+# Mutation testing cache
+.mutmut-cache

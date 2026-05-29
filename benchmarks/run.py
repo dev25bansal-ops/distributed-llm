@@ -667,6 +667,155 @@ def benchmark_spec_accept_rate(num_prompts: int) -> BenchmarkResult:
     return result
 
 
+def benchmark_distributed_speculative_throughput(
+    num_prompts: int = 10,
+    max_tokens: int = 64,
+) -> BenchmarkResult:
+    """Measure throughput with vs without distributed remote draft model.
+
+    Compares tokens/sec for:
+    1. Target-only generation (baseline)
+    2. Distributed speculative decoding with remote draft
+    """
+    result = BenchmarkResult(name="dist-spec-throughput")
+
+    try:
+        from distllm.core.distributed_speculative import (
+            DistributedSpeculativeDecoder,
+            DraftTokenResult,
+        )
+    except ImportError:
+        raise RuntimeError(
+            "Benchmark requires DistributedSpeculativeDecoder. "
+            "Ensure distllm.core.distributed_speculative is available."
+        )
+
+    import torch
+    import time
+
+    vocab_size = 100
+
+    def target_fn(input_ids, **kwargs):
+        batch, seq = input_ids.shape
+        logits = torch.full((batch, seq, vocab_size), -10.0)
+        logits[:, :, 10] = 10.0
+        return logits
+
+    # Mock draft that returns tokens instantly
+    from unittest.mock import MagicMock
+
+    def fast_draft(prompt_tokens, num_tokens, **kwargs):
+        return DraftTokenResult(
+            token_ids=[10] * num_tokens,
+            logprobs=[-0.05] * num_tokens,
+        )
+
+    draft = MagicMock()
+    draft.generate_tokens.side_effect = fast_draft
+    draft.stats = {"total_calls": 0, "total_tokens": 0, "avg_latency_ms": 0, "tokens_per_second": 0, "errors": 0}
+
+    # Benchmark target-only
+    input_ids = torch.tensor([[1, 2, 3]])
+    t0 = time.monotonic()
+    for _ in range(num_prompts):
+        # Simulate target-only generation
+        generated = input_ids.clone()
+        for _ in range(max_tokens):
+            logits = target_fn(generated)
+            next_token = torch.tensor([[10]])
+            generated = torch.cat([generated, next_token], dim=1)
+    target_only_time = time.monotonic() - t0
+
+    # Benchmark distributed speculative
+    sd = DistributedSpeculativeDecoder(
+        target_forward=target_fn,
+        draft_model=draft,
+        num_candidates=5,
+        temperature=0,
+        device="cpu",
+    )
+
+    t0 = time.monotonic()
+    for _ in range(num_prompts):
+        sd.generate(input_ids.clone(), max_new_tokens=max_tokens)
+    spec_time = time.monotonic() - t0
+
+    target_tps = (num_prompts * max_tokens) / max(target_only_time, 1e-6)
+    spec_tps = (num_prompts * max_tokens) / max(spec_time, 1e-6)
+    speedup = spec_tps / max(target_tps, 1e-6)
+
+    result.tokens_per_second = round(spec_tps, 1)
+    result.speedup = round(speedup, 2)
+    result.samples = num_prompts
+    result.target_value = 1.5  # Expect at least 1.5x speedup
+    result.target_met = speedup >= 1.5
+
+    sd.close()
+    return result
+
+
+def benchmark_remote_draft_latency(
+    num_requests: int = 50,
+) -> BenchmarkResult:
+    """Measure round-trip latency of RemoteDraftModel.generate_tokens().
+
+    Uses a mock HTTP server to measure parsing + retry overhead.
+    """
+    result = BenchmarkResult(name="remote-draft-latency")
+
+    try:
+        from distllm.core.distributed_speculative import (
+            RemoteDraftModel,
+            RemoteDraftConfig,
+        )
+    except ImportError:
+        raise RuntimeError("Benchmark requires RemoteDraftModel.")
+
+    import time
+    from unittest.mock import MagicMock
+
+    model = RemoteDraftModel(RemoteDraftConfig(
+        endpoint_url="http://mock:8000/v1/completions",
+        model_name="bench-draft",
+        max_retries=0,
+    ))
+
+    # Mock client to measure pure parsing overhead
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "choices": [{
+            "token_ids": list(range(16)),
+            "logprobs": {"token_ids": list(range(16)), "token_logprobs": [-0.1] * 16},
+        }],
+    }
+    mock_client.post.return_value = mock_resp
+    model._client = mock_client
+
+    latencies = []
+    for _ in range(num_requests):
+        t0 = time.monotonic()
+        r = model.generate_tokens([1, 2, 3], num_tokens=16)
+        latencies.append(time.monotonic() - t0)
+        assert r.ok
+
+    latencies.sort()
+    p50 = latencies[len(latencies) // 2] * 1000
+    p95 = latencies[int(len(latencies) * 0.95)] * 1000
+    p99 = latencies[int(len(latencies) * 0.99)] * 1000
+
+    result.avg_latency_ms = round(p50, 2)
+    result.p95_latency_ms = round(p95, 2)
+    result.p99_latency_ms = round(p99, 2)
+    result.samples = num_requests
+    result.target_value = 5.0  # Should be under 5ms for mock
+    result.target_met = p95 < 5.0
+
+    model.close()
+    return result
+
+
 def benchmark_network_util(model: str, max_tokens: int, nodes: int = 1) -> BenchmarkResult:
     """Estimate network bandwidth utilization during distributed inference."""
     result = BenchmarkResult(name="network-util", model=model, nodes=nodes)

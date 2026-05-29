@@ -29,6 +29,10 @@ jobs:
         run: |
           pytest tests/profiling/ -v --memory-profile -p no:asyncio
 
+      - name: Run defragmentation unit tests
+        run: |
+          pytest tests/core/test_memory_defragmenter.py -v --timeout=60 -x
+
       - name: Profile core operations
         run: |
           python -c "

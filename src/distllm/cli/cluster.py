@@ -150,10 +150,42 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
     try:
         coord_proc = subprocess.Popen(coord_args)
         console.print(f"[green]Coordinator started[/green] (PID: {coord_proc.pid})")
-        time.sleep(1)
+
+        # Wait for coordinator to be ready by polling health endpoint
+        import httpx
+        coord_ready = False
+        for attempt in range(15):
+            time.sleep(1)
+            try:
+                r = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
+                if r.status_code < 500:
+                    coord_ready = True
+                    break
+            except (httpx.ConnectError, httpx.TimeoutException):
+                continue
+        if coord_ready:
+            console.print(f"[green]Coordinator ready[/green] on port {port}")
+        else:
+            console.print(f"[yellow]Coordinator may not be ready[/yellow] (timeout)")
 
         api_proc = subprocess.Popen(api_args)
         console.print(f"[green]API server started[/green] (PID: {api_proc.pid})")
+
+        # Wait for API server
+        api_ready = False
+        for attempt in range(15):
+            time.sleep(1)
+            try:
+                r = httpx.get(f"http://localhost:{api_port}/health", timeout=2.0)
+                if r.status_code < 500:
+                    api_ready = True
+                    break
+            except (httpx.ConnectError, httpx.TimeoutException):
+                continue
+        if api_ready:
+            console.print(f"[green]API server ready[/green] on port {api_port}")
+        else:
+            console.print(f"[yellow]API server may not be ready[/yellow] (timeout)")
 
         console.print()
         console.print(f"Workers join: distllm cluster join --coordinator localhost:{port}")
@@ -163,8 +195,17 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
         try:
             coord_proc.wait()
         except KeyboardInterrupt:
+            console.print("[yellow]Stopping cluster...[/yellow]")
             coord_proc.terminate()
             api_proc.terminate()
+            try:
+                coord_proc.wait(timeout=5)
+            except Exception:
+                coord_proc.kill()
+            try:
+                api_proc.wait(timeout=5)
+            except Exception:
+                api_proc.kill()
             console.print("[yellow]Cluster stopped[/yellow]")
     except FileNotFoundError:
         console.print("[red]Error:[/red] distllm modules not found")
@@ -176,10 +217,30 @@ def _cluster_join(
     end_layer: int | None, total_layers: int | None,
     listen_port: int, device: str,
     cluster_key: str | None = None,
+    discover: bool = False,
 ):
     """Start a worker node and connect to an existing coordinator."""
     if node_id is None:
         node_id = f"node_{uuid.uuid4().hex[:8]}"
+
+    # Auto-discovery via mDNS
+    if discover or coordinator_host == "localhost":
+        console.print("[bold]Scanning LAN for coordinators...[/bold]")
+        from distllm.dist.discovery import DiscoveryClient
+        client = DiscoveryClient(timeout=3.0)
+        found = client.discover()
+        if found:
+            svc = found[0]
+            coordinator_host = svc["host"]
+            coordinator_port = svc["port"]
+            console.print(f"  [green]Discovered:[/green] {svc['name']} at {coordinator_host}:{coordinator_port}")
+            if svc.get("properties", {}).get("model"):
+                console.print(f"  Model: {svc['properties']['model']}")
+        elif not discover:
+            pass  # use default localhost
+        else:
+            console.print("[yellow]No coordinators found on LAN[/yellow]")
+            return
 
     console.print(f"[bold]Joining cluster at {coordinator_host}:{coordinator_port}...[/bold]")
     console.print(f"  Node ID: {node_id}  Listen port: {listen_port}")
@@ -198,11 +259,11 @@ def _cluster_join(
         "--coordinator-port", str(coordinator_port),
         "--device", device,
     ]
+    env = os.environ.copy()
     if cluster_key:
-        args += ["--cluster-key", cluster_key]
-
+        env["DISTLLM_CLUSTER_KEY"] = cluster_key
     try:
-        proc = subprocess.Popen(args)
+        proc = subprocess.Popen(args, env=env)
         console.print(f"[green]Worker started[/green] (PID: {proc.pid})")
         console.print(f"[dim]Connected to {coordinator_host}:{coordinator_port}[/dim]")
         try:

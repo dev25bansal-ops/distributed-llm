@@ -18,8 +18,6 @@ import time
 import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 try:
     from distllm.communication.grpc import GRPCServer, NodeService
     from distllm.communication.serializers import kv_cache_to_proto, proto_to_kv_cache, proto_to_tensor, tensor_to_proto

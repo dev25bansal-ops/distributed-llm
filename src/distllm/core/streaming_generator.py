@@ -42,7 +42,10 @@ class StreamChunk:
     usage: dict[str, Any] | None = None
 
     def to_sse(self) -> str:
-        return f"data: {json.dumps(asdict(self), ensure_ascii=False)}\n\n"
+        data = asdict(self)
+        if data.get("usage") is None:
+            del data["usage"]
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     @staticmethod
     def data_done() -> str:
@@ -181,10 +184,14 @@ class StreamingGenerator:
         # Yield final chunk with usage if configured
         if config.include_usage:
             total_time = time.time() - created
+            if self._tokenizer is not None:
+                prompt_tok_count = len(self._tokenizer.encode(prompt))
+            else:
+                prompt_tok_count = len(prompt.split())
             usage = {
-                "prompt_tokens": len(prompt.split()),
+                "prompt_tokens": prompt_tok_count,
                 "completion_tokens": tokens_generated,
-                "total_tokens": len(prompt.split()) + tokens_generated,
+                "total_tokens": prompt_tok_count + tokens_generated,
                 "time_ms": round(total_time * 1000, 2),
                 "tokens_per_second": round(tokens_generated / max(total_time, 0.001), 1),
             }

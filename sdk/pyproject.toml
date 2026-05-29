@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distllm-sdk"
+version = "1.0.0"
+description = "Python SDK for Distributed LLM — connect to any DistLLM cluster"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "Distributed LLM Contributors"},
+]
+keywords = ["llm", "inference", "distributed", "sdk", "client"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+grpc = ["grpcio>=1.60.0", "grpcio-tools>=1.60.0"]
+
+[project.urls]
+Homepage = "https://github.com/distributed-llm/distributed-llm"
+Repository = "https://github.com/distributed-llm/distributed-llm"
+Documentation = "https://github.com/distributed-llm/distributed-llm/tree/main/sdk"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["distllm_sdk*"]

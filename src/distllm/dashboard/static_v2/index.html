@@ -176,6 +176,21 @@
             <div class="stat-row"><span class="stat-label">Completed</span><span class="stat-value" id="sched-completed">0</span></div>
         </div>
 
+        <!-- Streaming Cost & Savings -->
+        <div class="card">
+            <h2>Streaming Cost & Savings</h2>
+            <div class="stat-row"><span class="stat-label">Active Streams</span><span class="stat-value" id="stream-active">0</span></div>
+            <div class="stat-row"><span class="stat-label">Cost/Second</span><span class="stat-value" id="stream-cost-per-sec">$0.00</span></div>
+            <div class="stat-row"><span class="stat-label">Cloud Cost</span><span class="stat-value" id="stream-cloud-cost">$0.00</span></div>
+            <div class="stat-row"><span class="stat-label">Savings</span><span class="stat-value good" id="stream-savings">$0.00</span></div>
+            <div class="gauge">
+                <span class="gauge-label">Savings</span>
+                <div class="gauge-bar"><div class="gauge-fill green" id="savings-gauge" style="width:0%"></div></div>
+                <span class="gauge-value" id="savings-gauge-val">0%</span>
+            </div>
+            <div class="stat-row"><span class="stat-label">Tokens Tracked</span><span class="stat-value" id="stream-tokens-tracked">0</span></div>
+        </div>
+
         <!-- Scheduler -->
         <div class="card">
             <h2>Throughput</h2>
@@ -390,6 +405,43 @@
         el('raw-metrics').textContent = JSON.stringify(d, null, 2);
     }
 
+    // Cluster Nodes
+    function fetchClusterNodes() {
+        fetch('/api/cluster/nodes')
+            .then(r => r.json())
+            .then(data => {
+                if (!data || !data.nodes || !data.nodes.length) return;
+                const topoContainer = el('topology-container');
+                const nodeContainer = el('node-list');
+                const nodes = data.nodes;
+
+                topoContainer.innerHTML = nodes.map((n, i) => {
+                    const dot = n.healthy ? 'healthy' : 'unhealthy';
+                    const arrow = i < nodes.length - 1 ? '<span class="topology-arrow"> → </span>' : '';
+                    return `<span class="topology-node"><span class="dot ${dot}"></span>${n.node_id} (${n.start_layer}-${n.end_layer})</span>${arrow}`;
+                }).join('');
+
+                nodeContainer.innerHTML = nodes.map(n => {
+                    const status = n.healthy ? 'healthy' : 'unhealthy';
+                    const vramTotal = (n.gpu_memory_total / (1024**3)).toFixed(1);
+                    const vramFree = (n.gpu_memory_free / (1024**3)).toFixed(1);
+                    return `<div class="node-item">
+                        <div class="node-header">
+                            <span class="node-id">${n.node_id}</span>
+                            <span class="node-status ${status}">${status}</span>
+                        </div>
+                        <div style="font-size:0.8rem;color:#94a3b8;">
+                            GPU: ${n.gpu_name || 'unknown'} · VRAM: ${vramFree}/${vramTotal} GB
+                        </div>
+                        <div style="font-size:0.7rem;color:#64748b;">
+                            Layers ${n.start_layer}-${n.end_layer} · ${n.host}:${n.port}
+                            ${n.gpu_sm_count ? ' · ' + n.gpu_sm_count + ' SMs' : ''}
+                        </div>
+                    </div>`;
+                }).join('');
+            }).catch(() => {});
+    }
+
     // Waterfall
     function fetchWaterfall() {
         fetch('/api/requests/waterfall?limit=30')
@@ -416,9 +468,47 @@
             }).catch(() => {});
     }
 
+    // Streaming Cost
+    function fetchStreamingCost() {
+        fetch('/api/streaming-cost/stats')
+            .then(r => r.json())
+            .then(data => {
+                if (!data || data.status === 'not_available') return;
+                el('stream-active').textContent = data.active_streams || 0;
+                el('stream-cost-per-sec').textContent = fmtMoney(data.active_cost_per_second);
+                el('stream-cloud-cost').textContent = fmtMoney(
+                    (data.total_cost_tracked || 0) + (data.total_savings_tracked || 0)
+                );
+                el('stream-savings').textContent = fmtMoney(data.total_savings_tracked);
+                el('stream-tokens-tracked').textContent = (data.total_tokens_tracked || 0).toLocaleString();
+
+                const totalCost = (data.total_cost_tracked || 0) + (data.total_savings_tracked || 0);
+                const savingsPct = totalCost > 0 ? ((data.total_savings_tracked || 0) / totalCost * 100) : 0;
+                el('savings-gauge').style.width = Math.min(savingsPct, 100) + '%';
+                el('savings-gauge-val').textContent = savingsPct.toFixed(1) + '%';
+            }).catch(() => {});
+    }
+
+    // Cost Summary
+    function fetchCostSummary() {
+        fetch('/api/cost/summary')
+            .then(r => r.json())
+            .then(data => {
+                if (!data || data.status === 'not_available') return;
+                el('cost-total').textContent = fmtMoney(data.total_cost_usd);
+                el('cost-avg').textContent = fmtMoney(data.avg_cost_per_request);
+            }).catch(() => {});
+    }
+
     connect();
+    fetchClusterNodes();
     fetchWaterfall();
+    fetchStreamingCost();
+    fetchCostSummary();
+    setInterval(fetchClusterNodes, 5000);
     waterfallTimer = setInterval(fetchWaterfall, 3000);
+    setInterval(fetchStreamingCost, 2000);
+    setInterval(fetchCostSummary, 10000);
 })();
 </script>
 </body>

@@ -21,7 +21,7 @@ from distllm.core.coordinator import Coordinator
 
 def _make_coord():
     with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok, \
-         patch("distllm.core.coordinator.GRPCServer"):
+         patch("distllm.core.coordinator.GRPCServer", create=True):
         mock_tok.from_pretrained.return_value = _mock_tokenizer()
         coord = Coordinator(model_name="test-model")
         coord.tokenizer = _mock_tokenizer()

@@ -1,18 +1,4 @@
-"""DistLLM ChatModel — LangChain BaseChatModel implementation.
-
-Wraps the DistLLM SDK client to provide a native LangChain ``ChatModel``
-with sync, async, streaming, and async-streaming support.
-
-Usage::
-
-    from distllm_langchain import DistLLMChat
-    from langchain_core.messages import HumanMessage
-
-    llm = DistLLMChat(model="distributed-llm", base_url="http://localhost:8000")
-    response = llm.invoke([HumanMessage(content="Hello!")])
-"""
-
-from typing import Any, ClassVar, Iterator, Optional
+from typing import Any, AsyncIterator, Iterator, Optional
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -28,10 +14,10 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from distllm.sdk import DistLLMClient, DistLLMClientSync
+from distllm.sdk.types import ChatCompletionResponse
 
 
 def _convert_message_to_dict(message: BaseMessage) -> dict[str, Any]:
-    """Convert a LangChain message to the DistLLM API dict format."""
     if isinstance(message, HumanMessage):
         return {"role": "user", "content": message.content}
     if isinstance(message, AIMessage):
@@ -52,7 +38,6 @@ def _convert_message_to_dict(message: BaseMessage) -> dict[str, Any]:
 
 
 def _convert_dict_to_message(data: dict) -> BaseMessage:
-    """Convert a DistLLM API response dict to a LangChain message."""
     role = data.get("role", "assistant")
     content = data.get("content", "")
     if role == "assistant":
@@ -65,26 +50,6 @@ def _convert_dict_to_message(data: dict) -> BaseMessage:
 
 
 class DistLLMChat(BaseChatModel):
-    """LangChain ChatModel backed by DistLLM's OpenAI-compatible API.
-
-    Wraps the :class:`distllm.sdk.DistLLMClient` for sync/async chat completions
-    and streaming. Supports tool calling and structured output.
-
-    .. rubric:: Example
-
-    .. code-block:: python
-
-        from distllm_langchain import DistLLMChat
-        from langchain_core.messages import HumanMessage
-
-        llm = DistLLMChat(
-            model="distributed-llm",
-            base_url="http://localhost:8000",
-            temperature=0.7,
-        )
-        response = llm.invoke([HumanMessage(content="Hello!")])
-    """
-
     model: str = "distributed-llm"
     base_url: str = "http://localhost:8000"
     api_key: Optional[str] = None
@@ -93,8 +58,8 @@ class DistLLMChat(BaseChatModel):
     max_tokens: Optional[int] = None
     timeout: float = 120.0
 
-    _client: DistLLMClientSync = None  # type: ignore[assignment]
-    _async_client: DistLLMClient = None  # type: ignore[assignment]
+    _client: DistLLMClientSync = None
+    _async_client: DistLLMClient = None
 
     class Config:
         extra = "allow"
@@ -123,7 +88,6 @@ class DistLLMChat(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Generate a chat completion synchronously."""
         payload = self._build_payload(messages, stop, kwargs)
         resp = self._client.chat_completions(**payload)
         return self._to_chat_result(resp)
@@ -135,11 +99,7 @@ class DistLLMChat(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Generate a chat completion asynchronously."""
-        from distllm.sdk.types import ChatCompletionResponse
-
         payload = self._build_payload(messages, stop, kwargs)
-        # The async client wraps the response in a dataclass; convert to dict
         resp_obj = await self._async_client.chat_completions(**payload)
         if isinstance(resp_obj, ChatCompletionResponse):
             data = {
@@ -171,23 +131,16 @@ class DistLLMChat(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        """Stream a chat completion synchronously."""
         payload = self._build_payload(messages, stop, kwargs)
-        payload["stream"] = True
-
-        for chunk in self._client.chat_completions_stream(**payload):
+        for chunk in self._client.chat_completions_stream(**payload, stream=True):
             delta = chunk if isinstance(chunk, dict) else {}
             content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
-            finish_reason = delta.get("choices", [{}])[0].get("finish_reason")
-            if not content and not finish_reason:
+            if not content:
                 continue
-
-            chunk_message = AIMessageChunk(content=content or "")
+            chunk_message = AIMessageChunk(content=content)
             gen_chunk = ChatGenerationChunk(message=chunk_message)
-
             if run_manager:
-                run_manager.on_llm_new_token(content or "", chunk=gen_chunk)
-
+                run_manager.on_llm_new_token(content, chunk=gen_chunk)
             yield gen_chunk
 
     async def _astream(
@@ -196,24 +149,17 @@ class DistLLMChat(BaseChatModel):
         stop: Optional[list[str]] = None,
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
-    ) -> Iterator[ChatGenerationChunk]:
-        """Stream a chat completion asynchronously."""
+    ) -> AsyncIterator[ChatGenerationChunk]:
         payload = self._build_payload(messages, stop, kwargs)
-        payload["stream"] = True
-
-        async for chunk in self._async_client.chat_completions_stream(**payload):
+        async for chunk in self._async_client.chat_completions_stream(**payload, stream=True):
             delta = chunk if isinstance(chunk, dict) else {}
             content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
-            finish_reason = delta.get("choices", [{}])[0].get("finish_reason")
-            if not content and not finish_reason:
+            if not content:
                 continue
-
-            chunk_message = AIMessageChunk(content=content or "")
+            chunk_message = AIMessageChunk(content=content)
             gen_chunk = ChatGenerationChunk(message=chunk_message)
-
             if run_manager:
-                run_manager.on_llm_new_token(content or "", chunk=gen_chunk)
-
+                run_manager.on_llm_new_token(content, chunk=gen_chunk)
             yield gen_chunk
 
     def _build_payload(
@@ -222,7 +168,6 @@ class DistLLMChat(BaseChatModel):
         stop: Optional[list[str]],
         kwargs: dict,
     ) -> dict:
-        """Build the request payload for the DistLLM API."""
         raw_messages = [_convert_message_to_dict(m) for m in messages]
         payload = {
             "messages": raw_messages,
@@ -238,22 +183,16 @@ class DistLLMChat(BaseChatModel):
 
     @staticmethod
     def _to_chat_result(resp: Any) -> ChatResult:
-        """Convert the SDK response to a LangChain ChatResult."""
         if isinstance(resp, dict):
             choices = resp.get("choices", [])
         else:
             choices = getattr(resp, "choices", [])
-
         generations = []
         for choice in choices:
             if isinstance(choice, dict):
                 msg_data = choice.get("message", choice)
-                finish = choice.get("finish_reason")
             else:
                 msg_data = choice
-                finish = getattr(choice, "finish_reason", None)
-
-            message = _convert_dict_to_message(msg_data)
+            message = _convert_dict_to_message(msg_data if isinstance(msg_data, dict) else {"role": "assistant", "content": msg_data.content if msg_data else ""})
             generations.append(ChatGeneration(message=message))
-
         return ChatResult(generations=generations)

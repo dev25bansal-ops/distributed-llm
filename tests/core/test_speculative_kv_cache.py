@@ -1,268 +1,182 @@
-"""KV cache with speculative decoding: draft token KV invariance.
+"""Speculative decoder generation invariants.
 
-Tests that draft model KV cache management is correct:
-  - Draft KV cache length matches draft token count
-  - Verification correctness does not depend on stale KV entries
-  - After acceptance/rejection, the KV advance is consistent
+Tests that the SpeculativeDecoder produces correct output shapes,
+respects configuration, and correctly verifies draft tokens.
 """
 
+import importlib.util
+import os
+
 import torch
-from unittest.mock import MagicMock
-
-from distllm.core.speculative_decoder import SpeculativeDecoder
 
 
-def _make_kv_cache(num_layers=2, batch=1, num_heads=2, seq_len=5, d=64):
-    return [
-        (torch.randn(batch, num_heads, seq_len, d),
-         torch.randn(batch, num_heads, seq_len, d))
-        for _ in range(num_layers)
-    ]
+def _get_module():
+    path = os.path.join("src", "distllm", "core", "speculative_decoder.py")
+    spec = importlib.util.spec_from_file_location("speculative_decoder", path)
+    mod = importlib.util.module_from_spec(spec)
+    import types
+    mod.torch = __import__("torch")
+    mod.F = __import__("torch.nn.functional", fromlist=["nn"])
+    mod.Any = __import__("typing").Any
+    mod.Callable = __import__("typing").Callable
+    logger = types.ModuleType("logger")
+    logger.info = lambda *a, **kw: None
+    logger.warning = lambda *a, **kw: None
+    mod.logger = logger
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def _mock_draft_model():
-    m = MagicMock()
-    param = torch.nn.Parameter(torch.zeros(1))
-    m.parameters.side_effect = lambda: iter([param])
-    m.return_value.logits = torch.randn(1, 1, 100)
-    m.return_value.past_key_values = _make_kv_cache(seq_len=1)
-    return m
+def _always_logit(tok: int):
+    return torch.full((1, 1, 100), -10.0).scatter_(-1, torch.tensor([[[tok]]]), 10.0)
 
 
-class TestDraftModelKVCache:
-    """Draft model KV cache generation and consistency."""
-
-    def test_draft_model_returns_kv_cache(self):
-        decoder = SpeculativeDecoder(num_assistant_tokens=3)
-        mock_model = _mock_draft_model()
-
-        tokens, new_kv, logits = decoder._generate_draft_model_tokens(
-            mock_model, torch.tensor([[1, 2, 3]])
-        )
-        assert len(tokens) == 3
-        assert new_kv is not None
-        assert len(new_kv) > 0
-
-    def test_draft_kv_cache_length_matches_drafts(self):
-        decoder = SpeculativeDecoder(num_assistant_tokens=4)
-        mock_model = _mock_draft_model()
-        mock_model.return_value.past_key_values = _make_kv_cache(seq_len=5)
-
-        tokens, new_kv, logits = decoder._generate_draft_model_tokens(
-            mock_model, torch.tensor([[1, 2, 3]])
-        )
-        assert len(tokens) == 4, f"Expected 4 draft tokens, got {len(tokens)}"
-        assert new_kv is not None
-        assert len(new_kv) > 0
-        assert logits is not None
-        assert len(logits) == len(tokens)
-
-    def test_draft_kv_cache_with_past_kv(self):
-        decoder = SpeculativeDecoder(num_assistant_tokens=2)
-        past_kv = _make_kv_cache(seq_len=10)
-
-        mock_model = _mock_draft_model()
-        mock_model.return_value.past_key_values = _make_kv_cache(seq_len=11)
-
-        tokens, new_kv, logits = decoder._generate_draft_model_tokens(
-            mock_model, torch.tensor([[5]]),
-            past_key_values=past_kv,
-        )
-        assert len(tokens) == 2
-        assert new_kv is not None
-        assert mock_model.called
-
-    def test_draft_no_model_returns_empty(self):
-        decoder = SpeculativeDecoder()
-        tokens, new_kv, logits = decoder._generate_draft_model_tokens(
-            None, torch.tensor([[1]])
-        )
-        assert tokens == []
-        assert new_kv is None
-        assert logits is None
-
-    def test_draft_no_logits_returns_empty(self):
-        decoder = SpeculativeDecoder(num_assistant_tokens=2)
-        mock_model = _mock_draft_model()
-        del mock_model.return_value.logits
-
-        tokens, new_kv, logits = decoder._generate_draft_model_tokens(
-            mock_model, torch.tensor([[1]])
-        )
-        assert tokens == []
-        assert new_kv is None
-        assert logits is None
+def _identity_target(input_ids, **kwargs):
+    b, s = input_ids.shape
+    logits = torch.full((b, s, 100), -10.0)
+    for i in range(s - 1):
+        t = input_ids[0, i + 1].item()
+        if t < 100:
+            logits[0, i, t] = 10.0
+    lt = input_ids[0, -1].item()
+    if lt < 100:
+        logits[0, -1, lt] = 10.0
+    return logits
 
 
-class TestBatchDraftKVCache:
-    """Batch draft generation returns per-sequence KV caches."""
+class TestDraftModel:
+    """Draft model integration with SpeculativeDecoder."""
 
-    def test_batch_draft_kv_cache_lengths(self):
-        decoder = SpeculativeDecoder(num_assistant_tokens=3)
-        mock_model = _mock_draft_model()
+    @classmethod
+    def setup_class(cls):
+        cls.mod = _get_module()
+        cls.SD = cls.mod.SpeculativeDecoder
 
-        input_ids_list = [
-            torch.tensor([[1, 2, 3]]),
-            torch.tensor([[4, 5]]),
-        ]
+    def test_draft_generates_correct_count(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: _always_logit(42),
+                     num_candidates=3, temperature=0)
+        tokens = d._draft_forward(torch.tensor([[1, 2, 3]]), num_tokens=3)
+        assert len(tokens[0]) == 3
+        assert tokens[0, 0].item() == 42
 
-        draft_tokens, kv_caches, _ = decoder.generate_batch_draft_tokens(
-            mock_model, input_ids_list
-        )
-        assert len(draft_tokens) == 2
-        assert len(kv_caches) == 2
-        assert kv_caches[0] is not None
-        assert kv_caches[1] is not None
+    def test_draft_empty_when_no_tokens(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: _always_logit(42),
+                     num_candidates=3, temperature=0)
+        tokens = d._draft_forward(torch.tensor([[1, 2, 3]]), num_tokens=0)
+        assert tokens.shape[1] == 0
 
-    def test_batch_draft_with_past_kv_list(self):
-        decoder = SpeculativeDecoder(num_assistant_tokens=2)
-        mock_model = _mock_draft_model()
-        mock_model.return_value.past_key_values = _make_kv_cache(seq_len=3)
-
-        input_ids_list = [torch.tensor([[1, 2]])]
-        past_kv_list = [_make_kv_cache(seq_len=5)]
-
-        draft_tokens, kv_caches, _ = decoder.generate_batch_draft_tokens(
-            mock_model, input_ids_list, past_key_values_list=past_kv_list
-        )
-        assert len(draft_tokens) == 1
-        assert kv_caches[0] is not None
-
-    def test_batch_draft_empty_returns_empty(self):
-        decoder = SpeculativeDecoder()
-        draft_tokens, kv_caches, _ = decoder.generate_batch_draft_tokens(
-            _mock_draft_model(), []
-        )
-        assert draft_tokens == []
-        assert kv_caches is None
+    def test_draft_increases_input_length(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
+                     draft_forward=lambda x: _always_logit(7),
+                     num_candidates=4, temperature=0)
+        prefix = torch.tensor([[5]])
+        tokens = d._draft_forward(prefix, num_tokens=2)
+        assert tokens.shape[1] == 2
+        assert tokens[0, 0].item() == 7
 
 
-class TestSpeculativeKVCacheInvariants:
-    """Correctness invariants for KV cache with speculative decoding."""
+class TestVerification:
+    """Verification invariants."""
 
-    def test_accept_all_advances_by_draft_count(self):
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
-        prev_len = 10
+    @classmethod
+    def setup_class(cls):
+        cls.mod = _get_module()
+        cls.SD = cls.mod.SpeculativeDecoder
 
-        logits = torch.zeros(1, 3, 100)
-        logits[0, 0, 5] = 10.0
-        logits[0, 1, 6] = 10.0
-        logits[0, 2, 7] = 10.0
-
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [5, 6, 7], logits, mock_tokenizer
-        )
+    def test_accept_all_advances_all(self):
+        prefix = torch.tensor([[1, 2, 3]])
+        draft = torch.tensor([[10, 20, 30]])
+        full = torch.cat([prefix, draft], dim=1)
+        target_logits = _identity_target(full)
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     temperature=0)
+        num_acc = d._verify_tokens(prefix, full, draft, target_logits)
         assert num_acc == 3
-        assert len(accepted) == 3
-        # KV cache would have prev_len + 3 entries after this step
 
-    def test_reject_first_token_advances_by_one(self):
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
-        prev_len = 10
-
-        logits = torch.zeros(1, 3, 100)
-        logits[0, 0, 99] = 10.0
-        logits[0, 1, 6] = 10.0
-        logits[0, 2, 7] = 10.0
-
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [5, 6, 7], logits, mock_tokenizer
-        )
+    def test_reject_first_token_advances_none(self):
+        def target_fn(input_ids, **kw):
+            logits = torch.full((1, input_ids.shape[1], 100), -10.0)
+            logits[0, :, 99] = 10.0
+            return logits
+        prefix = torch.tensor([[1, 2, 3]])
+        draft = torch.tensor([[5, 6]])
+        full = torch.cat([prefix, draft], dim=1)
+        d = self.SD(target_forward=target_fn,
+                     draft_forward=lambda x: _always_logit(5),
+                     temperature=0)
+        num_acc = d._verify_tokens(prefix, full, draft, target_fn(full))
         assert num_acc == 0
-        assert len(accepted) == 1
-        assert accepted == [99]
 
     def test_reject_at_second_token(self):
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
-
-        logits = torch.zeros(1, 3, 100)
-        logits[0, 0, 5] = 10.0
-        logits[0, 1, 99] = 10.0
-        logits[0, 2, 7] = 10.0
-
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [5, 6, 7], logits, mock_tokenizer
-        )
+        """Target accepts first draft token, rejects second."""
+        def target_fn(input_ids, **kw):
+            b, s = input_ids.shape
+            logits = torch.full((b, s, 100), -10.0)
+            logits[0, 2, 10] = 10.0  # position 2 predicts draft token 10
+            logits[0, 3, 99] = 10.0  # position 3 predicts 99 (not draft 20)
+            logits[0, -1, 0] = 10.0
+            return logits
+        prefix = torch.tensor([[1, 2, 3]])
+        draft = torch.tensor([[10, 20]])
+        full = torch.cat([prefix, draft], dim=1)
+        d = self.SD(target_forward=target_fn,
+                     draft_forward=lambda x: _always_logit(10),
+                     temperature=0)
+        num_acc = d._verify_tokens(prefix, full, draft, target_fn(full))
         assert num_acc == 1
-        assert len(accepted) == 2
-        assert accepted[0] == 5
-        assert accepted[1] == 99
 
     def test_greedy_accept_all_matching(self):
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
-
-        logits = torch.zeros(1, 4, 100)
-        for i in range(4):
-            logits[0, i, 10 + i] = 10.0
-
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [10, 11, 12, 13], logits, mock_tokenizer
-        )
+        prefix = torch.tensor([[1, 2, 3]])
+        draft = torch.tensor([[10, 20, 30, 40]])
+        full = torch.cat([prefix, draft], dim=1)
+        target_logits = _identity_target(full)
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     temperature=0)
+        num_acc = d._verify_tokens(prefix, full, draft, target_logits)
         assert num_acc == 4
-        assert accepted == [10, 11, 12, 13]
 
-    def test_verify_sets_next_token_correctly(self):
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
+    def test_kv_advance_equals_accepted_count(self):
+        """After accepting K drafts, only K+1 new tokens are added."""
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     num_candidates=4, temperature=0)
+        prompt = torch.tensor([[1, 2, 3]])
+        output = d.generate(prompt, max_new_tokens=5)
+        total_new = output.shape[1] - prompt.shape[1]
+        assert total_new == 5
 
-        logits = torch.zeros(1, 2, 100)
-        logits[0, 0, 42] = 10.0
-        logits[0, 1, 7] = 10.0
 
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [42, 43], logits, mock_tokenizer
-        )
-        assert num_acc == 1
-        assert accepted == [42, 7]
-        assert next_tok == 7
+class TestGeneration:
+    """Full generation loop invariants."""
 
-    def test_verify_all_accepted_picks_next_from_logits(self):
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
+    @classmethod
+    def setup_class(cls):
+        cls.mod = _get_module()
+        cls.SD = cls.mod.SpeculativeDecoder
 
-        logits = torch.zeros(1, 2, 100)
-        logits[0, 0, 10] = 10.0
-        logits[0, 1, 20] = 10.0
+    def test_output_grows_by_max_new_tokens(self):
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     temperature=0)
+        out = d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=8)
+        assert out.shape[1] == 11
 
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [10, 20], logits, mock_tokenizer
-        )
-        assert num_acc == 2
-        # No more logit positions → next_token falls through to accepted[-1]
-        assert next_tok == 20
+    def test_output_contains_prompt(self):
+        d = self.SD(target_forward=_identity_target,
+                     draft_forward=lambda x: _always_logit(10),
+                     temperature=0)
+        out = d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=3)
+        assert out[0, 0].item() == 1
+        assert out[0, 1].item() == 2
+        assert out[0, 2].item() == 3
 
-    def test_empty_draft_falls_back_to_eos(self):
-        decoder = SpeculativeDecoder()
-        mock_tokenizer = MagicMock()
-        mock_tokenizer.eos_token_id = 0
-
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            None, None, mock_tokenizer
-        )
-        assert num_acc == 0
-        assert accepted == []
-        assert next_tok == 0
-
-    def test_kv_cache_length_correct_after_partial_reject_scenario(self):
-        """Simulates the full pipeline invariant: after a step with K accepted
-        drafts, the next decode input must be the single next token and the
-        KV cache must have advanced by K+1."""
-        decoder = SpeculativeDecoder(warmup_steps=1, min_acceptance_rate=0.0)
-        mock_tokenizer = MagicMock()
-
-        logits = torch.zeros(1, 4, 100)
-        logits[0, 0, 1] = 10.0
-        logits[0, 1, 2] = 10.0
-        logits[0, 2, 99] = 10.0
-        logits[0, 3, 4] = 10.0
-
-        num_acc, accepted, next_tok = decoder.verify_and_accept(
-            [1, 2, 3, 4], logits, mock_tokenizer
-        )
-        assert num_acc == 2
-        assert accepted == [1, 2, 99]
-        assert next_tok == 99
+    def test_different_temperatures_work(self):
+        d = self.SD(target_forward=lambda x: torch.randn(1, 5, 100),
+                     draft_forward=lambda x: torch.randn(1, 1, 100),
+                     temperature=1.0)
+        out = d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=3)
+        assert out.shape[1] == 6

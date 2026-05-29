@@ -1,7 +1,7 @@
 """Tests for the multi-model chat router (ModelRouter)."""
 
 from distllm.config.settings import ChatRouterSettings, RouteRuleSettings
-from distllm.core.chat_router import ModelRouter
+from distllm.core.model_router import ModelRouter
 
 
 def _make_settings(

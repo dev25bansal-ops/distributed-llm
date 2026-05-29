@@ -102,32 +102,32 @@ async def completions(request: Request, body: CompletionRequest):
 
     start_time = time.time()
 
-    # Use batch scheduler with constraint if response_format is set and scheduler is available
-    if body.response_format and coord.scheduler is not None:
-        request_id = coord.generate_async(
-            body.prompt,
-            max_new_tokens=body.max_tokens,
-            temperature=body.temperature,
-            top_p=body.top_p,
-            top_k=body.top_k,
-            schema=schema,
-            priority=body.priority,
-            response_format=body.response_format,
-            user_id=getattr(request.state, "tenant", "default"),
-        )
-        result = await asyncio.to_thread(coord.wait_for_result, request_id)
-    else:
-        result = await asyncio.to_thread(
-            coord.generate,
-            body.prompt,
-            body.max_tokens,
-            body.temperature,
-            body.top_p,
-            user_id=getattr(request.state, "tenant", "default"),
-        )
+    result = await asyncio.to_thread(
+        coord.generate,
+        body.prompt,
+        body.max_tokens,
+        body.temperature,
+        body.top_p,
+        user_id=getattr(request.state, "tenant", "default"),
+    )
     elapsed = time.time() - start_time
 
-    generated = result[len(body.prompt):] if result.startswith(body.prompt) else result
+    generated = result
+
+    # Validate structured output if response_format specified
+    if body.response_format and generated:
+        from distllm.core.structured_output import validate_structured_output
+        fmt_type = body.response_format.get("type", "")
+        validation_schema = None
+        if fmt_type == "json_schema" and "schema" in body.response_format:
+            validation_schema = body.response_format["schema"]
+        elif fmt_type == "json_object":
+            validation_schema = {}
+        if validation_schema is not None:
+            validated = validate_structured_output(generated, validation_schema)
+            if validated is None:
+                from loguru import logger
+                logger.warning(f"Structured output validation failed for response_format={fmt_type}")
 
     return CompletionResponse(
         model=body.model,

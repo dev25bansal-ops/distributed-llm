@@ -1,0 +1,3 @@
+DEFAULT_HTTP_TIMEOUT: float = 120.0
+MAX_RETRIES: int = 3
+RETRY_DELAY: float = 1.0

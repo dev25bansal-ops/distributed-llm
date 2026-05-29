@@ -1,0 +1,58 @@
+replicaCount: 1
+
+image:
+  repository: distributed-llm
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  rest:
+    port: 8000
+  grpc:
+    port: 50051
+  metrics:
+    port: 9090
+
+resources:
+  limits:
+    cpu: 8
+    memory: 32Gi
+    nvidia.com/gpu: 1
+  requests:
+    cpu: 2
+    memory: 8Gi
+
+env:
+  DISTLLM_LOG_LEVEL: info
+  DISTLLM_COORDINATOR_HOST: "0.0.0.0"
+
+persistence:
+  models:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+  cache:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+
+redis:
+  enabled: true
+  address: ""
+  password: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+
+ingress:
+  enabled: false
+  host: distllm.example.com
+  tls: {}

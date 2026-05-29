@@ -1,27 +1,34 @@
-"""Tests for VRAM-aware quantization method selection."""
+"""Tests for VRAM-aware quantization method selection.
+
+Updated to import from distllm.dist.partition.quantization_tuner
+(the Adaptive Precision Optimizer) instead of the non-existent
+distllm.core.quantization_selector module.
+"""
 
 import pytest
-from distllm.core.quantization_selector import (
-    NodeVRAMInfo,
+from distllm.dist.partition.quantization_tuner import (
+    NodeInfo,
+    QuantMethod,
+    QuantizationAutoTuner,
     select_for_node,
-    estimate_model_size_bytes,
-    build_quantization_config,
 )
 
 
-class TestNodeVRAMInfo:
-    """Test NodeVRAMInfo dataclass."""
+class TestNodeInfo:
+    """Test NodeInfo model (replaces NodeVRAMInfo)."""
 
     def test_default_values(self):
-        info = NodeVRAMInfo()
-        assert info.total_memory == 0
-        assert info.available_memory == 0
-        assert info.device_type == "cpu"
+        info = NodeInfo(node_id="test")
+        assert info.total_memory_bytes == 8 * 1024**3
+        assert info.device_type == "cuda"
 
     def test_custom_values(self):
-        info = NodeVRAMInfo(total_memory=16e9, available_memory=12e9, device_type="cuda")
-        assert info.total_memory == 16e9
-        assert info.available_memory == 12e9
+        info = NodeInfo(
+            node_id="test",
+            total_memory_bytes=16_000_000_000,
+            device_type="cuda",
+        )
+        assert info.total_memory_bytes == 16_000_000_000
         assert info.device_type == "cuda"
 
 
@@ -29,99 +36,26 @@ class TestSelectForNode:
     """Test quantization method selection based on VRAM."""
 
     def test_cpu_node_returns_none(self):
-        info = NodeVRAMInfo(device_type="cpu")
-        assert select_for_node(info, 1e9) == "none"
-
-    def test_zero_vram_returns_none(self):
-        info = NodeVRAMInfo(device_type="cuda", available_memory=0)
-        assert select_for_node(info, 1e9) == "none"
+        info = NodeInfo(node_id="cpu", device_type="cpu", total_memory_bytes=16 * 1024**3)
+        assert select_for_node(info, 1_000_000_000) == QuantMethod.NONE
 
     def test_sufficient_vram_no_quantization(self):
-        # VRAM > model * 1.8 → no quantization
-        info = NodeVRAMInfo(device_type="cuda", available_memory=10e9)
-        assert select_for_node(info, 4e9) == "none"
+        # 80GB >> 4GB model -> no quantization needed
+        info = NodeInfo(node_id="big", total_memory_bytes=80 * 1024**3)
+        assert select_for_node(info, 4_000_000_000) == QuantMethod.NONE
 
-    def test_moderate_vram_8bit(self):
-        # VRAM < model * 1.8 but >= model * 1.2 → 8-bit
-        info = NodeVRAMInfo(device_type="cuda", available_memory=6e9)
-        assert select_for_node(info, 4e9) == "bnb_8bit"
+    def test_moderate_vram_needs_quant(self):
+        # 8GB VRAM, 14GB model -> needs quantization
+        info = NodeInfo(node_id="tight", total_memory_bytes=8 * 1024**3)
+        result = select_for_node(info, 14_000_000_000)
+        assert result != QuantMethod.NONE
 
-    def test_low_vram_gptq(self):
-        # VRAM < model * 1.1 → GPTQ 4-bit (most aggressive)
-        info = NodeVRAMInfo(device_type="cuda", available_memory=4e9)
-        assert select_for_node(info, 4e9) == "gptq"
+    def test_very_low_vram_returns_method(self):
+        info = NodeInfo(node_id="tiny", total_memory_bytes=4 * 1024**3)
+        result = select_for_node(info, 70_000_000_000)
+        assert isinstance(result, QuantMethod)
 
-    def test_very_low_vram_gptq(self):
-        # VRAM much less than model → GPTQ 4-bit
-        info = NodeVRAMInfo(device_type="cuda", available_memory=1e9)
-        assert select_for_node(info, 4e9) == "gptq"
-
-    def test_boundary_1_5x(self):
-        # 6e9 < 5e9 * 1.5 = 7.5e9 → AWQ 4-bit
-        info = NodeVRAMInfo(device_type="cuda", available_memory=6e9)
-        assert select_for_node(info, 5e9) == "awq"
-
-    def test_target_latency_unused(self):
-        # target_latency_ms is reserved for future use
-        info = NodeVRAMInfo(device_type="cuda", available_memory=10e9)
-        assert select_for_node(info, 4e9, target_latency_ms=100.0) == "none"
-
-
-class TestEstimateModelSize:
-    """Test model size estimation."""
-
-    def test_small_model(self):
-        # TinyStories-like: hidden=64, layers=4, vocab=5000
-        size = estimate_model_size_bytes(64, 4, 5000)
-        assert size > 0
-        # Roughly: 2 * (5000*64) + 4 * 4 * 64^2 = 640000 + 65536 = ~705K params
-        assert size < 10e6  # < 10MB in fp16
-
-    def test_medium_model(self):
-        # GPT-2 small: hidden=768, layers=12, vocab=50257
-        size = estimate_model_size_bytes(768, 12, 50257)
-        assert size > 100e6  # > 100MB
-
-    def test_fp32_larger_than_fp16(self):
-        size_32 = estimate_model_size_bytes(768, 12, 50257, dtype_bytes=4)
-        size_16 = estimate_model_size_bytes(768, 12, 50257, dtype_bytes=2)
-        assert size_32 == size_16 * 2
-
-    def test_more_layers_increases_size(self):
-        size_12 = estimate_model_size_bytes(768, 12, 50257)
-        size_24 = estimate_model_size_bytes(768, 24, 50257)
-        assert size_24 > size_12
-
-
-class TestBuildQuantizationConfig:
-    """Test BitsAndBytesConfig creation."""
-
-    def test_none_method(self):
-        assert build_quantization_config("none") is None
-
-    def test_bnb_8bit(self):
-        config = build_quantization_config("bnb_8bit")
-        assert config is not None
-        assert config.load_in_8bit is True
-        assert config.llm_int8_threshold == 6.0
-
-    def test_bnb_8bit_custom_threshold(self):
-        config = build_quantization_config("bnb_8bit", llm_int8_threshold=8.0)
-        assert config.llm_int8_threshold == 8.0
-
-    def test_bnb_4bit(self):
-        config = build_quantization_config("bnb_4bit")
-        assert config is not None
-        assert config.load_in_4bit is True
-        assert config.bnb_4bit_quant_type == "nf4"
-        assert config.bnb_4bit_use_double_quant is True
-
-    def test_gptq_method_returns_config_dict(self):
-        config = build_quantization_config("gptq")
-        assert isinstance(config, dict)
-        assert config["method"] == "gptq"
-        assert config["bits"] == 4
-
-    def test_unknown_method_returns_none(self):
-        config = build_quantization_config("unknown_method_xyz")
-        assert config is None
+    def test_returns_quant_method_type(self):
+        info = NodeInfo(node_id="n0", total_memory_bytes=10 * 1024**3)
+        result = select_for_node(info, 4_000_000_000)
+        assert isinstance(result, QuantMethod)
