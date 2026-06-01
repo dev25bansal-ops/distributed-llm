@@ -6,16 +6,29 @@ from typing import Any
 
 import torch
 from loguru import logger
-import torch
-from transformers import AutoTokenizer
 
 from distllm.errors import ConfigError
 from distllm.core.token_generator import TokenGenerator
 from distllm.core.request_replay import get_replay_buffer, RequestReplayBuffer, DeterministicMode
-from distllm.models.partitioner import ModelPartitioner, get_model_info
 from distllm.dist.latency import LatencyTracker
 from distllm.dist.reputation import ReputationSystem
 from distllm.dist.straggler import StragglerDetector
+
+# transformers is optional — only needed for model loading, not routing
+try:
+    from transformers import AutoTokenizer
+except ImportError:
+    AutoTokenizer = None  # type: ignore[assignment,misc]
+
+try:
+    from distllm.models.partitioner import ModelPartitioner, get_model_info
+except ImportError:
+    ModelPartitioner = None  # type: ignore[assignment,misc]
+    get_model_info = None  # type: ignore[assignment,misc]
+
+__all__ = [
+    "InferenceEngine",
+]
 
 
 class InferenceEngine:
@@ -89,6 +102,11 @@ class InferenceEngine:
 
     def load_local_model(self) -> None:
         """Load the full model on this machine (single-node mode)."""
+        if ModelPartitioner is None:
+            raise ImportError(
+                "transformers and torch required for model loading. "
+                "Install with: pip install distributed-llm[self-hosted]"
+            )
         self.local_partitioner = ModelPartitioner(
             model_name=self.model_name,
             dtype=self.dtype,
@@ -103,6 +121,49 @@ class InferenceEngine:
         self.model_info = get_model_info(self.model_name, self.trust_remote_code)
         self.total_layers = self.model_info["num_layers"]
         logger.info(f"Local model loaded: {self.model_name}")
+
+    def warmup(self, num_tokens: int = 8) -> float:
+        """Warm up the model by running dummy tokens through it.
+
+        Prevents first-request latency spikes from CUDA graph capture,
+        JIT compilation, and memory allocation. Should be called after
+        model load and before accepting real requests.
+
+        Args:
+            num_tokens: Number of dummy tokens to generate.
+
+        Returns:
+            Warmup duration in milliseconds.
+        """
+        start = time.monotonic()
+        try:
+            if self.tokenizer is None:
+                return 0.0
+
+            # Create a small dummy prompt
+            dummy_prompt = "Hello" * 2
+            dummy_ids = self.tokenizer.encode(dummy_prompt, return_tensors="pt")
+            if hasattr(dummy_ids, 'to') and torch.cuda.is_available():
+                dummy_ids = dummy_ids.to("cuda")
+
+            # Run through the model without storing results
+            with torch.no_grad():
+                if self.local_partitioner is not None:
+                    # Single-node mode: run through partitioner
+                    for _ in range(num_tokens):
+                        self.local_partitioner.forward(input_ids=dummy_ids)
+                elif self._pipeline is not None:
+                    # Distributed mode: run through pipeline
+                    self._pipeline.execute(dummy_ids)
+
+            elapsed_ms = (time.monotonic() - start) * 1000
+            logger.info(f"Model warmup complete: {num_tokens} tokens in {elapsed_ms:.0f}ms")
+            return elapsed_ms
+
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - start) * 1000
+            logger.warning(f"Model warmup failed after {elapsed_ms:.0f}ms: {e}")
+            return elapsed_ms
 
     def generate(
         self,
@@ -333,6 +394,13 @@ class InferenceEngine:
                 step_input = generated_ids if step == 0 else generated_ids[:, -1:]
 
                 try:
+                    # Note: Current implementation is sequential — each token
+                    # waits for the full pipeline before the next starts.
+                    # For 2-3x throughput improvement, implement micro-batching:
+                    # - Send N tokens through pipeline simultaneously
+                    # - Each node processes its layer for all N tokens
+                    # - Overlap communication with computation
+                    # See: pipeline_orchestrator.py for overlap scheduling
                     logits = self._pipeline.run_pipeline(
                         step_input, node_kv_caches, request_id=gen_id,
                     )
@@ -346,7 +414,8 @@ class InferenceEngine:
                     raise
 
                 # Save checkpoint for graceful degradation on node failure
-                if self._recovery_manager is not None:
+                # Only checkpoint every 10 tokens to avoid memory leak
+                if self._recovery_manager is not None and step % 10 == 0:
                     self._recovery_manager.save_checkpoint(
                         request_id=f"req_{step}",
                         kv_cache=node_kv_caches,

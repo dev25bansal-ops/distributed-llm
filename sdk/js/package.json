@@ -1,0 +1,24 @@
+{
+  "name": "distllm-sdk",
+  "version": "0.4.0",
+  "description": "JavaScript/TypeScript SDK for Distributed LLM inference",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "keywords": ["llm", "inference", "distributed", "openai-compatible"],
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": ["dist/", "README.md"]
+}

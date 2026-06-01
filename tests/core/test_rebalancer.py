@@ -3,8 +3,8 @@
 import time
 import pytest
 
-from distllm.core.latency_tracker import LatencyTracker
-from distllm.core.rebalancer import Rebalancer, PartitionRecommendation
+from distllm.dist.latency import LatencyTracker
+from distllm.dist.rebalancer import Rebalancer, PartitionRecommendation
 from distllm.config.settings import RebalancerSettings
 
 

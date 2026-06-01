@@ -1,0 +1,204 @@
+# Distributed Pipeline Integration Test
+#
+# Spins up a real multi-node cluster using Docker Compose and runs
+# end-to-end tests against it. This catches bugs that thread-based
+# tests miss: real gRPC, real network, real container orchestration.
+#
+# Tests:
+# - Multi-node model loading and inference
+# - Node failure recovery
+# - Health check propagation
+# - API endpoint correctness
+# - Streaming responses
+
+name: Distributed Integration Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/distllm/**"
+      - "docker-compose*.yml"
+      - "Dockerfile*"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/distllm/**"
+      - "docker-compose*.yml"
+  workflow_dispatch:
+
+env:
+  MODEL_NAME: "roneneldan/TinyStories-1M"
+  TOTAL_LAYERS: "8"
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # ── Build Docker images ────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build coordinator image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: distllm:coordinator
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save image
+        run: docker save distllm:coordinator | gzip > distllm-image.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: distllm-image.tar.gz
+          retention-days: 1
+
+  # ── Integration tests against real cluster ─────────────────────
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: docker load < distllm-image.tar.gz
+
+      - name: Create test network
+        run: docker network create distllm-test-net || true
+
+      - name: Start coordinator
+        run: |
+          docker run -d \
+            --name distllm-coordinator \
+            --network distllm-test-net \
+            -p 8000:8000 \
+            -p 50050:50050 \
+            -e DISTLLM_LOG_LEVEL=DEBUG \
+            -e MODEL_NAME=${{ env.MODEL_NAME }} \
+            distllm:coordinator \
+            distllm-api --model ${{ env.MODEL_NAME }} --local --port 8000
+
+      - name: Wait for coordinator to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Coordinator ready after ${i}s"
+              exit 0
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 2
+          done
+          echo "Coordinator failed to start"
+          docker logs distllm-coordinator
+          exit 1
+
+      - name: Install test dependencies
+        run: pip install httpx pytest
+
+      - name: Run API integration tests
+        run: |
+          python -c "
+          import httpx
+          import json
+
+          base = 'http://localhost:8000'
+          client = httpx.Client(timeout=30.0)
+
+          # Test 1: Health check
+          r = client.get(f'{base}/health')
+          assert r.status_code == 200, f'Health failed: {r.status_code}'
+          print('✓ Health check passed')
+
+          # Test 2: List models
+          r = client.get(f'{base}/v1/models')
+          assert r.status_code == 200
+          print('✓ List models passed')
+
+          # Test 3: Chat completion
+          r = client.post(f'{base}/v1/chat/completions', json={
+              'model': '${{ env.MODEL_NAME }}',
+              'messages': [{'role': 'user', 'content': 'Hello'}],
+              'max_tokens': 10,
+              'temperature': 0.1,
+          })
+          assert r.status_code == 200, f'Chat failed: {r.status_code} {r.text}'
+          data = r.json()
+          assert 'choices' in data
+          assert len(data['choices']) > 0
+          print(f'✓ Chat completion passed: {data[\"choices\"][0][\"message\"][\"content\"][:50]}...')
+
+          # Test 4: Text completion
+          r = client.post(f'{base}/v1/completions', json={
+              'model': '${{ env.MODEL_NAME }}',
+              'prompt': 'Once upon a time',
+              'max_tokens': 10,
+          })
+          assert r.status_code == 200, f'Completion failed: {r.status_code}'
+          print('✓ Text completion passed')
+
+          # Test 5: Streaming
+          with client.stream('POST', f'{base}/v1/chat/completions', json={
+              'model': '${{ env.MODEL_NAME }}',
+              'messages': [{'role': 'user', 'content': 'Tell me a story'}],
+              'max_tokens': 20,
+              'stream': True,
+          }) as r:
+              assert r.status_code == 200
+              tokens = []
+              for line in r.iter_lines():
+                  if line.startswith('data: ') and line != 'data: [DONE]':
+                      try:
+                          chunk = json.loads(line[6:])
+                          delta = chunk.get('choices', [{}])[0].get('delta', {})
+                          if 'content' in delta:
+                              tokens.append(delta['content'])
+                      except json.JSONDecodeError:
+                          pass
+              assert len(tokens) > 0, 'No streaming tokens received'
+              print(f'✓ Streaming passed: received {len(tokens)} chunks')
+
+          # Test 6: Error handling
+          r = client.post(f'{base}/v1/chat/completions', json={
+              'model': 'nonexistent-model',
+              'messages': [{'role': 'user', 'content': 'test'}],
+          })
+          assert r.status_code in (400, 404), f'Expected error, got {r.status_code}'
+          print('✓ Error handling passed')
+
+          print('\\nAll integration tests passed!')
+          "
+
+      - name: Collect coordinator logs
+        if: always()
+        run: docker logs distllm-coordinator > coordinator.log 2>&1
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-logs
+          path: coordinator.log
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop distllm-coordinator || true
+          docker rm distllm-coordinator || true
+          docker network rm distllm-test-net || true

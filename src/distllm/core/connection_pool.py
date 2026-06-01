@@ -22,7 +22,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from loguru import logger
 
@@ -34,7 +34,7 @@ class PooledConnection:
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
     use_count: int = 0
-    remote_addr: Tuple[str, int] = ("", 0)
+    remote_addr: tuple[str, int] = ("", 0)
 
 
 @dataclass
@@ -57,7 +57,7 @@ class PoolStats:
     creates: int = 0
     evictions: int = 0
     errors: int = 0
-    pool_sizes: Dict[str, int] = field(default_factory=dict)
+    pool_sizes: dict[str, int] = field(default_factory=dict)
 
     @property
     def hit_rate(self) -> float:
@@ -96,13 +96,13 @@ class ConnectionPool:
         self._enable_nodelay = enable_nodelay
         self._purge_interval_s = purge_interval_s
 
-        self._pool: Dict[Tuple[str, int], List[PooledConnection]] = {}
+        self._pool: dict[tuple[str, int], list[PooledConnection]] = {}
         self._lock = threading.Lock()
         self._stats = PoolStats()
         self._closed = False
 
         # Background purge thread
-        self._purge_thread: Optional[threading.Thread] = None
+        self._purge_thread: threading.Thread | None = None
         self._purge_stop = threading.Event()
         if purge_interval_s > 0:
             self._start_purge_thread()
@@ -269,7 +269,7 @@ class ConnectionPool:
         with self._lock:
             for key in list(self._pool.keys()):
                 conns = self._pool[key]
-                alive: List[PooledConnection] = []
+                alive: list[PooledConnection] = []
                 for conn in conns:
                     if self._is_valid(conn, now):
                         alive.append(conn)

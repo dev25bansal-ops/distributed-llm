@@ -39,6 +39,9 @@ class RedisPromptCache:
 
     Stores prompt prefix hashes with references to KV cache locations
     (node:cache:key) for cross-node cache sharing.
+
+    Supports connection pooling via ``redis.ConnectionPool`` for
+    high-throughput deployments.
     """
 
     HASH_PREFIX = "distllm:prompt:"
@@ -50,23 +53,43 @@ class RedisPromptCache:
         url: str = "redis://localhost:6379/0",
         max_entries: int = 10000,
         ttl_seconds: float = 3600.0,
+        max_connections: int = 20,
+        socket_timeout: float = 5.0,
+        socket_connect_timeout: float = 5.0,
+        retry_on_timeout: bool = True,
     ):
         self._url = url
         self._max_entries = max_entries
         self._ttl = ttl_seconds
+        self._max_connections = max_connections
+        self._socket_timeout = socket_timeout
+        self._socket_connect_timeout = socket_connect_timeout
+        self._retry_on_timeout = retry_on_timeout
         self._client: Any = None
+        self._pool: Any = None
         self._connected = False
 
     def connect(self) -> bool:
-        """Connect to Redis. Returns True on success."""
+        """Connect to Redis with connection pooling. Returns True on success."""
         if redis is None:
             logger.warning("redis package not installed")
             return False
         try:
-            self._client = redis.from_url(self._url)
+            self._pool = redis.ConnectionPool.from_url(
+                self._url,
+                max_connections=self._max_connections,
+                socket_timeout=self._socket_timeout,
+                socket_connect_timeout=self._socket_connect_timeout,
+                retry_on_timeout=self._retry_on_timeout,
+                decode_responses=True,
+            )
+            self._client = redis.Redis(connection_pool=self._pool)
             self._client.ping()
             self._connected = True
-            logger.info(f"Connected to Redis at {self._url}")
+            logger.info(
+                f"Connected to Redis at {self._url} "
+                f"(pool_size={self._max_connections})"
+            )
             return True
         except Exception as e:
             logger.warning(f"Redis connection failed: {e}")

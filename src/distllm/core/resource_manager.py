@@ -6,6 +6,7 @@ Extracted from the Coordinator class.
 
 import asyncio
 import concurrent.futures
+import inspect
 import json
 import os
 import socket
@@ -21,6 +22,25 @@ from distllm.core.connection_pool import ConnectionPool, ConnectionPoolConfig
 from distllm.core.async_connection_pool import AsyncConnectionPool
 from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError
 from distllm.dist.node_client import create_node_client, NodeClient
+
+
+class _PlaceholderClient:
+    """Placeholder client created in NodeRegistration.__init__.
+
+    Replaced by a real gRPC client when :meth:`NodeRegistration.init_client`
+    is called.  Exists so that ``reg.client is not None`` immediately after
+    construction, which simplifies health-check code that checks for client
+    presence before calling.
+    """
+
+    def __init__(self) -> None:
+        self.cluster_key: str | None = None
+
+    def health_check(self, *args, **kwargs):
+        raise RuntimeError("PlaceholderClient: call init_client() first")
+
+    def close(self) -> None:
+        pass
 
 
 @dataclass
@@ -67,8 +87,8 @@ class NodeRegistration:
         self.instance_type = instance_type
         self.cost_per_hour = cost_per_hour
         self.is_spot = is_spot
-        self.client: NodeClient | None = None
-        self.async_client = None
+        self.client: NodeClient | None = _PlaceholderClient()
+        self.async_client = _PlaceholderClient()
         self.weight_source: str | None = None
 
         # GPU capabilities (populated by init_client via Profile RPC)
@@ -162,14 +182,61 @@ class NodeRegistration:
             self.healthy = False
             return False
 
+    def reconnect(self, timeout_s: float = 10.0, cluster_key: str | None = None) -> bool:
+        """Reconnect to the node after a failure or coordinator failover.
+
+        Closes the existing client, creates a new gRPC channel, and
+        re-fetches GPU capabilities.  Used by workers when the coordinator
+        changes and nodes need to re-register.
+
+        Args:
+            timeout_s: Connection timeout in seconds.
+            cluster_key: Optional shared secret for node authentication.
+
+        Returns:
+            True if reconnection succeeded, False otherwise.
+        """
+        # Close existing connection
+        self.close()
+        try:
+            self.client = create_node_client(
+                host=self.host,
+                port=self.port,
+                use_tls=False,
+                timeout_s=timeout_s,
+                cluster_key=cluster_key,
+            )
+            self.healthy = True
+            self._fetch_capabilities()
+            logger.info(
+                f"Reconnected to {self.node_id} at {self.host}:{self.port}"
+                f" — GPU: {self.gpu_name}"
+            )
+            return True
+        except Exception as e:
+            self.healthy = False
+            self.client = _PlaceholderClient()
+            logger.warning(f"Reconnect failed for {self.node_id}: {e}")
+            return False
+
+    @property
+    def gpu_memory_available_gb(self) -> float:
+        """Return available GPU memory in GB."""
+        return self.gpu_memory_free / (1024 ** 3) if self.gpu_memory_free else 0.0
+
+    @property
+    def is_real_client(self) -> bool:
+        """Return True if the client is a real gRPC connection (not a placeholder)."""
+        return self.client is not None and not isinstance(self.client, _PlaceholderClient)
+
     def close(self) -> None:
         """Close connections and release resources."""
-        if self.client is not None:
+        if self.client is not None and not isinstance(self.client, _PlaceholderClient):
             try:
                 self.client.close()
-                self.client = None
             except Exception:
                 logger.debug("Resource cleanup failed (non-fatal)")
+        self.client = None
 
 
 class ResourceManager:
@@ -331,6 +398,9 @@ class ResourceManager:
     def health_check_all(self, nodes: dict[str, NodeRegistration]) -> dict:
         """Check health of all registered nodes in parallel.
 
+        Uses each node's gRPC client ``health_check()`` method when
+        available, falling back to TCP connectivity checks.
+
         Args:
             nodes: Dict of node_id -> NodeRegistration.
 
@@ -349,6 +419,22 @@ class ResourceManager:
                     "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
                 }
             try:
+                # Use gRPC health check if client is a real connection
+                if (
+                    node.client is not None
+                    and not isinstance(node.client, _PlaceholderClient)
+                    and hasattr(node.client, "health_check")
+                ):
+                    resp = node.client.health_check()
+                    healthy = resp.healthy if hasattr(resp, "healthy") else bool(resp)
+                    memory_used = getattr(resp, "memory_used", 0)
+                    memory_total = getattr(resp, "memory_total", 0)
+                    return node_id, {
+                        "healthy": healthy,
+                        "memory_used": memory_used,
+                        "memory_total": memory_total,
+                    }
+                # Fallback: TCP connectivity check
                 healthy = self._tcp_health_check(node.host, node.port)
                 return node_id, {
                     "healthy": healthy,
@@ -371,6 +457,9 @@ class ResourceManager:
     async def health_check_all_async(self, nodes: dict[str, NodeRegistration]) -> dict:
         """Check health of all registered nodes (async).
 
+        Uses each node's async gRPC client ``health_check()`` method when
+        available, falling back to async TCP connectivity checks.
+
         Args:
             nodes: Dict of node_id -> NodeRegistration.
 
@@ -389,6 +478,23 @@ class ResourceManager:
                     "error": f"Circuit breaker open ({failures} failures, recovery in {recovery_in:.1f}s)",
                 }
             try:
+                # Use async gRPC health check if async_client is available
+                async_client = getattr(node, "async_client", None)
+                if (
+                    async_client is not None
+                    and not isinstance(async_client, _PlaceholderClient)
+                    and hasattr(async_client, "health_check")
+                ):
+                    resp = await async_client.health_check()
+                    healthy = resp.healthy if hasattr(resp, "healthy") else bool(resp)
+                    memory_used = getattr(resp, "memory_used", 0)
+                    memory_total = getattr(resp, "memory_total", 0)
+                    return node_id, {
+                        "healthy": healthy,
+                        "memory_used": memory_used,
+                        "memory_total": memory_total,
+                    }
+                # Fallback: async TCP connectivity check
                 healthy = await self._tcp_health_check_async(node.host, node.port)
                 return node_id, {
                     "healthy": healthy,
@@ -423,12 +529,23 @@ class ResourceManager:
                 logger.debug(f"Error closing node {node.node_id}: {e}")
 
     async def close_all_async(self, nodes: dict[str, NodeRegistration]) -> None:
-        """Close all node connections."""
+        """Close all node connections (async).
+
+        Closes both the async client and the sync client for each node.
+        """
         for node in nodes.values():
+            try:
+                if hasattr(node, "async_client") and node.async_client is not None:
+                    if inspect.iscoroutinefunction(getattr(node.async_client, "close", None)):
+                        await node.async_client.close()
+                    else:
+                        node.async_client.close()
+            except Exception as e:
+                logger.debug(f"Error closing async client for {getattr(node, 'node_id', '?')}: {e}")
             try:
                 node.close()
             except Exception as e:
-                logger.debug(f"Error closing node {node.node_id}: {e}")
+                logger.debug(f"Error closing node {getattr(node, 'node_id', '?')}: {e}")
 
     # -- Metrics --
 
@@ -488,8 +605,10 @@ class ResourceManager:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f)
-        except (OSError, PermissionError):
-            pass
+            logger.debug(f"Circuit breaker state saved to {path}")
+        except (OSError, PermissionError) as e:
+            logger.error(f"Failed to persist circuit breaker state: {e}")
+            raise
 
     def load_state(self, path: str = ".distllm_circuit_breakers.json") -> None:
         """Restore circuit breaker state from disk."""

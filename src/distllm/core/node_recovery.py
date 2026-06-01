@@ -1,9 +1,16 @@
 """Compatibility shim — re-exports from distllm.dist.recovery.
 
-Tests import from distllm.core.node_recovery but the actual module
-lives at distllm.dist.recovery.  This file provides the re-export
-so existing tests pass without modification.
+.. deprecated::
+    Import from ``distllm.dist.recovery`` instead.
 """
+
+import warnings
+warnings.warn(
+    "distllm.core.node_recovery is deprecated. "
+    "Import from distllm.dist.recovery instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from distllm.dist.recovery import (
     LayerRedistribution,

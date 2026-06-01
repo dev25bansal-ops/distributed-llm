@@ -839,11 +839,14 @@ class UsageMeter:
         if self._use_sqlite and hasattr(self, "_conn"):
             self._conn.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+        self.close()
 
 
 # ── Factory ─────────────────────────────────────────────────────────────────

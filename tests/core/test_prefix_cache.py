@@ -5,7 +5,7 @@ import threading
 import pytest
 import torch
 
-from distllm.core.prefix_cache import PrefixCache
+from distllm.dist.prefix_cache import PrefixCache
 
 
 class TestPrefixCacheLRUOrder:

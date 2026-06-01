@@ -162,6 +162,12 @@ class RouteAuditLog:
                 "buffered": len(self._buffer),
             }
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.flush()
+
     def __del__(self) -> None:
         try:
             self.flush()

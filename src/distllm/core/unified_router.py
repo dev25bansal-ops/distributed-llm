@@ -315,3 +315,111 @@ class UnifiedRouter:
     @property
     def stats(self) -> dict[str, int]:
         return dict(self._stats)
+
+
+class RequestPhase(str, Enum):
+    """Phase of a request lifecycle."""
+    PREFILL = "prefill"   # Compute-bound: process prompt tokens
+    DECODE = "decode"     # Memory-bound: generate tokens one-by-one
+
+
+class DisaggregatedRouter:
+    """Routes requests to separate prefill and decode worker pools.
+
+    In disaggregated P&D architecture:
+    - Prefill nodes: optimized for compute-bound prompt processing (high FLOPS)
+    - Decode nodes: optimized for memory-bound autoregressive generation (high bandwidth)
+
+    This router tracks which nodes are prefill-optimized and which are
+    decode-optimized, and routes requests accordingly.
+
+    Usage::
+
+        router = DisaggregatedRouter()
+        router.set_prefill_nodes(["gpu-0", "gpu-1"])   # A100s for prefill
+        router.set_decode_nodes(["gpu-2", "gpu-3"])     # H100s for decode
+
+        prefill_node = router.route(RequestPhase.PREFILL)
+        decode_node = router.route(RequestPhase.DECODE)
+    """
+
+    def __init__(self) -> None:
+        self._prefill_nodes: list[str] = []
+        self._decode_nodes: list[str] = []
+        self._prefill_load: dict[str, int] = {}
+        self._decode_load: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._stats = {"prefill_routes": 0, "decode_routes": 0, "fallback_routes": 0}
+
+    def set_prefill_nodes(self, node_ids: list[str]) -> None:
+        """Set nodes optimized for prefill (compute-bound)."""
+        with self._lock:
+            self._prefill_nodes = list(node_ids)
+            self._prefill_load = {nid: 0 for nid in node_ids}
+
+    def set_decode_nodes(self, node_ids: list[str]) -> None:
+        """Set nodes optimized for decode (memory-bound)."""
+        with self._lock:
+            self._decode_nodes = list(node_ids)
+            self._decode_load = {nid: 0 for nid in node_ids}
+
+    def route(self, phase: RequestPhase) -> str | None:
+        """Route to the least-loaded node for the given phase.
+
+        Returns:
+            Node ID, or None if no nodes available.
+        """
+        with self._lock:
+            if phase == RequestPhase.PREFILL:
+                self._stats["prefill_routes"] += 1
+                nodes = self._prefill_nodes
+                load = self._prefill_load
+                fallback_load = self._decode_load
+                fallback_nodes = self._decode_nodes
+            else:
+                self._stats["decode_routes"] += 1
+                nodes = self._decode_nodes
+                load = self._decode_load
+                fallback_load = self._prefill_load
+                fallback_nodes = self._prefill_nodes
+
+            # Try preferred pool first
+            if nodes:
+                best = min(nodes, key=lambda n: load.get(n, 0))
+                load[best] = load.get(best, 0) + 1
+                return best
+
+            # Fallback to other pool
+            if fallback_nodes:
+                self._stats["fallback_routes"] += 1
+                best = min(fallback_nodes, key=lambda n: fallback_load.get(n, 0))
+                fallback_load[best] = fallback_load.get(best, 0) + 1
+                return best
+
+            return None
+
+    def release(self, node_id: str, phase: RequestPhase) -> None:
+        """Release a slot on a node after request completion."""
+        with self._lock:
+            if phase == RequestPhase.PREFILL:
+                self._prefill_load[node_id] = max(0, self._prefill_load.get(node_id, 1) - 1)
+            else:
+                self._decode_load[node_id] = max(0, self._decode_load.get(node_id, 1) - 1)
+
+    def get_pool_sizes(self) -> dict[str, int]:
+        """Return the size of each pool."""
+        with self._lock:
+            return {
+                "prefill_nodes": len(self._prefill_nodes),
+                "decode_nodes": len(self._decode_nodes),
+                "total_nodes": len(self._prefill_nodes) + len(self._decode_nodes),
+            }
+
+    @property
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._stats)
+
+
+# Need threading for DisaggregatedRouter
+import threading

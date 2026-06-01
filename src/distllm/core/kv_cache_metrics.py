@@ -20,7 +20,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -58,7 +58,7 @@ class MetricSnapshot:
     allocations_per_sec: float = 0.0
     frees_per_sec: float = 0.0
 
-    def to_dict(self) -> Dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         return {k: v for k, v in self.__dict__.items() if k != "timestamp"}
 
     def to_prometheus(self) -> str:

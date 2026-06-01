@@ -174,3 +174,62 @@ def span_prefix_cache_lookup(request_id: str, prefix_length: int):
         },
     ) as span:
         yield span
+
+
+# ── Cross-node span links ──────────────────────────────────────────────
+
+def create_linked_span(
+    name: str,
+    parent_trace_id: str,
+    parent_span_id: str,
+    attributes: dict[str, Any] | None = None,
+):
+    """Create a span linked to a parent span from another node.
+
+    When a request is forwarded from node A to node B, node B creates
+    a span with a link back to node A's span. This allows tracing
+    tools to follow the request across node boundaries.
+
+    Args:
+        name: Span name.
+        parent_trace_id: Hex trace ID from the parent node.
+        parent_span_id: Hex span ID from the parent node.
+        attributes: Optional span attributes.
+
+    Returns:
+        A new Span with a link to the parent.
+    """
+    from opentelemetry.trace import Link, SpanContext, TraceFlags
+
+    try:
+        trace_id = int(parent_trace_id, 16)
+        span_id = int(parent_span_id, 16)
+        parent_context = SpanContext(
+            trace_id=trace_id,
+            span_id=span_id,
+            is_remote=True,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        )
+        link = Link(parent_context)
+        return _tracer.start_span(
+            name,
+            attributes=attributes or {},
+            links=[link],
+        )
+    except (ValueError, TypeError) as e:
+        logger.debug(f"Failed to create linked span: {e}")
+        return _tracer.start_span(name, attributes=attributes or {})
+
+
+def link_to_parent_node(span: trace.Span, parent_node_id: str, request_id: str) -> None:
+    """Add a link attribute to connect this span to its parent node's span.
+
+    Used when the parent trace context is not available but we know
+    which node initiated the request.
+    """
+    span.set_attribute("link.parent_node", parent_node_id)
+    span.set_attribute("link.request_id", request_id)
+    span.add_event("cross_node_link", {
+        "parent_node": parent_node_id,
+        "request_id": request_id,
+    })

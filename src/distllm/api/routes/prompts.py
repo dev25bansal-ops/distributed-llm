@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import asdict
 from typing import Any
@@ -99,15 +100,18 @@ _prompts: dict[str, SystemPromptDef] = {}
 _share_tokens: dict[str, str] = {}
 _version_history: dict[str, list[dict[str, Any]]] = {}
 _seeded: bool = False
+_seeded_lock = threading.Lock()
 
 
 def _ensure_seeded() -> None:
     global _seeded
     if not _seeded:
-        _seeded = True
-        for pid, pdef in SYSTEM_PROMPTS.items():
-            _prompts[pid] = pdef
-            _version_history[pid] = [asdict(pdef)]
+        with _seeded_lock:
+            if not _seeded:
+                _seeded = True
+                for pid, pdef in SYSTEM_PROMPTS.items():
+                    _prompts[pid] = pdef
+                    _version_history[pid] = [asdict(pdef)]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

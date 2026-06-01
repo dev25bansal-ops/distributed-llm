@@ -22,7 +22,7 @@ keywords = [
     "open-source",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
@@ -66,24 +66,23 @@ self-hosted = [
 ray = [
     "ray[default]>=2.30.0",
 ]
-vllm = [
-    "vllm>=0.7.0",
-]
-sglang = [
+backends = [
+    "vllm>=0.7.0,<0.9.0",
     "sglang>=0.4.0",
-]
-llamacpp = [
     "llama-cpp-python>=0.3.0",
 ]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
+    "hypothesis>=6.90",
+    "pytest-benchmark>=4.0",
     "black>=24.0",
     "ruff>=0.1.0",
     "mypy>=1.8",
     "opentelemetry-test-utils>=0.42b0",
+    "bandit[toml]>=1.7",
+    "detect-secrets>=1.5",
 ]
-
 sdk = [
     "httpx>=0.27.0",
 ]
@@ -103,52 +102,25 @@ examples = [
     "llama-index-core>=0.10.0",
     "crewai>=0.30.0",
 ]
-tls = [
+security = [
     "cryptography>=41.0",
-]
-e2e = [
     "pynacl>=1.5.0",
 ]
-quant = [
+model-extras = [
     "bitsandbytes>=0.41.0",
-]
-lora = [
     "peft>=0.14.0",
-]
-rocm = [
-    "torch>=2.5.0",
-    "llama-cpp-python>=0.3.0",
-]
-metal = [
-    "torch>=2.5.0",
-]
-xpu = [
-    "torch>=2.5.0",
-    "oneapi>=2025.0",
-]
-cpu = [
-    "llama-cpp-python>=0.3.0",
 ]
 wan = [
     "aioquic>=1.0.0",
 ]
 all = [
-    "distributed-llm[self-hosted,observability,ray,tls,e2e,ui,vllm,sglang,llamacpp]",
-    "distributed-llm[dev,testing,examples,quant,lora]",
-    "distributed-llm[rocm,metal,xpu,cpu,wan]",
-]
-
-testing = [
-    "hypothesis>=6.90",
-    "pytest-benchmark>=4.0",
+    "distributed-llm[self-hosted,observability,ray,security,ui,backends]",
+    "distributed-llm[dev,examples,model-extras,wan]",
 ]
 all-dev = [
-    "distributed-llm[all]",
-    "distributed-llm[dev,testing]",
+    "distributed-llm[all,dev]",
     "locust>=2.20",
-    "bandit[toml]>=1.7",
     "safety>=3.0",
-    "detect-secrets>=1.5",
 ]
 
 [project.scripts]
@@ -176,6 +148,9 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "YTT", "ANN", "BLE", "SIM"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "N"]
@@ -221,21 +196,13 @@ module = [
     "distllm.core.cluster_manager",
     "distllm.core.health_manager",
     "distllm.core.metrics_collector",
-]
-disallow_untyped_defs = true
-disallow_untyped_calls = true
-check_untyped_defs = true
-
-[[tool.mypy.overrides]]
-# Relaxed checking for legacy/large modules
-module = [
     "distllm.core.request_pipeline",
     "distllm.models.partitioner",
     "distllm.api.server",
 ]
-disallow_untyped_defs = false
-disallow_untyped_calls = false
-check_untyped_defs = false
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 # Suppress errors from Protobuf-generated code

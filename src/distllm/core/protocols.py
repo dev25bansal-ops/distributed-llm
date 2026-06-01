@@ -16,11 +16,11 @@ class INodeClient(Protocol):
     host: str
     port: int
 
-    def health_check(self) -> Any:
+    def health_check(self) -> object:
         """Check node health. Returns a health response proto."""
         ...
 
-    def forward(self, request: Any) -> Any:
+    def forward(self, request: object) -> object:
         """Send a forward pass request to the node. Returns response proto."""
         ...
 
@@ -37,11 +37,11 @@ class ITokenizer(Protocol):
     pad_token_id: int | None
     vocab_size: int
 
-    def encode(self, text: str, **kwargs: Any) -> Any:
+    def encode(self, text: str, **kwargs: Any) -> list[int] | torch.Tensor:
         """Encode text to token IDs."""
         ...
 
-    def decode(self, tokens: Any, **kwargs: Any) -> str:
+    def decode(self, tokens: list[int] | torch.Tensor, **kwargs: Any) -> str:
         """Decode token IDs back to text."""
         ...
 
@@ -49,7 +49,7 @@ class ITokenizer(Protocol):
 @runtime_checkable
 class IModelPartitioner(Protocol):
     """Interface for a model partitioner that loads and runs model layers."""
-    full_model: Any
+    full_model: object
     tokenizer: ITokenizer | None
     embed_input: Any | None
     is_last_node: bool
@@ -68,7 +68,7 @@ class IModelPartitioner(Protocol):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         past_key_values: list | None = None,
-    ) -> tuple:
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """Forward pass through loaded layers."""
         ...
 
@@ -81,11 +81,11 @@ class IModelPartitioner(Protocol):
 class ICacheBackend(Protocol):
     """Interface for a prefix cache backend."""
 
-    def lookup(self, tokens: list[int]) -> tuple:
+    def lookup(self, tokens: list[int]) -> tuple[int, object]:
         """Lookup tokens in the cache. Returns (prefix_len, entry)."""
         ...
 
-    def store(self, tokens: list[int], entry: Any) -> None:
+    def store(self, tokens: list[int], entry: object) -> None:
         """Store tokens and associated entry in the cache."""
         ...
 
@@ -137,7 +137,7 @@ class IResourceManager(Protocol):
         """Record a node failure."""
         ...
 
-    def health_check_all(self, nodes: dict[str, Any]) -> dict:
+    def health_check_all(self, nodes: dict[str, Any]) -> dict[str, dict]:
         """Check health of all registered nodes."""
         ...
 
@@ -154,7 +154,7 @@ class ICacheManager(Protocol):
         """Lookup prefix match length for tokens."""
         ...
 
-    def maybe_chunk(self, tokens: list[int]) -> Any:
+    def maybe_chunk(self, tokens: list[int]) -> list[list[int]]:
         """Apply chunked prefill if enabled."""
         ...
 
@@ -168,15 +168,15 @@ class ITokenGenerator(Protocol):
         logits: torch.Tensor,
         temperature: float = 1.0,
         top_p: float = 1.0,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict[str, Any] | None]:
         """Sample next token from logits."""
         ...
 
     def sample_batch(
         self,
         logits: torch.Tensor,
-        batch: Any,
-    ) -> torch.Tensor:
+        batch: list[Any],
+    ) -> tuple[torch.Tensor, list[dict[str, Any] | None]]:
         """Sample next tokens for a batch with constraints."""
         ...
 

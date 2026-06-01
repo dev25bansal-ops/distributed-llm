@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..auth_deps import require_role
 
 
 router = APIRouter(tags=["federated"], prefix="/v1/federated")
@@ -42,7 +43,7 @@ class FederatedStatsResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/nodes")
+@router.post("/nodes", dependencies=[Depends(require_role("admin"))])
 async def register_node(req: RegisterNodeRequest):
     """Register a node for federated training."""
     coordinator = g.get("federated_merge")
@@ -62,7 +63,7 @@ async def register_node(req: RegisterNodeRequest):
     }
 
 
-@router.delete("/nodes/{node_id}")
+@router.delete("/nodes/{node_id}", dependencies=[Depends(require_role("admin"))])
 async def unregister_node(node_id: str):
     """Remove a node from federated training."""
     coordinator = g.get("federated_merge")
@@ -73,7 +74,7 @@ async def unregister_node(node_id: str):
     return {"status": "removed", "node_id": node_id}
 
 
-@router.post("/rounds")
+@router.post("/rounds", dependencies=[Depends(require_role("admin"))])
 async def start_round():
     """Start a new federated training round."""
     coordinator = g.get("federated_merge")
@@ -92,7 +93,7 @@ async def start_round():
     }
 
 
-@router.post("/rounds/submit")
+@router.post("/rounds/submit", dependencies=[Depends(require_role("admin"))])
 async def submit_adapter(req: SubmitAdapterRequest):
     """Submit a locally trained adapter for merging."""
     coordinator = g.get("federated_merge")
@@ -110,7 +111,7 @@ async def submit_adapter(req: SubmitAdapterRequest):
     return {"status": "submitted", "node_id": req.node_id}
 
 
-@router.post("/rounds/merge")
+@router.post("/rounds/merge", dependencies=[Depends(require_role("admin"))])
 async def merge_adapters():
     """Merge all submitted adapters."""
     coordinator = g.get("federated_merge")

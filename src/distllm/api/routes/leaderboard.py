@@ -1,13 +1,15 @@
 """Benchmark leaderboard API — list, submit, and compare benchmark results."""
 
+import json
+import os
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Optional
-import json
-import uuid
-import os
-import time
-from pathlib import Path
 
 
 router = APIRouter(tags=["leaderboard"])
@@ -48,6 +50,7 @@ class BenchmarkSubmission(BaseModel):
 _store: dict[str, dict] = {}
 _order: list[str] = []
 _loaded = False
+_loaded_lock = threading.Lock()
 
 
 def _find_project_root() -> Path:
@@ -62,7 +65,10 @@ def _load_seed_data():
     global _loaded
     if _loaded:
         return
-    _loaded = True
+    with _loaded_lock:
+        if _loaded:
+            return
+        _loaded = True
 
     results_dir = _find_project_root() / "benchmarks" / "results"
     if not results_dir.is_dir():
@@ -264,3 +270,108 @@ async def leaderboard_top():
 
     tops.sort(key=lambda e: e["metrics"].get("throughput_tok_s") or 0, reverse=True)
     return {"top_results": tops, "total": len(tops)}
+
+
+# ── Community Features ──────────────────────────────────────────────────
+
+_votes: dict[str, dict[str, int]] = {}  # entry_id -> {user_id -> vote}
+_comments: dict[str, list[dict]] = {}  # entry_id -> list of comments
+_verified: set[str] = set()  # entry_ids verified by maintainers
+
+
+class VoteRequest(BaseModel):
+    vote: int = Field(..., ge=-1, le=1, description="Vote: 1=upvote, -1=downvote, 0=remove")
+
+
+class CommentRequest(BaseModel):
+    user_id: str = Field(..., description="Commenter user ID")
+    text: str = Field(..., min_length=1, max_length=1000, description="Comment text")
+
+
+class CommunityStats(BaseModel):
+    total_submissions: int = 0
+    total_votes: int = 0
+    total_comments: int = 0
+    verified_count: int = 0
+    top_contributors: list[dict] = Field(default_factory=list)
+
+
+@router.post("/v1/leaderboard/{entry_id}/vote")
+async def vote_entry(entry_id: str, body: VoteRequest):
+    """Vote on a benchmark submission."""
+    if entry_id not in _store:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    user_id = body.user_id if hasattr(body, 'user_id') else "anonymous"
+    if entry_id not in _votes:
+        _votes[entry_id] = {}
+
+    if body.vote == 0:
+        _votes[entry_id].pop(user_id, None)
+    else:
+        _votes[entry_id][user_id] = body.vote
+
+    total_votes = sum(_votes[entry_id].values())
+    return {"entry_id": entry_id, "total_votes": total_votes, "voter_count": len(_votes[entry_id])}
+
+
+@router.post("/v1/leaderboard/{entry_id}/comment")
+async def comment_entry(entry_id: str, body: CommentRequest):
+    """Add a comment to a benchmark submission."""
+    if entry_id not in _store:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    comment = {
+        "user_id": body.user_id,
+        "text": body.text,
+        "timestamp": time.time(),
+    }
+    _comments.setdefault(entry_id, []).append(comment)
+
+    return {"entry_id": entry_id, "comment_count": len(_comments[entry_id])}
+
+
+@router.get("/v1/leaderboard/{entry_id}/comments")
+async def get_comments(entry_id: str):
+    """Get comments for a benchmark submission."""
+    return {"entry_id": entry_id, "comments": _comments.get(entry_id, [])}
+
+
+@router.post("/v1/leaderboard/{entry_id}/verify")
+async def verify_entry(entry_id: str):
+    """Mark a benchmark submission as verified (admin only)."""
+    if entry_id not in _store:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    _verified.add(entry_id)
+    return {"entry_id": entry_id, "verified": True}
+
+
+@router.get("/v1/leaderboard/community")
+async def community_stats():
+    """Get community leaderboard statistics."""
+    total_votes = sum(sum(v.values()) for v in _votes.values())
+    total_comments = sum(len(c) for c in _comments.values())
+
+    # Top contributors
+    contributors: dict[str, int] = {}
+    for entry in _store.values():
+        submitter = entry.get("submitted_by", "anonymous")
+        contributors[submitter] = contributors.get(submitter, 0) + 1
+
+    top = sorted(contributors.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        "total_submissions": len(_store),
+        "total_votes": total_votes,
+        "total_comments": total_comments,
+        "verified_count": len(_verified),
+        "top_contributors": [{"user": u, "submissions": c} for u, c in top],
+    }
+
+
+@router.get("/v1/leaderboard/verified")
+async def verified_entries():
+    """Get all verified benchmark submissions."""
+    entries = [_store[eid] for eid in _verified if eid in _store]
+    return {"entries": entries, "total": len(entries)}

@@ -1,5 +1,6 @@
 """Model Registry API routes — aggregated view of loaded models, versions, and cache."""
 
+import threading
 import time
 
 from fastapi import APIRouter
@@ -155,6 +156,7 @@ def _build_registry():
 
 _registry_cache: dict | None = None
 _cache_timestamp: float = 0
+_cache_lock = threading.Lock()
 _CACHE_TTL = 2.0
 
 
@@ -162,8 +164,10 @@ def _get_registry(force: bool = False) -> dict:
     global _registry_cache, _cache_timestamp
     now = time.time()
     if force or _registry_cache is None or (now - _cache_timestamp) > _CACHE_TTL:
-        _registry_cache = _build_registry()
-        _cache_timestamp = now
+        with _cache_lock:
+            if force or _registry_cache is None or (now - _cache_timestamp) > _CACHE_TTL:
+                _registry_cache = _build_registry()
+                _cache_timestamp = now
     return _registry_cache
 
 

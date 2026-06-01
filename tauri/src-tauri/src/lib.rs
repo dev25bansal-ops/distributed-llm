@@ -388,7 +388,88 @@ fn get_gpu_metrics() -> Result<Vec<GpuInfo>, String> {
                 }
                 let _ = nvml.shutdown();
             }
-            Err(_) => {}
+            Err(_) => {
+                // NVML not available — try lspci fallback on Linux
+                #[cfg(target_os = "linux")]
+                {
+                    if let Ok(output) = std::process::Command::new("lspci")
+                        .args(["-v", "-s", "VGA"])
+                        .output()
+                    {
+                        if let Ok(text) = String::from_utf8(output.stdout) {
+                            for line in text.lines() {
+                                if line.contains("VGA") || line.contains("3D") {
+                                    let name = line.split(':').nth(1).unwrap_or("Unknown GPU").trim();
+                                    gpus.push(GpuInfo {
+                                        index: gpus.len() as u32,
+                                        name: name.to_string(),
+                                        temperature: 0.0,
+                                        utilization: 0.0,
+                                        memory_total: 0,
+                                        memory_used: 0,
+                                        memory_free: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: use system_profiler to detect GPU hardware
+        // NVML is not available on macOS, so we provide basic GPU info
+        if let Ok(output) = std::process::Command::new("system_profiler")
+            .arg("SPDisplaysDataType")
+            .arg("-json")
+            .output()
+        {
+            if let Ok(json_str) = String::from_utf8(output.stdout) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    if let Some(displays) = parsed["SPDisplaysDataType"].as_array() {
+                        for (i, display) in displays.iter().enumerate() {
+                            let name = display["_name"]
+                                .as_str()
+                                .unwrap_or("Apple GPU")
+                                .to_string();
+                            let mem_str = display["sppci_model"]
+                                .as_str()
+                                .unwrap_or("");
+                            // Extract VRAM if available (e.g., "spdisplays_vram: 8192 MB")
+                            let mem_total: u64 = display["spdisplays_vram"]
+                                .as_str()
+                                .and_then(|s| s.split_whitespace().next())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .map(|mb| mb * 1024 * 1024)
+                                .unwrap_or(0);
+                            gpus.push(GpuInfo {
+                                index: i as u32,
+                                name,
+                                temperature: 0.0,  // Not available via system_profiler
+                                utilization: 0.0,   // Not available via system_profiler
+                                memory_total: mem_total,
+                                memory_used: 0,
+                                memory_free: mem_total,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback if system_profiler fails: report at least one Apple GPU
+        if gpus.is_empty() {
+            gpus.push(GpuInfo {
+                index: 0,
+                name: "Apple GPU".to_string(),
+                temperature: 0.0,
+                utilization: 0.0,
+                memory_total: 0,
+                memory_used: 0,
+                memory_free: 0,
+            });
         }
     }
 

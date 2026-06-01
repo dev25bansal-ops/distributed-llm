@@ -19,6 +19,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+__all__ = [
+    "GracefulDegradation",
+    "DegradationLevel",
+    "DegradationPlan",
+    "LoadSnapshot",
+]
+
 
 class DegradationLevel(Enum):
     """Progressive degradation levels."""
@@ -58,22 +65,26 @@ class DegradationPlan:
     partial_ok: bool = False                # Allow partial response
 
     def apply_to_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Modify generation params in-place according to degradation plan."""
+        """Return a new params dict with degradation adjustments applied.
+
+        Does not mutate the input dict (immutability compliance).
+        """
+        result = dict(params)  # Copy to avoid in-place mutation
         if self.max_tokens is not None:
-            params["max_new_tokens"] = min(
-                params.get("max_new_tokens", 2048), self.max_tokens
+            result["max_new_tokens"] = min(
+                result.get("max_new_tokens", 2048), self.max_tokens
             )
-        if self.truncate_prompt is not None and "prompt" in params:
-            prompt = params["prompt"]
-            if isinstance(prompt, str) and "tokenizer" in params:
-                tokenizer = params["tokenizer"]
+        if self.truncate_prompt is not None and "prompt" in result:
+            prompt = result["prompt"]
+            if isinstance(prompt, str) and "tokenizer" in result:
+                tokenizer = result["tokenizer"]
                 encoded = tokenizer.encode(prompt)
                 if len(encoded) > self.truncate_prompt:
                     truncated = encoded[:self.truncate_prompt]
-                    params["prompt"] = tokenizer.decode(truncated)
+                    result["prompt"] = tokenizer.decode(truncated)
             elif isinstance(prompt, str):
-                params["prompt"] = prompt[:self.truncate_prompt * 4]
-        return params
+                result["prompt"] = prompt[:self.truncate_prompt * 4]
+        return result
 
 
 class GracefulDegradation:

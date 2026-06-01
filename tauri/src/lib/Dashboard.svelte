@@ -9,6 +9,8 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let grafanaUrl = $state<string>("http://localhost:3000");
+  let showGrafana = $state(false);
 
   onMount(async () => {
     await loadAll();
@@ -174,6 +176,39 @@
         </div>
       </section>
     {/if}
+
+    <!-- Grafana Observability Dashboard -->
+    <section class="card">
+      <div class="grafana-header">
+        <h2 class="card-title">Observability Dashboard</h2>
+        <div class="grafana-controls">
+          <input
+            type="text"
+            class="grafana-url-input"
+            placeholder="Grafana URL (e.g., http://localhost:3000)"
+            bind:value={grafanaUrl}
+          />
+          <button class="grafana-toggle" onclick={() => showGrafana = !showGrafana}>
+            {showGrafana ? 'Hide' : 'Show'} Grafana
+          </button>
+        </div>
+      </div>
+      {#if showGrafana}
+        <div class="grafana-container">
+          <iframe
+            src="{grafanaUrl}/d/distllm/distllm-overview?orgId=1&refresh=10s&kiosk"
+            title="Grafana Dashboard"
+            frameborder="0"
+            allowfullscreen
+          ></iframe>
+        </div>
+      {:else}
+        <div class="empty-state">
+          Click "Show Grafana" to embed the observability dashboard.
+          Requires Grafana running with the DistLLM dashboard provisioned.
+        </div>
+      {/if}
+    </section>
   {/if}
 </div>
 
@@ -221,4 +256,11 @@
   .sys-item { display: flex; flex-direction: column; gap: 2px; }
   .sys-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
   .sys-value { font-size: 13px; }
+  .grafana-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+  .grafana-controls { display: flex; gap: 8px; align-items: center; }
+  .grafana-url-input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; width: 280px; background: var(--bg-input); color: var(--text); }
+  .grafana-toggle { padding: 6px 14px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; }
+  .grafana-toggle:hover { opacity: 0.9; }
+  .grafana-container { width: 100%; height: 450px; border-radius: 8px; overflow: hidden; }
+  .grafana-container iframe { width: 100%; height: 100%; border: none; }
 </style>

@@ -21,7 +21,7 @@ import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Type
 
 
 class EvictionPolicy(ABC):
@@ -40,11 +40,11 @@ class EvictionPolicy(ABC):
         """Record that a block was freed."""
 
     @abstractmethod
-    def pick_victim(self, block_usage: Dict[int, Any]) -> Optional[int]:
+    def pick_victim(self, block_usage: dict[int, Any]) -> int | None:
         """Pick a block to evict. Returns block_id or None."""
 
     @abstractmethod
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Return policy statistics."""
 
 
@@ -73,7 +73,7 @@ class LRUPolicy(EvictionPolicy):
     def record_free(self, block_id: int) -> None:
         self._order.pop(block_id, None)
 
-    def pick_victim(self, block_usage: Dict[int, Any]) -> Optional[int]:
+    def pick_victim(self, block_usage: dict[int, Any]) -> int | None:
         for bid in self._order:
             if bid in block_usage and block_usage[bid].ref_count <= 0:
                 return bid
@@ -83,7 +83,7 @@ class LRUPolicy(EvictionPolicy):
                 return bid
         return None
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {"policy": "lru", "tracked": len(self._order), "hits": self._hits}
 
     def __repr__(self) -> str:
@@ -98,7 +98,7 @@ class LFUPolicy(EvictionPolicy):
     """
 
     def __init__(self, decay_interval_s: float = 60.0):
-        self._counts: Dict[int, int] = {}
+        self._counts: dict[int, int] = {}
         self._last_decay: float = time.time()
         self._decay_interval = decay_interval_s
         self._total_accesses = 0
@@ -107,7 +107,9 @@ class LFUPolicy(EvictionPolicy):
         now = time.time()
         if now - self._last_decay > self._decay_interval:
             for bid in list(self._counts.keys()):
-                self._counts[bid] = max(1, self._counts[bid] // 2)
+                # Use floating-point halving to avoid "sticky" entries
+                # where counts of 1-2 never decrease with integer division
+                self._counts[bid] = max(1, int(self._counts[bid] * 0.5))
             self._last_decay = now
 
     def record_access(self, block_id: int) -> None:
@@ -121,7 +123,7 @@ class LFUPolicy(EvictionPolicy):
     def record_free(self, block_id: int) -> None:
         self._counts.pop(block_id, None)
 
-    def pick_victim(self, block_usage: Dict[int, Any]) -> Optional[int]:
+    def pick_victim(self, block_usage: dict[int, Any]) -> int | None:
         if not self._counts:
             return None
         # Pick the block with the lowest count
@@ -132,7 +134,7 @@ class LFUPolicy(EvictionPolicy):
         )
         return victim
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {
             "policy": "lfu",
             "tracked": len(self._counts),
@@ -162,13 +164,13 @@ class FIFOPolicy(EvictionPolicy):
     def record_free(self, block_id: int) -> None:
         self._queue.pop(block_id, None)
 
-    def pick_victim(self, block_usage: Dict[int, Any]) -> Optional[int]:
+    def pick_victim(self, block_usage: dict[int, Any]) -> int | None:
         for bid in self._queue:
             if bid in block_usage:
                 return bid
         return None
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {"policy": "fifo", "tracked": len(self._queue)}
 
     def __repr__(self) -> str:
@@ -213,7 +215,7 @@ class TwoQPolicy(EvictionPolicy):
         self._a1in.pop(block_id, None)
         self._am.pop(block_id, None)
 
-    def pick_victim(self, block_usage: Dict[int, Any]) -> Optional[int]:
+    def pick_victim(self, block_usage: dict[int, Any]) -> int | None:
         # Evict from A1in first
         for bid in self._a1in:
             if bid in block_usage:
@@ -224,7 +226,7 @@ class TwoQPolicy(EvictionPolicy):
                 return bid
         return None
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {
             "policy": "2q",
             "a1in_size": len(self._a1in),
@@ -304,7 +306,7 @@ class ARCPolicy(EvictionPolicy):
         self._b1.pop(block_id, None)
         self._b2.pop(block_id, None)
 
-    def pick_victim(self, block_usage: Dict[int, Any]) -> Optional[int]:
+    def pick_victim(self, block_usage: dict[int, Any]) -> int | None:
         for bid in self._t1:
             if bid in block_usage:
                 return bid
@@ -313,7 +315,7 @@ class ARCPolicy(EvictionPolicy):
                 return bid
         return None
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return {
             "policy": "arc",
             "t1_size": len(self._t1),
@@ -330,7 +332,7 @@ class ARCPolicy(EvictionPolicy):
         )
 
 
-_POLICY_REGISTRY: Dict[str, Type[EvictionPolicy]] = {
+_POLICY_REGISTRY: dict[str, Type[EvictionPolicy]] = {
     "lru": LRUPolicy,
     "lfu": LFUPolicy,
     "fifo": FIFOPolicy,
@@ -356,6 +358,6 @@ def create_policy(name: str, **kwargs: Any) -> EvictionPolicy:
     return cls(**kwargs)
 
 
-def list_policies() -> List[str]:
+def list_policies() -> list[str]:
     """Return the names of all available eviction policies."""
     return list(_POLICY_REGISTRY.keys())

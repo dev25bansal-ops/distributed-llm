@@ -11,10 +11,10 @@ from distllm.core.agent_loop import AgentLoop, AgentMemory, ToolCall, AgentState
 from distllm.core.tool_engine import ToolCallingEngine, ToolSchema, ToolResult
 from distllm.core.rag_pipeline import RAGPipeline, Document, TextChunker, DocumentChunk
 from distllm.core.resource_manager import ResourceManager
-from distllm.core.node_recovery import NodeRecoveryManager, SequenceCheckpoint, LayerRedistribution, NodeRecoveryPlan
+from distllm.dist.recovery import NodeRecoveryManager, SequenceCheckpoint, LayerRedistribution, NodeRecoveryPlan
 from distllm.core.graceful_degradation import GracefulDegradation, LoadSnapshot, DegradationLevel, DegradationPlan
 from distllm.core.cache_warming import CacheWarmer, WarmUpTier
-from distllm.core.predictive_cache import PatternLearner, PredictiveCacheManager, PrefixPattern, CachePrediction, CacheTier
+from distllm.dist.predictive_cache import PatternLearner, PredictiveCacheManager, PrefixPattern, CachePrediction, CacheTier
 
 
 class TestAgentMemory:

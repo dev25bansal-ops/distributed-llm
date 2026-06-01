@@ -1,5 +1,11 @@
 """TensorRT-LLM backend adapter for high-performance distributed inference.
 
+.. warning::
+    **EXPERIMENTAL**: This backend is under active development and not yet
+    production-ready.  API surface, configuration options, and behavior
+    may change without notice.  Use at your own risk in non-production
+    environments.
+
 Provides first-class TensorRT-LLM integration with:
 - Optimized CUDA kernels via TensorRT
 - PagedAttention with KV cache management
@@ -22,12 +28,18 @@ Usage::
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 from loguru import logger
 import torch
 
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
+
+_EXPERIMENTAL_WARNING = (
+    "TensorRT-LLM backend is EXPERIMENTAL and not yet production-ready. "
+    "API surface and behavior may change without notice."
+)
 
 
 class TensorRTLLMAdapter(BackendAdapter):
@@ -100,6 +112,7 @@ class TensorRTLLMAdapter(BackendAdapter):
         Loads a pre-built engine from engine_dir, or builds one from
         model_name if no engine_dir is provided.
         """
+        warnings.warn(_EXPERIMENTAL_WARNING, UserWarning, stacklevel=2)
         try:
             import tensorrt_llm
             from tensorrt_llm import LLM, SamplingParams
@@ -172,7 +185,7 @@ class TensorRTLLMAdapter(BackendAdapter):
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """Single-node: run full model via TensorRT-LLM generate()."""
         if self._engine is None:
-            raise RuntimeError("TensorRT-LLM not loaded. Call load_model() first.")
+            raise ModelLoadError("tensorrt-llm", "TensorRT-LLM not loaded. Call load_model() first.")
 
         if self._is_pipeline_mode:
             raise NotImplementedError(
@@ -210,7 +223,7 @@ class TensorRTLLMAdapter(BackendAdapter):
             if self._engine is not None:
                 self._model = self._extract_inner_model(self._engine)
             else:
-                raise RuntimeError("TensorRT-LLM not loaded. Call load_model() first.")
+                raise ModelLoadError("tensorrt-llm", "TensorRT-LLM not loaded. Call load_model() first.")
 
         with torch.no_grad():
             output = self._model(
@@ -255,7 +268,7 @@ class TensorRTLLMAdapter(BackendAdapter):
     ) -> list[Any]:
         """Direct TensorRT-LLM generation API for single-node use."""
         if self._engine is None:
-            raise RuntimeError("TensorRT-LLM not loaded. Call load_model() first.")
+            raise ModelLoadError("tensorrt-llm", "TensorRT-LLM not loaded. Call load_model() first.")
 
         from tensorrt_llm import SamplingParams
         if sampling_params is None:

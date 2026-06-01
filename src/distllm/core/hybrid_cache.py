@@ -20,7 +20,7 @@ Usage::
 from __future__ import annotations
 
 import threading
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 from loguru import logger
@@ -54,7 +54,7 @@ class ContiguousKVBuffer:
         self.keys[layer_idx, :, self.num_tokens:self.num_tokens + n, :] = key
         self.values[layer_idx, :, self.num_tokens:self.num_tokens + n, :] = value
 
-    def get(self, layer_idx: int, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get(self, layer_idx: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         return (
             self.keys[layer_idx, :, :seq_len, :],
             self.values[layer_idx, :, :seq_len, :],
@@ -106,9 +106,9 @@ class HybridKVCache:
             device=device,
         )
 
-        self._contiguous: Dict[str, ContiguousKVBuffer] = {}
-        self._mode: Dict[str, str] = {}  # request_id -> "contiguous" | "paged"
-        self._seq_lens: Dict[str, int] = {}
+        self._contiguous: dict[str, ContiguousKVBuffer] = {}
+        self._mode: dict[str, str] = {}  # request_id -> "contiguous" | "paged"
+        self._seq_lens: dict[str, int] = {}
         self._lock = threading.Lock()
 
     @property
@@ -165,7 +165,7 @@ class HybridKVCache:
                 self._migrate_to_paged(request_id)
 
             if self._mode[request_id] == "paged":
-                self._paged_mgr.free_layer_kv(request_id, layer_idx, key, value)
+                self._paged_mgr.append_layer_kv(request_id, layer_idx, key, value)
             else:
                 buf = self._contiguous[request_id]
                 buf.append(layer_idx, key, value)
@@ -177,7 +177,7 @@ class HybridKVCache:
         request_id: str,
         layer_idx: int,
         seq_len: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Retrieve KV tensors for attention."""
         mode = self._mode.get(request_id)
         if mode is None:
@@ -210,7 +210,7 @@ class HybridKVCache:
         for layer_idx in range(self._num_layers):
             k, v = buf.get(layer_idx, buf.num_tokens)
             if k.numel() > 0:
-                self._paged_mgr.free_layer_kv(
+                self._paged_mgr.append_layer_kv(
                     request_id, layer_idx,
                     k[:, :, :buf.num_tokens, :],
                     v[:, :, :buf.num_tokens, :],
@@ -220,7 +220,7 @@ class HybridKVCache:
         self._mode[request_id] = "paged"
         logger.debug(f"Migrated {request_id} from contiguous to paged ({buf.num_tokens} tokens)")
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         contiguous_count = sum(1 for m in self._mode.values() if m == "contiguous")
         paged_count = sum(1 for m in self._mode.values() if m == "paged")
         return {

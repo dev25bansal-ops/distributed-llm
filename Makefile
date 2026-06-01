@@ -48,7 +48,7 @@ bench-update: ## Update baseline with current benchmark results
 	python -m pytest tests/benchmark/ -v --benchmark-json=benchmarks/results.json -p no:asyncio
 	python -c "import json; results = json.load(open('benchmarks/results.json')); print('Update baseline manually with results from benchmarks/results.json')"
 
-security: ## Run security scans (bandit, safety, detect-secrets)
+security: ## Run quick security scans (bandit, safety, detect-secrets)
 	bash scripts/security_scan.sh
 
 memory-profile: ## Run memory profiling tests

@@ -39,12 +39,11 @@ async def exchange_gossip_advertisement(peer_advertisement: dict, request: Reque
     during rollout).
     """
     protocol = _get_gossip_protocol()
-    # Verify HMAC if present (backward-compatible: accept unsigned during rollout)
-    if "_hmac" in peer_advertisement:
-        if not protocol.verify_message(dict(peer_advertisement)):
-            raise HTTPException(status_code=403, detail="Invalid gossip message HMAC")
-    else:
-        logger = request.app.state.logger if hasattr(request.app.state, 'logger') else None
+    # HMAC verification is mandatory — reject unsigned messages
+    if "_hmac" not in peer_advertisement:
+        raise HTTPException(status_code=403, detail="Gossip message must include HMAC signature")
+    if not protocol.verify_message(dict(peer_advertisement)):
+        raise HTTPException(status_code=403, detail="Invalid gossip message HMAC")
     protocol.process_advertisement(peer_advertisement)
     return protocol.advertise()
 

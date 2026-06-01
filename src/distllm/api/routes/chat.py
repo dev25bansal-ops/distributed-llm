@@ -220,19 +220,28 @@ def _reject_private_address(host: str, port: int | None = None) -> None:
     if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
         raise ValueError("Connections to localhost are not allowed")
 
+    # Strip IPv6 brackets if present: [::1] → ::1
+    clean_host = host.strip("[]") if host.startswith("[") else host
+
     addresses = []
     try:
-        addresses = [host]
-        ipaddress.ip_address(host)
+        # Try parsing as a direct IP address (handles IPv4, IPv6, IPv4-mapped IPv6)
+        addr = ipaddress.ip_address(clean_host)
+        addresses = [addr]
     except ValueError:
+        # Not a raw IP — resolve via DNS
         try:
-            infos = socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)
+            infos = socket.getaddrinfo(clean_host, port or 443, type=socket.SOCK_STREAM)
         except socket.gaierror as exc:
             raise ValueError("Unable to resolve image URL hostname") from exc
-        addresses = [info[4][0] for info in infos]
+        addresses = []
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0]))
+            except ValueError:
+                continue
 
-    for address in addresses:
-        addr = ipaddress.ip_address(address)
+    for addr in addresses:
         if (
             addr.is_private
             or addr.is_loopback
@@ -280,9 +289,8 @@ class ImageURLContent(BaseModel):
         host = parsed.hostname
         if not host:
             raise ValueError("URL must have a hostname")
-        # SSRF protection is configurable via DISTLLM_SSRF_ENABLED env var
-        if os.environ.get("DISTLLM_SSRF_ENABLED", "1").lower() in ("1", "true"):
-            _reject_private_address(host, parsed.port)
+        # SSRF protection is always enforced — no env var bypass
+        _reject_private_address(host, parsed.port)
         return v
 
 

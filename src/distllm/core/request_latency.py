@@ -158,3 +158,48 @@ class RequestLatencyTracker:
     def tracked_count(self) -> int:
         with self._lock:
             return len(self._requests)
+
+    def get_sla_percentiles(self, window_size: int = 100) -> dict:
+        """Compute SLA compliance percentiles from recent completed requests.
+
+        Returns:
+            Dict with P50, P95, P99 latency, SLA compliance rate,
+            and TTFT/TPOT percentiles.
+        """
+        with self._lock:
+            recent = self._completed[-window_size:]
+            if not recent:
+                return {
+                    "sample_size": 0,
+                    "ttft_p50_ms": 0, "ttft_p95_ms": 0, "ttft_p99_ms": 0,
+                    "tpot_p50_ms": 0, "tpot_p95_ms": 0, "tpot_p99_ms": 0,
+                    "elapsed_p50_ms": 0, "elapsed_p95_ms": 0, "elapsed_p99_ms": 0,
+                    "sla_compliance_pct": 100.0,
+                    "overdue_count": 0,
+                }
+
+            ttfts = sorted([r.ttft_ms for r in recent if r.ttft_ms is not None])
+            tpots = sorted([r.tpot_ms for r in recent if r.tpot_ms is not None])
+            elapsed = sorted([r.elapsed_ms for r in recent])
+            overdue = sum(1 for r in recent if r.is_overdue)
+
+            def percentile(sorted_list, pct):
+                if not sorted_list:
+                    return 0.0
+                idx = int(len(sorted_list) * pct / 100)
+                return round(sorted_list[min(idx, len(sorted_list) - 1)], 2)
+
+            return {
+                "sample_size": len(recent),
+                "ttft_p50_ms": percentile(ttfts, 50),
+                "ttft_p95_ms": percentile(ttfts, 95),
+                "ttft_p99_ms": percentile(ttfts, 99),
+                "tpot_p50_ms": percentile(tpots, 50),
+                "tpot_p95_ms": percentile(tpots, 95),
+                "tpot_p99_ms": percentile(tpots, 99),
+                "elapsed_p50_ms": percentile(elapsed, 50),
+                "elapsed_p95_ms": percentile(elapsed, 95),
+                "elapsed_p99_ms": percentile(elapsed, 99),
+                "sla_compliance_pct": round((1 - overdue / len(recent)) * 100, 1),
+                "overdue_count": overdue,
+            }

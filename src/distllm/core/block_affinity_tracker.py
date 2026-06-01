@@ -21,14 +21,14 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 
 @dataclass
 class RequestInfo:
     """Metadata for a tracked request."""
     request_id: str
-    block_ids: List[int]
+    block_ids: list[int]
     prefix_hash: str = ""
     created_at: float = field(default_factory=time.time)
     last_access: float = field(default_factory=time.time)
@@ -48,15 +48,15 @@ class BlockAffinityTracker:
     """
 
     def __init__(self) -> None:
-        self._requests: Dict[str, RequestInfo] = {}
-        self._block_to_requests: Dict[int, Set[str]] = defaultdict(set)
-        self._prefix_to_requests: Dict[str, Set[str]] = defaultdict(set)
-        self._shared_blocks: Dict[int, int] = {}  # block_id -> ref_count
+        self._requests: dict[str, RequestInfo] = {}
+        self._block_to_requests: dict[int, set[str]] = defaultdict(set)
+        self._prefix_to_requests: dict[str, set[str]] = defaultdict(set)
+        self._shared_blocks: dict[int, int] = {}  # block_id -> ref_count
 
     def register(
         self,
         request_id: str,
-        block_ids: List[int],
+        block_ids: list[int],
         prefix_hash: str = "",
         adapter_id: str | None = None,
         priority: int = 2,
@@ -108,15 +108,15 @@ class BlockAffinityTracker:
             info.last_access = time.time()
             info.access_count += 1
 
-    def find_prefix_siblings(self, prefix_hash: str) -> List[str]:
+    def find_prefix_siblings(self, prefix_hash: str) -> list[str]:
         """Find all request IDs sharing the same prefix hash."""
         return list(self._prefix_to_requests.get(prefix_hash, set()))
 
-    def get_shared_blocks(self) -> List[int]:
+    def get_shared_blocks(self) -> list[int]:
         """Return block IDs shared by 2+ requests (CoW candidates)."""
         return [bid for bid, count in self._shared_blocks.items() if count >= 2]
 
-    def get_unique_blocks(self, request_id: str) -> List[int]:
+    def get_unique_blocks(self, request_id: str) -> list[int]:
         """Return block IDs unique to a specific request."""
         info = self._requests.get(request_id)
         if info is None:
@@ -131,7 +131,7 @@ class BlockAffinityTracker:
         shared = sum(1 for bid in info.block_ids if self._shared_blocks.get(bid, 0) >= 2)
         return shared / len(info.block_ids)
 
-    def hot_prefixes(self, min_requests: int = 2) -> List[tuple[str, int]]:
+    def hot_prefixes(self, min_requests: int = 2) -> list[tuple[str, int]]:
         """Return prefix hashes shared by at least min_requests requests."""
         return [
             (prefix, len(reqs))
@@ -139,11 +139,11 @@ class BlockAffinityTracker:
             if len(reqs) >= min_requests
         ]
 
-    def request_info(self, request_id: str) -> Optional[RequestInfo]:
+    def request_info(self, request_id: str) -> RequestInfo | None:
         """Get metadata for a request."""
         return self._requests.get(request_id)
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         total_blocks = len(self._block_to_requests)
         shared = len(self.get_shared_blocks())
         return {

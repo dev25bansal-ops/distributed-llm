@@ -1,0 +1,38 @@
+# Code Owners
+#
+# These owners will be automatically requested for review when a PR
+# touches files matching the patterns below.
+#
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ── Default: Core maintainers review everything ─────────────
+* @distributed-llm/core-maintainers
+
+# ── API layer ───────────────────────────────────────────────
+src/distllm/api/ @distributed-llm/api-team
+src/distllm/api/routes/ @distributed-llm/api-team
+
+# ── Security ────────────────────────────────────────────────
+src/distllm/security/ @distributed-llm/security-team
+SECURITY.md @distributed-llm/security-team
+
+# ── Infrastructure / DevOps ─────────────────────────────────
+.github/ @distributed-llm/devops
+Dockerfile* @distributed-llm/devops
+docker-compose*.yml @distributed-llm/devops
+deploy/ @distributed-llm/devops
+Makefile @distributed-llm/devops
+
+# ── Documentation ───────────────────────────────────────────
+docs/ @distributed-llm/docs-team
+*.md @distributed-llm/docs-team
+
+# ── SDK ─────────────────────────────────────────────────────
+sdk/ @distributed-llm/sdk-team
+
+# ── Proto definitions ───────────────────────────────────────
+proto/ @distributed-llm/core-maintainers
+
+# ── Config ──────────────────────────────────────────────────
+src/distllm/config/ @distributed-llm/core-maintainers
+pyproject.toml @distributed-llm/core-maintainers

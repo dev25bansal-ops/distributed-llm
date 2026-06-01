@@ -1,11 +1,16 @@
 """OpenAI-compatible REST API for distributed LLM inference."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import hmac
 import os
+import threading
 import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
@@ -28,6 +33,7 @@ from distllm.dashboard.ws_handler import (
     KNOWN_METRIC_CATEGORIES,
 )
 from fastapi.responses import StreamingResponse
+from starlette.responses import Response
 from distllm.core.monitor import SystemMonitor
 from distllm.config.settings import DistLLMSettings
 from distllm.core.debug import set_debug_mode
@@ -56,6 +62,7 @@ from distllm.api.routes import (
     model_registry_router,
     router_admin_router,
     defrag_router,
+    batch_router,
 )
 
 # Re-export models from route modules for backward compatibility
@@ -119,24 +126,68 @@ def _get_cors_origins() -> list[str]:
 
 # Lazy-initialized CORS origins (avoids import-time side effects)
 _CORS_ORIGINS: list[str] | None = None
+_cors_origins_lock = threading.Lock()
 
 
 def _get_cors_origins_lazy() -> list[str]:
     """Get CORS origins, initializing on first call."""
     global _CORS_ORIGINS
     if _CORS_ORIGINS is None:
-        _CORS_ORIGINS = _get_cors_origins()
+        with _cors_origins_lock:
+            if _CORS_ORIGINS is None:
+                _CORS_ORIGINS = _get_cors_origins()
     return _CORS_ORIGINS
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: initialize on startup, clean up on shutdown."""
+    import signal
+    import os
+
     _init_observability()
 
     # Initialize plugin system and register built-in plugins
     state.plugin_system = PluginSystem()
     _init_plugins(state.plugin_system)
+
+    # Register SIGHUP handler for configuration hot-reload (Unix only)
+    if hasattr(signal, 'SIGHUP'):
+        def _reload_config(signum, frame):
+            """Reload configuration on SIGHUP without restarting."""
+            try:
+                from distllm.config.settings import DistLLMSettings
+                config_path = os.environ.get("DISTLLM_CONFIG", "config.yaml")
+                if os.path.exists(config_path):
+                    new_settings = DistLLMSettings.from_yaml(config_path=config_path)
+                    # Update coordinator settings if available
+                    coord = getattr(state, 'coordinator', None)
+                    if coord is not None:
+                        logger.info(f"Config reloaded from {config_path}")
+                        # Update rate limits, timeouts, etc. from new settings
+                        # Use lock to prevent race condition with scheduler
+                        if hasattr(coord, '_batch_scheduler') and coord._batch_scheduler is not None:
+                            scheduler = coord._batch_scheduler
+                            if hasattr(new_settings, 'batching'):
+                                with scheduler._lock if hasattr(scheduler, '_lock') else None:
+                                    scheduler.max_batch_size = new_settings.batching.max_batch_size
+                                    scheduler.max_tokens_per_batch = new_settings.batching.max_tokens_per_batch
+                    else:
+                        logger.info(f"Config reloaded (no coordinator to update)")
+                else:
+                    logger.warning(f"Config file not found: {config_path}")
+            except Exception as e:
+                logger.error(f"Config reload failed: {e}")
+
+        signal.signal(signal.SIGHUP, _reload_config)
+        logger.info("SIGHUP handler registered for config hot-reload")
+
+    # Security warning when TLS is disabled
+    if not os.environ.get("DISTLLM_TLS_ENABLED", "").lower() in ("1", "true"):
+        logger.warning(
+            "TLS is DISABLED. API keys and data are transmitted in plaintext. "
+            "Set DISTLLM_TLS_ENABLED=true for production deployments."
+        )
 
     _start_ws_broadcaster()
     yield
@@ -146,13 +197,16 @@ async def lifespan(app: FastAPI):
         state.ws_broadcast_task.cancel()
 
 
+# Disable OpenAPI docs in production (set DISTLLM_ENABLE_DOCS=1 to enable)
+_enable_docs = os.environ.get("DISTLLM_ENABLE_DOCS", "0").lower() in ("1", "true")
+
 app = FastAPI(
     lifespan=lifespan,
     title="Distributed LLM API",
     description="OpenAI-compatible REST API for distributed LLM inference across multiple machines using pipeline parallelism",
     version="0.4.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if _enable_docs else None,
+    redoc_url="/redoc" if _enable_docs else None,
     openapi_tags=[
         {"name": "chat", "description": "Chat completion endpoints with streaming support across distributed nodes"},
         {"name": "completion", "description": "Text completion endpoints with streaming support across distributed nodes"},
@@ -199,7 +253,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         are considered internal and do not receive version headers.
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
         response.headers["X-Frame-Options"] = "DENY"
@@ -254,7 +308,7 @@ def _error_response(
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Convert Pydantic validation errors to OpenAI-compatible 422."""
     messages = []
     for err in exc.errors():
@@ -270,7 +324,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Convert HTTPException to structured error response."""
     return _error_response(
         status_code=exc.status_code,
@@ -282,7 +336,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
+async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all for unhandled exceptions with structured response."""
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return _error_response(
@@ -308,10 +362,10 @@ class _ServerState:
     return the same object — no dual bookkeeping.
     """
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(_shared_state, name)
 
-    def __setattr__(self, name, value):
+    def __setattr__(self, name: str, value: Any) -> None:
         setattr(_shared_state, name, value)
 
 
@@ -321,7 +375,7 @@ state = _ServerState()
 
 
 
-def _init_observability():
+def _init_observability() -> None:
     """Initialize tracing, logging, metrics exporter."""
     setup_logging(level="INFO", json_format=True)
 
@@ -347,7 +401,7 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         "/v1/embeddings": 60.0,  # 1 minute for embeddings
     }
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         timeout = self.ENDPOINT_TIMEOUTS.get(
             request.url.path, self.DEFAULT_TIMEOUT
         )
@@ -403,10 +457,10 @@ class RequestSizeLimitMiddleware:
 
     MAX_REQUEST_SIZE = 32 * 1024 * 1024  # 32 MB default
 
-    def __init__(self, app):
+    def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or scope.get("method") not in ("POST", "PUT", "PATCH"):
             await self.app(scope, receive, send)
             return
@@ -468,7 +522,7 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
 
     MAX_PENDING_REQUESTS = 1000  # Max pending requests before rejecting
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Skip backpressure for health/metrics endpoints
         if request.url.path in ("/health", "/ready", "/live", "/metrics", "/docs", "/openapi.json", "/redoc"):
             return await call_next(request)
@@ -529,7 +583,7 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
     SKIP_PATHS = {"/health", "/ready", "/live", "/metrics", "/docs", "/openapi.json",
                   "/redoc", "/ws", "/dashboard"}
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         plugin_sys: PluginSystem | None = getattr(state, "plugin_system", None)
         if plugin_sys is None or request.url.path in self.SKIP_PATHS:
             return await call_next(request)
@@ -538,11 +592,14 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
         req_ctx = {
             "method": request.method,
             "path": request.url.path,
+            "query": str(request.query_params),
             "request_id": getattr(request.state, "request_id", ""),
             "tenant": getattr(request.state, "tenant", "default"),
             "model": getattr(request.state, "model", ""),
             "client_ip": request.client.host if request.client else "",
             "user_agent": request.headers.get("user-agent", ""),
+            "api_key_role": getattr(request.state, "api_key_role", ""),
+            "api_key_id": getattr(request.state, "api_key_id", ""),
         }
 
         # Allow plugins to modify/reject the request
@@ -597,6 +654,7 @@ app.include_router(leaderboard_router)
 app.include_router(prompts_router)
 app.include_router(model_registry_router)
 app.include_router(router_admin_router)
+app.include_router(batch_router)
 
 # Cost tracking middleware
 try:
@@ -611,7 +669,7 @@ from pathlib import Path
 
 
 @app.websocket("/ws")
-async def dashboard_websocket(websocket: WebSocket):
+async def dashboard_websocket(websocket: WebSocket) -> None:
     """WebSocket endpoint for real-time dashboard metrics.
 
     Client may send JSON commands:
@@ -622,6 +680,23 @@ async def dashboard_websocket(websocket: WebSocket):
     kv_cache, speculative, cost, queue_depth, active_requests, scheduler,
     nodes, gpu, prefix_cache, spec_decoder, topology, tenants.
     """
+    # Authenticate WebSocket connection via query param or first message
+    auth_token = websocket.query_params.get("token", "")
+    if not auth_token:
+        # Try to get from Authorization header
+        auth_header = websocket.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[7:]
+
+    # Validate API key if auth is configured
+    from distllm.core.api_key_store import get_api_key_store
+    store = get_api_key_store()
+    if store.get_key_count() > 0 and auth_token:
+        result = store.authenticate(auth_token)
+        if result is None:
+            await websocket.close(code=4001, reason="Invalid API key")
+            return
+
     await manager.connect(websocket)
     try:
         while True:
@@ -649,7 +724,7 @@ async def dashboard_websocket(websocket: WebSocket):
 
 
 @app.websocket("/ws/metrics")
-async def metrics_websocket(websocket: WebSocket):
+async def metrics_websocket(websocket: WebSocket) -> None:
     """Dedicated WebSocket endpoint for live metrics streaming.
 
     Unlike /ws (which requires subscribe commands), this endpoint
@@ -660,7 +735,8 @@ async def metrics_websocket(websocket: WebSocket):
         categories: Comma-separated metric categories to include
     """
     await websocket.accept()
-    interval = float(websocket.query_params.get("interval", "1.0"))
+    # Clamp interval to safe range (0.2s - 10.0s) to prevent DoS
+    interval = max(0.2, min(float(websocket.query_params.get("interval", "1.0")), 10.0))
     categories = websocket.query_params.get("categories", "")
     requested = [c.strip() for c in categories.split(",") if c.strip()] or None
 
@@ -726,7 +802,7 @@ async def metrics_websocket(websocket: WebSocket):
     response_description="Dashboard HTML page",
     include_in_schema=False,
 )
-async def dashboard_page():
+async def dashboard_page() -> HTMLResponse:
     """Serve the real-time dashboard HTML."""
     html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "index.html"
     if html_path.exists():
@@ -741,7 +817,7 @@ async def dashboard_page():
     description="Serve the benchmark leaderboard HTML page for comparing results across models, hardware, and frameworks.",
     include_in_schema=False,
 )
-async def dashboard_leaderboard_page():
+async def dashboard_leaderboard_page() -> HTMLResponse:
     """Serve the benchmark leaderboard HTML."""
     html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "leaderboard.html"
     if html_path.exists():
@@ -755,7 +831,7 @@ async def dashboard_leaderboard_page():
     summary="Model Registry page",
     include_in_schema=False,
 )
-async def model_registry_page():
+async def model_registry_page() -> HTMLResponse:
     """Serve the model registry dashboard HTML."""
     html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "models.html"
     if html_path.exists():
@@ -769,7 +845,7 @@ async def model_registry_page():
     description="Return all registered worker nodes with their GPU info, health status, and layer assignments.",
     response_description="List of cluster nodes with capabilities",
 )
-async def api_cluster_nodes():
+async def api_cluster_nodes() -> dict:
     """Return current cluster node topology."""
     coord = state.coordinator
     if coord is None:
@@ -798,7 +874,7 @@ async def api_cluster_nodes():
                 "Authenticated via cluster key in X-Cluster-Key header.",
     include_in_schema=False,
 )
-async def federation_heartbeat(request: Request):
+async def federation_heartbeat(request: Request) -> dict:
     """Receive and store heartbeat from a federated peer.
 
     Requires a valid ``X-Cluster-Key`` header matching the local coordinator's
@@ -841,7 +917,7 @@ async def federation_heartbeat(request: Request):
     description="Return pipeline health status, node execution metrics, transport info, and configuration.",
     response_description="Pipeline health and metrics",
 )
-async def api_pipeline_health():
+async def api_pipeline_health() -> dict:
     """Return pipeline orchestrator health and metrics."""
     coord = state.coordinator
     if coord is None:
@@ -875,7 +951,7 @@ async def api_pipeline_health():
     description="Return reputation scores for all registered nodes based on reliability, speed, uptime, and health.",
     response_description="Reputation scores per node",
 )
-async def api_cluster_reputation():
+async def api_cluster_reputation() -> dict:
     """Return node reputation scores."""
     coord = state.coordinator
     if coord is None or not hasattr(coord, '_reputation'):
@@ -889,7 +965,7 @@ async def api_cluster_reputation():
     description="Return a snapshot of all collected metrics from the observability collector, including raw counters and gauges for instrumentation debugging.",
     response_description="Collector metrics snapshot",
 )
-async def api_collector_metrics():
+async def api_collector_metrics() -> dict:
     """Return current collector metrics snapshot."""
     return get_collector().summary()
 
@@ -903,7 +979,7 @@ async def api_collector_metrics():
 async def api_metrics_stream(
     metrics: str = "",
     interval: float = 1.0,
-):
+) -> StreamingResponse:
     """SSE endpoint for real-time dashboard metrics.
 
     Query parameters:
@@ -946,7 +1022,7 @@ async def api_metrics_stream(
     description="Return recent request lifecycle data (queue → prefill → decode) for the dashboard waterfall chart.",
     response_description="List of request timing entries with elapsed_ms, ttft_ms, and request_id",
 )
-async def api_waterfall(limit: int = 50):
+async def api_waterfall(limit: int = 50) -> list:
     """Return recent request waterfall entries showing lifecycle phases."""
     coord = state.coordinator
     if coord is None:
@@ -969,7 +1045,7 @@ async def api_waterfall(limit: int = 50):
     description="Return statistics about the edge-to-cloud device continuum including device types, transports, and layer assignments.",
     response_description="Continuum statistics",
 )
-async def api_continuum_stats():
+async def api_continuum_stats() -> dict:
     """Return edge-to-cloud continuum statistics."""
     continuum = getattr(state, "continuum", None)
     if continuum is None:
@@ -983,7 +1059,7 @@ async def api_continuum_stats():
     description="Return cost tracking summary including per-request costs, savings vs cloud APIs, and throughput metrics.",
     response_description="Cost summary",
 )
-async def api_cost_summary(tenant_id: str = ""):
+async def api_cost_summary(tenant_id: str = "") -> dict:
     """Return cost tracking summary."""
     try:
         from distllm.core.cost_tracker import get_cost_tracker
@@ -998,7 +1074,7 @@ async def api_cost_summary(tenant_id: str = ""):
     description="Return recent cost tracking history.",
     response_description="Cost history entries",
 )
-async def api_cost_history(limit: int = 100):
+async def api_cost_history(limit: int = 100) -> list:
     """Return recent cost history."""
     try:
         from distllm.core.cost_tracker import get_cost_tracker
@@ -1013,7 +1089,7 @@ async def api_cost_history(limit: int = 100):
     description="Return real-time streaming cost tracker statistics.",
     response_description="Streaming cost stats",
 )
-async def api_streaming_cost_stats():
+async def api_streaming_cost_stats() -> dict:
     """Return streaming cost tracker statistics."""
     try:
         from distllm.core.streaming_cost import get_streaming_cost_tracker
@@ -1022,7 +1098,7 @@ async def api_streaming_cost_stats():
         return {"status": "not_available"}
 
 
-def _start_ws_broadcaster():
+def _start_ws_broadcaster() -> None:
     """Start the WebSocket metrics broadcaster background task."""
     if state.coordinator is not None:
         state.ws_broadcast_task = asyncio.create_task(metrics_broadcaster(state.coordinator))
@@ -1077,6 +1153,39 @@ def create_coordinator(
     else:
         logger.info(f"Coordinator ready for distributed mode: {model_name}")
 
+    # Start gRPC server for worker connections
+    # Create a minimal node-like object for the gRPC server
+    coord_port = 50050  # Default coordinator gRPC port
+    try:
+        from distllm.dist.node_service import NodeServer
+
+        # Create a wrapper that provides the interface NodeServer expects
+        class _CoordinatorNode:
+            def __init__(self, coordinator: Coordinator) -> None:
+                self._coord = coordinator
+                self.node_id = "coordinator"
+                self.host = "0.0.0.0"
+                self.port = coord_port
+                self.start_layer = 0
+                self.end_layer = 0
+                self.total_layers = 0
+                self.healthy = True
+                self.partitioner = None
+
+            def forward_fn(self, **kwargs: Any) -> Any:
+                return self._coord.generate(**kwargs)
+
+            def health_check(self) -> bool:
+                return True
+
+        coord._node_wrapper = _CoordinatorNode(coord)
+        coord._node_server = NodeServer(coord._node_wrapper, port=coord_port, max_workers=4)
+        coord._node_server.start(use_tls=False)
+        logger.info(f"Coordinator gRPC server started on port {coord_port} for worker connections")
+    except Exception as e:
+        logger.warning(f"Could not start gRPC server on port {coord_port}: {e}")
+        logger.warning("Workers will not be able to connect. Run 'system coordinator' separately.")
+
     monitor_inst = SystemMonitor()
     state.coordinator = coord
     state.monitor = monitor_inst
@@ -1084,7 +1193,7 @@ def create_coordinator(
     return coord
 
 
-def _load_settings(args) -> DistLLMSettings:
+def _load_settings(args: Any) -> DistLLMSettings:
     """Load settings via :class:`ConfigResolver` with full precedence.
 
     Precedence (lowest to highest):
@@ -1117,7 +1226,7 @@ def _load_settings(args) -> DistLLMSettings:
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Distributed LLM REST API")
     parser.add_argument("--model", type=str, default=None, help="Model name (overrides config)")
     parser.add_argument("--host", type=str, default=None, help="Server host (overrides config)")

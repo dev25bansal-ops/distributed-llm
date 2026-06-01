@@ -7,13 +7,13 @@ Splits responsibilities across four specialized components:
   - ``MetricsCollector`` — aggregated metrics from all subsystems
 """
 
-import argparse
 import asyncio
 import os
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from loguru import logger
@@ -23,6 +23,7 @@ from distllm.config.settings import DistLLMSettings, NodeRole
 from distllm.core.batch_scheduler import BatchScheduler
 from distllm.core.cache_manager import CacheManager
 from distllm.core.cluster_manager import ClusterManager
+from distllm.core.coordinator_config import CoordinatorConfig
 from distllm.core.debug import set_debug_mode
 from distllm.core.health_manager import HealthManager
 from distllm.core.inference_engine import InferenceEngine
@@ -34,6 +35,8 @@ from distllm.core.memory_defragmenter import (
 )
 from distllm.core.metrics_collector import MetricsCollector
 from distllm.core.model_router import ModelRouter
+from distllm.core.param_update_channel import ParamUpdateChannel
+from distllm.core.request_tracker import RequestTracker
 from distllm.core.resource_manager import ResourceManager
 from distllm.dist.federation import FederationConfig
 from distllm.dist.latency import LatencyTracker
@@ -41,181 +44,12 @@ from distllm.dist.pipeline import PipelineOrchestrator
 from distllm.dist.recovery import NodeRecoveryManager
 from distllm.dist.reputation import ReputationSystem
 from distllm.dist.straggler import DetectionMethod, StragglerDetector
-from distllm.models.partitioner import ModelPartitioner, get_model_info
+from distllm.models.partitioner import ModelPartitioner
 from distllm.security import hf_revision
 
-
-class _ParamUpdateChannel:
-    """Channel for mid-stream parameter updates (temperature, top_p, top_k)."""
-
-    def __init__(self):
-        self._channels: dict[str, dict] = {}
-
-    def register(self, request_id: str) -> None:
-        self._channels[request_id] = {}
-
-    def update(self, request_id: str, **params) -> None:
-        if request_id in self._channels:
-            self._channels[request_id].update(params)
-
-    def get(self, request_id: str) -> dict | None:
-        return self._channels.get(request_id)
-
-    def unregister(self, request_id: str) -> None:
-        self._channels.pop(request_id, None)
-
-
-class _RequestTracker:
-    """Tracks async request results and completion events."""
-
-    def __init__(self):
-        self._results: dict[str, str] = {}
-        self._events: dict[str, threading.Event] = {}
-        self._logprobs: dict[str, dict] = {}
-        self._lock = threading.Lock()
-
-    def register_request(self, request_id: str) -> None:
-        with self._lock:
-            self._events[request_id] = threading.Event()
-
-    def set_result(self, request_id: str, result: str) -> None:
-        with self._lock:
-            self._results[request_id] = result
-            event = self._events.get(request_id)
-            if event:
-                event.set()
-
-    def wait_for_result(self, request_id: str, timeout: float = 120.0) -> str:
-        event = self._events.get(request_id)
-        if event is None:
-            raise ValueError(f"Unknown request_id: {request_id}")
-        event.wait(timeout=timeout)
-        with self._lock:
-            result = self._results.pop(request_id, None)
-            self._events.pop(request_id, None)
-        if result is None:
-            raise TimeoutError(f"Request {request_id} timed out after {timeout}s")
-        return result
-
-    def get_logprobs(self, request_id: str) -> dict | None:
-        return self._logprobs.get(request_id)
-
-    def complete_batch_requests(self, active_seqs, pending_seqs, tokenizer) -> None:
-        """Complete all active/pending requests in the batch.
-
-        Called when the batch scheduler is shutting down or timing out.
-        Finishes any active sequences by decoding their generated tokens,
-        and marks pending sequences with an error.
-        """
-        with self._lock:
-            # Complete active sequences that have generated tokens
-            for seq_id, seq in (active_seqs.items() if isinstance(active_seqs, dict) else []):
-                try:
-                    if hasattr(seq, 'generated_tokens') and seq.generated_tokens:
-                        if tokenizer is not None:
-                            result = tokenizer.decode(seq.generated_tokens, skip_special_tokens=True)
-                        else:
-                            result = str(seq.generated_tokens)
-                        self._results[seq_id] = result
-                    else:
-                        self._results[seq_id] = "[Error: Sequence completed without output]"
-                except Exception as e:
-                    self._results[seq_id] = f"[Error decoding output: {e}]"
-                event = self._events.pop(seq_id, None)
-                if event:
-                    event.set()
-                self._logprobs.pop(seq_id, None)
-
-            # Mark pending sequences as timed out
-            for seq in pending_seqs:
-                sid = getattr(seq, 'request_id', str(seq))
-                self._results[sid] = "[Error: Request timed out waiting in scheduler queue]"
-                event = self._events.pop(sid, None)
-                if event:
-                    event.set()
-
-
-class CoordinatorConfig:
-    """Configuration for the distributed coordinator.
-
-    Use :meth:`from_settings` to create from a :class:`DistLLMSettings`
-    instance, which extracts all values from the Pydantic settings model.
-    """
-
-    def __init__(
-        self,
-        model_name: str = "",
-        port: int = 50050,
-        dtype: str = "float16",
-        trust_remote_code: bool | None = None,
-        max_batch_size: int = 4,
-        max_tokens_per_batch: int = 1024,
-        pipeline_timeout: float = 30.0,
-        cluster_key: str | None = None,
-        model_cache_dir: str | None = None,
-        metrics_exporter=None,
-        discovery_mode: str | None = None,
-        wide_area_config=None,
-        redundancy: int = 1,
-        federation_config=None,
-        plugin_system=None,
-    ):
-        self.model_name = model_name
-        self.port = port
-        self.dtype = dtype
-        self.trust_remote_code = trust_remote_code
-        self.metrics_exporter = metrics_exporter
-        self.discovery_mode = discovery_mode
-        self.max_batch_size = max_batch_size
-        self.max_tokens_per_batch = max_tokens_per_batch
-        self.pipeline_timeout = pipeline_timeout
-        self.cluster_key = cluster_key
-        self.model_cache_dir = model_cache_dir
-        self.wide_area_config = wide_area_config
-        self.redundancy = redundancy
-        self.min_reputation = 0.0
-        self.federation_config = federation_config
-        self.prefix_cache_enabled = False
-        self.prefix_cache_max_entries = 256
-        self.prefix_cache_min_prefix_len = 4
-        self.radix_tree_cache_enabled = False
-        self.chunked_prefill_enabled = False
-        self.chunked_prefill_chunk_size = 512
-        self.enable_pipeline_overlap = False
-        self.plugin_system = plugin_system
-
-    @classmethod
-    def from_settings(cls, settings: "DistLLMSettings", **overrides) -> "CoordinatorConfig":
-        wa = settings.wide_area
-        wide_area_config = None
-        if wa.enabled:
-            from distllm.dist.config import WideAreaConfig
-            wide_area_config = WideAreaConfig(
-                enabled=wa.enabled,
-                p2p_forwarding=wa.p2p_forwarding,
-                tokens_before_forward=wa.tokens_before_forward,
-                wan_timeout_seconds=wa.wan_timeout_seconds,
-                max_retries=wa.max_retries,
-                backoff_base_seconds=wa.backoff_base_seconds,
-            )
-
-        config = cls(
-            model_name=settings.model.name,
-            port=settings.coordinator.port,
-            dtype=settings.model.dtype,
-            trust_remote_code=settings.model.trust_remote_code or None,
-            max_batch_size=settings.batching.max_batch_size,
-            max_tokens_per_batch=settings.batching.max_tokens_per_batch,
-            pipeline_timeout=settings.network.grpc_timeout,
-            model_cache_dir=settings.model_hub.cache_dir,
-            wide_area_config=wide_area_config,
-        )
-
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
-
-        return config
+__all__ = [
+    "Coordinator",
+]
 
 
 class Coordinator:
@@ -332,10 +166,15 @@ class Coordinator:
             recovery_manager=self._recovery_manager,
         )
 
+        # High-availability election (optional)
+        self._ha_election: Any = None
+        self._is_standby = False
+
         self._running = threading.Event()
         self._async_shutdown = asyncio.Event()
         self._request_results: dict[str, str] = {}
         self._request_events: dict[str, threading.Event] = {}
+        self._request_lock = threading.Lock()  # Protects _request_results and _request_events
         self._health_check_interval_s: float = 10.0
         self._straggler_check_counter: int = 0
         self._health_thread: threading.Thread | None = None
@@ -345,8 +184,8 @@ class Coordinator:
 
         # Async batch scheduler support (used by RequestPipeline)
         self._batch_event = threading.Event()
-        self._param_update_channel = _ParamUpdateChannel()
-        self._request_tracker = _RequestTracker()
+        self._param_update_channel = ParamUpdateChannel()
+        self._request_tracker = RequestTracker()
         self._rate_limiter = None  # Set externally if needed
         self._request_fingerprinter = None
         self._request_auditor = None
@@ -407,6 +246,109 @@ class Coordinator:
             f"hybrid_names={self._model_router.list_hybrid_models()}"
         )
         return self._model_router
+
+    # ── High Availability ──
+
+    def enable_ha(
+        self,
+        coordinator_id: str | None = None,
+        peer_coordinators: list[tuple[str, str, int]] | None = None,
+        heartbeat_interval_s: float = 2.0,
+        election_timeout_s: float = 10.0,
+    ) -> None:
+        """Enable high-availability mode with leader election.
+
+        When enabled, this coordinator participates in leader election
+        with peer coordinators. Only the leader accepts requests; standbys
+        replicate state and wait for failover.
+
+        Args:
+            coordinator_id: Unique ID for this coordinator. Defaults to
+                hostname:port.
+            peer_coordinators: List of (id, host, port) tuples for peers.
+            heartbeat_interval_s: Seconds between heartbeats.
+            election_timeout_s: Seconds without heartbeat before election.
+        """
+        from distllm.core.ha_coordinator import RayFaultTolerance
+
+        cid = coordinator_id or f"{self.model_name}:{self.port}"
+        self._ha_election = RayFaultTolerance(
+            coordinator_id=cid,
+            heartbeat_interval_s=heartbeat_interval_s,
+            election_timeout_s=election_timeout_s,
+        )
+
+        if peer_coordinators:
+            for peer_id, peer_host, peer_port in peer_coordinators:
+                self._ha_election.add_peer(peer_id, peer_host, peer_port)
+
+        self._ha_election.start()
+        logger.info(f"HA enabled for coordinator {cid}")
+
+    @property
+    def is_leader(self) -> bool:
+        """Return True if this coordinator is the elected leader."""
+        if self._ha_election is None:
+            return True  # No HA = always leader
+        return self._ha_election.is_leader()
+
+    @property
+    def ha_status(self) -> dict:
+        """Return HA election status."""
+        if self._ha_election is None:
+            return {"enabled": False}
+        return self._ha_election.stats()
+
+    def state_snapshot(self) -> dict[str, Any]:
+        """Create a snapshot of coordinator state for replication.
+
+        Standby coordinators can use this to maintain a warm copy
+        of the leader's state for fast failover.
+
+        Returns:
+            Dict with node registrations, model info, and config.
+        """
+        return {
+            "model_name": self.model_name,
+            "total_layers": self.total_layers,
+            "nodes": {
+                nid: {
+                    "host": getattr(n, "host", ""),
+                    "port": getattr(n, "port", 0),
+                    "start_layer": getattr(n, "start_layer", 0),
+                    "end_layer": getattr(n, "end_layer", 0),
+                    "healthy": getattr(n, "healthy", False),
+                }
+                for nid, n in self.nodes.items()
+            },
+            "node_order": list(self.node_order),
+            "timestamp": time.time(),
+        }
+
+    def apply_state_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Apply a state snapshot from the leader (for standby coordinators).
+
+        Re-registers nodes and updates internal state to match the leader.
+        """
+        if not self._is_standby:
+            logger.warning("apply_state_snapshot called on non-standby coordinator")
+            return
+
+        nodes = snapshot.get("nodes", {})
+        for nid, info in nodes.items():
+            if nid not in self.nodes:
+                try:
+                    self.manual_register(
+                        node_id=nid,
+                        host=info["host"],
+                        port=info["port"],
+                        start_layer=info["start_layer"],
+                        end_layer=info["end_layer"],
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to apply snapshot node {nid}: {e}")
+
+        logger.info(f"Applied state snapshot: {len(nodes)} nodes")
 
     # ── Callbacks ──
 
@@ -557,6 +499,7 @@ class Coordinator:
             compression_method=settings.compression_method,
             calibration_samples=settings.calibration_samples,
             output_dir=settings.output_dir,
+            trust_remote_code=getattr(self, 'trust_remote_code', False),
         )
 
         if utilization_fn is None:
@@ -566,6 +509,7 @@ class Coordinator:
             output_base=settings.output_dir,
             method=settings.compression_method,
             calibration_samples=settings.calibration_samples,
+            trust_remote_code=getattr(self, 'trust_remote_code', False),
         )
 
         self._adaptive_compression_mgr = AdaptiveCompressionManager(
@@ -613,6 +557,42 @@ class Coordinator:
         logger.info(
             f"Defragmenter initialized: policy={settings.policy}, "
             f"threshold={threshold:.0%}, interval={settings.interval_seconds}s"
+        )
+
+    def init_graceful_degradation(
+        self,
+        enabled: bool = True,
+        light_threshold: float = 0.3,
+        moderate_threshold: float = 0.5,
+        severe_threshold: float = 0.7,
+        critical_threshold: float = 0.85,
+        fallback_model: str | None = None,
+    ) -> None:
+        """Initialize graceful degradation for overload protection.
+
+        When system load exceeds thresholds, automatically reduces
+        response quality instead of returning 503 errors.
+
+        Args:
+            enabled: Whether degradation is active.
+            light_threshold: Load score for LIGHT degradation (reduce max_tokens).
+            moderate_threshold: Load score for MODERATE (smaller model).
+            severe_threshold: Load score for SEVERE (cached responses only).
+            critical_threshold: Load score for CRITICAL (partial responses).
+            fallback_model: Model name for moderate degradation fallback.
+        """
+        from distllm.core.graceful_degradation import GracefulDegradation
+        self._graceful_degradation = GracefulDegradation(
+            enabled=enabled,
+            light_threshold=light_threshold,
+            moderate_threshold=moderate_threshold,
+            severe_threshold=severe_threshold,
+            critical_threshold=critical_threshold,
+            fallback_model=fallback_model,
+        )
+        logger.info(
+            f"Graceful degradation initialized: "
+            f"thresholds=[{light_threshold}, {moderate_threshold}, {severe_threshold}, {critical_threshold}]"
         )
 
     async def _defrag_loop(self) -> None:
@@ -735,22 +715,20 @@ class Coordinator:
                 max_batch = stats.get("max_batch_size", 4)
                 total = float(active + pending)
                 return min(total / max(max_batch, 1), 1.0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to compute cluster utilization: {e}")
         return 0.0
 
     def _load_model_callback(self, name: str, path: str):
         """Load a model for hot-swap with a configurable timeout (default: 5 min)."""
         import concurrent.futures
 
-        from distllm.models.partitioner import ModelPartitioner
 
         timeout = int(os.environ.get("DISTLLM_HOT_SWAP_TIMEOUT", "300"))
 
         def _load():
             partitioner = ModelPartitioner(model_name=path, dtype=self.dtype)
             partitioner.load_full_model()
-            import torch
             mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
             return partitioner, partitioner.tokenizer, mem_gb
 
@@ -764,7 +742,6 @@ class Coordinator:
 
     def _unload_model_callback(self, name: str, model, tokenizer) -> None:
         """Callback to unload a model from GPU."""
-        import torch
         del model
         del tokenizer
         if torch.cuda.is_available():
@@ -856,7 +833,8 @@ class Coordinator:
         user_id = kwargs.get("user_id", "default")
 
         event = threading.Event()
-        self._request_events[request_id] = event
+        with self._request_lock:
+            self._request_events[request_id] = event
 
         def _run():
             try:
@@ -868,9 +846,11 @@ class Coordinator:
                     top_k=top_k,
                     user_id=user_id,
                 )
-                self._request_results[request_id] = result
+                with self._request_lock:
+                    self._request_results[request_id] = result
             except Exception as e:
-                self._request_results[request_id] = f"[Error: {e}]"
+                with self._request_lock:
+                    self._request_results[request_id] = f"[Error: {e}]"
             finally:
                 event.set()
 
@@ -888,8 +868,8 @@ class Coordinator:
         if hasattr(self, '_metrics_collector') and self._metrics_collector is not None:
             try:
                 self._metrics_collector.record(name, value)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to record metric '{name}': {e}")
 
     def wait_for_result(self, request_id: str, timeout: float | None = None) -> str:
         """Wait for an async generation result.
@@ -905,12 +885,14 @@ class Coordinator:
                 pass
 
         # Fallback: legacy event-based path
-        event = self._request_events.get(request_id)
+        with self._request_lock:
+            event = self._request_events.get(request_id)
         if event is None:
             raise ValueError(f"Unknown request_id: {request_id}")
         event.wait(timeout=timeout)
-        result = self._request_results.pop(request_id, None)
-        self._request_events.pop(request_id, None)
+        with self._request_lock:
+            result = self._request_results.pop(request_id, None)
+            self._request_events.pop(request_id, None)
         if result is None:
             raise TimeoutError(f"Request {request_id} timed out")
         return result
@@ -946,8 +928,11 @@ class Coordinator:
                 properties={"model": self.model_name} if announce_model else {},
             )
             self._discovery.start()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                f"Discovery service failed to start "
+                f"(cluster auto-discovery disabled): {e}"
+            )
 
         if (hasattr(self.config, 'federation_config')
                 and self.config.federation_config
@@ -993,18 +978,28 @@ class Coordinator:
 
         Shutdown sequence:
         1. Set _shutting_down flag (rejects new requests)
-        2. Stop accepting new requests (clear running flag)
-        3. Wait for in-flight requests to complete (with timeout)
-        4. Checkpoint all active sequences
-        5. Release GPU memory
-        6. Close gRPC connections
-        7. Save state to disk
-        8. Stop background threads
+        2. Cordon all nodes (mark as draining — stop sending new work)
+        3. Stop accepting new requests (clear running flag)
+        4. Wait for in-flight requests to complete (with timeout)
+        5. Checkpoint all active sequences
+        6. Release GPU memory
+        7. Close gRPC connections
+        8. Save state to disk
+        9. Stop background threads
         """
         logger.info("Initiating graceful shutdown...")
         self._shutting_down = True
 
-        # 1. Stop accepting new requests
+        # 1. Cordon all nodes — mark as draining so scheduler stops sending work
+        for nid in list(self.nodes.keys()):
+            try:
+                if hasattr(self._resource_mgr, 'mark_node_draining'):
+                    self._resource_mgr.mark_node_draining(nid)
+                logger.debug(f"Cordoned node {nid}")
+            except Exception as e:
+                logger.warning(f"Failed to cordon node {nid}: {e}")
+
+        # 2. Stop accepting new requests
         self._running.clear()
         self._health_event.set()
         self._async_shutdown.set()
@@ -1056,17 +1051,17 @@ class Coordinator:
         if hasattr(self, '_resource_mgr') and self._resource_mgr is not None:
             try:
                 self._resource_mgr._conn_pool.close_all()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing sync connection pool: {e}")
             try:
                 import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                try:
+                    loop = asyncio.get_running_loop()
                     asyncio.ensure_future(self._resource_mgr._async_conn_pool.close_all())
-                else:
-                    loop.run_until_complete(self._resource_mgr._async_conn_pool.close_all())
-            except Exception:
-                pass
+                except RuntimeError:
+                    asyncio.run(self._resource_mgr._async_conn_pool.close_all())
+            except Exception as e:
+                logger.warning(f"Error closing async connection pool: {e}")
 
         # 7. Stop background services
         self._health_mgr.stop()
@@ -1110,112 +1105,9 @@ class Coordinator:
         logger.debug(f"Shutdown state saved to {state_path}")
 
 
-def _resolve_cluster_key() -> str | None:
-    """Resolve cluster key from environment variable or file.
-
-    Resolution order:
-    1. DISTLLM_CLUSTER_KEY environment variable
-    2. ~/.distllm/cluster_key file
-    3. None (no key)
-    """
-    key = os.environ.get("DISTLLM_CLUSTER_KEY", "")
-    if key:
-        return key
-    key_path = os.path.expanduser("~/.distllm/cluster_key")
-    if os.path.isfile(key_path):
-        try:
-            with open(key_path) as f:
-                return f.read().strip()
-        except OSError:
-            pass
-    return None
-
-
-def main():
-    from distllm.config.resolver import ConfigResolver
-
-    parser = argparse.ArgumentParser(description="DistLLM Coordinator")
-    ConfigResolver._register_args(parser, ConfigResolver.COMMON_ARGS + ConfigResolver.COORDINATOR_ARGS)
-    args = parser.parse_args()
-
-    if args.validate_config:
-        DistLLMSettings.validate_startup()
-        print("Config validation passed")
-        return
-
-    if args.debug:
-        set_debug_mode(True)
-
-    # Discover config path and load settings if available
-    config_path = ConfigResolver._resolve_config_path("coordinator", args)
-    settings = DistLLMSettings.from_yaml(config_path=config_path) if config_path else None
-
-    federation_cfg = None
-    if args.federate:
-        federation_cfg = FederationConfig(
-            enabled=True,
-            cluster_id=args.federation_cluster_id,
-            listen_port=args.federation_port,
-            seed_nodes=args.federation_seed or [],
-        )
-
-    # Build CoordinatorConfig: YAML/env as base, CLI args override
-    if settings is not None:
-        config = CoordinatorConfig.from_settings(settings)
-        config.model_name = args.model or config.model_name
-        config.dtype = args.dtype or config.dtype
-        config.port = args.port
-        config.trust_remote_code = args.trust_remote_code or None
-        config.cluster_key = args.cluster_key or config.cluster_key or _resolve_cluster_key()
-        config.model_cache_dir = args.model_cache_dir or config.model_cache_dir
-        config.redundancy = args.redundancy
-        config.federation_config = federation_cfg or config.federation_config
-    else:
-        config = CoordinatorConfig(
-            model_name=args.model,
-            port=args.port,
-            dtype=args.dtype,
-            trust_remote_code=args.trust_remote_code or None,
-            cluster_key=args.cluster_key or _resolve_cluster_key(),
-            model_cache_dir=args.model_cache_dir,
-            redundancy=args.redundancy,
-            federation_config=federation_cfg,
-        )
-    coordinator = Coordinator(config=config)
-    coordinator._distribute_weights = args.distribute_weights
-
-    # Initialize model router if chat_router config is available
-    if settings is not None and getattr(settings, 'chat_router', None):
-        cr = settings.chat_router
-        if cr.enabled:
-            coordinator.init_model_router(cr)
-
-    if args.local:
-        coordinator.load_local_model()
-        if args.chat:
-            print(f"Model loaded: {args.model}")
-            while True:
-                prompt = input("\nPrompt (or 'quit' to exit): ")
-                if prompt.lower() in ('quit', 'exit'):
-                    break
-                result = coordinator.generate(prompt, max_new_tokens=128)
-                print(f"\nResult: {result}")
-        else:
-            coordinator.start()
-    else:
-        if args.nodes:
-            for i, node_str in enumerate(args.nodes):
-                parts = node_str.split(":")
-                coordinator.manual_register(
-                    node_id=f"node_{i}",
-                    host=parts[0],
-                    port=int(parts[1]),
-                    start_layer=int(parts[2]),
-                    end_layer=int(parts[3]),
-                    total_layers=args.total_layers,
-                )
-        coordinator.start()
-
+# ── CLI entry point (moved to coordinator_cli.py) ────────────────────────
+# Backward-compatible re-exports so existing imports keep working.
+from distllm.core.coordinator_cli import _resolve_cluster_key, main  # noqa: E402
 
 if __name__ == "__main__":
     main()

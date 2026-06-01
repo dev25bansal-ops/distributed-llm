@@ -19,6 +19,7 @@ The distributed variant (``dist/attention.py``) adds:
 from __future__ import annotations
 
 import math
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -135,7 +136,8 @@ class PagedAttentionManager:
         self._num_heads = num_heads
         self._head_dim = head_dim
         self._device = device
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
+        self._numa_node = self._detect_numa_node()
 
         # Block pool: pre-allocate all blocks
         self._blocks: list[KVCacheBlock] = [
@@ -155,6 +157,33 @@ class PagedAttentionManager:
         }
 
     # ── Defragmentable protocol conformance ──
+
+    @staticmethod
+    def _detect_numa_node() -> int:
+        """Detect the NUMA node for the current GPU.
+
+        Returns the NUMA node ID or 0 if detection fails.
+        Used to hint block allocation locality.
+        """
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # CUDA_VISIBLE_DEVICES maps GPU to NUMA node
+                gpu_id = int(os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
+                # Try reading from sysfs (Linux)
+                numa_path = f"/sys/bus/pci/devices/*/numa_node"
+                import glob
+                for path in glob.glob(numa_path):
+                    try:
+                        with open(path) as f:
+                            node = int(f.read().strip())
+                            if node >= 0:
+                                return node
+                    except (ValueError, OSError):
+                        continue
+        except Exception:
+            pass
+        return 0
 
     def get_blocks(self) -> list[KVCacheBlock]:
         return self._blocks
@@ -439,8 +468,9 @@ class PagedAttentionManager:
                     del gpu_key, gpu_val
                     swapped += 1
 
-        if swapped > 0:
-            torch.cuda.empty_cache()
+        # Note: torch.cuda.empty_cache() removed — it causes 10-100ms stalls
+        # in the hot path. GPU memory is reclaimed automatically by PyTorch's
+        # caching allocator. Only call empty_cache() during shutdown.
 
         return swapped
 
@@ -498,3 +528,20 @@ class PagedAttentionManager:
             f"size={self._block_size}, used={self.num_used_blocks}, "
             f"seqs={len(self._seq_blocks)})"
         )
+
+    # ── Async API for non-blocking serving ─────────────────────────
+
+    async def async_allocate_sequence(self, sequence_id: str, num_tokens: int) -> list[int]:
+        """Async wrapper for allocate_sequence — yields to event loop."""
+        import asyncio
+        return await asyncio.to_thread(self.allocate_sequence, sequence_id, num_tokens)
+
+    async def async_free_sequence(self, sequence_id: str) -> None:
+        """Async wrapper for free_sequence — yields to event loop."""
+        import asyncio
+        return await asyncio.to_thread(self.free_sequence, sequence_id)
+
+    async def async_append_token(self, sequence_id: str) -> int:
+        """Async wrapper for append_token — yields to event loop."""
+        import asyncio
+        return await asyncio.to_thread(self.append_token, sequence_id)

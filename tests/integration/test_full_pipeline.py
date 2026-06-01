@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from distllm.core.coordinator import Coordinator
-from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+from distllm.dist.pipeline import PipelineOrchestrator
 from distllm.core.resource_manager import (
     ResourceManager,
     NodeRegistration,

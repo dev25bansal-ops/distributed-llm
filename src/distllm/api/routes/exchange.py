@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..auth_deps import require_role
 
 
 router = APIRouter(tags=["prompt-exchange"], prefix="/v1/exchange")
@@ -74,7 +75,7 @@ class ExchangeStatsResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/prompts", response_model=PromptResponse)
+@router.post("/prompts", response_model=PromptResponse, dependencies=[Depends(require_role("admin"))])
 async def publish_prompt(req: PublishPromptRequest):
     """Publish a prompt to the exchange."""
     exchange = g.get("prompt_exchange")
@@ -249,7 +250,7 @@ async def record_usage(prompt_id: str, req: UsageRecordRequest):
     return {"recorded": True, "prompt_id": prompt_id}
 
 
-@router.post("/prompts/{prompt_id}/fork", response_model=PromptResponse)
+@router.post("/prompts/{prompt_id}/fork", response_model=PromptResponse, dependencies=[Depends(require_role("admin"))])
 async def fork_prompt(prompt_id: str, user_id: str = Query(...), new_name: str = ""):
     """Fork an existing prompt."""
     exchange = g.get("prompt_exchange")
@@ -302,7 +303,7 @@ async def get_wallet(user_id: str):
     }
 
 
-@router.post("/wallet/{user_id}/topup")
+@router.post("/wallet/{user_id}/topup", dependencies=[Depends(require_role("admin"))])
 async def top_up_wallet(user_id: str, amount: int = Query(..., gt=0)):
     """Top up user's token wallet."""
     exchange = g.get("prompt_exchange")

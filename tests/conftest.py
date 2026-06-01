@@ -38,7 +38,11 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "fuzz: marks fuzz tests")
 
 import pytest
-import torch
+
+try:
+    import torch
+except ImportError:
+    torch = None  # Tests that require torch will skip naturally
 
 # --- Tokenizer Fixtures ---
 

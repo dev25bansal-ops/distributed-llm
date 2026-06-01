@@ -103,7 +103,7 @@ class PyTorchNodeAdapter(BackendAdapter):
         For last node: compute logits after layers.
         """
         if self.partitioner is None:
-            raise RuntimeError("Model not loaded. Call load_model() before forward().")
+            raise ModelLoadError("pytorch", "Model not loaded. Call load_model() before forward().")
 
         if input_ids is not None and self.partitioner.embed_input is not None:
             position_offset = 0

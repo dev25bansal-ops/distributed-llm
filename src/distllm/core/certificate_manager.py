@@ -196,6 +196,74 @@ class CertificateManager:
         except Exception:
             return None
 
+    def create_mtls_client_credentials(
+        self,
+        client_cn: str,
+        ca_cn: str | None = None,
+    ) -> Any | None:
+        """Create gRPC client credentials with client certificate for mTLS.
+
+        Args:
+            client_cn: Common name of the client certificate.
+            ca_cn: Common name of the CA certificate. If None, uses "ca".
+
+        Returns:
+            gRPC SSL channel credentials with client cert, or None.
+        """
+        import grpc
+        client_cert = self.cert_path(client_cn)
+        client_key = self.key_path(client_cn)
+        ca_cert = self._cert_dir / f"{ca_cn or 'ca'}.crt"
+        if not ca_cert.exists():
+            ca_cert = self.cert_path(ca_cn or client_cn)
+        if not client_cert or not client_key or not ca_cert or not ca_cert.exists():
+            logger.error(f"Missing mTLS cert/key/CA for {client_cn}")
+            return None
+        try:
+            return grpc.ssl_channel_credentials(
+                root_certificates=ca_cert.read_bytes(),
+                private_key=client_key.read_bytes(),
+                certificate_chain=client_cert.read_bytes(),
+            )
+        except Exception as e:
+            logger.error(f"Failed to create mTLS credentials: {e}")
+            return None
+
+    def create_mtls_server_credentials(
+        self,
+        server_cn: str,
+        require_client_cert: bool = True,
+    ) -> Any | None:
+        """Create gRPC server credentials that require client certificates.
+
+        Args:
+            server_cn: Common name of the server certificate.
+            require_client_cert: If True, clients must present a valid cert.
+
+        Returns:
+            gRPC SSL server credentials with client cert requirement.
+        """
+        import grpc
+        server_cert = self.cert_path(server_cn)
+        server_key = self.key_path(server_cn)
+        ca_cert = self._cert_dir / "ca.crt"
+        if not ca_cert.exists():
+            ca_cert = server_cert  # Self-signed fallback
+        if not server_cert or not server_key:
+            logger.error(f"Missing server cert/key for {server_cn}")
+            return None
+        try:
+            ca_bytes = ca_cert.read_bytes() if ca_cert and ca_cert.exists() else None
+            client_auth = grpc.ssl.ClientCertificateStyle.REQUIRE_AND_VERIFY if require_client_cert else grpc.ssl.ClientCertificateStyle.OPTIONAL
+            return grpc.ssl_server_credentials(
+                [(server_key.read_bytes(), server_cert.read_bytes())],
+                root_certificates=ca_bytes,
+                require_client_auth=require_client_cert,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create mTLS server credentials: {e}")
+            return None
+
     # ── Background renewal ──────────────────────────────────────────────
 
     def start_background_renewal(self) -> threading.Thread:
@@ -291,6 +359,12 @@ class CertificateManager:
             serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
         ))
+
+        # Restrict private key permissions (owner-only read/write)
+        try:
+            os.chmod(str(key_path), 0o600)
+        except OSError:
+            pass  # Windows doesn't support chmod in the same way
 
         info = CertificateInfo(
             common_name=common_name,

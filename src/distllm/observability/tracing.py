@@ -190,3 +190,77 @@ def get_current_span_id() -> str | None:
     return None
 
 
+# ── gRPC Interceptors for Automatic Trace Context Propagation ─────────
+
+class TraceContextClientInterceptor:
+    """gRPC client interceptor that injects W3C TraceContext into outgoing metadata.
+
+    Automatically adds traceparent/tracestate headers to every outgoing
+    gRPC call so that downstream nodes join the same distributed trace.
+
+    Usage::
+
+        interceptor = TraceContextClientInterceptor()
+        channel = grpc.intercept_channel(channel, interceptor)
+    """
+
+    def intercept_unary_unary(self, continuation, client_call_details, request):
+        metadata = list(client_call_details.metadata or [])
+        carrier = {}
+        _tracecontext_propagator.inject(carrier)
+        for key, value in carrier.items():
+            metadata.append((key, value))
+
+        new_details = client_call_details._replace(metadata=metadata)
+        return continuation(new_details, request)
+
+    def intercept_unary_stream(self, continuation, client_call_details, request):
+        metadata = list(client_call_details.metadata or [])
+        carrier = {}
+        _tracecontext_propagator.inject(carrier)
+        for key, value in carrier.items():
+            metadata.append((key, value))
+
+        new_details = client_call_details._replace(metadata=metadata)
+        return continuation(new_details, request)
+
+    def intercept_stream_unary(self, continuation, client_call_details, request_iterator):
+        metadata = list(client_call_details.metadata or [])
+        carrier = {}
+        _tracecontext_propagator.inject(carrier)
+        for key, value in carrier.items():
+            metadata.append((key, value))
+
+        new_details = client_call_details._replace(metadata=metadata)
+        return continuation(new_details, request_iterator)
+
+    def intercept_stream_stream(self, continuation, client_call_details, request_iterator):
+        metadata = list(client_call_details.metadata or [])
+        carrier = {}
+        _tracecontext_propagator.inject(carrier)
+        for key, value in carrier.items():
+            metadata.append((key, value))
+
+        new_details = client_call_details._replace(metadata=metadata)
+        return continuation(new_details, request_iterator)
+
+
+class TraceContextServerInterceptor:
+    """gRPC server interceptor that extracts W3C TraceContext from incoming metadata.
+
+    Automatically extracts traceparent/tracestate headers from incoming
+    gRPC calls and attaches them to the current OpenTelemetry context.
+
+    Usage::
+
+        interceptor = TraceContextServerInterceptor()
+        server = grpc.server(executor, interceptors=[interceptor])
+    """
+
+    def intercept_service(self, continuation, handler_call_details):
+        metadata = dict(handler_call_details.invocation_metadata or {})
+        if "traceparent" in metadata:
+            extract_trace_context(metadata)
+        return continuation(handler_call_details)
+
+

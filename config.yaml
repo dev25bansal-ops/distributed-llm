@@ -44,7 +44,7 @@ speculative_decoding:
   remote_draft:
     endpoint: "http://draft-server:8000/v1/completions"
     model_name: ""
-    api_key: ""  # redacted in logs
+    # api_key: Use DISTLLM_REMOTE_DRAFT_API_KEY env var instead
     num_candidates: 5
     transport: "http"  # "http" or "grpc"
     prompt_format: "auto"  # "tokens", "text", "auto"
@@ -93,7 +93,7 @@ wide_area:
 
 # TLS / Security
 tls:
-  enabled: false
+  enabled: true
   cert_dir: "certs"
 
 # GPU memory defragmentation — compacts fragmented KV cache blocks

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from distllm.core.predictive_cache import PatternLearner, PredictiveCacheManager, PrefixPattern
+from distllm.dist.predictive_cache import PatternLearner, PredictiveCacheManager, PrefixPattern
 
 
 class TestPatternLearner:

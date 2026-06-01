@@ -1,0 +1,446 @@
+openapi: "3.1.0"
+info:
+  title: DistLLM API
+  version: "0.4.0"
+  description: |
+    OpenAI-compatible REST API for distributed LLM inference across
+    multiple machines using pipeline parallelism.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: https://api.distllm.dev
+    description: Production
+
+security:
+  - BearerAuth: []
+
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      tags: [Chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+      responses:
+        "200":
+          description: Chat completion response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionResponse"
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/completions:
+    post:
+      operationId: createCompletion
+      summary: Create a text completion
+      tags: [Completion]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompletionRequest"
+      responses:
+        "200":
+          description: Completion response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompletionResponse"
+
+  /v1/embeddings:
+    post:
+      operationId: createEmbedding
+      summary: Create embeddings
+      tags: [Embedding]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingRequest"
+      responses:
+        "200":
+          description: Embedding response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbeddingResponse"
+
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List available models
+      tags: [Models]
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /v1/batches:
+    post:
+      operationId: createBatch
+      summary: Create a batch job
+      tags: [Batch]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchRequest"
+      responses:
+        "200":
+          description: Batch job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchJob"
+    get:
+      operationId: listBatches
+      summary: List batch jobs
+      tags: [Batch]
+      responses:
+        "200":
+          description: Batch list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchList"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    Unauthorized:
+      description: Invalid or missing API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required: [messages]
+      properties:
+        model:
+          type: string
+          default: distributed-llm
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 0.7
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.9
+        max_tokens:
+          type: integer
+          minimum: 1
+          default: 256
+        stream:
+          type: boolean
+          default: false
+        response_format:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [text, json_object, json_schema]
+        adapter:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tool"
+        stop:
+          type: array
+          items:
+            type: string
+
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+        name:
+          type: string
+        tool_call_id:
+          type: string
+
+    ChatCompletionResponse:
+      type: object
+      required: [id, model, choices]
+      properties:
+        id:
+          type: string
+        model:
+          type: string
+        created:
+          type: integer
+        choices:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatChoice"
+        usage:
+          $ref: "#/components/schemas/UsageInfo"
+        generation_time:
+          type: number
+
+    ChatChoice:
+      type: object
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        finish_reason:
+          type: string
+          enum: [stop, length, tool_calls]
+
+    CompletionRequest:
+      type: object
+      required: [prompt]
+      properties:
+        model:
+          type: string
+          default: distributed-llm
+        prompt:
+          type: string
+        temperature:
+          type: number
+          default: 0.7
+        max_tokens:
+          type: integer
+          default: 256
+        stream:
+          type: boolean
+          default: false
+
+    CompletionResponse:
+      type: object
+      required: [id, model, choices]
+      properties:
+        id:
+          type: string
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompletionChoice"
+        usage:
+          $ref: "#/components/schemas/UsageInfo"
+
+    CompletionChoice:
+      type: object
+      properties:
+        index:
+          type: integer
+        text:
+          type: string
+        finish_reason:
+          type: string
+
+    EmbeddingRequest:
+      type: object
+      required: [input]
+      properties:
+        model:
+          type: string
+          default: distributed-llm
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+
+    EmbeddingResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbeddingObject"
+        usage:
+          $ref: "#/components/schemas/UsageInfo"
+
+    EmbeddingObject:
+      type: object
+      properties:
+        index:
+          type: integer
+        embedding:
+          type: array
+          items:
+            type: number
+
+    ModelList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelInfo"
+
+    ModelInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        owned_by:
+          type: string
+        created:
+          type: integer
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        model:
+          type: string
+        nodes:
+          type: integer
+        uptime:
+          type: number
+
+    BatchRequest:
+      type: object
+      required: [input_file_id, endpoint]
+      properties:
+        input_file_id:
+          type: string
+        endpoint:
+          type: string
+        metadata:
+          type: object
+
+    BatchJob:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        input_file_id:
+          type: string
+        created_at:
+          type: integer
+
+    BatchList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchJob"
+
+    UsageInfo:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        cost_usd:
+          type: number
+        tokens_per_second:
+          type: number
+
+    Tool:
+      type: object
+      properties:
+        type:
+          type: string
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+            code:
+              type: string

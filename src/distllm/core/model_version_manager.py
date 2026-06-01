@@ -40,6 +40,9 @@ class ModelVersion:
     config_overrides: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, float] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    parent_version: str = ""  # Lineage: which version this was derived from
+    training_round: int = 0   # Lineage: federated training round number
+    training_node: str = ""   # Lineage: which node trained this version
 
 
 @dataclass
@@ -309,6 +312,51 @@ class ModelVersionManager:
         ``hook(version_id, previous_version_id)``
         """
         self._promote_hooks.append(hook)
+
+    # ── Lineage tracking ──────────────────────────────────────────────────
+
+    def get_lineage(self, version_id: str) -> list[dict[str, Any]]:
+        """Return the ancestry chain for a version.
+
+        Walks the parent_version chain from the given version back to
+        the root (original) version.
+
+        Returns:
+            List of dicts from newest to oldest, each with version_id,
+            parent_version, training_round, training_node, deployed_at.
+        """
+        lineage: list[dict[str, Any]] = []
+        visited: set[str] = set()
+        current = version_id
+
+        while current and current not in visited:
+            visited.add(current)
+            version = self._versions.get(current)
+            if version is None:
+                break
+            lineage.append({
+                "version_id": version.version_id,
+                "parent_version": version.parent_version,
+                "training_round": version.training_round,
+                "training_node": version.training_node,
+                "deployed_at": version.deployed_at,
+                "status": version.status.value,
+            })
+            current = version.parent_version
+
+        return lineage
+
+    def get_version_tree(self) -> dict[str, list[str]]:
+        """Return the full version tree as adjacency list.
+
+        Returns:
+            Dict mapping parent_version -> [child_version_ids].
+        """
+        tree: dict[str, list[str]] = {}
+        for vid, version in self._versions.items():
+            parent = version.parent_version or "__root__"
+            tree.setdefault(parent, []).append(vid)
+        return tree
 
     # ── Persistence ─────────────────────────────────────────────────────
 

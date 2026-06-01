@@ -3,7 +3,7 @@
 import threading
 import pytest
 
-from distllm.core.latency_tracker import LatencyTracker
+from distllm.dist.latency import LatencyTracker
 
 
 class TestLatencyTracker:

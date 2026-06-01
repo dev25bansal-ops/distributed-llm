@@ -21,7 +21,7 @@ ok()    { printf "${GREEN}  OK${NC}  %s\n" "$*"; }
 warn()  { printf "${YELLOW} WARN${NC}  %s\n" "$*"; }
 fail()  { printf "${RED}FAIL${NC}  %s\n" "$*"; exit 1; }
 
-REPO="https://github.com/dev25bansal-ops/distributed-llm.git"
+REPO="https://github.com/distributed-llm/distributed-llm.git"
 DISTLLM_DIR="${DISTLLM_DIR:-$HOME/.distllm}"
 MODEL="${DISTLLM_MODEL:-roneneldan/TinyStories-1M}"
 COMPOSE_PROJECT="distllm"

@@ -13,7 +13,6 @@ from typing import Any
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
 
 from distllm.core.cost_tracker import get_cost_tracker
 
@@ -35,8 +34,8 @@ def _estimate_tokens(text: str) -> int:
     if _tiktoken_encoding is not None:
         try:
             return len(_tiktoken_encoding.encode(text))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"tiktoken encode failed, using heuristic: {e}")
     # Fallback: ~4 chars per token (conservative for English)
     return max(1, len(text) // 4)
 
@@ -85,8 +84,8 @@ class CostTrackingMiddleware(BaseHTTPMiddleware):
                     input_tokens = _estimate_tokens(text)
                 elif prompt:
                     input_tokens = _estimate_tokens(prompt)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to estimate input tokens from request body: {e}")
 
         # Process the request
         response = await call_next(request)
@@ -141,7 +140,12 @@ class StreamingCostMiddleware:
         model_name: str = "",
     ):
         """Start tracking a streaming request."""
-        from distllm.core.cost_tracker import get_cost_tracker, _estimate_throughput, _match_cloud_api, CLOUD_API_COST_PER_M_TOKENS
+        from distllm.core.cost_tracker import (
+            CLOUD_API_COST_PER_M_TOKENS,
+            _estimate_throughput,
+            _match_cloud_api,
+            get_cost_tracker,
+        )
 
         cost_tracker = get_cost_tracker()
         gpu_type = cost_tracker._default_gpu

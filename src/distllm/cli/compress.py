@@ -1,17 +1,10 @@
 """CLI compression command for distllm compress."""
 
-import gc
-import json
-import os
-import sys
-import time
 from pathlib import Path
 
 import torch
-from loguru import logger
 from rich.console import Console
-from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 CompressionConfig = CompressionMethod = None
 CompressionPipeline = StrategySelector = HardwareProfiler = HardwareClass = None
@@ -28,6 +21,7 @@ def run_compress(
     method: str,
     local: bool,
     console: Console,
+    trust_remote_code: bool = False,
 ):
     """Run model compression and save compressed model."""
     console.print(f"[bold]Compressing model:[/bold] {model_name}")
@@ -73,7 +67,7 @@ def run_compress(
             model_name,
             torch_dtype=dtype,
             device_map="auto" if torch.cuda.is_available() else None,
-            trust_remote_code=True,
+            trust_remote_code=trust_remote_code,
             revision=hf_revision(),
         )
         model.eval()
@@ -83,7 +77,7 @@ def run_compress(
     tokenizer_name = tokenizer_name or model_name
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
-        trust_remote_code=True,
+        trust_remote_code=trust_remote_code,
         revision=hf_revision(),
     )
     if tokenizer.pad_token is None:

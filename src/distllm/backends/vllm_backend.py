@@ -135,7 +135,7 @@ class VLLMNodeAdapter(BackendAdapter):
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """Single-node: run full model via vLLM generate()."""
         if self._llm is None:
-            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+            raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         if self._is_pipeline_mode:
             raise NotImplementedError(
@@ -174,7 +174,7 @@ class VLLMNodeAdapter(BackendAdapter):
             if self._llm is not None:
                 self._model = self._extract_inner_model(self._llm)
             else:
-                raise RuntimeError("vLLM not loaded. Call load_model() first.")
+                raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         with torch.no_grad():
             output = self._model(
@@ -207,7 +207,7 @@ class VLLMNodeAdapter(BackendAdapter):
             List of vLLM RequestOutput objects.
         """
         if self._llm is None:
-            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+            raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         from vllm import SamplingParams
         if sampling_params is None:
@@ -284,7 +284,7 @@ class VLLMNodeAdapter(BackendAdapter):
             vLLM RequestOutput objects as tokens are generated.
         """
         if self._llm is None:
-            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+            raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         from vllm import SamplingParams
         if sampling_params is None:
@@ -308,7 +308,7 @@ class VLLMNodeAdapter(BackendAdapter):
             adapter_path: Path to the LoRA adapter weights.
         """
         if self._llm is None:
-            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+            raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         try:
             from vllm.lora.request import LoRARequest
@@ -339,7 +339,7 @@ class VLLMNodeAdapter(BackendAdapter):
             List of vLLM RequestOutput objects.
         """
         if self._llm is None:
-            raise RuntimeError("vLLM not loaded. Call load_model() first.")
+            raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         from vllm import SamplingParams
         if sampling_params is None:

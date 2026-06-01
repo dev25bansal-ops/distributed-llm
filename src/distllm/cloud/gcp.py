@@ -98,6 +98,7 @@ class GCPPricingFetcher(PricingFetcher):
         try:
             cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
             if not cred_path:
+                logger.warning("GCP auth: GOOGLE_APPLICATION_CREDENTIALS not set")
                 return ""
             import httpx
             import json
@@ -113,7 +114,8 @@ class GCPPricingFetcher(PricingFetcher):
             )
             resp.raise_for_status()
             return resp.json().get("access_token", "")
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GCP auth failed: {e}")
             return ""
 
     def _make_jwt(self, creds: dict) -> str:
@@ -203,6 +205,7 @@ class GCPAvailabilityChecker(AvailabilityChecker):
         try:
             cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
             if not cred_path:
+                logger.warning("GCP auth: GOOGLE_APPLICATION_CREDENTIALS not set")
                 return ""
             import httpx, json, time, base64
             with open(cred_path) as f:
@@ -219,7 +222,8 @@ class GCPAvailabilityChecker(AvailabilityChecker):
             resp = httpx.post(creds.get("token_uri", ""), data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": (message + b"." + base64.urlsafe_b64encode(sig).rstrip(b"=")).decode()}, timeout=10.0)
             resp.raise_for_status()
             return resp.json().get("access_token", "")
-        except Exception:
+        except Exception as e:
+            logger.warning(f"GCP auth failed: {e}")
             return ""
 
     def _get_project(self) -> str:
@@ -229,6 +233,6 @@ class GCPAvailabilityChecker(AvailabilityChecker):
             if cred_path:
                 with open(cred_path) as f:
                     return json.load(f).get("project_id", "")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"GCP _get_project failed: {e}")
         return os.environ.get("GOOGLE_CLOUD_PROJECT", "")

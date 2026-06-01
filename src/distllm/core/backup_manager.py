@@ -248,3 +248,97 @@ class BackupManager:
             backup_id = oldest.stem.replace(".manifest", "")
             self.delete_backup(backup_id)
             logger.info(f"Pruned old backup {backup_id}")
+
+
+class AutoBackup:
+    """Background auto-backup with configurable schedule and retention.
+
+    Runs periodic backups of the coordinator state and prunes old
+    backups based on retention policy.
+
+    Usage::
+
+        auto = AutoBackup(
+            backup_manager=mgr,
+            interval_hours=6,
+            retention_days=7,
+        )
+        auto.start()
+        # ... runs in background ...
+        auto.stop()
+    """
+
+    def __init__(
+        self,
+        backup_manager: BackupManager,
+        interval_hours: float = 6.0,
+        retention_days: int = 7,
+        get_state_fn: Callable[[], dict] | None = None,
+    ):
+        self._mgr = backup_manager
+        self._interval_s = interval_hours * 3600
+        self._retention_days = retention_days
+        self._get_state = get_state_fn
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the auto-backup background thread."""
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop,
+            daemon=True,
+            name="auto-backup",
+        )
+        self._thread.start()
+        logger.info(f"Auto-backup started (interval={self._interval_s}s, retention={self._retention_days}d)")
+
+    def stop(self) -> None:
+        """Stop the auto-backup background thread."""
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+    def _loop(self) -> None:
+        while self._running:
+            try:
+                self._run_backup()
+                self._prune_expired()
+            except Exception as e:
+                logger.warning(f"Auto-backup failed: {e}")
+
+            # Sleep in small increments for responsive shutdown
+            deadline = time.time() + self._interval_s
+            while self._running and time.time() < deadline:
+                time.sleep(1.0)
+
+    def _run_backup(self) -> None:
+        """Run a single backup cycle."""
+        if self._get_state:
+            state = self._get_state()
+            self._mgr.create_full(
+                cluster_name=state.get("cluster_name", "auto"),
+                coordinator_config=state.get("config", {}),
+                node_registrations=state.get("nodes", []),
+                model_assignments=state.get("models", []),
+            )
+        else:
+            logger.debug("Auto-backup: no state function configured, skipping")
+
+    def _prune_expired(self) -> None:
+        """Remove backups older than retention period."""
+        cutoff = time.time() - (self._retention_days * 86400)
+        for backup in self._mgr.list_backups():
+            if backup.created_at < cutoff:
+                self._mgr.delete_backup(backup.backup_id)
+                logger.info(f"Pruned expired backup {backup.backup_id}")
+
+    def stats(self) -> dict:
+        return {
+            "running": self._running,
+            "interval_hours": self._interval_s / 3600,
+            "retention_days": self._retention_days,
+            "total_backups": len(self._mgr.list_backups()),
+        }

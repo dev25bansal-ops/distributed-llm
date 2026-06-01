@@ -12,7 +12,7 @@ import torch
 
 from distllm.core.batch_scheduler import BatchScheduler, Sequence
 from distllm.core.coordinator import Coordinator
-from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+from distllm.dist.pipeline import PipelineOrchestrator
 
 
 class TestTensorSerialization:

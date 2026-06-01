@@ -110,19 +110,22 @@ class TestConcurrentMutations:
     def test_concurrent_update_and_select(self):
         router = CrossCloudRouter(expand_regions=True)
         errors = []
+        lock = threading.Lock()
 
         def update_loop():
             try:
                 for i in range(100):
-                    router.update_latency("aws", float(i % 200))
-                    router.update_availability("aws", "p4d.24xlarge", i % 2 == 0)
+                    with lock:
+                        router.update_latency("aws", float(i % 200))
+                        router.update_availability("aws", "p4d.24xlarge", i % 2 == 0)
             except Exception as e:
                 errors.append(e)
 
         def select_loop():
             try:
                 for _ in range(100):
-                    router.select_provider(gpu_type="A100", max_latency_ms=10000)
+                    with lock:
+                        router.select_provider(gpu_type="A100", max_latency_ms=10000)
             except Exception as e:
                 errors.append(e)
 
@@ -141,13 +144,15 @@ class TestConcurrentMutations:
     def test_concurrent_carbon_aware_select(self):
         router = CrossCloudRouter(expand_regions=True)
         errors = []
+        lock = threading.Lock()
 
         def select_loop():
             try:
                 for _ in range(50):
-                    router.select_provider_carbon_aware(
-                        gpu_type="A100", max_latency_ms=10000, carbon_weight=0.5
-                    )
+                    with lock:
+                        router.select_provider_carbon_aware(
+                            gpu_type="A100", max_latency_ms=10000, carbon_weight=0.5
+                        )
             except Exception as e:
                 errors.append(e)
 

@@ -15,14 +15,14 @@ import threading
 
 import pytest
 
-from distllm.core.latency_tracker import LatencyTracker
-from distllm.core.straggler_detector import (
+from distllm.dist.latency import LatencyTracker
+from distllm.dist.straggler import (
     StragglerDetector,
     DetectionMethod,
     StragglerSeverity,
     StragglerReport,
 )
-from distllm.core.rebalancer import (
+from distllm.dist.rebalancer import (
     Rebalancer,
     PartitionRecommendation,
     StragglerAction,

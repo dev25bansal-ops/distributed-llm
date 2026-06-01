@@ -30,7 +30,7 @@ spec:
           emptyDir: {}
       containers:
         - name: worker
-          image: ghcr.io/distributed-llm/coordinator:0.4.0
+          image: ghcr.io/distributed-llm/worker:0.4.0
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -72,6 +72,12 @@ spec:
               port: 50051
             initialDelaySeconds: 5
             periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                # Graceful drain: signal worker to finish in-flight requests
+                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep 10"]
+      terminationGracePeriodSeconds: 30
       tolerations:
         - key: "nvidia.com/gpu"
           operator: "Exists"

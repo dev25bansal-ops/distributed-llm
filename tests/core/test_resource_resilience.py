@@ -12,7 +12,7 @@ from distllm.core.resource_manager import (
     ResourceManager,
     CircuitBreakerConfig,
 )
-from distllm.core.node_recovery import (
+from distllm.dist.recovery import (
     NodeRecoveryManager,
     SequenceCheckpoint,
     NodeRecoveryPlan,
@@ -27,7 +27,7 @@ from distllm.errors.types import ConfigValidationError
 @pytest.fixture
 def pipeline():
     """PipelineOrchestrator with mocked ResourceManager and 12 layers."""
-    from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+    from distllm.dist.pipeline import PipelineOrchestrator
     rm = ResourceManager()
     return PipelineOrchestrator(resource_mgr=rm, total_layers=12)
 

@@ -228,6 +228,12 @@ class CarbonIntensityProvider:
                 pass
             self._http_client = None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def __del__(self) -> None:
         self.close()
 

@@ -172,6 +172,119 @@ class ChatUser(HttpUser):
                 response.failure(f"HTTP {response.status_code}")
 
 
+class CompletionUser(HttpUser):
+    """Simulates a user making text completion requests."""
+
+    wait_time = between(1, 3)
+
+    @task(weight=5)
+    def text_completion(self):
+        """Text completion endpoint."""
+        payload = {
+            "model": MODEL,
+            "prompt": random_prompt(),
+            "max_tokens": MAX_TOKENS,
+            "temperature": TEMPERATURE,
+        }
+
+        with self.client.post(
+            "/v1/completions",
+            json=payload,
+            headers=get_headers(),
+            catch_response=True,
+            name="/v1/completions",
+        ) as response:
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    if data.get("choices") and len(data["choices"]) > 0:
+                        response.success()
+                    else:
+                        response.failure("Empty choices in response")
+                except json.JSONDecodeError:
+                    response.failure("Invalid JSON response")
+            elif response.status_code == 429:
+                response.failure("Rate limited (429)")
+            else:
+                response.failure(f"HTTP {response.status_code}")
+
+    @task(weight=2)
+    def streaming_completion(self):
+        """Streaming text completion."""
+        payload = {
+            "model": MODEL,
+            "prompt": random_prompt(),
+            "max_tokens": min(MAX_TOKENS, 64),
+            "temperature": TEMPERATURE,
+            "stream": True,
+        }
+
+        with self.client.post(
+            "/v1/completions",
+            json=payload,
+            headers=get_headers(),
+            catch_response=True,
+            name="/v1/completions [stream]",
+        ) as response:
+            if response.status_code == 200:
+                response.success()
+            else:
+                response.failure(f"HTTP {response.status_code}")
+
+
+class EmbeddingUser(HttpUser):
+    """Simulates a user making embedding requests."""
+
+    wait_time = between(0.5, 2)
+
+    @task(weight=5)
+    def single_embedding(self):
+        """Single text embedding."""
+        payload = {
+            "model": MODEL,
+            "input": random_prompt(),
+        }
+
+        with self.client.post(
+            "/v1/embeddings",
+            json=payload,
+            headers=get_headers(),
+            catch_response=True,
+            name="/v1/embeddings",
+        ) as response:
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    if data.get("data") and len(data["data"]) > 0:
+                        response.success()
+                    else:
+                        response.failure("Empty embeddings in response")
+                except json.JSONDecodeError:
+                    response.failure("Invalid JSON response")
+            else:
+                response.failure(f"HTTP {response.status_code}")
+
+    @task(weight=2)
+    def batch_embedding(self):
+        """Batch text embedding."""
+        payload = {
+            "model": MODEL,
+            "input": [random_prompt() for _ in range(3)],
+        }
+
+        with self.client.post(
+            "/v1/embeddings",
+            json=payload,
+            headers=get_headers(),
+            catch_response=True,
+            name="/v1/embeddings [batch]",
+        ) as response:
+            if response.status_code == 200:
+                response.success()
+            else:
+                response.failure(f"HTTP {response.status_code}")
+
+
 class HealthCheckUser(HttpUser):
     """Simulates monitoring/health check traffic."""
 

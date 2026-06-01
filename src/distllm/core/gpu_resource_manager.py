@@ -8,6 +8,7 @@ use to avoid OOM.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -315,20 +316,23 @@ class GPUResourceManager:
 
 # Module-level singleton (lazy init) for global access
 _global_mgr: GPUResourceManager | None = None
+_global_mgr_lock = threading.Lock()
 
 
 def get_gpu_resource_manager() -> GPUResourceManager:
     """Return the global GPU resource manager instance (platform-aware)."""
     global _global_mgr
     if _global_mgr is None:
-        _global_mgr = GPUResourceManager()
-        from distllm.core.device_registry import detect_platform, detect_all_devices
-        plat = detect_platform()
-        if plat != "cpu":
-            devices = detect_all_devices()
-            for dev in devices:
-                try:
-                    _global_mgr.register_device(dev.device_id)
-                except Exception:
-                    continue
+        with _global_mgr_lock:
+            if _global_mgr is None:
+                _global_mgr = GPUResourceManager()
+                from distllm.core.device_registry import detect_platform, detect_all_devices
+                plat = detect_platform()
+                if plat != "cpu":
+                    devices = detect_all_devices()
+                    for dev in devices:
+                        try:
+                            _global_mgr.register_device(dev.device_id)
+                        except Exception:
+                            continue
     return _global_mgr

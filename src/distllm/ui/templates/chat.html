@@ -1,120 +1,300 @@
 {% extends "base.html" %}
 
-{% block title %}DistLLM - Chat{% endblock %}
+{% block title %}DistLLM - Chat Playground{% endblock %}
 
 {% block content %}
-<div class="chat-container">
-    <div id="chat-messages" class="chat-messages">
-        <div class="message system">
-            <div class="message-content">
-                Welcome to DistLLM Chat. Type a message to begin.
+<div class="playground-container">
+    <!-- Sidebar: Settings -->
+    <aside class="playground-sidebar">
+        <h3>Settings</h3>
+        <div class="setting-group">
+            <label for="model-select">Model</label>
+            <select id="model-select">
+                <option value="distributed-llm">Loading models...</option>
+            </select>
+        </div>
+        <div class="setting-group">
+            <label for="temperature">Temperature: <span id="temp-value">0.7</span></label>
+            <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
+        </div>
+        <div class="setting-group">
+            <label for="max-tokens">Max Tokens: <span id="tokens-value">256</span></label>
+            <input type="range" id="max-tokens" min="1" max="4096" step="1" value="256">
+        </div>
+        <div class="setting-group">
+            <label for="top-p">Top P: <span id="topp-value">0.9</span></label>
+            <input type="range" id="top-p" min="0" max="1" step="0.05" value="0.9">
+        </div>
+        <div class="setting-group">
+            <label>
+                <input type="checkbox" id="stream-toggle" checked> Stream responses
+            </label>
+        </div>
+        <div class="setting-group">
+            <label for="system-prompt">System Prompt</label>
+            <textarea id="system-prompt" rows="3" placeholder="You are a helpful assistant..."></textarea>
+        </div>
+        <button id="clear-btn" class="btn-secondary">Clear Chat</button>
+        <div class="stats-panel" id="stats-panel">
+            <h4>Stats</h4>
+            <div id="stats-content">No requests yet</div>
+        </div>
+    </aside>
+
+    <!-- Main: Chat -->
+    <main class="playground-main">
+        <div id="chat-messages" class="playground-messages">
+            <div class="welcome-message">
+                <h2>DistLLM Chat Playground</h2>
+                <p>Start a conversation with your distributed model.</p>
             </div>
         </div>
-    </div>
 
-    <form id="chat-form" class="chat-form" hx-post="{{ api_url }}/v1/chat/completions"
-          hx-target="#chat-messages" hx-swap="beforeend">
-        <div class="chat-input-group">
-            <textarea id="chat-input" name="prompt" placeholder="Type your message..."
-                      rows="1" required></textarea>
-            <button type="submit" id="send-btn">
-                <span class="btn-text">Send</span>
-                <span class="btn-loading" style="display:none">Generating...</span>
-            </button>
-        </div>
-        <input type="hidden" name="model" value="distributed-llm">
-        <input type="hidden" name="max_tokens" value="256">
-        <input type="hidden" name="temperature" value="0.7">
-    </form>
+        <form id="chat-form" class="playground-input-form">
+            <div class="input-wrapper">
+                <textarea id="chat-input" placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+                          rows="1" autofocus></textarea>
+                <button type="submit" id="send-btn" title="Send">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </form>
+    </main>
 </div>
-{% endblock %}
+
+<style>
+.playground-container { display: flex; height: calc(100vh - 80px); gap: 0; }
+.playground-sidebar { width: 280px; padding: 16px; border-right: 1px solid #e0e0e0; overflow-y: auto; background: #fafafa; }
+.playground-sidebar h3 { margin: 0 0 16px 0; font-size: 16px; }
+.setting-group { margin-bottom: 14px; }
+.setting-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; color: #555; }
+.setting-group select, .setting-group textarea { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+.setting-group input[type="range"] { width: 100%; }
+.btn-secondary { width: 100%; padding: 8px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.btn-secondary:hover { background: #e0e0e0; }
+.stats-panel { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 8px; font-size: 12px; }
+.stats-panel h4 { margin: 0 0 8px 0; }
+.playground-main { flex: 1; display: flex; flex-direction: column; }
+.playground-messages { flex: 1; overflow-y: auto; padding: 20px; }
+.welcome-message { text-align: center; color: #888; margin-top: 20vh; }
+.playground-input-form { padding: 16px 20px; border-top: 1px solid #e0e0e0; }
+.input-wrapper { display: flex; gap: 8px; align-items: flex-end; }
+.input-wrapper textarea { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 12px; resize: none; font-size: 14px; max-height: 200px; }
+.input-wrapper button { width: 40px; height: 40px; border-radius: 50%; background: #10a37f; color: white; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.input-wrapper button:hover { background: #0d8c6d; }
+.input-wrapper button:disabled { background: #ccc; cursor: not-allowed; }
+.msg { margin-bottom: 16px; max-width: 80%; }
+.msg-user { margin-left: auto; }
+.msg-assistant { margin-right: auto; }
+.msg-bubble { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.msg-user .msg-bubble { background: #10a37f; color: white; border-bottom-right-radius: 4px; }
+.msg-assistant .msg-bubble { background: #f0f0f0; color: #333; border-bottom-left-radius: 4px; }
+.msg-system .msg-bubble { background: #fff3cd; color: #856404; font-size: 12px; text-align: center; max-width: 100%; }
+.msg-meta { font-size: 11px; color: #999; margin-top: 4px; }
+.msg-user .msg-meta { text-align: right; }
+.cursor-blink { animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+</style>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const API_URL = '{{ api_url }}';
     const form = document.getElementById('chat-form');
     const input = document.getElementById('chat-input');
     const messages = document.getElementById('chat-messages');
     const sendBtn = document.getElementById('send-btn');
-    const btnText = sendBtn.querySelector('.btn-text');
-    const btnLoading = sendBtn.querySelector('.btn-loading');
+    const clearBtn = document.getElementById('clear-btn');
+    const modelSelect = document.getElementById('model-select');
+    const tempSlider = document.getElementById('temperature');
+    const tokensSlider = document.getElementById('max-tokens');
+    const toppSlider = document.getElementById('top-p');
+    const streamToggle = document.getElementById('stream-toggle');
+    const systemPrompt = document.getElementById('system-prompt');
+    const statsContent = document.getElementById('stats-content');
 
     let conversation = [];
+    let isGenerating = false;
+    let totalTokens = 0;
+    let totalRequests = 0;
 
-    form.addEventListener('submit', async function(e) {
+    // Slider value displays
+    tempSlider.addEventListener('input', () => document.getElementById('temp-value').textContent = tempSlider.value);
+    tokensSlider.addEventListener('input', () => document.getElementById('tokens-value').textContent = tokensSlider.value);
+    toppSlider.addEventListener('input', () => document.getElementById('topp-value').textContent = toppSlider.value);
+
+    // Load models
+    async function loadModels() {
+        try {
+            const res = await fetch(`${API_URL}/v1/models`);
+            const data = await res.json();
+            modelSelect.innerHTML = '';
+            (data.data || []).forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.id;
+                modelSelect.appendChild(opt);
+            });
+            if (!data.data?.length) modelSelect.innerHTML = '<option value="distributed-llm">distributed-llm</option>';
+        } catch { modelSelect.innerHTML = '<option value="distributed-llm">distributed-llm</option>'; }
+    }
+    loadModels();
+
+    // Clear chat
+    clearBtn.addEventListener('click', () => {
+        conversation = [];
+        messages.innerHTML = '<div class="welcome-message"><h2>DistLLM Chat Playground</h2><p>Start a conversation.</p></div>';
+    });
+
+    // Auto-resize textarea
+    input.addEventListener('input', () => {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+    });
+
+    // Submit
+    form.addEventListener('submit', async (e) => {
         e.preventDefault();
-
         const prompt = input.value.trim();
-        if (!prompt) return;
+        if (!prompt || isGenerating) return;
 
-        // Add user message
+        // Add system prompt if first message and set
+        if (conversation.length === 0 && systemPrompt.value.trim()) {
+            conversation.push({role: 'system', content: systemPrompt.value.trim()});
+        }
+
+        conversation.push({role: 'user', content: prompt});
         addMessage(prompt, 'user');
         input.value = '';
+        input.style.height = 'auto';
 
-        // Update conversation history
-        conversation.push({role: 'user', content: prompt});
-
-        // Show loading
-        btnText.style.display = 'none';
-        btnLoading.style.display = 'inline';
+        isGenerating = true;
         sendBtn.disabled = true;
 
+        const startTime = performance.now();
+
         try {
-            const response = await fetch('{{ api_url }}/v1/chat/completions', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    model: 'distributed-llm',
-                    messages: conversation,
-                    max_tokens: 256,
-                    temperature: 0.7
-                })
-            });
-
-            const data = await response.json();
-            const assistantMsg = data.choices[0].message.content;
-
-            addMessage(assistantMsg, 'assistant');
-            conversation.push({role: 'assistant', content: assistantMsg});
-
-            // Show token stats if available
-            if (data.usage) {
-                const tokens = data.usage.completion_tokens || 0;
-                const time = data.generation_time || 0;
-                if (time > 0) {
-                    const tps = (tokens / time).toFixed(1);
-                    addSystemMessage(`${tokens} tokens in ${time.toFixed(1)}s (${tps} tokens/s)`);
-                }
+            if (streamToggle.checked) {
+                await streamResponse(startTime);
+            } else {
+                await normalResponse(startTime);
             }
         } catch (error) {
-            addSystemMessage('Error: ' + error.message);
+            addMessage('Error: ' + error.message, 'system');
         } finally {
-            btnText.style.display = 'inline';
-            btnLoading.style.display = 'none';
+            isGenerating = false;
             sendBtn.disabled = false;
         }
     });
 
-    input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            form.dispatchEvent(new Event('submit'));
-        }
-    });
+    // Streaming response
+    async function streamResponse(startTime) {
+        const response = await fetch(`${API_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                model: modelSelect.value,
+                messages: conversation,
+                max_tokens: parseInt(tokensSlider.value),
+                temperature: parseFloat(tempSlider.value),
+                top_p: parseFloat(toppSlider.value),
+                stream: true,
+            }),
+        });
 
-    function addMessage(text, role) {
-        const msg = document.createElement('div');
-        msg.className = `message ${role}`;
-        msg.innerHTML = `<div class="message-content">${escapeHtml(text)}</div>`;
-        messages.appendChild(msg);
-        messages.scrollTop = messages.scrollHeight;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const msgDiv = addMessage('', 'assistant', true);
+        const bubble = msgDiv.querySelector('.msg-bubble');
+        let fullText = '';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, {stream: true});
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(data);
+                    const delta = parsed.choices?.[0]?.delta?.content || '';
+                    if (delta) {
+                        fullText += delta;
+                        bubble.textContent = fullText;
+                        messages.scrollTop = messages.scrollHeight;
+                    }
+                } catch {}
+            }
+        }
+
+        bubble.classList.remove('cursor-blink');
+        conversation.push({role: 'assistant', content: fullText});
+        const elapsed = (performance.now() - startTime) / 1000;
+        updateStats(fullText.length, elapsed);
+        addMeta(msgDiv, fullText.length, elapsed);
     }
 
-    function addSystemMessage(text) {
+    // Non-streaming response
+    async function normalResponse(startTime) {
+        const response = await fetch(`${API_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                model: modelSelect.value,
+                messages: conversation,
+                max_tokens: parseInt(tokensSlider.value),
+                temperature: parseFloat(tempSlider.value),
+                top_p: parseFloat(toppSlider.value),
+            }),
+        });
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const text = data.choices[0].message.content;
+        conversation.push({role: 'assistant', content: text});
+
+        const elapsed = (performance.now() - startTime) / 1000;
+        const tokens = data.usage?.completion_tokens || 0;
+        addMessage(text, 'assistant');
+        updateStats(tokens, elapsed);
+    }
+
+    // Add message to UI
+    function addMessage(text, role, streaming = false) {
+        const welcome = messages.querySelector('.welcome-message');
+        if (welcome) welcome.remove();
+
         const msg = document.createElement('div');
-        msg.className = 'message system';
-        msg.innerHTML = `<div class="message-content"><em>${escapeHtml(text)}</em></div>`;
+        msg.className = `msg msg-${role}`;
+        msg.innerHTML = `<div class="msg-bubble${streaming ? ' cursor-blink' : ''}">${escapeHtml(text)}</div>`;
         messages.appendChild(msg);
         messages.scrollTop = messages.scrollHeight;
+        return msg;
+    }
+
+    function addMeta(msgDiv, tokens, elapsed) {
+        const tps = tokens > 0 && elapsed > 0 ? (tokens / elapsed).toFixed(1) : '—';
+        const meta = document.createElement('div');
+        meta.className = 'msg-meta';
+        meta.textContent = `${tokens} tokens · ${elapsed.toFixed(1)}s · ${tps} tok/s`;
+        msgDiv.appendChild(meta);
+    }
+
+    function updateStats(tokens, elapsed) {
+        totalTokens += tokens;
+        totalRequests++;
+        const avgTps = totalTokens / (elapsed || 1);
+        statsContent.innerHTML = `Requests: ${totalRequests}<br>Total tokens: ${totalTokens}<br>Avg speed: ${avgTps.toFixed(1)} tok/s`;
     }
 
     function escapeHtml(text) {
@@ -122,5 +302,14 @@ document.addEventListener('DOMContentLoaded', function() {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    // Enter to send, Shift+Enter for newline
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.dispatchEvent(new Event('submit'));
+        }
+    });
 });
 </script>
+{% endblock %}

@@ -2,15 +2,15 @@
 
 Configuration precedence: environment variables > CLI args > config.yaml > defaults
 
-Note: This module is a thin compatibility layer over the pydantic-settings
-based configuration in config/settings.py. New code should import from
-config.settings directly.
+This module is a thin compatibility layer over the pydantic-settings
+based configuration in ``config/settings.py`` and the CLI resolver in
+``config/resolver.py``.  New code should import from those modules directly.
 """
 
 import os
 import warnings
-from enum import Enum
-from dataclasses import dataclass, field
+
+from loguru import logger
 
 import yaml
 
@@ -33,6 +33,7 @@ from distllm.config.settings import (
     MoESettings,
     NodeRole,
 )
+from distllm.config.resolver import _find_config, ConfigResolver
 
 # Backward compatibility: alias old dataclass names to new pydantic models
 ModelConfig = ModelSettings
@@ -54,11 +55,45 @@ DistLLMConfig = DistLLMSettings
 
 
 def load_config_file(path: str) -> dict:
-    """Load configuration from a YAML file."""
+    """Load configuration from a YAML file.
+
+    Raises:
+        ValueError: If the YAML file contains syntax errors.
+    """
     if not os.path.exists(path):
         return {}
-    with open(path, "r") as f:
-        return yaml.safe_load(f) or {}
+    try:
+        with open(path, "r") as f:
+            return yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in config file '{path}': {e}") from e
+
+
+def validate_config(data: dict) -> list[str]:
+    """Validate a config dict without creating a full DistLLMSettings.
+
+    Returns a list of human-readable error messages.  An empty list
+    means the config is valid.
+
+    Usage::
+
+        errors = validate_config(load_config_file("config.yaml"))
+        if errors:
+            for err in errors:
+                print(f"Config error: {err}")
+            sys.exit(1)
+    """
+    from pydantic import ValidationError
+
+    try:
+        DistLLMSettings.model_validate(data)
+        return []
+    except ValidationError as exc:
+        errors = []
+        for err in exc.errors():
+            loc = ".".join(str(l) for l in err["loc"])
+            errors.append(f"{loc}: {err['msg']} (got {err.get('input', '?')})")
+        return errors
 
 
 def dict_to_config(data: dict) -> DistLLMSettings:
@@ -67,145 +102,6 @@ def dict_to_config(data: dict) -> DistLLMSettings:
     Uses pydantic's model_validate for automatic type coercion and validation.
     """
     return DistLLMSettings.model_validate(data)
-
-
-def apply_env_overrides(data: dict) -> dict:
-    """Apply DISTLLM_* environment variable overrides to a config dict.
-
-    Deprecated: pydantic-settings handles env var parsing automatically.
-    """
-    warnings.warn(
-        "apply_env_overrides is deprecated; use DistLLMSettings with env vars directly",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    mapping = {
-        "DISTLLM_MODEL_NAME": ("model", "name"),
-        "DISTLLM_MODEL_DTYPE": ("model", "dtype"),
-        "DISTLLM_COORDINATOR_HOST": ("coordinator", "host"),
-        "DISTLLM_COORDINATOR_PORT": ("coordinator", "port"),
-        "DISTLLM_COORDINATOR_API_PORT": ("coordinator", "api_port"),
-        "DISTLLM_GENERATION_MAX_NEW_TOKENS": ("generation", "max_new_tokens"),
-        "DISTLLM_GENERATION_TEMPERATURE": ("generation", "temperature"),
-        "DISTLLM_GENERATION_TOP_P": ("generation", "top_p"),
-        "DISTLLM_NETWORK_GRPC_TIMEOUT": ("network", "grpc_timeout"),
-        "DISTLLM_NETWORK_MAX_RETRIES": ("network", "max_retries"),
-        "DISTLLM_NETWORK_RETRY_DELAY": ("network", "retry_delay"),
-        "DISTLLM_TLS_ENABLED": ("tls", "enabled"),
-        "DISTLLM_TLS_CERT_DIR": ("tls", "cert_dir"),
-        "DISTLLM_BATCHING_MAX_BATCH_SIZE": ("batching", "max_batch_size"),
-        "DISTLLM_BATCHING_MAX_TOKENS_PER_BATCH": ("batching", "max_tokens_per_batch"),
-        "DISTLLM_PREFIX_CACHE_ENABLED": ("prefix_cache", "enabled"),
-        "DISTLLM_PREFIX_CACHE_MAX_ENTRIES": ("prefix_cache", "max_entries"),
-        "DISTLLM_PREFIX_CACHE_MIN_PREFIX_LEN": ("prefix_cache", "min_prefix_len"),
-        "DISTLLM_CHUNKED_PREFILL_ENABLED": ("chunked_prefill", "enabled"),
-        "DISTLLM_CHUNKED_PREFILL_CHUNK_SIZE": ("chunked_prefill", "chunk_size"),
-        "DISTLLM_MONITORING_ENABLED": ("monitoring", "enabled"),
-        "DISTLLM_QUANTIZATION_METHOD": ("quantization", "method"),
-        "DISTLLM_QUANTIZATION_BNB_4BIT_COMPUTE_DTYPE": ("quantization", "bnb_4bit_compute_dtype"),
-        "DISTLLM_QUANTIZATION_BNB_4BIT_QUANT_TYPE": ("quantization", "bnb_4bit_quant_type"),
-        "DISTLLM_QUANTIZATION_BNB_4BIT_USE_DOUBLE_QUANT": ("quantization", "bnb_4bit_use_double_quant"),
-        "DISTLLM_QUANTIZATION_LLM_INT8_THRESHOLD": ("quantization", "llm_int8_threshold"),
-        "DISTLLM_SPECULATIVE_DRAFT_MODEL": ("speculative", "draft_model"),
-        "DISTLLM_SPECULATIVE_NUM_ASSISTANT_TOKENS": ("speculative", "num_assistant_tokens"),
-        "DISTLLM_SPECULATIVE_METHOD": ("speculative", "method"),
-        "DISTLLM_SPECULATIVE_EAGLE_CHECKPOINT": ("speculative", "eagle_checkpoint"),
-        "DISTLLM_SPECULATIVE_EAGLE_VARIANT": ("speculative", "eagle_variant"),
-        "DISTLLM_TENSOR_PARALLEL_ENABLED": ("tensor_parallel", "enabled"),
-        "DISTLLM_TENSOR_PARALLEL_NUM_GPUS": ("tensor_parallel", "num_gpus"),
-        "DISTLLM_DISTRIBUTED_KV_CACHE_ENABLED": ("distributed_kv_cache", "enabled"),
-        "DISTLLM_LORA_ENABLED": ("lora", "enabled"),
-        "DISTLLM_KV_OFFLOAD_ENABLED": ("kv_offload", "enabled"),
-        "DISTLLM_KV_OFFLOAD_GPU_LIMIT_GB": ("kv_offload", "gpu_limit_gb"),
-        "DISTLLM_KV_OFFLOAD_CPU_LIMIT_GB": ("kv_offload", "cpu_limit_gb"),
-        "DISTLLM_RING_ATTENTION_ENABLED": ("ring_attention", "enabled"),
-        "DISTLLM_RING_ATTENTION_THRESHOLD_TOKENS": ("ring_attention", "threshold_tokens"),
-        "DISTLLM_MOE_ENABLED": ("moe", "enabled"),
-        "DISTLLM_MOE_NUM_EXPERTS": ("moe", "num_experts"),
-        "DISTLLM_MOE_NUM_EXPERTS_PER_TOK": ("moe", "num_experts_per_tok"),
-        "DISTLLM_COST_ENABLED": ("cost", "enabled"),
-        "DISTLLM_COST_BUDGET_PER_HOUR": ("cost", "budget_per_hour"),
-        "DISTLLM_COST_SPOT_PREFERENCE": ("cost", "spot_preference"),
-    }
-
-    for env_key, (section, key) in mapping.items():
-        value = os.environ.get(env_key)
-        if value is not None:
-            if section not in data:
-                data[section] = {}
-            existing = data[section].get(key)
-            if isinstance(existing, bool):
-                value = value.lower() in ("true", "1", "yes")
-            elif isinstance(existing, int):
-                value = int(value)
-            elif isinstance(existing, float):
-                value = float(value)
-            data[section][key] = value
-
-    return data
-
-
-def apply_cli_overrides(data: dict, cli_args: dict) -> dict:
-    """Apply CLI argument overrides to a config dict.
-
-    Recognized CLI keys: model, dtype, host, port, api_port, local,
-    trust_remote_code, nodes, grpc_timeout, max_retries, retry_delay,
-    quantization, draft_model, num_assistant_tokens, tensor_parallel,
-    num_gpus, lora, lora_adapters
-    """
-    warnings.warn(
-        "apply_cli_overrides is deprecated; pass overrides to dict_to_config directly",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    if cli_args.get("model"):
-        data.setdefault("model", {})["name"] = cli_args["model"]
-    if cli_args.get("dtype"):
-        data.setdefault("model", {})["dtype"] = cli_args["dtype"]
-    if cli_args.get("host"):
-        data.setdefault("coordinator", {})["host"] = cli_args["host"]
-    if cli_args.get("port"):
-        data.setdefault("coordinator", {})["port"] = cli_args["port"]
-    if cli_args.get("api_port"):
-        data.setdefault("coordinator", {})["api_port"] = cli_args["api_port"]
-    if cli_args.get("trust_remote_code") is not None:
-        data.setdefault("model", {})["trust_remote_code"] = cli_args["trust_remote_code"]
-    if cli_args.get("grpc_timeout"):
-        data.setdefault("network", {})["grpc_timeout"] = cli_args["grpc_timeout"]
-    if cli_args.get("max_retries"):
-        data.setdefault("network", {})["max_retries"] = cli_args["max_retries"]
-    if cli_args.get("retry_delay"):
-        data.setdefault("network", {})["retry_delay"] = cli_args["retry_delay"]
-    if cli_args.get("nodes"):
-        data["nodes"] = cli_args["nodes"]
-    if cli_args.get("quantization"):
-        data.setdefault("quantization", {})["method"] = cli_args["quantization"]
-    if cli_args.get("draft_model"):
-        data.setdefault("speculative", {})["draft_model"] = cli_args["draft_model"]
-    if cli_args.get("num_assistant_tokens"):
-        data.setdefault("speculative", {})["num_assistant_tokens"] = cli_args["num_assistant_tokens"]
-    if cli_args.get("tensor_parallel"):
-        data.setdefault("tensor_parallel", {})["enabled"] = cli_args["tensor_parallel"]
-    if cli_args.get("num_gpus"):
-        data.setdefault("tensor_parallel", {})["num_gpus"] = cli_args["num_gpus"]
-    if cli_args.get("lora"):
-        data.setdefault("lora", {})["enabled"] = True
-    if cli_args.get("lora_adapters"):
-        data.setdefault("lora", {})["adapters"] = cli_args["lora_adapters"]
-    if cli_args.get("kv_offload"):
-        data.setdefault("kv_offload", {})["enabled"] = cli_args["kv_offload"]
-    if cli_args.get("ring_attention"):
-        data.setdefault("ring_attention", {})["enabled"] = cli_args["ring_attention"]
-    if cli_args.get("moe"):
-        data.setdefault("moe", {})["enabled"] = True
-    if cli_args.get("cost_budget"):
-        data.setdefault("cost", {})["budget_per_hour"] = cli_args["cost_budget"]
-    if cli_args.get("cost"):
-        data.setdefault("cost", {})["enabled"] = cli_args["cost"]
-
-    return data
 
 
 def load_config(
@@ -219,13 +115,16 @@ def load_config(
     precedence chain including YAML and CLI overrides.
 
     Args:
-        config_path: Path to YAML config file. If None, looks for config.yaml
-                     in current directory, then project root.
+        config_path: Path to YAML config file. If None, auto-discovers.
         cli_args: Dictionary of CLI argument overrides.
 
     Returns:
         DistLLMSettings with all overrides applied.
     """
+    logger.warning(
+        "load_config is deprecated; use DistLLMSettings.from_yaml() or "
+        "DistLLMSettings() for env-var-only config"
+    )
     warnings.warn(
         "load_config is deprecated; use DistLLMSettings.from_yaml() or "
         "DistLLMSettings() for env-var-only config",
@@ -234,9 +133,36 @@ def load_config(
     )
 
     if config_path is None:
-        for candidate in ["config.yaml", os.path.join(os.path.dirname(__file__), "..", "..", "..", "config.yaml")]:
-            if os.path.exists(candidate):
-                config_path = candidate
-                break
+        config_path = _find_config(ConfigResolver.COMMON_CONFIG_CANDIDATES)
 
     return DistLLMSettings.from_yaml(config_path=config_path, cli_overrides=cli_args)
+
+
+def apply_env_overrides(data: dict) -> dict:
+    """Apply environment variable overrides to config data.
+
+    Deprecated: DistLLMSettings handles env vars automatically via pydantic-settings.
+    This function is a no-op stub for backward compatibility.
+    """
+    warnings.warn(
+        "apply_env_overrides is deprecated; DistLLMSettings handles env vars automatically",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return data
+
+
+def apply_cli_overrides(data: dict, cli_args: dict | None = None) -> dict:
+    """Apply CLI argument overrides to config data.
+
+    Deprecated: Use DistLLMSettings.from_yaml(config_path, cli_overrides) instead.
+    This function is a no-op stub for backward compatibility.
+    """
+    warnings.warn(
+        "apply_cli_overrides is deprecated; use DistLLMSettings.from_yaml() with cli_overrides",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    if cli_args:
+        data.update(cli_args)
+    return data

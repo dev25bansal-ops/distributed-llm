@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -65,7 +64,7 @@ class AsyncConnectionPool:
         self._connect_timeout = connect_timeout
         self._max_age_s = max_age_s
 
-        self._pool: Dict[Tuple[str, int], List[AsyncPooledConnection]] = {}
+        self._pool: dict[tuple[str, int], list[AsyncPooledConnection]] = {}
         self._lock = asyncio.Lock()
         self._stats = AsyncPoolStats()
         self._closed = False
@@ -78,7 +77,7 @@ class AsyncConnectionPool:
 
     async def get(
         self, host: str, port: int,
-    ) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         """Get a connection from the pool or create a new one."""
         if self._closed:
             raise OSError("AsyncConnectionPool is closed")
@@ -116,7 +115,7 @@ class AsyncConnectionPool:
         host: str,
         port: int,
         writer: asyncio.StreamWriter,
-        reader: Optional[asyncio.StreamReader] = None,
+        reader: asyncio.StreamReader | None = None,
     ) -> None:
         """Return a connection to the pool."""
         if self._closed:

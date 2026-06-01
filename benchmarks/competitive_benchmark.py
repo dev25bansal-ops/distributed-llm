@@ -79,13 +79,18 @@ COMPETITOR_PRICING = {
 
 @dataclass
 class OptimizationFactors:
-    """Throughput multipliers from engine optimizations."""
-    speculative_decoding: float = 2.0       # EAGLE-2: 2-3x
-    flash_attention: float = 1.5            # FlashAttention-2
-    adaptive_precision: float = 1.3         # FP8/INT8 on less critical layers
-    kv_cache_optimization: float = 1.2      # Predictive + radix tree caching
-    moe_optimization: float = 1.15          # Efficient expert routing
-    straggler_mitigation: float = 1.1       # Straggler detection + mitigation
+    """Throughput multipliers from engine optimizations.
+
+    These are conservative estimates based on published benchmarks.
+    Actual gains depend on workload, hardware, and configuration.
+    Run `distllm benchmark run` for measured values on your setup.
+    """
+    speculative_decoding: float = 1.5       # Conservative: 1.5-2x (not all tokens accepted)
+    flash_attention: float = 1.3            # FlashAttention-2 (depends on seq length)
+    adaptive_precision: float = 1.1         # FP8/INT8 on less critical layers
+    kv_cache_optimization: float = 1.15     # Predictive + radix tree caching
+    moe_optimization: float = 1.0           # Only applies to MoE models
+    straggler_mitigation: float = 1.05      # Straggler detection + mitigation
 
     @property
     def combined(self) -> float:

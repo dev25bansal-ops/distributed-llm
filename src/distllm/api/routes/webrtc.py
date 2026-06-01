@@ -1,5 +1,11 @@
 """WebRTC signaling API routes for browser-based inference.
 
+.. warning::
+    **EXPERIMENTAL**: WebRTC support depends on ``aiortc`` which is complex,
+    OS-dependent, and has known issues on some platforms. Use at your own
+    risk in non-production environments. The API surface may change without
+    notice.
+
 Exposes HTTP endpoints for SDP offer/answer and ICE candidate exchange,
 enabling browsers to establish WebRTC data channels to the DistLLM cluster.
 
@@ -130,9 +136,9 @@ async def webrtc_offer(req: SDPOfferRequest):
             session_id=session_id,
         )
     except Exception as e:
-        logger.error(f"WebRTC offer handling failed: {e}")
+        logger.error(f"WebRTC offer handling failed: {e}", exc_info=True)
         _session_mgr.close_session(session_id)
-        raise HTTPException(status_code=500, detail=f"WebRTC setup failed: {e}")
+        raise HTTPException(status_code=500, detail="WebRTC setup failed")
 
 
 @router.post("/ice")

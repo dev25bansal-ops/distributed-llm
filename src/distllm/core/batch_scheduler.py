@@ -1,13 +1,13 @@
 """Continuous batch scheduler for pipeline-parallel inference."""
 
-from loguru import logger
 import heapq
 import math
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING
+
+from loguru import logger
 
 if TYPE_CHECKING:
     import torch
@@ -15,283 +15,34 @@ if TYPE_CHECKING:
 from distllm.core.request_latency import RequestLatencyTracker
 from distllm.utils.scheduling import group_by_length
 
+# Import extracted classes from the scheduler package
+from distllm.core.scheduler.sequence import (
+    SequenceStatus,
+    GenerationConfig,
+    OpenAICompliance,
+    SchedulingHints,
+    Sequence,
+    ScheduledBatch,
+)
+from distllm.core.scheduler.pressure import DecodePressureTracker
+from distllm.core.scheduler.budget import IterationBudget
+from distllm.core.scheduler.chunked_prefill import ChunkedPrefillInfo
+
 if TYPE_CHECKING:
     from distllm.core.adaptive_batching import AdaptiveBatchingEngine
     from distllm.core.advanced_scheduling import (
-        NodeCapabilityInfo,
-        HeterogeneousBudgetComputer,
         CostAwarePriorityAdjuster,
-        WANSchedulingPolicy,
         EnergyAwareScheduler,
+        HeterogeneousBudgetComputer,
+        NodeCapabilityInfo,
+        WANSchedulingPolicy,
     )
 
-
-class SequenceStatus(Enum):
-    """Lifecycle states for a generation sequence."""
-    PENDING = "pending"
-    PREFILLING = "prefilling"
-    DECODING = "decoding"
-    DONE = "done"
-    FAILED = "failed"
-    PREEMPTED = "preempted"  # Temporarily removed to free resources
-
-
-@dataclass
-class GenerationConfig:
-    """Sampling parameters for text generation."""
-    temperature: float = 0.7
-    top_p: float = 0.9
-    top_k: int = 0
-    max_new_tokens: int = 256
-    stop_token_ids: list[int] = field(default_factory=list)
-
-
-@dataclass
-class OpenAICompliance:
-    """OpenAI-compatible response parameters."""
-    include_logprobs: bool = False
-    top_logprobs: int = 0
-    logit_bias: dict[int, float] = field(default_factory=dict)
-    presence_penalty: float = 0.0
-    frequency_penalty: float = 0.0
-    token_counts: dict[int, int] = field(default_factory=dict)
-
-
-@dataclass
-class SchedulingHints:
-    """Hints for the batch scheduler."""
-    priority: int = 2  # 0=critical, 1=high, 2=normal, 3=low
-    max_latency_ms: float | None = None
-    adapter_id: str | None = None  # LoRA adapter ID (S-LoRA style)
-
-
-@dataclass
-class Sequence:
-    """Represents a single generation sequence (one request).
-
-    Fields are grouped by concern into nested config objects:
-    - ``generation`` — sampling params (temperature, top_p, top_k, max_new_tokens)
-    - ``scheduling`` — priority, max_latency_ms, adapter_id
-    - ``openai`` — logprobs, penalties, logit_bias
-
-    Flat fields are kept for backward compatibility and synced to the
-    nested objects via ``__post_init__``.  New code should prefer the
-    nested objects (e.g. ``seq.generation.temperature``).
-    """
-    request_id: str
-    prompt_tokens: list[int] = field(default_factory=list)
-    generated_tokens: list[int] = field(default_factory=list)
-    status: SequenceStatus = SequenceStatus.PENDING
-    priority: int = 2  # 0=critical, 1=high, 2=normal, 3=low
-    max_new_tokens: int = 256
-    temperature: float = 0.7
-    top_p: float = 0.9
-    top_k: int = 0
-    stop_token_ids: list[int] = field(default_factory=list)
-    constraint: object | None = None  # JSONSchemaConstraint from structured_output
-    prefix_match_len: int = 0  # Tokens served from prefix cache
-    created_at: float = field(default_factory=time.time)
-    adapter_id: str | None = None  # LoRA adapter ID for this request (S-LoRA style)
-    # Logprobs & OpenAI compliance
-    include_logprobs: bool = False
-    top_logprobs: int = 0
-    logit_bias: dict[int, float] = field(default_factory=dict)
-    presence_penalty: float = 0.0
-    frequency_penalty: float = 0.0
-    token_counts: dict[int, int] = field(default_factory=dict)
-    max_latency_ms: float | None = None  # For frequency penalty
-
-    # Nested config objects (synced from flat fields in __post_init__)
-    generation: GenerationConfig = field(default=None, repr=False)
-    scheduling: SchedulingHints = field(default=None, repr=False)
-    openai: OpenAICompliance = field(default=None, repr=False)
-
-    def __post_init__(self) -> None:
-        # Validate priority range
-        if not isinstance(self.priority, int) or self.priority < 0:
-            logger.warning(
-                f"Sequence {self.request_id}: priority={self.priority} "
-                f"is not a non-negative int, clamping to 0 (critical)"
-            )
-            self.priority = 0
-        elif self.priority > 3:
-            logger.debug(
-                f"Sequence {self.request_id}: priority={self.priority} "
-                f"is outside recommended range 0-3 (will still work)"
-            )
-
-        # Sync nested objects from flat fields
-        if self.generation is None:
-            self.generation = GenerationConfig(
-                temperature=self.temperature,
-                top_p=self.top_p,
-                top_k=self.top_k,
-                max_new_tokens=self.max_new_tokens,
-                stop_token_ids=list(self.stop_token_ids),
-            )
-        if self.scheduling is None:
-            self.scheduling = SchedulingHints(
-                priority=self.priority,
-                max_latency_ms=self.max_latency_ms,
-                adapter_id=self.adapter_id,
-            )
-        if self.openai is None:
-            self.openai = OpenAICompliance(
-                include_logprobs=self.include_logprobs,
-                top_logprobs=self.top_logprobs,
-                logit_bias=dict(self.logit_bias),
-                presence_penalty=self.presence_penalty,
-                frequency_penalty=self.frequency_penalty,
-                token_counts=dict(self.token_counts),
-            )
-
-    @property
-    def is_complete(self) -> bool:
-        if self.status in (SequenceStatus.DONE, SequenceStatus.FAILED):
-            return True
-        return len(self.generated_tokens) >= self.max_new_tokens
-
-    @property
-    def total_len(self) -> int:
-        return len(self.prompt_tokens) + len(self.generated_tokens)
-
-    @property
-    def decode_input_token(self) -> int:
-        """Token to feed as input for the next decode step."""
-        return self.generated_tokens[-1]
-
-
-@dataclass
-class ScheduledBatch:
-    """A batch of sequences ready for one forward pass.
-    
-    Uses ragged/flat token layout (no padding) for zero wasted GPU compute.
-    Each sequence's tokens are concatenated into a flat 1D tensor, with
-    seq_starts tracking per-sequence boundaries in the flat array.
-    """
-    sequences: list[Sequence]
-    input_ids: "torch.Tensor"       # [total_tokens] — flattened 1D, all tokens concatenated (no padding)
-    seq_starts: list[int] = field(default_factory=list)       # Start index in input_ids for each sequence
-    seq_lengths: list[int] = field(default_factory=list)      # Per-sequence total length
-    position_offsets: list[int] = field(default_factory=list) # Cached KV length per sequence
-    is_prefill: list[bool] = field(default_factory=list)      # Whether each seq is doing prefill vs decode
-    request_ids: list[str] = field(default_factory=list)
-    attention_mask: "torch.Tensor | None" = None  # [1, 1, total_tokens, total_tokens] block-diagonal causal mask
-    speculative_enabled: bool = False
-    batch_tags: dict[str, object] = field(default_factory=dict)
-    adapter_ids: list[str | None] = field(default_factory=list)
-
-    @property
-    def batch_size(self) -> int:
-        return len(self.sequences)
-
-    @property
-    def max_seq_len(self) -> int:
-        return max(self.seq_lengths) if self.seq_lengths else 0
-
-    @property
-    def total_tokens(self) -> int:
-        """Total tokens in the flat tensor (sum of all seq lengths)."""
-        return sum(self.seq_lengths) if self.seq_lengths else 0
-
-
-class DecodePressureTracker:
-    """Tracks decode queue pressure to dynamically adapt prefill/decode split.
-
-    Uses exponential moving average (EMA) for smooth pressure signal.
-    EMA avoids the abrupt data drop of SMA windows and provides
-    configurable responsiveness via the alpha parameter.
-
-    Higher pressure → more decode slots reserved, prefill tokens throttled.
-    """
-
-    def __init__(self, alpha: float = 0.1, target_ms_per_token: float = 8.0):
-        self._ema: float = 0.0
-        self._alpha = alpha
-        self._target_ms = target_ms_per_token
-        self._sample_count: int = 0
-
-    def record_decode_step(self, batch_decode_count: int, elapsed_ms: float) -> None:
-        per_token = elapsed_ms / max(batch_decode_count, 1)
-        if self._sample_count == 0:
-            self._ema = per_token
-        else:
-            self._ema = self._alpha * per_token + (1 - self._alpha) * self._ema
-        self._sample_count += 1
-
-    @property
-    def pressure(self) -> float:
-        if self._sample_count == 0:
-            return 0.0
-        return min(1.0, self._ema / max(self._target_ms, 0.1))
-
-    @property
-    def avg_ms_per_token(self) -> float:
-        if self._sample_count == 0:
-            return 0.0
-        return self._ema
-
-
-@dataclass
-class IterationBudget:
-    """Budget for a single iteration step.
-
-    Controls how many prefill vs decode tokens to process,
-    respecting both batch size and token count limits.
-    """
-    max_prefill_tokens: int = 4096
-    max_decode_tokens: int = 512
-    max_batch_size: int = 32
-    max_total_tokens: int = 32768
-    enable_chunked_prefill: bool = True
-    prefill_slack_ratio: float = 0.3  # Reserve % for decode during long prefills
-
-    @property
-    def decode_slots(self) -> int:
-        return min(self.max_batch_size, self.max_decode_tokens)
-
-
-@dataclass
-class ChunkedPrefillInfo:
-    """Tracks chunked prefill state for a sequence.
-
-    Thin adapter around chunked_prefill.ChunkState that provides
-    the interface the scheduler needs: is_complete, remaining,
-    tokens_processed, and chunks_remaining.
-    """
-    seq_id: str
-    total_prompt_tokens: int
-    tokens_processed: int = 0
-    chunk_size: int = 0
-    chunks_remaining: int = 0
-
-    @property
-    def is_complete(self) -> bool:
-        return self.tokens_processed >= self.total_prompt_tokens
-
-    @property
-    def remaining(self) -> int:
-        return self.total_prompt_tokens - self.tokens_processed
-
-    @classmethod
-    def from_chunk_state(cls, seq_id: str, cs: "ChunkState") -> "ChunkedPrefillInfo":
-        """Create from a chunked_prefill.ChunkState instance."""
-        return cls(
-            seq_id=seq_id,
-            total_prompt_tokens=len(cs.prompt_tokens),
-            tokens_processed=cs.current_offset,
-            chunk_size=cs.chunk_size,
-            chunks_remaining=cs.chunks_total - cs.chunks_done,
-        )
-
-    def advance(self, tokens_processed: int) -> None:
-        """Update tokens_processed after a chunk is consumed."""
-        self.tokens_processed += tokens_processed
-        if self.chunk_size > 0:
-            self.chunks_remaining = max(
-                0,
-                (self.total_prompt_tokens - self.tokens_processed + self.chunk_size - 1) // self.chunk_size,
-            )
+__all__ = [
+    "BatchScheduler",
+    "Sequence",
+    "ScheduledBatch",
+]
 
 
 class BatchScheduler:
@@ -333,6 +84,7 @@ class BatchScheduler:
         self._pending_heap: list = []  # Min-heap of (priority, counter, Sequence)
         self._overflow_buffer: list = []  # Overflow from split_overflow
         self._counter: int = 0  # Tiebreaker for FIFO within same priority
+        self._max_pending: int = 1000  # Max pending queue size (backpressure)
         self.active: dict[str, Sequence] = {}
         self._total_tokens: int = 0  # Incremental token count for O(1) tracking
         self._model_info = model_info
@@ -383,7 +135,7 @@ class BatchScheduler:
         self._max_preempted: int = 4  # Max concurrent preempted sequences
 
         # Adaptive batching engine (set externally by coordinator)
-        self._adaptive_engine: 'AdaptiveBatchingEngine | None' = None
+        self._adaptive_engine: AdaptiveBatchingEngine | None = None
 
         self._lock = threading.Lock()
 
@@ -393,22 +145,22 @@ class BatchScheduler:
         # ── Advanced scheduling integrations (lazy-initialized) ──
 
         # 1. Heterogeneous P2P scheduling
-        self._het_budget: 'HeterogeneousBudgetComputer | None' = None
+        self._het_budget: HeterogeneousBudgetComputer | None = None
 
         # 2. Cost-aware scheduling
-        self._cost_adjuster: 'CostAwarePriorityAdjuster | None' = None
+        self._cost_adjuster: CostAwarePriorityAdjuster | None = None
 
         # 3. WAN-optimized scheduling
-        self._wan_policy: 'WANSchedulingPolicy | None' = None
+        self._wan_policy: WANSchedulingPolicy | None = None
 
         # 4. Energy-aware scheduling
-        self._energy_scheduler: 'EnergyAwareScheduler | None' = None
+        self._energy_scheduler: EnergyAwareScheduler | None = None
 
         # 5. Pluggable scheduling policy (overrides Sarathi-Serve when set)
-        self._scheduling_policy: 'SchedulingPolicy | None' = None
+        self._scheduling_policy: SchedulingPolicy | None = None
 
         # 6. Preemption policy (from dist/preemption.py)
-        self._preemption_policy: 'PreemptionPolicy | None' = None
+        self._preemption_policy: PreemptionPolicy | None = None
 
     def set_cache_manager(self, cache_mgr) -> None:
         """Set the cache manager for radix tree prefix storage."""
@@ -492,7 +244,7 @@ class BatchScheduler:
             rtt_threshold_ms: RTT above which WAN mode activates.
             prefetch_kv: Prefetch KV cache during pipeline stalls.
         """
-        from distllm.core.advanced_scheduling import WANSchedulingPolicy, WANConfig
+        from distllm.core.advanced_scheduling import WANConfig, WANSchedulingPolicy
         self._wan_policy = WANSchedulingPolicy(WANConfig(
             enabled=enabled,
             chunk_multiplier=chunk_multiplier,
@@ -840,8 +592,8 @@ class BatchScheduler:
         if self._paged_attention_mgr is not None:
             try:
                 self._paged_attention_mgr.free_sequence(request_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to free paged blocks for {request_id}: {e}")
 
     def swap_evict_to_cpu(self, min_blocks: int = 1) -> int:
         """Evict lowest-priority active sequences to CPU to free GPU blocks.
@@ -874,7 +626,8 @@ class BatchScheduler:
                 blocks_freed = self._paged_attention_mgr.swap_blocks_to_cpu(seq.request_id)
                 freed += blocks_freed
                 logger.debug(f"Swapped {blocks_freed} blocks to CPU for {seq.request_id}")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to swap blocks to CPU for {seq.request_id}: {e}")
                 continue
         return freed
 
@@ -884,7 +637,8 @@ class BatchScheduler:
             return 0
         try:
             return self._paged_attention_mgr.swap_blocks_to_gpu(request_id)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to restore blocks from CPU for {request_id}: {e}")
             return 0
 
     def copy_on_write(self, source_id: str, dest_id: str) -> None:
@@ -892,8 +646,8 @@ class BatchScheduler:
         if self._paged_attention_mgr is not None:
             try:
                 self._paged_attention_mgr.copy_on_write(source_id, dest_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Copy-on-write failed from {source_id} to {dest_id}: {e}")
 
     def _compute_sarathi_budget(self, budget: IterationBudget) -> IterationBudget:
         """Sarathi-Serve style adaptive budget: reserve decode slots first.
@@ -1015,10 +769,21 @@ class BatchScheduler:
         return (tokens + block_size - 1) // block_size
 
     def add(self, seq: Sequence) -> None:
-        """Add a new request to the pending queue (priority-ordered)."""
+        """Add a new request to the pending queue (priority-ordered).
+
+        Raises:
+            BatchCapacityError: If the pending queue is full (backpressure).
+        """
         with self._lock:
+            if len(self._pending_heap) >= self._max_pending:
+                from distllm.errors.types import BatchCapacityError
+                raise BatchCapacityError(
+                    current_tokens=len(self._pending_heap),
+                    max_tokens=self._max_pending,
+                )
             heapq.heappush(self._pending_heap, (seq.priority, self._counter, seq))
             self._counter += 1
+            self._pending_index = None  # Invalidate index cache
         self._latency_tracker.register(seq.request_id, sla_ms=seq.max_latency_ms)
 
     def schedule(self) -> ScheduledBatch | None:
@@ -1500,6 +1265,8 @@ class BatchScheduler:
     def promote_request(self, request_id: str, new_priority: int) -> bool:
         """Change the priority of a pending request.
 
+        Uses O(log n) indexed heap update instead of O(n) linear scan + heapify.
+
         Args:
             request_id: The request to promote.
             new_priority: The new priority level.
@@ -1508,13 +1275,29 @@ class BatchScheduler:
             True if the request was found and updated.
         """
         with self._lock:
-            for i, (_pri, _cnt, seq) in enumerate(self._pending_heap):
-                if seq.request_id == request_id:
-                    seq.priority = new_priority
-                    self._pending_heap[i] = (new_priority, _cnt, seq)
-                    heapq.heapify(self._pending_heap)
-                    return True
-            return False
+            # Build index if not cached
+            if not hasattr(self, '_pending_index') or self._pending_index is None:
+                self._pending_index = {
+                    seq.request_id: i
+                    for i, (_, _, seq) in enumerate(self._pending_heap)
+                }
+
+            idx = self._pending_index.get(request_id)
+            if idx is None:
+                return False
+
+            _pri, _cnt, seq = self._pending_heap[idx]
+            seq.priority = new_priority
+            self._pending_heap[idx] = (new_priority, _cnt, seq)
+
+            # Bubble up or down — O(log n) instead of O(n) heapify
+            if new_priority < _pri:
+                heapq._siftup(self._pending_heap, idx)
+            else:
+                heapq._siftdown(self._pending_heap, 0, idx)
+
+            self._pending_index[request_id] = idx
+            return True
 
     def preempt_lowest(self, min_priority: int = 3, kv_cache_state: dict | None = None) -> Sequence | None:
         """Preempt the active sequence with the lowest importance and re-queue it.
@@ -1660,7 +1443,6 @@ class BatchScheduler:
         Returns:
             Decompressed data ready for use.
         """
-        import torch
 
         if isinstance(kv_data, dict) and kv_data.get("_compressed"):
             return self._decompress_tensor(kv_data)

@@ -5,10 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..auth_deps import require_role
 
 
 router = APIRouter(tags=["marketplace"], prefix="/v1/marketplace")
@@ -85,7 +86,7 @@ class MarketplaceStatsResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/listings", response_model=GPUListingResponse)
+@router.post("/listings", response_model=GPUListingResponse, dependencies=[Depends(require_role("admin"))])
 async def create_listing(req: GPUListingRequest):
     """Create a new GPU listing in the marketplace."""
     marketplace = g.get("marketplace")
@@ -180,7 +181,7 @@ async def get_listing(listing_id: str):
     )
 
 
-@router.delete("/listings/{listing_id}")
+@router.delete("/listings/{listing_id}", dependencies=[Depends(require_role("admin"))])
 async def remove_listing(listing_id: str):
     """Remove a GPU listing."""
     marketplace = g.get("marketplace")
@@ -192,7 +193,7 @@ async def remove_listing(listing_id: str):
     return {"status": "removed", "listing_id": listing_id}
 
 
-@router.post("/jobs", response_model=JobResponse)
+@router.post("/jobs", response_model=JobResponse, dependencies=[Depends(require_role("admin"))])
 async def post_job(req: JobPostRequest):
     """Post a compute job to the marketplace."""
     marketplace = g.get("marketplace")
@@ -263,7 +264,7 @@ async def list_jobs(
     ]
 
 
-@router.post("/jobs/{job_id}/complete")
+@router.post("/jobs/{job_id}/complete", dependencies=[Depends(require_role("admin"))])
 async def complete_job(job_id: str, tokens_generated: int = 0):
     """Mark a job as completed."""
     marketplace = g.get("marketplace")
@@ -275,7 +276,7 @@ async def complete_job(job_id: str, tokens_generated: int = 0):
     return {"status": "completed", "job_id": job_id}
 
 
-@router.post("/jobs/{job_id}/cancel")
+@router.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_role("admin"))])
 async def cancel_job(job_id: str):
     """Cancel a job."""
     marketplace = g.get("marketplace")

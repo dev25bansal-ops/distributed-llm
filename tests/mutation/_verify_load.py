@@ -36,7 +36,7 @@ for key in list(sys.modules.keys()):
     if 'latency_tracker' in key:
         del sys.modules[key]
 
-import distllm.core.latency_tracker as lt
+import distllm.dist.latency as lt
 print(f"MODULE_FILE: {lt.__file__}")
 
 t = lt.LatencyTracker()

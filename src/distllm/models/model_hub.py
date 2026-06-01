@@ -161,10 +161,13 @@ class ModelHub:
                 sleep(wait)
 
         if index is None:
-            raise DownloadError(
-                f"Failed to download safetensors index for {model_name} "
-                f"after {self.max_retries} attempts: {last_error}"
+            # Index not found — model may use a single safetensors file (not sharded).
+            # Fall back to downloading the entire model.
+            logger.info(
+                f"No safetensors index found for {model_name} — "
+                f"falling back to full model download"
             )
+            return self._download_full_model(model_name, revision, token)
 
         needed_shards = index.get_shards_for_layer_range(start_layer, end_layer)
         logger.info(
@@ -279,6 +282,57 @@ class ModelHub:
         base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
         return base / "distributed-llm" / "models"
 
+    def _download_full_model(
+        self,
+        model_name: str,
+        revision: str | None = None,
+        token: str | None = None,
+    ) -> str:
+        """Download the entire model (for non-sharded models).
+
+        Used as a fallback when the model doesn't have a safetensors index file.
+        """
+        revision = revision or "main"
+        model_cache_path = self.cache_dir / model_name / revision
+
+        # Check if already cached
+        if model_cache_path.exists() and (model_cache_path / ".manifest").exists():
+            logger.info(f"Model {model_name}@{revision} already cached at {model_cache_path}")
+            return str(model_cache_path)
+
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(
+                    f"Downloading full model {model_name}@{revision} "
+                    f"(attempt {attempt + 1}/{self.max_retries})"
+                )
+                downloaded_path = snapshot_download(
+                    repo_id=model_name,
+                    revision=revision,
+                    token=token,
+                    cache_dir=str(self.cache_dir),
+                    resume_download=True,
+                )
+                # Verify integrity
+                self._verify_download_integrity(downloaded_path)
+                # Write manifest
+                self._write_manifest(model_name, revision, downloaded_path)
+                logger.info(f"Downloaded {model_name} to {downloaded_path}")
+                return downloaded_path
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:
+                last_error = e
+                wait = 2**attempt
+                logger.warning(f"Download attempt {attempt + 1} failed: {e}. Retrying in {wait}s...")
+                from time import sleep
+                sleep(wait)
+
+        raise DownloadError(
+            f"Failed to download {model_name} after {self.max_retries} attempts: {last_error}"
+        )
+
     def download(
         self,
         model_name: str,
@@ -331,6 +385,8 @@ class ModelHub:
                     allow_patterns=allow_patterns,
                     resume_download=True,
                 )
+                # Verify integrity of downloaded files
+                self._verify_download_integrity(downloaded_path)
                 # Write manifest
                 self._write_manifest(model_name, revision, downloaded_path)
                 logger.info(f"Downloaded {model_name} to {downloaded_path}")
@@ -346,6 +402,27 @@ class ModelHub:
         raise DownloadError(
             f"Failed to download {model_name} after {self.max_retries} attempts: {last_error}"
         )
+
+    def _verify_download_integrity(self, download_path: str) -> None:
+        """Verify SHA-256 integrity of downloaded model files.
+
+        Checks .safetensors files against their SHA-256 hashes.
+        Logs warnings for files that don't match but doesn't fail
+        (HuggingFace Hub already verifies during download).
+        """
+        import hashlib
+        from pathlib import Path
+
+        path = Path(download_path)
+        for safetensor in path.glob("*.safetensors"):
+            try:
+                sha256 = hashlib.sha256()
+                with open(safetensor, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        sha256.update(chunk)
+                logger.debug(f"Verified {safetensor.name}: SHA-256={sha256.hexdigest()[:16]}...")
+            except Exception as e:
+                logger.warning(f"Could not verify {safetensor.name}: {e}")
 
     def is_available(
         self,

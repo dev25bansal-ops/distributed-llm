@@ -118,7 +118,7 @@ class LlamacppNodeAdapter(BackendAdapter):
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """Single-node path: run full model via create_completion()."""
         if self._llm is None:
-            raise RuntimeError("llama.cpp not loaded. Call load_model() first.")
+            raise ModelLoadError("llamacpp", "llama.cpp not loaded. Call load_model() first.")
 
         ids = input_ids.flatten().tolist()
         output = self._llm.create_completion(
@@ -146,7 +146,7 @@ class LlamacppNodeAdapter(BackendAdapter):
         where each node holds the full model (no layer splitting).
         """
         if self._llm is None:
-            raise RuntimeError("llama.cpp not loaded. Call load_model() first.")
+            raise ModelLoadError("llamacpp", "llama.cpp not loaded. Call load_model() first.")
 
         ids = hidden_states.argmax(dim=-1).flatten().tolist()
         n_tokens = len(ids)
@@ -180,7 +180,7 @@ class LlamacppNodeAdapter(BackendAdapter):
             Generated text.
         """
         if self._llm is None:
-            raise RuntimeError("llama.cpp not loaded. Call load_model() first.")
+            raise ModelLoadError("llamacpp", "llama.cpp not loaded. Call load_model() first.")
 
         output = self._llm.create_completion(
             prompt=prompt,

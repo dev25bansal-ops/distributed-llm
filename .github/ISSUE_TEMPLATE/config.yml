@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/distributed-llm/distributed-llm/blob/main/README.md
+    about: Check the documentation before creating an issue
+  - name: Discussions
+    url: https://github.com/distributed-llm/distributed-llm/discussions
+    about: Ask questions and discuss ideas

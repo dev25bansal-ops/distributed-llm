@@ -1,0 +1,56 @@
+# Publish Helm chart to GitHub Pages
+#
+# This workflow packages the DistLLM Helm chart and publishes it
+# to a GitHub Pages-hosted Helm repository. Users can then install
+# with:
+#
+#   helm repo add distllm https://distributed-llm.github.io/helm-charts
+#   helm install distllm distllm/distllm
+
+name: Helm Chart Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "integrations/kubernetes/helm/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  publish-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.14.0
+
+      - name: Package chart
+        run: |
+          helm package integrations/kubernetes/helm/distllm \
+            --destination .cr-release-packages \
+            --version ${{ github.run_number }}.0.0 \
+            --app-version 0.4.0
+
+      - name: Publish to GitHub Pages
+        uses: helm/chart-releaser-action@v1.6.0
+        with:
+          charts_dir: integrations/kubernetes/helm
+          skip_packaging: true
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

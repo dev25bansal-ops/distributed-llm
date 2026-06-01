@@ -47,8 +47,7 @@ import hashlib
 import hmac
 import os
 import struct
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -204,6 +203,18 @@ class E2EEncryption:
     _session: SessionKeys | None = None
 
     def __post_init__(self) -> None:
+        if not self.cluster_key:
+            logger.warning(
+                "E2EEncryption initialized with empty cluster_key — "
+                "HMAC signatures will provide no authentication. "
+                "Set a strong cluster_key for production use."
+            )
+        elif len(self.cluster_key) < 16:
+            logger.warning(
+                f"E2EEncryption cluster_key is only {len(self.cluster_key)} characters — "
+                "recommend at least 16 characters for security. "
+                "Use: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
         if HAS_NACL:
             self._generate_keypair()
             self._session = None
@@ -310,9 +321,15 @@ class E2EEncryption:
 
         Packet format:
           [salt:16B][nonce+ciphertext+tag:...]
+
+        Raises:
+            RuntimeError: If PyNaCl is not installed.
         """
         if not HAS_NACL:
-            return raw_tensor_bytes
+            raise RuntimeError(
+                "PyNaCl not installed — E2E encryption required. "
+                "Install with: pip install 'distllm[e2e]'"
+            )
 
         ct_with_nonce, salt = self.encrypt(raw_tensor_bytes)
         return struct.pack("!16s", salt) + ct_with_nonce
@@ -321,9 +338,21 @@ class E2EEncryption:
         """Decrypt a self-contained packet produced by ``encrypt_tensor_payload``.
 
         Returns the original plaintext tensor bytes.
+
+        Raises:
+            RuntimeError: If PyNaCl is not installed.
         """
-        if not HAS_NACL or len(encrypted_packet) < SALT_BYTES + NONCE_BYTES + TAG_BYTES:
-            return encrypted_packet
+        if not HAS_NACL:
+            raise RuntimeError(
+                "PyNaCl not installed — E2E decryption required. "
+                "Install with: pip install 'distllm[e2e]'"
+            )
+        if len(encrypted_packet) < SALT_BYTES + NONCE_BYTES + TAG_BYTES:
+            raise ValueError(
+                f"Encrypted packet too short ({len(encrypted_packet)} bytes) — "
+                f"expected at least {SALT_BYTES + NONCE_BYTES + TAG_BYTES}. "
+                "Refusing to return raw bytes (possible downgrade attack)."
+            )
 
         salt = encrypted_packet[:SALT_BYTES]
         ct_with_nonce = encrypted_packet[SALT_BYTES:]

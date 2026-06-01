@@ -5,7 +5,7 @@ import hmac
 import time
 import uuid
 import secrets
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -18,8 +18,11 @@ from distllm.core.api_key_store import get_api_key_store, role_satisfies
 class _RateLimiter:
     """Sliding window rate limiter: tracks failed attempts per IP.
 
-    Memory-bounded: evicts the oldest IP when the tracked IP count exceeds
-    ``max_ips``. Each IP stores up to ``max_attempts`` timestamps within a
+    Memory-bounded: evicts the LRU IP when the tracked IP count exceeds
+    ``max_ips``. Uses an OrderedDict for O(1) LRU eviction instead of
+    O(N) min-search.
+
+    Each IP stores up to ``max_attempts`` timestamps within a
     ``window_seconds`` sliding window.
     """
 
@@ -28,6 +31,7 @@ class _RateLimiter:
         self.window_seconds = window_seconds
         self.max_ips = max_ips
         self._attempts: dict[str, deque[float]] = defaultdict(deque)
+        self._access_order: OrderedDict[str, None] = OrderedDict()
 
     def _prune(self, ip: str) -> None:
         """Remove expired entries for *ip* and enforce the IP cap."""
@@ -41,12 +45,18 @@ class _RateLimiter:
         # Remove empty entries
         if not timestamps:
             del self._attempts[ip]
+            self._access_order.pop(ip, None)
             return
 
-        # Enforce IP cap: evict oldest IP when over limit
-        if len(self._attempts) > self.max_ips:
-            oldest_ip = min(self._attempts, key=lambda k: self._attempts[k][-1])
+        # Touch LRU order
+        self._access_order.pop(ip, None)
+        self._access_order[ip] = None
+
+        # Enforce IP cap: evict LRU IP when over limit (O(1) with OrderedDict)
+        while len(self._attempts) > self.max_ips:
+            oldest_ip, _ = next(iter(self._access_order.items()))
             del self._attempts[oldest_ip]
+            del self._access_order[oldest_ip]
 
     def is_rate_limited(self, ip: str) -> bool:
         """Return True if the IP has exceeded the rate limit."""
@@ -169,7 +179,16 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             return None
 
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        raw_id = request.headers.get("X-Request-ID")
+        if raw_id:
+            # Validate X-Request-ID format (UUID or alphanumeric, no control chars)
+            import re
+            if not re.match(r'^[a-zA-Z0-9\-]{1,64}$', raw_id):
+                request_id = str(uuid.uuid4())
+            else:
+                request_id = raw_id
+        else:
+            request_id = str(uuid.uuid4())
         request.state.request_id = request_id
         request.state.request_timeout = self._parse_timeout(
             request.headers.get("X-Request-Timeout")

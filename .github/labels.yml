@@ -1,0 +1,152 @@
+# Standard GitHub Labels
+#
+# Apply with: gh label create <name> --color <color> --description <desc>
+# Or use the GitHub UI: Settings → Labels
+#
+# These labels ensure consistent issue triage across the project.
+
+# ── Issue Type ──────────────────────────────────────────────────
+- name: "bug"
+  color: "d73a4a"
+  description: "Something isn't working"
+
+- name: "feature"
+  color: "a2eeef"
+  description: "New feature or enhancement"
+
+- name: "question"
+  color: "d876e3"
+  description: "Further information is requested"
+
+- name: "documentation"
+  color: "0075ca"
+  description: "Improvements or additions to documentation"
+
+- name: "security"
+  color: "e4e669"
+  description: "Security vulnerability or concern"
+
+- name: "performance"
+  color: "fbca04"
+  description: "Performance improvement or regression"
+
+- name: "refactor"
+  color: "ededed"
+  description: "Code refactoring without functional change"
+
+# ── Priority ────────────────────────────────────────────────────
+- name: "priority: critical"
+  color: "b60205"
+  description: "Must be fixed immediately — blocks production use"
+
+- name: "priority: high"
+  color: "d93f0b"
+  description: "Should be fixed in the next release"
+
+- name: "priority: medium"
+  color: "fbca04"
+  description: "Important but not urgent"
+
+- name: "priority: low"
+  color: "0e8a16"
+  description: "Nice to have, low impact"
+
+# ── Difficulty ──────────────────────────────────────────────────
+- name: "good first issue"
+  color: "7057ff"
+  description: "Good for newcomers to the project"
+
+- name: "help wanted"
+  color: "008672"
+  description: "Extra attention is needed from contributors"
+
+- name: "complex"
+  color: "e99695"
+  description: "Requires significant design or implementation effort"
+
+# ── Component ───────────────────────────────────────────────────
+- name: "component: api"
+  color: "1d76db"
+  description: "REST API layer (FastAPI, middleware, routes)"
+
+- name: "component: coordinator"
+  color: "5319e7"
+  description: "Coordinator node (scheduling, lifecycle, HA)"
+
+- name: "component: pipeline"
+  color: "006b75"
+  description: "Pipeline orchestrator (tensor transport, strategy)"
+
+- name: "component: backends"
+  color: "c2e0c6"
+  description: "Inference backends (PyTorch, vLLM, llama.cpp)"
+
+- name: "component: cache"
+  color: "bfdadc"
+  description: "KV cache, prefix cache, semantic cache"
+
+- name: "component: security"
+  color: "e4e669"
+  description: "TLS, auth, encryption, SSRF protection"
+
+- name: "component: observability"
+  color: "d4c5f9"
+  description: "Logging, metrics, tracing, dashboards"
+
+- name: "component: cli"
+  color: "c5def5"
+  description: "CLI commands and interactive tools"
+
+- name: "component: sdk"
+  color: "fbca04"
+  description: "Python SDK client"
+
+- name: "component: kubernetes"
+  color: "326ce5"
+  description: "Helm chart, operator, K8s deployment"
+
+- name: "component: docker"
+  color: "2496ed"
+  description: "Docker images, Compose files"
+
+- name: "component: tauri"
+  color: "ffc300"
+  description: "Desktop app (Tauri + Svelte)"
+
+# ── Status ──────────────────────────────────────────────────────
+- name: "status: needs triage"
+  color: "ededed"
+  description: "Needs initial review and categorization"
+
+- name: "status: in progress"
+  color: "0e8a16"
+  description: "Actively being worked on"
+
+- name: "status: blocked"
+  color: "b60205"
+  description: "Blocked by another issue or dependency"
+
+- name: "status: needs review"
+  color: "1d76db"
+  description: "Ready for code review"
+
+- name: "status: stale"
+  color: "ffffff"
+  description: "No activity for 30+ days — will be closed soon"
+
+# ── Special ─────────────────────────────────────────────────────
+- name: "breaking change"
+  color: "b60205"
+  description: "Introduces a breaking API or config change"
+
+- name: "model request"
+  color: "7057ff"
+  description: "Request for new model architecture support"
+
+- name: "integration"
+  color: "006b75"
+  description: "Integration with external frameworks (LangChain, etc.)"
+
+- name: "benchmark"
+  color: "fbca04"
+  description: "Benchmarking, performance testing, regression"

@@ -3,11 +3,20 @@
 Each node trains on its private data.  Only gradient updates (not raw data
 or model weights) are exchanged over the P2P gossip protocol.
 
+Supported algorithms:
+- **FedAvg**: Standard federated averaging (McMahan et al. 2017)
+- **FedProx**: Proximal term regularization for heterogeneous data (Li et al. 2020)
+
 Architecture::
 
     Node A (data_a) ── LoRA grads ──┐
     Node B (data_b) ── LoRA grads ──┼── P2P All-Reduce ──▸ Unified LoRA weights
     Node C (data_c) ── LoRA grads ──┘
+
+Privacy:
+- Gradient clipping bounds sensitivity
+- Gaussian noise addition for differential privacy
+- Secure aggregation via additive secret sharing (see federated_merge.py)
 """
 
 from __future__ import annotations
@@ -52,6 +61,13 @@ class FederatedFineTuner:
         local_steps: int = 100,
         num_rounds: int = 10,
         learning_rate: float = 1e-4,
+        dp_epsilon: float = 1.0,
+        dp_delta: float = 1e-5,
+        dp_max_grad_norm: float = 1.0,
+        dp_noise_multiplier: float = 0.0,
+        algorithm: str = "fedavg",
+        fedprox_mu: float = 0.0,
+        global_model_params: list[torch.Tensor] | None = None,
     ):
         self._node_id = node_id
         self._lora_adapter = lora_adapter
@@ -67,11 +83,56 @@ class FederatedFineTuner:
         self._peers: set[str] = set()
         self._received_grads: dict[str, list[torch.Tensor]] = {}
 
+        # Algorithm selection
+        self._algorithm = algorithm.lower()
+        self._fedprox_mu = fedprox_mu  # FedProx proximal term coefficient
+        self._global_model_params = global_model_params  # Global model for FedProx
+
+        # Differential privacy settings
+        self._dp_epsilon = dp_epsilon
+        self._dp_delta = dp_delta
+        self._dp_max_grad_norm = dp_max_grad_norm
+        self._dp_noise_multiplier = dp_noise_multiplier
+
         self._stats = {
             "rounds_completed": 0,
             "total_local_steps": 0,
             "peers_contacted": 0,
+            "dp_clips": 0,
+            "dp_noise_added": False,
+            "algorithm": self._algorithm,
+            "fedprox_proximal_terms": 0,
         }
+
+    def _clip_gradients(self, grads: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Clip gradients to max_grad_norm for differential privacy.
+
+        Computes the total gradient norm across all parameters and clips
+        if it exceeds max_grad_norm. This bounds sensitivity for noise addition.
+        """
+        total_norm = torch.sqrt(sum(g.norm() ** 2 for g in grads))
+        if total_norm > self._dp_max_grad_norm:
+            clip_factor = self._dp_max_grad_norm / total_norm
+            self._stats["dp_clips"] += 1
+            return [g * clip_factor for g in grads]
+        return grads
+
+    def _add_dp_noise(self, grads: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Add calibrated Gaussian noise for differential privacy.
+
+        Noise scale: sigma = max_grad_norm * noise_multiplier
+        where noise_multiplier = sqrt(2 * ln(1.25/delta)) / epsilon
+        """
+        if self._dp_noise_multiplier > 0:
+            sigma = self._dp_max_grad_norm * self._dp_noise_multiplier
+        else:
+            import math
+            sigma = self._dp_max_grad_norm * math.sqrt(
+                2 * math.log(1.25 / self._dp_delta)
+            ) / self._dp_epsilon
+
+        self._stats["dp_noise_added"] = True
+        return [g + torch.randn_like(g) * sigma for g in grads]
 
     def add_peer(self, peer_id: str) -> None:
         self._peers.add(peer_id)
@@ -96,6 +157,11 @@ class FederatedFineTuner:
         # Step 1: Local training
         local_grads = local_train_fn(self._local_steps)
         self._stats["total_local_steps"] += self._local_steps
+
+        # Step 1.5: Apply differential privacy (clip + noise)
+        if self._dp_epsilon < float("inf"):
+            local_grads = self._clip_gradients(local_grads)
+            local_grads = self._add_dp_noise(local_grads)
 
         # Step 2: Broadcast gradients to peers
         if self._broadcast is not None:
@@ -135,7 +201,12 @@ class FederatedFineTuner:
         }
 
     def _average_gradients(self, local_grads: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Average local gradients with all received peer gradients."""
+        """Average local gradients with all received peer gradients.
+
+        Uses the configured algorithm:
+        - FedAvg: Simple weighted average
+        - FedProx: Average with proximal term regularization
+        """
         all_grads = [local_grads]
         for peer_id, peer_grads in self._received_grads.items():
             if len(peer_grads) == len(local_grads):
@@ -145,12 +216,55 @@ class FederatedFineTuner:
         if num_sources <= 1:
             return local_grads
 
+        # FedProx: add proximal term to gradients
+        if self._algorithm == "fedprox" and self._global_model_params is not None:
+            local_grads = self._apply_fedprox_term(local_grads)
+            all_grads[0] = local_grads
+
+        # Weighted average (FedAvg or FedProx)
         averaged = []
         for i in range(len(local_grads)):
             grad_sum = sum(g[i] for g in all_grads)
             averaged.append(grad_sum / num_sources)
 
         return averaged
+
+    def _apply_fedprox_term(self, grads: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Apply FedProx proximal term to gradients.
+
+        FedProx adds a regularization term: mu * (w - w_global)
+        This penalizes local model for drifting too far from the global model,
+        which helps with heterogeneous data distributions.
+
+        Args:
+            grads: Local gradients.
+
+        Returns:
+            Gradients with proximal term added.
+        """
+        if self._global_model_params is None or self._fedprox_mu <= 0:
+            return grads
+
+        proximal_grads = []
+        for i, grad in enumerate(grads):
+            if i < len(self._global_model_params):
+                global_param = self._global_model_params[i]
+                # Proximal term: mu * (w_local - w_global)
+                # This is added to the gradient to penalize divergence
+                proximal = self._fedprox_mu * (grad - global_param.detach())
+                proximal_grads.append(grad + proximal)
+                self._stats["fedprox_proximal_terms"] += 1
+            else:
+                proximal_grads.append(grad)
+
+        return proximal_grads
+
+    def set_global_model(self, params: list[torch.Tensor]) -> None:
+        """Update the global model parameters for FedProx.
+
+        Called after each round with the aggregated global model.
+        """
+        self._global_model_params = [p.detach().clone() for p in params]
 
     def run(self, local_train_fn: Callable[[int], list[torch.Tensor]]) -> dict[str, Any]:
         """Run the full federated training loop.

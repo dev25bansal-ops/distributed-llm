@@ -80,6 +80,13 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                # Graceful drain: signal coordinator to stop accepting new
+                # requests and wait for in-flight requests to complete
+                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep 15"]
+      terminationGracePeriodSeconds: 60
       tolerations:
         - key: "nvidia.com/gpu"
           operator: "Exists"

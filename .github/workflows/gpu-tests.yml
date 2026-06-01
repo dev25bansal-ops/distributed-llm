@@ -1,0 +1,208 @@
+# GPU CI Pipeline
+#
+# Runs tests that require real GPU hardware. These tests verify:
+# - Actual CUDA inference (not mocked)
+# - PagedAttention with real GPU memory
+# - Multi-GPU communication (NCCL)
+# - Memory leak detection under GPU load
+# - FP16/BF16 numerical stability
+#
+# Requires: Self-hosted runner with NVIDIA GPU and CUDA toolkit
+# Configure: Add self-hosted runner label "gpu" in repository settings
+
+name: GPU Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/distllm/**"
+      - "tests/**gpu**"
+      - "tests/**/test_paged**"
+      - "tests/**/test_kv_cache**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/distllm/**"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to test with"
+        default: "roneneldan/TinyStories-1M"
+        required: false
+      duration:
+        description: "Soak test duration (seconds)"
+        default: "300"
+        required: false
+
+env:
+  MODEL_NAME: ${{ github.event.inputs.model || 'roneneldan/TinyStories-1M' }}
+  SOAK_DURATION: ${{ github.event.inputs.duration || '300' }}
+
+jobs:
+  # ── GPU Unit Tests ──────────────────────────────────────────────
+  gpu-unit-tests:
+    name: GPU Unit Tests
+    runs-on: [self-hosted, gpu, linux]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[self-hosted,dev,testing]"
+
+      - name: Verify GPU availability
+        run: |
+          python -c "
+          import torch
+          assert torch.cuda.is_available(), 'CUDA not available'
+          print(f'GPU: {torch.cuda.get_device_name(0)}')
+          print(f'Memory: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')
+          print(f'CUDA: {torch.version.cuda}')
+          "
+
+      - name: Run GPU-marked tests
+        run: |
+          pytest tests/ -m "gpu" -v --timeout=120 \
+            --junitxml=results/gpu-unit.xml \
+            --tb=short
+        env:
+          NVIDIA_VISIBLE_DEVICES: all
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-unit-test-results
+          path: results/gpu-unit.xml
+
+  # ── GPU Integration Tests (Real Model) ─────────────────────────
+  gpu-integration:
+    name: GPU Integration (Real Model)
+    runs-on: [self-hosted, gpu, linux]
+    timeout-minutes: 45
+    needs: gpu-unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[self-hosted,dev,testing]"
+
+      - name: Run real model inference test
+        run: |
+          python tests/test_distributed.py \
+            --model ${{ env.MODEL_NAME }} \
+            --compare \
+            --dtype float16
+        timeout-minutes: 15
+
+      - name: Run pipeline correctness tests
+        run: |
+          pytest tests/correctness/ -v --timeout=120 \
+            --junitxml=results/gpu-correctness.xml \
+            -k "not test_tensor_to_bytes"
+        env:
+          DISTLLM_TEST_MODEL: ${{ env.MODEL_NAME }}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-integration-results
+          path: results/
+
+  # ── GPU Memory Leak Detection ──────────────────────────────────
+  gpu-memory-leak:
+    name: GPU Memory Leak Detection
+    runs-on: [self-hosted, gpu, linux]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[self-hosted,dev,testing]"
+
+      - name: Run memory profiling
+        run: |
+          pytest tests/profiling/ -v --timeout=300 \
+            --memory-profile \
+            --junitxml=results/gpu-memory.xml \
+            -p no:asyncio
+        env:
+          DISTLLM_TEST_MODEL: ${{ env.MODEL_NAME }}
+          PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+      - name: Check for memory leaks
+        run: |
+          python -c "
+          import torch
+          if torch.cuda.is_available():
+              allocated = torch.cuda.memory_allocated() / 1e9
+              reserved = torch.cuda.memory_reserved() / 1e9
+              print(f'Final GPU memory: allocated={allocated:.2f}GB, reserved={reserved:.2f}GB')
+              if allocated > 1.0:
+                  print('WARNING: High GPU memory after tests - possible leak')
+                  exit(1)
+          "
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-memory-results
+          path: results/
+
+  # ── GPU Soak Test ──────────────────────────────────────────────
+  gpu-soak:
+    name: GPU Soak Test (${{ github.event.inputs.duration || '300' }}s)
+    runs-on: [self-hosted, gpu, linux]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[self-hosted,dev,testing]"
+
+      - name: Run soak test
+        run: |
+          pytest tests/stability/test_soak.py -v --timeout=3600 \
+            --junitxml=results/gpu-soak.xml \
+            -p no:asyncio
+        env:
+          DISTLLM_SOAK_DURATION: ${{ env.SOAK_DURATION }}
+          DISTLLM_TEST_MODEL: ${{ env.MODEL_NAME }}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-soak-results
+          path: results/

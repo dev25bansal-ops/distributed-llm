@@ -1,0 +1,104 @@
+# DistLLM Prometheus Alert Rules
+#
+# Deploy with:
+#   kubectl apply -f deploy/monitoring/prometheus/alert-rules.yaml
+#
+# Or mount as ConfigMap in Prometheus:
+#   volumes:
+#     - ./deploy/monitoring/prometheus/alert-rules.yml:/etc/prometheus/rules/distllm.yml
+
+groups:
+  - name: distllm-alerts
+    rules:
+      # ── Availability ──────────────────────────────────────────────
+      - alert: DistLLMNodeDown
+        expr: distllm_node_health == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DistLLM node {{ $labels.node_id }} is down"
+          description: "Node {{ $labels.node_id }} has been unhealthy for more than 1 minute."
+
+      - alert: DistLLMHighErrorRate
+        expr: rate(distllm_errors_total[5m]) / rate(distllm_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DistLLM error rate above 5%"
+          description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes."
+
+      # ── Latency ───────────────────────────────────────────────────
+      - alert: DistLLMHighLatency
+        expr: histogram_quantile(0.95, rate(distllm_request_latency_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DistLLM P95 latency above 10s"
+          description: "P95 latency is {{ $value }}s for the last 5 minutes."
+
+      - alert: DistLLMHighTTFT
+        expr: histogram_quantile(0.95, rate(distllm_token_generation_latency_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DistLLM token latency above 2s"
+          description: "P95 token generation latency is {{ $value }}s."
+
+      # ── Resource Usage ────────────────────────────────────────────
+      - alert: DistLLMHighGPUUsage
+        expr: distllm_node_gpu_utilization_percent > 95
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU utilization above 95% on {{ $labels.node_id }}"
+          description: "GPU {{ $labels.node_id }} has been at {{ $value }}% for 10 minutes."
+
+      - alert: DistLLMLowGPUMemory
+        expr: distllm_kv_cache_usage_ratio > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "KV cache memory usage above 90%"
+          description: "KV cache is {{ $value | humanizePercentage }} full on {{ $labels.node_id }}."
+
+      # ── Queue Health ──────────────────────────────────────────────
+      - alert: DistLLMQueueBacklog
+        expr: distllm_coordinator_queue_depth > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Request queue backlog above 100"
+          description: "Queue depth is {{ $value }} for more than 2 minutes."
+
+      - alert: DistLLMCircuitBreakerOpen
+        expr: distllm_circuit_breaker_state == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.target_node }}"
+          description: "Circuit breaker is open — requests to {{ $labels.target_node }} are being rejected."
+
+      # ── Recovery ──────────────────────────────────────────────────
+      - alert: DistLLMNodeRecovery
+        expr: increase(distllm_recovery_total[1h]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "Node recovery triggered"
+          description: "{{ $value }} node recovery events in the last hour."
+
+      - alert: DistLLMSequenceLoss
+        expr: increase(distllm_recovery_sequences_lost_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "In-flight sequences lost during recovery"
+          description: "{{ $value }} sequences lost in the last hour."

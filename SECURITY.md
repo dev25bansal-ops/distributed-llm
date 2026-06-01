@@ -35,11 +35,49 @@ We prefer all communications to be in English.
 
 When we receive a security bug report, we will:
 
-1. Confirm receipt and analyze the report
-2. Work on a fix and prepare a release
-3. Notify the reporter when the fix is released
+1. **Acknowledge** receipt within 48 hours
+2. **Triage** the vulnerability within 5 business days (confirm, assess severity)
+3. **Develop** a fix (timeline depends on severity):
+   - Critical: 7 days
+   - High: 14 days
+   - Medium: 30 days
+   - Low: 60 days
+4. **Release** the fix and notify the reporter
+5. **Credit** the reporter in the security advisory (unless they prefer anonymity)
 
 We will coordinate with the reporter throughout this process and will not disclose the vulnerability publicly until a fix has been released.
+
+## Bug Bounty
+
+We currently do not offer a formal bug bounty program, but we deeply appreciate security researchers who responsibly disclose vulnerabilities. We will:
+
+- Credit you in the security advisory
+- Mention you in the release notes
+- Send you DistLLM swag (stickers, t-shirt)
+
+## Security Hall of Fame
+
+We maintain a hall of fame for security researchers who have helped improve DistLLM's security. If you report a valid vulnerability, you'll be added to this list (with your permission).
+
+## Scope
+
+The following are in scope for security reports:
+
+- Authentication/authorization bypasses
+- Remote code execution
+- SQL injection, command injection, SSRF
+- Cross-site scripting (XSS)
+- Information disclosure (API keys, internal paths)
+- Denial of service (resource exhaustion)
+- Cryptographic weaknesses
+- Supply chain vulnerabilities
+
+The following are out of scope:
+
+- Social engineering
+- Physical attacks
+- Denial of service via volumetric attacks
+- Issues in third-party dependencies (report to them directly)
 
 ## Comments on this Policy
 

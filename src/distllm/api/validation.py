@@ -14,6 +14,10 @@ ALLOWED_ADAPTER_BASES = [
 def validate_adapter_path(raw_path: str) -> Path:
     """Validate and resolve an adapter path, preventing path traversal.
 
+    Resolves symlinks via os.path.realpath() before validation to prevent
+    symlink-based directory traversal attacks.  Re-validates the resolved
+    path against allowed base directories.
+
     Args:
         raw_path: User-supplied path string.
 
@@ -27,17 +31,18 @@ def validate_adapter_path(raw_path: str) -> Path:
     if not raw_path or not raw_path.strip():
         raise ValueError("Adapter path cannot be empty")
 
-    # Normalize using pathlib (handles ../, ..\, double slashes, etc.)
-    resolved = Path(raw_path).resolve()
-
-    # Check for traversal after resolution
+    # Check for traversal in the raw input before any resolution
     if ".." in Path(raw_path).parts:
         raise ValueError("Adapter path cannot contain parent directory traversal (..)")
 
-    # For absolute paths, verify they are within allowed base directories
+    # Resolve symlinks and relative paths to get the real filesystem path
+    # This prevents symlink-based traversal where a symlink points outside allowed dirs
+    resolved = Path(os.path.realpath(raw_path))
+
+    # For absolute paths, verify the *real* resolved path is within allowed base directories
     if resolved.is_absolute():
         for base in ALLOWED_ADAPTER_BASES:
-            resolved_base = base.resolve()
+            resolved_base = Path(os.path.realpath(base))
             try:
                 resolved.relative_to(resolved_base)
                 return resolved

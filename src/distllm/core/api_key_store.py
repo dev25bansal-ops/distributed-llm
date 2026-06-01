@@ -18,9 +18,11 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -31,10 +33,20 @@ from loguru import logger
 
 # ── Roles ───────────────────────────────────────────────────────────────────
 
-VALID_ROLES = frozenset({"admin", "read-only", "inference-only"})
+VALID_ROLES = frozenset({
+    "admin",           # Full access to all operations
+    "model-admin",     # Manage models (load, unload, configure) but not cluster
+    "user-admin",      # Manage users/API keys but not models or cluster
+    "inference-only",  # Run inference (chat, completions, embeddings) only
+    "read-only",       # Read-only access (health, metrics, list models)
+    "auditor",         # Read-only + access to audit logs and security events
+})
 
 ROLE_HIERARCHY: dict[str, int] = {
-    "admin": 3,
+    "admin": 6,
+    "user-admin": 5,
+    "model-admin": 4,
+    "auditor": 3,
     "inference-only": 2,
     "read-only": 1,
 }
@@ -43,15 +55,35 @@ ROLE_HIERARCHY: dict[str, int] = {
 def role_satisfies(actual: str, required: str) -> bool:
     """Check if *actual* role satisfies *required* role.
 
-    Admin satisfies everything. Read-only only satisfies read-only.
-    Inference-only satisfies inference-only and read-only.
+    Role hierarchy (highest to lowest):
+    - admin: satisfies everything
+    - user-admin: satisfies user management + read-only
+    - model-admin: satisfies model management + inference + read-only
+    - auditor: satisfies read-only + audit access
+    - inference-only: satisfies inference + read-only
+    - read-only: satisfies read-only only
     """
     if actual == required:
         return True
     if actual == "admin":
         return True
+
+    # user-admin can manage users and read
+    if actual == "user-admin" and required in ("read-only",):
+        return True
+
+    # model-admin can do inference and read
+    if actual == "model-admin" and required in ("inference-only", "read-only"):
+        return True
+
+    # auditor can read
+    if actual == "auditor" and required in ("read-only",):
+        return True
+
+    # inference-only can read
     if actual == "inference-only" and required == "read-only":
         return True
+
     return False
 
 
@@ -89,8 +121,9 @@ class ApiKeyStore:
         Returns ``(key_id, role)`` on success, ``None`` on failure.
         Uses constant-time comparison to prevent timing attacks.
         """
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         for k in self._keys:
-            if compare_digest(token, k.key):
+            if compare_digest(token_hash, k.key):
                 return (k.key_id, k.role)
         return None
 
@@ -155,7 +188,7 @@ class ApiKeyStore:
         legacy_key = os.environ.get("API_KEY")
         if legacy_key:
             self._keys.append(StoredKey(
-                key=legacy_key,
+                key=hashlib.sha256(legacy_key.encode()).hexdigest(),
                 role="admin",
                 label="legacy-api-key",
                 key_id="legacy",
@@ -167,7 +200,7 @@ class ApiKeyStore:
         # 4. Auto-generate an admin key (legacy behavior)
         generated = secrets.token_urlsafe(48)
         self._keys.append(StoredKey(
-            key=generated,
+            key=hashlib.sha256(generated.encode()).hexdigest(),
             role="admin",
             label="auto-generated",
             key_id="auto",
@@ -196,7 +229,7 @@ class ApiKeyStore:
                 role = "admin"
 
             self._keys.append(StoredKey(
-                key=key_str,
+                key=hashlib.sha256(key_str.encode()).hexdigest(),
                 role=role,
                 label=label or key_id,
                 key_id=key_id,
@@ -207,13 +240,16 @@ class ApiKeyStore:
 # ── Module-level singleton ──────────────────────────────────────────────────
 
 _store: ApiKeyStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_api_key_store() -> ApiKeyStore:
     """Get or create the singleton API key store."""
     global _store
     if _store is None:
-        _store = ApiKeyStore()
+        with _store_lock:
+            if _store is None:
+                _store = ApiKeyStore()
     return _store
 
 

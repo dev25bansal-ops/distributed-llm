@@ -1,5 +1,11 @@
 """ExLlamaV2 backend adapter for fast GPTQ inference.
 
+.. warning::
+    **EXPERIMENTAL**: This backend is under active development and not yet
+    production-ready.  API surface, configuration options, and behavior
+    may change without notice.  Use at your own risk in non-production
+    environments.
+
 ExLlamaV2 is a heavily optimized GPTQ inference engine that provides
 significant speedups over HuggingFace Transformers for quantized 4-bit
 models on NVIDIA GPUs.
@@ -7,6 +13,7 @@ models on NVIDIA GPUs.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import torch
@@ -14,6 +21,11 @@ from loguru import logger
 
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
+
+_EXPERIMENTAL_WARNING = (
+    "ExLlamaV2 backend is EXPERIMENTAL and not yet production-ready. "
+    "API surface and behavior may change without notice."
+)
 
 try:
     from exllamav2 import ExLlamaV2Config, ExLlamaV2Tokenizer
@@ -78,6 +90,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
                 "exllamav2 not installed. Install with: "
                 "pip install exllamav2",
             )
+        warnings.warn(_EXPERIMENTAL_WARNING, UserWarning, stacklevel=2)
         from exllamav2 import ExLlamaV2Config, ExLlamaV2, ExLlamaV2Tokenizer
 
         logger.info(f"[ExLlamaV2] Loading model: {self.model_name}")
@@ -109,7 +122,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         input_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         if self._model is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+            raise ModelLoadError("exllamav2", "Model not loaded. Call load_model() first.")
 
         if input_ids is not None:
             return self._forward_input_ids(input_ids)
@@ -179,7 +192,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         **kwargs: Any,
     ) -> str:
         if self._model is None or self._tokenizer is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+            raise ModelLoadError("exllamav2", "Model not loaded. Call load_model() first.")
         from exllamav2.generator import (
             ExLlamaV2BaseGenerator,
             ExLlamaV2Sampler,

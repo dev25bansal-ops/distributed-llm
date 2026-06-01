@@ -26,6 +26,13 @@ MUTATION_OPERATORS = [
     "remove_break",
     "replace_dict_get",
     "replace_augmented_assign",
+    # New operators for better coverage
+    "remove_logging",
+    "return_none",
+    "replace_int_constant",
+    "remove_decorator",
+    "swap_arguments",
+    "replace_string_empty",
 ]
 
 
@@ -178,6 +185,65 @@ def find_mutation_points(source: str) -> list[MutationPoint]:
                     "replace_dict_get", desc,
                     ast.Call, node.lineno, node.col_offset,
                     lambda n: ast.Subscript(value=n.func.value, slice=n.args[0], ctx=ast.Load())))
+
+        # remove_logging — remove logger.xxx() and print() calls
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in ("debug", "info", "warning", "error", "critical"):
+                desc = f"Remove logging call .{node.func.attr}() at line {node.lineno}"
+                points.append(MutationPoint(
+                    "remove_logging", desc,
+                    ast.Call, node.lineno, node.col_offset,
+                    lambda n: ast.Constant(value=None)))
+
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
+            desc = f"Remove print() at line {node.lineno}"
+            points.append(MutationPoint(
+                "remove_logging", desc,
+                ast.Call, node.lineno, node.col_offset,
+                lambda n: ast.Constant(value=None)))
+
+        # return_none — replace return X with return None
+        if isinstance(node, ast.Return) and node.value is not None:
+            desc = f"Replace return value with None at line {node.lineno}"
+            points.append(MutationPoint(
+                "return_none", desc,
+                ast.Return, node.lineno, node.col_offset,
+                lambda n: ast.Return(value=ast.Constant(value=None))))
+
+        # replace_int_constant — replace integer N with N+1, N-1, 0
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) and node.value not in (0, 1, -1, True, False):
+            for replacement, label in [(node.value + 1, "+1"), (node.value - 1, "-1"), (0, "0")]:
+                desc = f"Replace int {node.value} with {replacement} ({label}) at line {node.lineno}"
+                points.append(MutationPoint(
+                    "replace_int_constant", desc,
+                    ast.Constant, node.lineno, node.col_offset,
+                    lambda n, r=replacement: ast.Constant(value=r)))
+
+        # remove_decorator — remove @decorator
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
+            for dec in node.decorator_list:
+                dec_name = ast.dump(dec)[:40]
+                desc = f"Remove decorator @{dec_name} at line {dec.lineno}"
+                points.append(MutationPoint(
+                    "remove_decorator", desc,
+                    type(dec), dec.lineno, dec.col_offset,
+                    lambda n: ast.Constant(value=None)))
+
+        # swap_arguments — swap first two arguments of a function call
+        if isinstance(node, ast.Call) and len(node.args) >= 2:
+            desc = f"Swap first 2 arguments at line {node.lineno}"
+            points.append(MutationPoint(
+                "swap_arguments", desc,
+                ast.Call, node.lineno, node.col_offset,
+                lambda n: ast.Call(func=n.func, args=[n.args[1], n.args[0]] + n.args[2:], keywords=n.keywords)))
+
+        # replace_string_empty — replace string literal with empty string
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value != "":
+            desc = f"Replace string '{node.value[:20]}...' with '' at line {node.lineno}"
+            points.append(MutationPoint(
+                "replace_string_empty", desc,
+                ast.Constant, node.lineno, node.col_offset,
+                lambda n: ast.Constant(value="")))
 
     # Deduplicate by description
     seen = set()

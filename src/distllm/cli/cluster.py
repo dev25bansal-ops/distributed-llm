@@ -218,6 +218,7 @@ def _cluster_join(
     listen_port: int, device: str,
     cluster_key: str | None = None,
     discover: bool = False,
+    model: str | None = None,
 ):
     """Start a worker node and connect to an existing coordinator."""
     if node_id is None:
@@ -247,10 +248,41 @@ def _cluster_join(
     if start_layer is not None and end_layer is not None:
         console.print(f"  Layers: {start_layer}-{end_layer} of {total_layers or '?'}")
 
+    # Get model name from coordinator or use provided model
+    model_name = model or "unknown"
+    if model_name == "unknown":
+        try:
+            import httpx
+            # Try to get model from coordinator's health endpoint
+            resp = httpx.get(
+                f"http://{coordinator_host}:{coordinator_port + 1}/health",
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                model_name = data.get("model", "unknown")
+            if model_name == "unknown":
+                # Try to get from /v1/models
+                resp2 = httpx.get(f"http://{coordinator_host}:{coordinator_port + 1}/v1/models", timeout=5.0)
+                if resp2.status_code == 200:
+                    models = resp2.json().get("data", [])
+                    if models:
+                        model_name = models[0].get("id", "unknown")
+        except Exception:
+            pass
+
+    if model_name == "unknown":
+        console.print("[red]Error:[/red] Could not determine model name. Use --model option.")
+        return
+
+    # Get actual IP address of this machine before spawning worker
+    import socket
+    worker_host = socket.gethostbyname(socket.gethostname())
+
     args = [
         sys.executable, "-m", "distllm.dist.worker",
         "--node-id", node_id,
-        "--model", "connecting",
+        "--model", model_name,
         "--start-layer", str(start_layer or 0),
         "--end-layer", str(end_layer or 0),
         "--total-layers", str(total_layers or 1),
@@ -263,14 +295,65 @@ def _cluster_join(
     if cluster_key:
         env["DISTLLM_CLUSTER_KEY"] = cluster_key
     try:
-        proc = subprocess.Popen(args, env=env)
+        proc = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         console.print(f"[green]Worker started[/green] (PID: {proc.pid})")
         console.print(f"[dim]Connected to {coordinator_host}:{coordinator_port}[/dim]")
+
+        # Register with coordinator — wait for worker gRPC port to be ready
+        api_port = 8000
         try:
-            proc.wait()
+            import socket as _sock
+            import time
+            # Poll until the worker's gRPC port is open (model loading takes ~30s)
+            console.print("[dim]Waiting for worker to finish loading model...[/dim]")
+            for attempt in range(60):
+                s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                s.settimeout(2)
+                result = s.connect_ex((worker_host, listen_port))
+                s.close()
+                if result == 0:
+                    break
+                time.sleep(1)
+            else:
+                console.print("[yellow]Worker port not open after 60s, registering anyway...[/yellow]")
+
+            import httpx
+            reg_headers = {}
+            api_key = os.environ.get("API_KEY") or os.environ.get("DISTLLM_API_KEY")
+            if api_key:
+                reg_headers["Authorization"] = f"Bearer {api_key}"
+            resp = httpx.post(
+                f"http://{coordinator_host}:{api_port}/admin/v1/nodes/register",
+                json={
+                    "node_id": node_id,
+                    "host": worker_host,
+                    "port": listen_port,
+                    "start_layer": start_layer or 0,
+                    "end_layer": end_layer or 0,
+                    "total_layers": total_layers or 1,
+                    "device": device,
+                },
+                headers=reg_headers or None,
+                timeout=60.0,
+            )
+            if resp.status_code in (200, 201):
+                console.print(f"[green]Node registered with coordinator at {coordinator_host}:{api_port}[/green]")
+            elif resp.status_code == 401:
+                console.print("[yellow]Registration requires API key. Set API_KEY env var.[/yellow]")
+            elif resp.status_code == 409:
+                console.print("[green]Node already registered[/green]")
+            else:
+                console.print(f"[yellow]Registration: {resp.status_code} {resp.text[:100]}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Registration: {e}[/yellow]")
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                print(line, end='')
         except KeyboardInterrupt:
             proc.terminate()
             console.print(f"[yellow]Worker {node_id} stopped[/yellow]")
+        finally:
+            proc.stdout.close()
     except FileNotFoundError:
         console.print("[red]Error:[/red] distllm modules not found")
 

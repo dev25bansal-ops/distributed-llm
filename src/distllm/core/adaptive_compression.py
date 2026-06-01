@@ -11,8 +11,9 @@ from __future__ import annotations
 import os
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from loguru import logger
 
@@ -97,10 +98,12 @@ class SimpleCompressor:
         output_base: str = "",
         method: str = "int4",
         calibration_samples: int = 128,
+        trust_remote_code: bool = False,
     ):
         self._output_base = output_base
         self._method = method
         self._calibration_samples = calibration_samples
+        self._trust_remote_code = trust_remote_code
 
     def compress(
         self,
@@ -119,6 +122,7 @@ class SimpleCompressor:
             Path to the compressed model directory.
         """
         import gc
+
         import torch
 
         output_dir = os.path.join(self._output_base or "/tmp/distllm-compress",
@@ -142,12 +146,12 @@ class SimpleCompressor:
                     model_path,
                     torch_dtype=dtype,
                     device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True,
+                    trust_remote_code=self._trust_remote_code,
                 )
                 model.eval()
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_path,
-                    trust_remote_code=True,
+                    trust_remote_code=self._trust_remote_code,
                 )
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
@@ -159,8 +163,7 @@ class SimpleCompressor:
                 raise
         else:
             try:
-                from transformers import AutoModelForCausalLM, AutoTokenizer
-                from transformers import BitsAndBytesConfig
+                from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=(bits == 4),
                     load_in_8bit=(bits == 8),
@@ -172,12 +175,12 @@ class SimpleCompressor:
                     model_path,
                     quantization_config=bnb_config,
                     device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True,
+                    trust_remote_code=self._trust_remote_code,
                 )
                 model.eval()
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_path,
-                    trust_remote_code=True,
+                    trust_remote_code=self._trust_remote_code,
                 )
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
@@ -191,12 +194,12 @@ class SimpleCompressor:
                     model_path,
                     torch_dtype=dtype,
                     device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True,
+                    trust_remote_code=self._trust_remote_code,
                 )
                 model.eval()
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_path,
-                    trust_remote_code=True,
+                    trust_remote_code=self._trust_remote_code,
                 )
                 model.save_pretrained(output_dir)
                 tokenizer.save_pretrained(output_dir)
@@ -220,6 +223,7 @@ class AdaptiveCompressionConfig:
     compression_method: str = "int4"
     calibration_samples: int = 128
     output_dir: str = "/tmp/distllm-compress"
+    trust_remote_code: bool = False
 
 
 class AdaptiveCompressionManager:
@@ -246,6 +250,7 @@ class AdaptiveCompressionManager:
             output_base=self._config.output_dir,
             method=self._config.compression_method,
             calibration_samples=self._config.calibration_samples,
+            trust_remote_code=self._config.trust_remote_code,
         )
         self._on_compression_complete = on_compression_complete
 

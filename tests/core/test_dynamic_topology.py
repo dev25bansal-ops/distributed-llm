@@ -262,7 +262,7 @@ class TestDynamicClusterTopology:
 class TestPipelineOrchestratorIntegration:
     @pytest.fixture
     def orchestrator(self):
-        from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+        from distllm.dist.pipeline import PipelineOrchestrator
         from distllm.core.dynamic_topology import DynamicClusterTopology
         topo = DynamicClusterTopology(probe_on_join=False)
         return PipelineOrchestrator(total_layers=24, topology=topo)

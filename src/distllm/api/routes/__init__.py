@@ -16,6 +16,7 @@ from .leaderboard import router as leaderboard_router
 from .scheduler import router as scheduler_router
 from .router_admin import router as router_admin_router
 from .defrag import router as defrag_router
+from .batch import router as batch_router
 __all__ = [
     "chat_router",
     "chat_v2_router",
@@ -33,4 +34,5 @@ __all__ = [
     "scheduler_router",
     "router_admin_router",
     "defrag_router",
+    "batch_router",
 ]

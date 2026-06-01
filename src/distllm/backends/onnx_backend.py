@@ -121,7 +121,7 @@ class ONNXNodeAdapter(BackendAdapter):
         input_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         if self._session is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+            raise ModelLoadError("onnx", "Model not loaded. Call load_model() first.")
 
         ort_inputs = {}
         if input_ids is not None:
@@ -156,7 +156,7 @@ class ONNXNodeAdapter(BackendAdapter):
         **kwargs: Any,
     ) -> str:
         if self._session is None:
-            raise RuntimeError("Model not loaded.")
+            raise ModelLoadError("onnx", "Model not loaded.")
 
         inputs = self._tokenize(prompt)
         output_ids = []

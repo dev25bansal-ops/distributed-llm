@@ -1,0 +1,243 @@
+# Docker Compose Pro — Production-grade DistLLM with full observability
+#
+# Usage:
+#   docker compose -f docker-compose.pro.yml up -d
+#   docker compose -f docker-compose.pro.yml --profile monitoring up -d
+#   docker compose -f docker-compose.pro.yml --profile ssl up -d
+#
+# Services:
+#   - coordinator: DistLLM coordinator (gRPC + REST API)
+#   - worker: GPU worker nodes (scalable)
+#   - prometheus: Metrics collection
+#   - grafana: Dashboards (auto-provisioned)
+#   - loki: Log aggregation
+#   - tempo: Distributed tracing
+#   - nginx: Reverse proxy with TLS termination
+#   - redis: Distributed rate limiting + prompt cache
+#
+# Prerequisites:
+#   - NVIDIA Container Toolkit (for GPU workers)
+#   - Docker Compose v2.x+
+#   - Set GRAFANA_ADMIN_PASSWORD env var
+
+services:
+  # ── DistLLM Coordinator ────────────────────────────────────────
+  coordinator:
+    image: distributed-llm:${DISTLLM_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: distllm-coordinator
+    command: >
+      distllm system coordinator
+        --host 0.0.0.0
+        --port 50050
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --total-layers ${TOTAL_LAYERS:-32}
+    ports:
+      - "${COORDINATOR_GRPC_PORT:-50050}:50050"
+      - "${COORDINATOR_API_PORT:-8000}:8000"
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - ./config.yaml:/app/config.yaml:ro
+      - ./certs:/app/certs:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DISTLLM_LOG_FORMAT=json
+      - DISTLLM_REDIS_URL=redis://redis:6379/0
+      - DISTLLM_OTEL_ENDPOINT=http://tempo:4317
+      - DISTLLM_AUDIT_LOG=/var/log/distllm/audit.jsonl
+      - DISTLLM_QUOTA_ENABLED=${QUOTA_ENABLED:-0}
+      - DISTLLM_TLS_ENABLED=${TLS_ENABLED:-0}
+    env_file: .env
+    networks:
+      - distllm-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=8000"
+      - "prometheus.io/path=/metrics"
+
+  # ── GPU Workers (scalable) ─────────────────────────────────────
+  worker:
+    image: distributed-llm:${DISTLLM_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      distllm-node
+        --coordinator coordinator:50050
+        --port 50051
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --device cuda
+        --dtype ${DTYPE:-float16}
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - ./certs:/app/certs:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DISTLLM_LOG_FORMAT=json
+      - DISTLLM_CLUSTER_KEY=${CLUSTER_KEY:-}
+    env_file: .env
+    networks:
+      - distllm-net
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+      replicas: ${WORKER_REPLICAS:-2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Redis (rate limiting + prompt cache) ───────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: distllm-redis
+    # Redis is only accessible within the Docker network (no host port binding)
+    # Use DISTLLM_REDIS_URL=redis://redis:6379/0 from other services
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - distllm-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-}
+
+  # ── Prometheus ─────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: distllm-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - distllm-net
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # ── Grafana (auto-provisioned dashboards) ─────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: distllm-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./deploy/grafana:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD env var}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    networks:
+      - distllm-net
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+  # ── Loki (log aggregation) ────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.6
+    container_name: distllm-loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./deploy/logging/loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    networks:
+      - distllm-net
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # ── Tempo (distributed tracing) ───────────────────────────────
+  tempo:
+    image: grafana/tempo:2.4.1
+    container_name: distllm-tempo
+    ports:
+      - "${TEMPO_PORT:-3200}:3200"
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+    volumes:
+      - tempo-data:/var/tempo
+    networks:
+      - distllm-net
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    profiles:
+      - monitoring
+
+  # ── Nginx reverse proxy (optional TLS) ────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: distllm-nginx
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - distllm-net
+    restart: unless-stopped
+    depends_on:
+      - coordinator
+    profiles:
+      - ssl
+
+volumes:
+  model-cache:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  tempo-data:
+
+networks:
+  distllm-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

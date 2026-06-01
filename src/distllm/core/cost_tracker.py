@@ -17,6 +17,7 @@ Features:
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -547,13 +548,16 @@ def _match_cloud_api(model_name: str) -> str:
 # ── Module-level singleton ──────────────────────────────────────────────────
 
 _tracker: CostTracker | None = None
+_tracker_lock = threading.Lock()
 
 
 def get_cost_tracker() -> CostTracker:
     """Get or create the module-level CostTracker singleton."""
     global _tracker
     if _tracker is None:
-        _tracker = CostTracker()
+        with _tracker_lock:
+            if _tracker is None:
+                _tracker = CostTracker()
     return _tracker
 
 

@@ -39,18 +39,23 @@ def _get_client_id(request: Any) -> str:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
+import threading
+
 import torch
 
 from .api_state import g
 from distllm.core.token_generator import TokenGenerator
 
 _token_gen: TokenGenerator | None = None
+_token_gen_lock = threading.Lock()
 
 
 def _get_token_gen() -> TokenGenerator:
     global _token_gen
     if _token_gen is None:
-        _token_gen = TokenGenerator()
+        with _token_gen_lock:
+            if _token_gen is None:
+                _token_gen = TokenGenerator()
     return _token_gen
 
 

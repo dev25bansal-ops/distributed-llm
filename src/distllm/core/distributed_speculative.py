@@ -226,15 +226,49 @@ class RemoteDraftModel:
                 timeout=self._config.timeout_seconds,
                 headers=self._build_headers(),
                 verify=self._config.verify_ssl,
+                limits=httpx.Limits(
+                    max_connections=10,
+                    max_keepalive_connections=5,
+                    keepalive_expiry=30.0,
+                ),
             )
         return self._client
 
     def _get_grpc_stub(self) -> Any:
         if self._grpc_stub is None:
             import grpc
+
             from distllm.proto import node_pb2_grpc  # noqa: I001
 
-            channel = grpc.insecure_channel(self._config.endpoint_url)
+            if self._config.verify_ssl:
+                try:
+                    from distllm.core.certificate_manager import CertificateManager
+                    cert_mgr = CertificateManager()
+                    creds = cert_mgr.create_grpc_client_credentials()
+                    if creds is not None:
+                        channel = grpc.secure_channel(self._config.endpoint_url, creds)
+                    else:
+                        logger.warning(
+                            f"No TLS certificates found for "
+                            f"{self._config.endpoint_url} — "
+                            "falling back to insecure gRPC channel. "
+                            "Run 'distllm security cert create' "
+                            "to generate certificates."
+                        )
+                        channel = grpc.insecure_channel(self._config.endpoint_url)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load TLS credentials: {e} — "
+                        "falling back to insecure gRPC channel."
+                    )
+                    channel = grpc.insecure_channel(self._config.endpoint_url)
+            else:
+                logger.warning(
+                    f"TLS disabled for gRPC channel to {self._config.endpoint_url} — "
+                    "tensor data and credentials are transmitted in plaintext."
+                )
+                channel = grpc.insecure_channel(self._config.endpoint_url)
+
             self._grpc_stub = node_pb2_grpc.NodeServiceStub(channel)
         return self._grpc_stub
 
@@ -787,6 +821,15 @@ class DistributedSpeculativeDecoder:
             "adaptive_adjustments": 0,
         }
 
+        # Quality scorer for dynamic draft model selection
+        self._quality_scorer: Any = None
+        if draft_fleet is not None:
+            try:
+                from distllm.core.draft_quality_scorer import DraftQualityScorer
+                self._quality_scorer = DraftQualityScorer()
+            except ImportError:
+                pass
+
     def _get_draft_model(self) -> RemoteDraftModel:
         """Get the active draft model (single or fleet-routed)."""
         if self._draft is not None:
@@ -911,6 +954,17 @@ class DistributedSpeculativeDecoder:
             # --- Adaptive candidate count ---
             if self._adaptive:
                 self._adapt_candidates(accepted_count, len(draft_token_ids))
+
+            # --- Quality scoring for fleet routing ---
+            if self._quality_scorer is not None and self._draft is not None:
+                draft_name = getattr(self._draft, '_config', None)
+                draft_name = getattr(draft_name, 'endpoint_url', 'unknown') if draft_name else 'unknown'
+                self._quality_scorer.record(
+                    draft_model=draft_name,
+                    target_model="target",
+                    accepted=accepted_count,
+                    total=len(draft_token_ids),
+                )
 
         self._stats["total_proposed"] += actual_draft_tokens
         self._stats["accepted"] += generated.shape[1] - prompt_len
@@ -1148,6 +1202,63 @@ class DistributedSpeculativeDecoder:
                 return i
 
         return num_draft
+
+    def batch_verify(
+        self,
+        prefixes: list[torch.Tensor],
+        draft_tokens_list: list[torch.Tensor],
+        draft_logprobs_list: list[list[float] | None],
+    ) -> list[int]:
+        """Verify draft tokens for multiple requests in one target forward pass.
+
+        Batches all draft sequences into a single target model call for
+        better GPU utilization, then verifies each independently.
+
+        Args:
+            prefixes: List of ``(1, prefix_len_i)`` tensors (one per request).
+            draft_tokens_list: List of ``(1, num_draft_i)`` tensors.
+            draft_logprobs_list: List of logprobs lists (or None per request).
+
+        Returns:
+            List of accepted token counts (one per request).
+        """
+        if not prefixes:
+            return []
+
+        # Build batched input: pad all sequences to the same length
+        max_len = max(p.shape[1] + d.shape[1] for p, d in zip(prefixes, draft_tokens_list))
+        batch_size = len(prefixes)
+
+        padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=self._device)
+        prefix_lens = []
+        draft_lens = []
+
+        for i, (prefix, draft) in enumerate(zip(prefixes, draft_tokens_list)):
+            full = torch.cat([prefix, draft], dim=1)
+            padded[i, :full.shape[1]] = full[0]
+            prefix_lens.append(prefix.shape[1])
+            draft_lens.append(draft.shape[1])
+
+        # Single batched target forward pass
+        target_logits = self._target(padded)
+        self._stats["target_calls"] += 1
+
+        # Verify each request independently
+        results = []
+        for i in range(batch_size):
+            plen = prefix_lens[i]
+            dlen = draft_lens[i]
+            # Extract logits for this request's draft tokens
+            req_logits = target_logits[i:i+1, plen - 1:plen + dlen - 1, :]
+            req_draft = draft_tokens_list[i]
+            req_logprobs = draft_logprobs_list[i]
+
+            accepted = self._verify_tokens(
+                prefixes[i], req_draft, req_logits, req_logprobs,
+            )
+            results.append(accepted)
+
+        return results
 
     def _adapt_candidates(self, accepted: int, proposed: int) -> None:
         """Adjust num_candidates based on acceptance rate."""

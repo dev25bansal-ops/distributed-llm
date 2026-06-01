@@ -1,10 +1,15 @@
-"""Structured output: JSON schema-constrained decoding."""
+"""Structured output package for constrained generation."""
 
 import string
 import threading
-from loguru import logger
 
 import torch
+from loguru import logger
+
+from distllm.core.structured_output.engine import StructuredOutputEngine, GenerationResult
+from distllm.core.structured_output.config import StructuredOutputConfig
+from distllm.core.structured_output.validator import SchemaValidator, OutputRepairer, ValidationResult, RepairResult
+from distllm.core.structured_output.streaming import BufferedAccumulator, PartialJSONParser, StructuredStreamHandler, PartialResult
 
 
 class JSONSchemaConstraint:
@@ -21,12 +26,11 @@ class JSONSchemaConstraint:
     SchemaConstrainedDecoder from constrained_decoder.py.
     """
 
-    # Class-level cache: tokenizer id -> token_first_chars dict
-    # Avoids rebuilding the expensive token index for every new constraint
     _token_index_cache: dict = {}
     _token_ord_cache: dict = {}
     _building_keys: set = set()
     _build_lock: threading.Lock = threading.Lock()
+    _valid_ord_sets: dict[str, tuple[int, ...]] = {}
 
     def __init__(self, schema: dict | None = None):
         self.schema = schema
@@ -37,21 +41,12 @@ class JSONSchemaConstraint:
         self._generated = ""
         self._token_first_chars: dict[int, str] | None = None
         self._mask_cache: dict[tuple, torch.Tensor] = {}
+        # Precomputed valid-ord tensor for each state (lazily built)
+        self._valid_ord_tensors: dict[str, torch.Tensor] = {}
 
     @classmethod
     def from_response_format(cls, response_format: dict, tokenizer=None):
-        """Create a constraint from OpenAI response_format dict.
-
-        Supports: json_object, json_schema, grammar, regex.
-        Delegates to SchemaConstrainedDecoder for non-json_object types.
-
-        Args:
-            response_format: Dict with 'type' key.
-            tokenizer: Tokenizer for constraint creation.
-
-        Returns:
-            Constraint instance or None.
-        """
+        """Create a constraint from OpenAI response_format dict."""
         fmt_type = response_format.get("type", "")
 
         if fmt_type == "json_object":
@@ -61,32 +56,17 @@ class JSONSchemaConstraint:
             schema = response_format.get("schema", {})
             return cls(schema=schema)
 
-        # For grammar/regex, SchemaConstrainedDecoder not available; fallback to simple JSON
         if fmt_type in ("grammar", "regex"):
             return cls(schema={})
 
         return cls(schema=None)
 
     def _build_token_index(self, tokenizer) -> dict[int, str]:
-        """Precompute the first character of every token ID.
-
-        Uses class-level cache keyed by ``tokenizer.name_or_path`` to avoid
-        rebuilding for the same model across multiple constraint instances.
-        Falls back to ``id(tokenizer)`` if ``name_or_path`` is not available.
-
-        If the index is not yet cached, kicks off a background thread to
-        build it so the first request is not blocked by 32K decode calls.
-        Returns an empty dict immediately if building is in progress; the
-        mask generation will fall back to allowing all tokens until the
-        index is ready.
-
-        Returns dict mapping token_id -> first_char (or '' for empty).
-        """
+        """Precompute the first character of every token ID."""
         tok_key = getattr(tokenizer, 'name_or_path', None) or str(id(tokenizer))
         if tok_key in self._token_index_cache:
             return self._token_index_cache[tok_key]
 
-        # If another thread is already building this index, don't block
         with self._build_lock:
             if tok_key in self._building_keys:
                 return {}
@@ -111,50 +91,52 @@ class JSONSchemaConstraint:
         thread.start()
         return {}
 
-    def get_logits_mask(self, vocab_size: int, tokenizer) -> torch.Tensor:
-        """Return a boolean mask: True for allowed token IDs, False for blocked.
+    def _get_valid_ord_tensor(self, state: str, in_string: bool) -> torch.Tensor:
+        """Return a precomputed tensor of valid character ordinals for the given state.
 
-        Uses GPU-side vectorized operations instead of Python loop iteration.
-        Precomputes first characters for all tokens, then uses torch.isin
-        for O(1) mask generation.
-
-        Args:
-            vocab_size: Size of the tokenizer vocabulary.
-            tokenizer: The tokenizer to decode token IDs.
-
-        Returns:
-            Boolean tensor of shape [vocab_size].
+        Caches the result per (state, in_string) key so repeated calls
+        avoid the Python set→tensor conversion.
         """
+        cache_key = (state, in_string)
+        cached = self._valid_ord_tensors.get(cache_key)
+        if cached is not None:
+            return cached
+
         valid_chars = self._valid_next_chars()
-        # Convert to ordinals for tensor comparison
-        valid_ords = set()
-        for ch in valid_chars:
-            valid_ords.add(ord(ch))
-        # Also allow whitespace for certain states
-        if self._state in (
+        valid_ords = {ord(ch) for ch in valid_chars}
+        if state in (
             "after_value", "after_key", "after_colon", "object_value", "array_value"
         ):
-            for ch in ' \t\n\r':
-                valid_ords.add(ord(ch))
+            valid_ords.update(ord(ch) for ch in ' \t\n\r')
 
+        tensor = torch.tensor(sorted(valid_ords), dtype=torch.long)
+        self._valid_ord_tensors[cache_key] = tensor
+        return tensor
+
+    def get_logits_mask(self, vocab_size: int, tokenizer, device: str | torch.device | None = None) -> torch.Tensor:
+        """Return a boolean mask: True for allowed token IDs, False for blocked.
+
+        Args:
+            vocab_size: Vocabulary size.
+            tokenizer: Tokenizer for decoding tokens.
+            device: Target device for the mask tensor. If None, uses CPU.
+        """
         eos_token_id = getattr(tokenizer, 'eos_token_id', None)
         cache_key = (
             self._state,
             self._in_string,
             self._escape_next,
-            tuple(sorted(valid_ords)),
             vocab_size,
             eos_token_id,
+            str(device),
         )
         cached = self._mask_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        # Build token index on first call, then reuse
         if self._token_first_chars is None:
             self._token_first_chars = self._build_token_index(tokenizer)
 
-        # GPU-side: collect all token ordinals as a tensor
         n = min(vocab_size, len(self._token_first_chars))
         ord_cache_key = (id(tokenizer), n)
         first_ords = self._token_ord_cache.get(ord_cache_key)
@@ -165,15 +147,17 @@ class JSONSchemaConstraint:
             )
             self._token_ord_cache[ord_cache_key] = first_ords
 
-        # Create mask: token is allowed if its first char is in valid_ords
-        valid_ord_tensor = torch.tensor(list(valid_ords), dtype=torch.long)
-        # Use broadcasting: [n] vs [num_valid] -> [n, num_valid]
-        is_valid = (first_ords.unsqueeze(1) == valid_ord_tensor.unsqueeze(0)).any(dim=1)
+        valid_ord_tensor = self._get_valid_ord_tensor(self._state, self._in_string)
 
-        mask = torch.zeros(vocab_size, dtype=torch.bool)
+        # Move tensors to target device for GPU-accelerated comparison
+        target = device or "cpu"
+        first_ords_dev = first_ords.to(target)
+        valid_ords_dev = valid_ord_tensor.to(target)
+        is_valid = (first_ords_dev.unsqueeze(1) == valid_ords_dev.unsqueeze(0)).any(dim=1)
+
+        mask = torch.zeros(vocab_size, dtype=torch.bool, device=target)
         mask[:n] = is_valid
 
-        # Always allow EOS token
         if eos_token_id is not None:
             mask[eos_token_id] = True
 
@@ -181,20 +165,16 @@ class JSONSchemaConstraint:
         return mask
 
     def update(self, token_str: str) -> None:
-        """Advance the state machine after emitting a token.
-
-        Args:
-            token_str: The decoded token string.
-        """
+        """Advance the state machine after emitting a token."""
         self._generated += token_str
         self._mask_cache.clear()
+        self._valid_ord_tensors.clear()
         for ch in token_str:
             self._state = self._transition(self._state, ch)
 
     def _valid_next_chars(self) -> set[str]:
         """Return the set of characters valid for the current JSON state."""
         if self._in_string and not self._escape_next:
-            # Inside a JSON string: any printable char except control chars
             return set(string.printable) - {'\n', '\r', '\x0b', '\x0c'}
 
         transitions: dict[str, set[str]] = {
@@ -226,9 +206,8 @@ class JSONSchemaConstraint:
                 if state == "in_string_key":
                     return "after_key"
                 return "after_value"
-            return state  # Stay in string
+            return state
 
-        # Not in string
         if char == '"':
             self._in_string = True
             if state in ("object_start", "after_open_brace", "after_comma"):
@@ -256,9 +235,8 @@ class JSONSchemaConstraint:
                 return self._stack.pop()
             return "done"
 
-        # Start of a JSON value (true, false, null, number)
         if state in ("after_colon", "array_start", "after_array_comma"):
-            if char in 'tfn':  # true, false, null
+            if char in 'tfn':
                 return "after_value"
             if char in '-0123456789':
                 return "in_number"
@@ -283,39 +261,29 @@ class JSONSchemaConstraint:
 
 
 def validate_structured_output(text: str, schema: dict | None = None) -> dict | None:
-    """Validate generated text against a JSON schema.
-
-    Args:
-        text: The generated text to validate.
-        schema: JSON schema dict. If None or empty, only validates JSON syntax.
-
-    Returns:
-        Parsed JSON object if valid, None if invalid.
-    """
+    """Validate generated text against a JSON schema."""
     import json
 
-    # Parse JSON
     try:
         obj = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return None
 
-    # If no schema, just validate JSON syntax
     if not schema:
         return obj
 
-    # Validate against schema using jsonschema if available
     try:
         import jsonschema
         jsonschema.validate(obj, schema)
         return obj
     except ImportError:
-        # jsonschema not installed — basic type validation only
-        pass
+        logger.warning(
+            "jsonschema not installed — falling back to basic type checking. "
+            "Install with: pip install jsonschema"
+        )
     except jsonschema.ValidationError:
         return None
 
-    # Fallback: basic type checking against schema
     expected_type = schema.get("type")
     if expected_type == "object" and not isinstance(obj, dict):
         return None
@@ -330,7 +298,6 @@ def validate_structured_output(text: str, schema: dict | None = None) -> dict | 
     if expected_type == "boolean" and not isinstance(obj, bool):
         return None
 
-    # Check required fields for objects
     if expected_type == "object" and isinstance(obj, dict):
         required = schema.get("required", [])
         for field in required:
@@ -338,3 +305,20 @@ def validate_structured_output(text: str, schema: dict | None = None) -> dict | 
                 return None
 
     return obj
+
+
+__all__ = [
+    "JSONSchemaConstraint",
+    "validate_structured_output",
+    "StructuredOutputEngine",
+    "GenerationResult",
+    "StructuredOutputConfig",
+    "SchemaValidator",
+    "OutputRepairer",
+    "ValidationResult",
+    "RepairResult",
+    "BufferedAccumulator",
+    "PartialJSONParser",
+    "StructuredStreamHandler",
+    "PartialResult",
+]

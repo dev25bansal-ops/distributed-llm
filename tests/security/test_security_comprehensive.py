@@ -154,26 +154,42 @@ class TestAuthenticationBypass:
 class TestInjectionPrevention:
     """Verify API input sanitization prevents injection attacks."""
 
-    def test_sql_injection_payloads_string_type(self):
+    def test_sql_injection_payloads_rejected(self):
+        """SQL injection payloads should be rejected by input validation."""
+        from distllm.security.utils import validate_http_url
         for p in ["'; DROP TABLE users; --", '" OR 1=1 --', "1; DROP DATABASE; --"]:
-            assert isinstance(p, str)
+            # These are not valid URLs \u2014 should raise
+            with pytest.raises(Exception):
+                validate_http_url(f"http://example.com?q={p}")
 
-    def test_command_injection_payloads_string_type(self):
+    def test_command_injection_payloads_rejected(self):
+        """Command injection payloads should be rejected by path validation."""
+        from distllm.api.validation import validate_adapter_path
         for p in ["$(cat /etc/passwd)", "`cat /etc/passwd`", "| cat /etc/passwd",
                    "; rm -rf /", "&& cat /etc/passwd", "|| echo vulnerable"]:
-            assert isinstance(p, str)
+            with pytest.raises(Exception):
+                validate_adapter_path(p)
 
     def test_path_traversal_detected(self):
+        """Path traversal attempts should be rejected."""
+        from distllm.api.validation import validate_adapter_path
         for p in ["../../etc/passwd", "..\\..\\windows\\system32",
                    "%2e%2e%2f%2e%2e%2f", "....//....//etc/passwd"]:
-            assert isinstance(p, str)
+            with pytest.raises(Exception):
+                validate_adapter_path(p)
 
-    def test_null_byte_preserved(self):
-        assert "\x00" in "model\x00../../etc/passwd"
+    def test_null_byte_in_path_rejected(self):
+        """Null bytes in paths should be rejected."""
+        from distllm.api.validation import validate_adapter_path
+        with pytest.raises(Exception):
+            validate_adapter_path("model\x00../../etc/passwd")
 
-    def test_unicode_rtl_attack_type(self):
+    def test_unicode_rtl_attack_rejected(self):
+        """Unicode RTL override attacks should be rejected."""
+        from distllm.api.validation import validate_adapter_path
         for p in ["\u202ecat/etc/passwd", "\uff0fetc\uff0fpasswd", "\u2215etc\u2215passwd"]:
-            assert isinstance(p, str)
+            with pytest.raises(Exception):
+                validate_adapter_path(p)
 
     def test_ssrf_protection_validates_private_ip(self):
         sec = _load_module("distllm/security/utils.py")

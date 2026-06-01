@@ -56,6 +56,12 @@ async def models_page(request: Request):
     return templates.TemplateResponse("models.html", {"request": request, "api_url": API_URL})
 
 
+@ui_app.get("/compare", response_class=HTMLResponse)
+async def compare_page(request: Request):
+    """Model comparison dashboard."""
+    return templates.TemplateResponse("compare.html", {"request": request, "api_url": API_URL})
+
+
 @ui_app.get("/api/health")
 async def health_proxy():
     """Proxy health check from API server."""

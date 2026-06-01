@@ -16,10 +16,13 @@ from typing import Any
 class PersistentStore:
     """Thread-safe SQLite storage for API data."""
 
+    SCHEMA_VERSION = 1
+
     def __init__(self, db_path: str | Path = ":memory:"):
         self.db_path = str(db_path)
         self._lock = threading.Lock()
         self._init_db()
+        self._migrate()
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -41,6 +44,10 @@ class PersistentStore:
     def _init_db(self):
         with self._transaction() as conn:
             conn.executescript("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS batches (
                     id TEXT PRIMARY KEY,
                     data TEXT NOT NULL,
@@ -59,6 +66,40 @@ class PersistentStore:
                     created_at REAL NOT NULL
                 );
             """)
+
+    def _get_schema_version(self) -> int:
+        """Return the current schema version stored in the DB."""
+        with self._transaction() as conn:
+            row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            return row["version"] if row else 0
+
+    def _set_schema_version(self, version: int) -> None:
+        """Update the stored schema version."""
+        with self._transaction() as conn:
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+
+    def _migrate(self) -> None:
+        """Run incremental schema migrations.
+
+        Each migration is a numbered step.  To add a new migration:
+        1. Bump ``SCHEMA_VERSION``.
+        2. Add an ``elif current_version == N:`` block below.
+        """
+        current = self._get_schema_version()
+        if current >= self.SCHEMA_VERSION:
+            return
+
+        logger = __import__("loguru").logger
+        logger.info(f"Migrating PersistentStore from v{current} to v{self.SCHEMA_VERSION}")
+
+        # Example migration (add columns, indexes, etc.):
+        # if current < 1:
+        #     with self._transaction() as conn:
+        #         conn.execute("ALTER TABLE batches ADD COLUMN status TEXT DEFAULT 'pending'")
+
+        self._set_schema_version(self.SCHEMA_VERSION)
+        logger.info(f"PersistentStore migration complete (v{self.SCHEMA_VERSION})")
 
     # --- Batch operations ---
 

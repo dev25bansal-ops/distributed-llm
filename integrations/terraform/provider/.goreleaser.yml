@@ -1,0 +1,69 @@
+# .goreleaser.yml for Terraform Registry Publishing
+#
+# This configuration builds the DistLLM Terraform provider for all
+# platforms supported by Terraform Registry, and creates a GitHub
+# release with the correct naming convention.
+#
+# Usage:
+#   goreleaser release --clean
+#
+# Prerequisites:
+#   - Go 1.21+
+#   - GPG key for signing (optional but recommended)
+#   - GitHub token with repo scope
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      - "-s -w"
+    goos:
+      - freebsd
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+    binary: "{{ .ProjectName }}_v{{ .Version }}"
+
+archives:
+  - format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+signs:
+  - artifacts: checksum
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
+release:
+  github:
+    owner: distributed-llm
+    name: terraform-provider-distllm
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+# Terraform Registry expects a specific directory structure
+# The built binaries are renamed by goreleaser to match

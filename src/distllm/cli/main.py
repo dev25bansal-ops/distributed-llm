@@ -1,11 +1,8 @@
 """DistLLM CLI - Unified command-line interface for Distributed LLM."""
 
 import os
-import sys
 import time
-import os
-import sys
-import time
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -30,10 +27,84 @@ def _display_qr(port: int = 50050) -> None:
 app = typer.Typer(
     name="distllm",
     help="Distributed LLM Inference System - Run large language models across multiple GPU-equipped machines",
-    add_completion=False,
+    add_completion=True,
     rich_markup_mode="rich",
 )
 console = Console()
+
+
+@app.command("completion")
+def completion_command(
+    shell: str = typer.Argument(
+        ...,
+        help="Shell to generate completion for (bash, zsh, fish, powershell)",
+    ),
+) -> None:
+    """Generate shell autocomplete scripts for distllm CLI.
+
+    Usage:
+        distllm completion bash >> ~/.bashrc
+        distllm completion zsh >> ~/.zshrc
+        distllm completion fish > ~/.config/fish/completions/distllm.fish
+        distllm completion powershell >> $PROFILE
+
+    Then restart your shell or source the file.
+    """
+    import subprocess
+    import sys
+
+    shell_map = {
+        "bash": "bash",
+        "zsh": "zsh",
+        "fish": "fish",
+        "powershell": "powershell",
+    }
+
+    if shell not in shell_map:
+        console.print(f"[red]Unsupported shell: {shell}[/red]")
+        console.print(f"Supported: {', '.join(shell_map.keys())}")
+        raise typer.Exit(1)
+
+    # Typer provides built-in completion via the --show-completion flag
+    if shell == "bash":
+        script = """
+# DistLLM CLI autocomplete for bash
+_evalcache() { eval "$1"; }
+_distllm_bash_complete() {
+    local IFS=$'\\n'
+    COMPREPLY=( $(compgen -W "$(distllm --show-completion bash)" -- "${COMP_WORDS[COMP_CWORD]}") )
+}
+complete -F _distllm_bash_complete distllm
+"""
+    elif shell == "zsh":
+        script = """# DistLLM CLI autocomplete for zsh
+#compdef distllm
+_distllm() {
+    compadd $(distllm --show-completion zsh)
+}
+_distllm
+"""
+    elif shell == "fish":
+        script = """# DistLLM CLI autocomplete for fish
+complete -c distllm -f
+complete -c distllm -a '(distllm --show-completion fish)'
+"""
+    elif shell == "powershell":
+        script = """# DistLLM CLI autocomplete for PowerShell
+Register-ArgumentCompleter -Native -CommandName distllm -ScriptBlock {
+    param($commandName, $wordToComplete, $cursorPosition)
+    distllm --show-completion powershell | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+    }
+}
+"""
+    else:
+        script = ""
+
+    console.print(f"[green]Generated {shell} completion script:[/green]")
+    console.print()
+    console.print(script)
+    console.print(f"[dim]Add this to your shell config file to enable autocomplete.[/dim]")
 
 # ── Command groups ──────────────────────────────────────────────────────
 #
@@ -223,8 +294,9 @@ def system_schedule_viz(
     api_key: str | None = typer.Option(None, "--api-key", help="API key for authentication"),
 ):
     """Visualize scheduling decisions as ASCII timeline or HTML."""
-    from distllm.core.schedule_viz import ScheduleVisualizer
     import httpx
+
+    from distllm.core.schedule_viz import ScheduleVisualizer
 
     base_url = f"http://{host}:{port}"
     headers = {}
@@ -316,8 +388,8 @@ def config_reference(
     output: str = typer.Option("", "--output", "-o", help="Output file (default: stdout)"),
 ):
     """Generate configuration reference documentation from Pydantic models."""
-    from distllm.config.settings import DistLLMSettings
     from distllm.config.reference import generate_config_reference
+    from distllm.config.settings import DistLLMSettings
 
     doc = generate_config_reference(DistLLMSettings)
     if output:
@@ -481,6 +553,7 @@ def cluster_join(
     coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
     discover: bool = typer.Option(False, "--discover", "-d", help="Auto-discover coordinators on LAN via mDNS"),
     node_id: str = typer.Option(None, "--node-id", help="Unique node ID (auto-generated if omitted)"),
+    model: str = typer.Option(None, "--model", "-m", help="Model name (auto-detected from coordinator if omitted)"),
     start_layer: int = typer.Option(None, "--start-layer", help="First layer to serve"),
     end_layer: int = typer.Option(None, "--end-layer", help="Last layer to serve"),
     total_layers: int = typer.Option(None, "--total-layers", help="Total model layers"),
@@ -489,7 +562,6 @@ def cluster_join(
     cluster_key: str = typer.Option(None, "--cluster-key", help="[DEPRECATED] Use DISTLLM_CLUSTER_KEY env var instead. Shared cluster authentication key"),
 ):
     """Join an existing cluster as a worker node."""
-    import os
     if cluster_key:
         console.print("[yellow]Warning:[/yellow] --cluster-key is deprecated. Set DISTLLM_CLUSTER_KEY env var instead.")
     resolved_key = cluster_key or os.environ.get("DISTLLM_CLUSTER_KEY", "")
@@ -502,6 +574,7 @@ def cluster_join(
         coordinator_host, coordinator_port, node_id,
         start_layer, end_layer, total_layers, port, device, resolved_key or None,
         discover=discover,
+        model=model,
     )
 
 
@@ -598,6 +671,7 @@ def model_compress(
     calibration_samples: int = typer.Option(128, "--calibration-samples", help="Calibration samples for PTQ"),
     method: str = typer.Option("awq", "--method", help="Quantization method (awq, gptq)"),
     local: bool = typer.Option(True, "--local", "-l", help="Run in local mode (no cluster)"),
+    trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="Allow loading remote code from HuggingFace models (security risk)"),
 ):
     """Compress a model (AWQ/GPTQ INT4, INT8, pruning) and save to disk."""
     from distllm.cli.compress import run_compress
@@ -611,6 +685,7 @@ def model_compress(
         method=method,
         local=local,
         console=console,
+        trust_remote_code=trust_remote_code,
     )
 
 
@@ -633,7 +708,7 @@ def federate_train(
     """Run federated fine-tuning: train LoRA locally, submit to coordinator for merging."""
     import httpx
 
-    console.print(f"\n[bold blue]Federated Fine-Tuning[/bold blue]")
+    console.print("\n[bold blue]Federated Fine-Tuning[/bold blue]")
     console.print(f"Model: {model}")
     console.print(f"Adapter: {adapter}")
     console.print(f"Data: {data}")
@@ -1087,9 +1162,10 @@ def system_coordinator(
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
 ):
     """Start the coordinator facade for distributed inference."""
+    from loguru import logger
+
     from distllm.core.coordinator import Coordinator
     from distllm.core.debug import set_debug_mode
-    from loguru import logger
 
     if debug:
         set_debug_mode(True)
@@ -1128,10 +1204,11 @@ def system_api(
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
 ):
     """Start the OpenAI-compatible REST API server."""
+    import uvicorn
+    from loguru import logger
+
     from distllm.api.server import app, create_coordinator
     from distllm.core.debug import set_debug_mode
-    from loguru import logger
-    import uvicorn
 
     if debug:
         set_debug_mode(True)
@@ -1155,6 +1232,7 @@ def dashboard(
     Use ``distllm serve --port <port>`` to run the API server.
     """
     import webbrowser
+
     from loguru import logger
     base_url = api_url or "http://localhost:8000"
     dashboard_url = f"{base_url.rstrip('/')}/dashboard"
@@ -1231,8 +1309,8 @@ def system_cost_avoid(
         model_name=model, requests_per_day=requests_per_day,
         gpu_type=gpu_type, cloud_api=cloud_api,
     )
-    from rich.table import Table
     from rich.console import Console
+    from rich.table import Table
     console = Console()
     table = Table(title="Cost Avoidance Analysis", show_header=False)
     table.add_column("Metric")
@@ -1277,7 +1355,7 @@ def daas_serve(
 
         distllm daas serve --model SmolLM-135M --port 9000
     """
-    from distllm.dist.daas_server import DaaSServer, DaaSConfig
+    from distllm.dist.daas_server import DaaSConfig, DaaSServer
 
     config = DaaSConfig(
         model_name=model,
@@ -1332,9 +1410,9 @@ def daas_benchmark(
     concurrent: int = typer.Option(4, "--concurrent", "-c", help="Concurrent requests"),
 ):
     """Benchmark a DaaS server's throughput and latency."""
-    import httpx
     import asyncio
-    import time
+
+    import httpx
 
     async def _bench():
         url = f"http://{host}:{port}/v1/completions"
@@ -1363,7 +1441,7 @@ def daas_benchmark(
 
         if latencies:
             latencies.sort()
-            console.print(f"\n[bold]DaaS Benchmark Results[/bold]")
+            console.print("\n[bold]DaaS Benchmark Results[/bold]")
             console.print(f"  Requests: {requests} ({errors} errors)")
             console.print(f"  Total time: {total_time:.2f}s")
             console.print(f"  Throughput: {len(latencies) / total_time:.1f} req/s")
@@ -1523,14 +1601,15 @@ def tune_quantize(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON instead of human-readable text"),
 ):
     """Run Adaptive Precision Optimizer to select optimal quantization per device."""
-    import asyncio
     from pathlib import Path
 
     try:
-        from distllm.dist.partition.quantization_tuner import (
-            QuantizationAutoTuner, NodeInfo, QuantMethod,
-        )
         from distllm.dist.partition.quant_report import ReportGenerator
+        from distllm.dist.partition.quantization_tuner import (
+            NodeInfo,
+            QuantizationAutoTuner,
+            QuantMethod,
+        )
 
         # Build node info from GPU profiling
         if benchmark:

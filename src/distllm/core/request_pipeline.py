@@ -36,7 +36,7 @@ class RequestPipeline:
     Holds a reference to the coordinator for shared state access.
     """
 
-    def __init__(self, coord):
+    def __init__(self, coord: "Coordinator") -> None:
         self._coord = coord
 
     # -- Token Sampling --
@@ -667,7 +667,7 @@ class RequestPipeline:
         if use_spec:
             draft_tokens_list, _, draft_logits_list = c._spec_decoder.generate_batch_draft_tokens(c.draft_model, input_tensors)
 
-        def stage_forward(micro_batch):
+        def stage_forward(micro_batch: torch.Tensor) -> Any:
             stage_logits = c._async_pipeline.forward_stage(micro_batch, None)
             return stage_logits
 

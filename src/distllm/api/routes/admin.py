@@ -8,17 +8,14 @@ compression.
 Requires ``admin`` role API key.
 """
 
-import asyncio
 import time
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
-from loguru import logger
 
 
 def _coord_attr(coord, attr: str, default=None):
@@ -34,7 +31,7 @@ def _coord_attr(coord, attr: str, default=None):
 router = APIRouter(
     prefix="/admin/v1",
     tags=["admin"],
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_role("admin", "model-admin"))],
 )
 
 
@@ -124,7 +121,6 @@ def _get_node_state(coord, node_id: str) -> str:
         if resource_mgr is not None:
             if hasattr(resource_mgr, 'is_node_draining') and resource_mgr.is_node_draining(node_id):
                 return "draining"
-        from distllm.health.state import NodeState
         health_mgr = getattr(coord, '_health_mgr', None)
         if health_mgr is not None:
             state_store = getattr(health_mgr, '_state_store', None) or getattr(health_mgr, 'state_store', None)
@@ -455,7 +451,11 @@ async def compress_model(body: CompressRequest):
     try:
         from distllm.core.adaptive_compression import SimpleCompressor
         output_dir = body.output_dir or f"/tmp/distllm-compress/{model_name}"
-        compressor = SimpleCompressor(output_base=output_dir, method=body.method)
+        compressor = SimpleCompressor(
+            output_base=output_dir,
+            method=body.method,
+            trust_remote_code=getattr(coord, 'trust_remote_code', False),
+        )
         job_id = f"compress-{model_name}-{int(time.time())}"
         import threading
         thread = threading.Thread(
@@ -475,3 +475,69 @@ async def compress_model(body: CompressRequest):
     except Exception as e:
         logger.exception("Admin compress failed")
         raise HTTPException(status_code=500, detail=f"Failed to start compression: {e}")
+
+
+class RegisterNodeRequest(BaseModel):
+    """Request to register a new worker node."""
+    node_id: str = Field(..., description="Unique node ID")
+    host: str = Field(..., description="Node hostname or IP")
+    port: int = Field(..., description="gRPC port")
+    start_layer: int = Field(..., description="First layer index")
+    end_layer: int = Field(..., description="Last layer index")
+    total_layers: int = Field(..., description="Total model layers")
+    device: str = Field("cpu", description="Device type")
+    gpu_name: str = Field("", description="GPU name")
+
+
+@router.post(
+    "/nodes/register",
+    summary="Register a worker node",
+    description="Register a new worker node with the coordinator. Called automatically by distllm cluster join.",
+)
+async def register_node(body: RegisterNodeRequest):
+    """Register a worker node.
+
+    If the worker isn't reachable yet (still loading model), the node
+    is still registered and the health manager will reconnect later.
+
+    If a node at the same host:port already exists, it is replaced
+    (the old node was likely restarted with a new node_id).
+    """
+    coord = _resolve_coordinator()
+
+    # Remove stale node at the same host:port if it exists
+    stale_node_id = None
+    for nid, node in coord.nodes.items():
+        if node.host == body.host and node.port == body.port:
+            stale_node_id = nid
+            break
+    if stale_node_id and stale_node_id != body.node_id:
+        logger.info(f"Removing stale node {stale_node_id} at {body.host}:{body.port} for re-registration")
+        try:
+            coord._pipeline.unregister_node(stale_node_id)
+        except Exception as e:
+            logger.warning(f"Could not remove stale node {stale_node_id}: {e}")
+
+    try:
+        coord.manual_register(
+            node_id=body.node_id,
+            host=body.host,
+            port=body.port,
+            start_layer=body.start_layer,
+            end_layer=body.end_layer,
+            total_layers=body.total_layers,
+        )
+        logger.info(f"Node {body.node_id} registered (host={body.host}, port={body.port})")
+        return {"status": "registered", "node_id": body.node_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        err_str = str(e)
+        if "overlap" in err_str.lower():
+            logger.info(f"Node {body.node_id} already registered")
+            raise HTTPException(status_code=409, detail=f"Node already registered: {e}")
+        if "unreachable" in err_str.lower():
+            logger.warning(f"Node {body.node_id} unreachable (worker loading?) — registered as pending")
+            return {"status": "registered_pending", "node_id": body.node_id, "warning": "worker not yet reachable"}
+        logger.error(f"Failed to register node {body.node_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to register node: {e}")

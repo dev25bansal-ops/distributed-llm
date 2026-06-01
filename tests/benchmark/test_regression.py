@@ -65,6 +65,9 @@ def _make_pipeline(num_nodes=2, total_layers=32, latency_ms=2.0):
     p.resource_mgr.record_success = MagicMock()
     p.resource_mgr.record_failure = MagicMock()
 
+    # Use a monotonic counter instead of time.sleep for deterministic tests
+    _simulated_time = [0.0]
+
     for i in range(num_nodes):
         node = MagicMock()
         node.node_id = f"n{i}"
@@ -80,7 +83,8 @@ def _make_pipeline(num_nodes=2, total_layers=32, latency_ms=2.0):
 
         def make_fwd(lat=latency_ms):
             def fwd(req):
-                time.sleep(lat / 1000)
+                # Simulate latency by advancing counter instead of sleeping
+                _simulated_time[0] += lat / 1000
                 return MagicMock(
                     success=True,
                     error_code=0,

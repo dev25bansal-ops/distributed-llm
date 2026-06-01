@@ -185,5 +185,11 @@ class CacheQueryLogger:
             self._file.close()
             self._file = None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def __del__(self):
         self.close()

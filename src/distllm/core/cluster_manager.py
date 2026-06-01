@@ -1,5 +1,7 @@
 """Node lifecycle and cluster management."""
 
+from __future__ import annotations
+
 from typing import Any
 
 from loguru import logger
@@ -131,3 +133,58 @@ class ClusterManager:
         if entry is None:
             return None
         return (entry["host"], entry["port"])
+
+    def register_nodes_batch(
+        self,
+        nodes_config: list[dict[str, Any]],
+        cluster_key: str | None = None,
+        max_workers: int = 8,
+    ) -> dict[str, dict]:
+        """Register multiple nodes concurrently with batched Profile RPCs.
+
+        Args:
+            nodes_config: List of node config dicts.
+            cluster_key: Optional shared secret.
+            max_workers: Max concurrent registration threads.
+
+        Returns:
+            Dict of node_id -> registration result.
+        """
+        return self._node_registrar.register_nodes_batch(
+            nodes_config,
+            cluster_key=cluster_key or self._cluster_key,
+            max_workers=max_workers,
+        )
+
+    def scale_pipeline_capacity(self, per_node_limit: int = 16) -> int:
+        """Scale the pipeline's concurrent request limit based on node count.
+
+        Args:
+            per_node_limit: Max concurrent requests per node.
+
+        Returns:
+            The new max concurrent request limit.
+        """
+        return self._pipeline.scale_concurrent_requests(per_node_limit)
+
+    @property
+    def node_count(self) -> int:
+        """Return the number of registered nodes."""
+        return len(self._pipeline.nodes)
+
+    def get_node_gpu_summary(self) -> dict[str, dict]:
+        """Return GPU summary for all registered nodes.
+
+        Returns:
+            Dict of node_id -> {gpu_name, memory_total_gb, memory_free_gb}.
+        """
+        summary = {}
+        for nid, node in self._pipeline.nodes.items():
+            summary[nid] = {
+                "gpu_name": getattr(node, "gpu_name", ""),
+                "memory_total_gb": getattr(node, "gpu_memory_total", 0) / (1024 ** 3)
+                if getattr(node, "gpu_memory_total", 0) else 0.0,
+                "memory_free_gb": getattr(node, "gpu_memory_free", 0) / (1024 ** 3)
+                if getattr(node, "gpu_memory_free", 0) else 0.0,
+            }
+        return summary

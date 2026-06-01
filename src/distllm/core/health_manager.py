@@ -225,8 +225,9 @@ class HealthManager:
                             record = HealthRecord(node_id=node_id)
                             self._health_store.set(node_id, record)
 
+                        _t0 = time.monotonic()
                         alive = node.health_check()
-                        latency_ms = 0.0  # TODO: extract from health_check
+                        latency_ms = (time.monotonic() - _t0) * 1000.0
 
                         if self._reputation:
                             self._reputation.record_health(node_id, alive)

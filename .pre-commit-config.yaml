@@ -19,27 +19,27 @@ repos:
       - id: pyroma
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.12
+    rev: v0.14.14
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.0
+    rev: v1.14.1
     hooks:
       - id: mypy
-        additional_dependencies: ['types-PyYAML', 'types-psutil', 'pydantic']
+        additional_dependencies: ['types-PyYAML', 'types-psutil', 'pydantic', 'pydantic-settings']
 
   - repo: https://github.com/adrienverge/yamllint
-    rev: v1.38.0
+    rev: v1.35.1
     hooks:
       - id: yamllint
         args: ['-d', '{extends: relaxed, rules: {line-length: disable}}']
         files: ^deploy/.*\.(yaml|yml)$
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: v5.0.0
     hooks:
       - id: check-merge-conflict
       - id: check-symlinks
@@ -48,6 +48,7 @@ repos:
       - id: check-toml
       - id: check-json
       - id: check-added-large-files
+        args: ['--maxkb=1024']
       - id: detect-private-key
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -59,9 +60,9 @@ repos:
     hooks:
       - id: helm-lint
         name: helm-lint
-        entry: bash -c 'helm lint deploy/helm/ --quiet 2>/dev/null || echo "Helm lint skipped (not installed)"'
+        entry: bash -c 'helm lint integrations/kubernetes/helm/distllm/ --quiet 2>/dev/null || echo "Helm lint skipped (not installed)"'
         language: system
-        files: ^deploy/helm/
+        files: ^integrations/kubernetes/helm/.*\.(yaml|yml|tpl)$
         pass_filenames: false
         always_run: false
         verbose: true

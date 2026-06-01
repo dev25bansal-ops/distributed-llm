@@ -145,6 +145,7 @@ class PluginSystem:
         self._config = config or {}
         self._context.config = self._config
         self._lock = threading.RLock()
+        self._started_cache: list[PluginInstance] | None = None
 
     # ── Discovery ───────────────────────────────────────────────────────
 
@@ -246,6 +247,7 @@ class PluginSystem:
                     inst.state = PluginState.ERROR
                     inst.error = str(e)
                     logger.error(f"Plugin {name} start failed: {e}")
+        self._invalidate_plugin_cache()
         return count
 
     def stop_all(self) -> int:
@@ -261,6 +263,7 @@ class PluginSystem:
                     count += 1
                 except Exception as e:
                     logger.error(f"Plugin {name} stop failed: {e}")
+        self._invalidate_plugin_cache()
         return count
 
     # ── Hook dispatch ───────────────────────────────────────────────────
@@ -316,12 +319,21 @@ class PluginSystem:
 
     # ── Private ─────────────────────────────────────────────────────────
 
-    def _started_plugins(self) -> list[PluginInstance]:
+    def _invalidate_plugin_cache(self) -> None:
+        """Invalidate the cached started plugins list."""
         with self._lock:
-            return [
+            self._started_cache = None
+
+    def _started_plugins(self) -> list[PluginInstance]:
+        """Return started plugins, using cache to avoid lock on every dispatch."""
+        with self._lock:
+            if self._started_cache is not None:
+                return self._started_cache
+            self._started_cache = [
                 inst for inst in self._plugins.values()
                 if inst.state == PluginState.STARTED
             ]
+            return self._started_cache
 
     def _discover_from_file(self, path: Path) -> PluginMetadata | None:
         """Scan a single Python file for PluginBase subclasses.

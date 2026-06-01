@@ -17,13 +17,13 @@ from distllm.errors.types import (
     ConfigValidationError, NodeUnreachableError, OOMError,
     InputValidationError, GRPCTimeoutError,
 )
-from distllm.core.pipeline_orchestrator import TensorTransport, TransportBackend
+from distllm.dist.pipeline import TensorTransport, TransportBackend
 
 
 @pytest.fixture
 def pipeline():
     """Create a PipelineOrchestrator with mocked ResourceManager."""
-    from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+    from distllm.dist.pipeline import PipelineOrchestrator
     rm = ResourceManager()
     return PipelineOrchestrator(resource_mgr=rm, total_layers=12)
 
@@ -32,7 +32,7 @@ class TestPipelineOrchestratorInit:
     """Tests for initialization."""
 
     def test_default_init(self):
-        from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+        from distllm.dist.pipeline import PipelineOrchestrator
         p = PipelineOrchestrator()
         assert p.nodes == {}
         assert p.node_order == []
@@ -110,7 +110,7 @@ class TestValidateLayerAssignment:
         assert len(pipeline.node_order) == 2
 
     def test_no_validation_without_total_layers(self):
-        from distllm.core.pipeline_orchestrator import PipelineOrchestrator
+        from distllm.dist.pipeline import PipelineOrchestrator
         p = PipelineOrchestrator(total_layers=0)
         p.register_node("node-0", "localhost", 50051, 0, 5)
         assert "node-0" in p.nodes
@@ -160,7 +160,7 @@ class TestTensorTransport:
         assert pipeline._transport_rank_map == {}
 
     def test_set_latency_tracker(self, pipeline):
-        from distllm.core.latency_tracker import LatencyTracker
+        from distllm.dist.latency import LatencyTracker
         tracker = LatencyTracker()
         pipeline.set_latency_tracker(tracker)
         assert pipeline._latency_tracker is tracker
