@@ -55,15 +55,20 @@ openssl x509 -in cert.pem -text -noout
 ### API Key Management
 
 ```bash
-# Generate API key
-distllm config setup
+# Set API key via environment variable
+export API_KEY=your-secure-key-here
 
-# Set via environment variable
-export DISTLLM_API_KEY=your-secure-key-here
+# Start server with API key
+distllm system api --model <model> --local
 
-# Or in config.yaml
-network:
-  api_key: ${DISTLLM_API_KEY}
+# Or disable auth for development
+distllm system api --model <model> --local --no-auth
+```
+
+The API key is displayed on startup. For production, use a strong random key:
+
+```bash
+export API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 ```
 
 ### Cluster Key (gRPC Authentication)

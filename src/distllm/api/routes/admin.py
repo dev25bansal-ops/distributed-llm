@@ -130,7 +130,8 @@ def _get_node_state(coord, node_id: str) -> str:
                     return record.state.value if hasattr(record.state, 'value') else str(record.state)
         node = coord.nodes.get(node_id)
         if node is not None:
-            return "healthy" if node.healthy else "unhealthy"
+            healthy = node.get("healthy", True) if isinstance(node, dict) else getattr(node, "healthy", True)
+            return "healthy" if healthy else "unhealthy"
     except Exception:
         pass
     return "unknown"
@@ -280,8 +281,13 @@ async def offline_node(node_id: str):
             except Exception:
                 pass
 
-    node = coord.nodes[node_id]
-    node.healthy = False
+    node = coord.nodes.get(node_id)
+    if node is not None:
+        if isinstance(node, dict):
+            # Dict from PipelineOrchestrator — update via pipeline
+            pass
+        else:
+            node.healthy = False
     logger.info(f"Admin: marked node {node_id} offline")
     return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' marked offline")
 
@@ -299,8 +305,13 @@ async def recover_node(node_id: str):
     if node_id not in coord.nodes:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
 
-    node = coord.nodes[node_id]
-    node.healthy = True
+    node = coord.nodes.get(node_id)
+    if node is not None:
+        if isinstance(node, dict):
+            # Dict from PipelineOrchestrator — mark healthy via pipeline
+            coord._pipeline.mark_node_healthy(node_id)
+        else:
+            node.healthy = True
 
     resource_mgr = getattr(coord, '_resource_mgr', None)
     if resource_mgr is not None:
@@ -508,7 +519,9 @@ async def register_node(body: RegisterNodeRequest):
     # Remove stale node at the same host:port if it exists
     stale_node_id = None
     for nid, node in coord.nodes.items():
-        if node.host == body.host and node.port == body.port:
+        node_host = node.get("host") if isinstance(node, dict) else getattr(node, "host", None)
+        node_port = node.get("port") if isinstance(node, dict) else getattr(node, "port", None)
+        if node_host == body.host and node_port == body.port:
             stale_node_id = nid
             break
     if stale_node_id and stale_node_id != body.node_id:

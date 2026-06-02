@@ -49,12 +49,19 @@ async for chunk in client.chat_completions_stream(
 ```python
 from distllm_sdk import DistLLMClient, RetryConfig, PoolConfig
 
+# With API key (production)
 client = DistLLMClient(
     base_url="http://localhost:8000",
-    api_key="sk-your-key",
+    api_key="your-api-key",
     timeout=120.0,
     retry=RetryConfig(max_retries=3, initial_delay=1.0),
     pool=PoolConfig(max_connections=100),
+)
+
+# Without API key (development with --no-auth)
+client = DistLLMClient(
+    base_url="http://localhost:8000",
+    api_key="not-needed",
 )
 ```
 

@@ -27,13 +27,17 @@ pip install "distllm[all]"
 # Install with vLLM backend
 pip install "distllm[self-hosted]"
 
-# Start with local model
-distllm-api --model meta-llama/Llama-3.2-1B --local --port 8000
+# Start with local model (no auth for development)
+distllm system api --model meta-llama/Llama-3.2-1B --local --port 8000 --no-auth
+
+# Or with API key
+export API_KEY="your-secret-key"
+distllm system api --model meta-llama/Llama-3.2-1B --local --port 8000
 
 # Test it
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DISTLLM_API_KEY" \
+  -H "Authorization: Bearer your-secret-key" \
   -d '{"messages":[{"role":"user","content":"Hello"}],"model":"default"}'
 ```
 

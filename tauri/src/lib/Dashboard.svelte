@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { getClusterStatus, getGpuMetrics, getSystemInfo } from "./api";
+  import { getClusterStatus, getGpuMetrics, getSystemInfo, joinCluster } from "./api";
   import type { ClusterStatus, GpuInfo, SystemInfo } from "./types";
 
   let cluster = $state<ClusterStatus | null>(null);
@@ -11,8 +11,10 @@
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let grafanaUrl = $state<string>("http://localhost:3000");
   let showGrafana = $state(false);
+  let coordinatorDetected = $state(false);
 
   onMount(async () => {
+    await autoDetectCoordinator();
     await loadAll();
     pollTimer = setInterval(loadAll, 3000);
   });
@@ -20,6 +22,24 @@
   onDestroy(() => {
     if (pollTimer) clearInterval(pollTimer);
   });
+
+  async function autoDetectCoordinator() {
+    // Try to detect a running coordinator on localhost
+    try {
+      const resp = await fetch("http://localhost:8000/health");
+      if (resp.ok) {
+        coordinatorDetected = true;
+        // Auto-join the cluster
+        try {
+          await joinCluster("127.0.0.1", 8000);
+        } catch {
+          // Already joined or failed, that's ok
+        }
+      }
+    } catch {
+      // No coordinator running
+    }
+  }
 
   async function loadAll() {
     try {
@@ -56,7 +76,18 @@
 </script>
 
 <div class="dashboard">
-  <h1 class="page-title">Dashboard</h1>
+  <div class="dashboard-header">
+    <h1 class="page-title">Dashboard</h1>
+    <div class="coordinator-status">
+      {#if coordinatorDetected}
+        <span class="status-dot connected"></span>
+        <span>Coordinator detected on localhost:8000</span>
+      {:else}
+        <span class="status-dot disconnected"></span>
+        <span>No coordinator detected</span>
+      {/if}
+    </div>
+  </div>
 
   {#if error}
     <div class="error-banner">{error}</div>
@@ -215,6 +246,11 @@
 <style>
   .dashboard { max-width: 900px; }
   .page-title { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
+  .dashboard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .coordinator-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.connected { background: #3fb950; }
+  .status-dot.disconnected { background: #f85149; }
   .loading { color: var(--text-secondary); padding: 40px 0; text-align: center; }
   .error-banner {
     background: color-mix(in srgb, var(--danger) 15%, transparent);

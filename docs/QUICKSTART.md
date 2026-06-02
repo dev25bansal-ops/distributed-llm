@@ -65,8 +65,8 @@ pip install distllm
 ### Step 2: Start Coordinator
 
 ```bash
-# Start with a small model
-distllm system run --model meta-llama/Llama-3.2-1B --local
+# Start with a small model (no auth required for local development)
+distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
 ```
 
 ### Step 3: Chat
@@ -92,20 +92,66 @@ Download the desktop app from [releases](https://github.com/distributed-llm/dist
 
 ---
 
+## Authentication
+
+### Development (No Auth)
+
+For local development, disable authentication:
+
+```bash
+distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
+```
+
+No API key needed — anyone on localhost can connect.
+
+### With API Key
+
+Set an API key via environment variable:
+
+```bash
+# Set your API key
+export API_KEY="your-secret-key"
+
+# Start the server
+distllm system api --model meta-llama/Llama-3.2-1B --local
+```
+
+The API key is shown on startup:
+```
+API Key: your-secret-key
+Use: curl -H 'Authorization: Bearer your-secret-key' http://localhost:8000/health
+```
+
+### Connecting External Tools
+
+| Tool | Configuration |
+|------|--------------|
+| **OpenAI SDK** | `OpenAI(base_url="http://localhost:8000/v1", api_key="your-key")` |
+| **OpenCode** | Set `base_url: http://localhost:8000/v1` |
+| **Cursor** | Set `openai.baseUrl` in settings |
+| **curl** | `curl -H "Authorization: Bearer your-key" http://localhost:8000/v1/...` |
+
+---
+
 ## Multi-Node Setup
 
 ### Same Network (LAN)
 
 ```bash
 # Node 1 (Coordinator)
-distllm system coordinator --model meta-llama/Llama-3.2-70B --port 50050
+$env:API_KEY = "my-cluster-key"
+distllm system api --model meta-llama/Llama-3.2-70B --local --host 0.0.0.0 --port 8000
 
 # Node 2 (Worker)
-distllm system run --coordinator-host 192.168.1.100 --port 50051
+$env:API_KEY = "my-cluster-key"
+distllm cluster join --coordinator 192.168.1.100 --port 50050
 
 # Node 3 (Worker)
-distllm system run --coordinator-host 192.168.1.100 --port 50052
+$env:API_KEY = "my-cluster-key"
+distllm cluster join --coordinator 192.168.1.100 --port 50051
 ```
+
+**Important**: All nodes must use the same `API_KEY`.
 
 ### Different Locations (WAN)
 
@@ -130,7 +176,10 @@ distllm system run --coordinator-host your-server.com --port 50050
 ```python
 from distllm_sdk import DistLLMClient
 
-client = DistLLMClient(base_url="http://localhost:8000/v1")
+client = DistLLMClient(
+    base_url="http://localhost:8000/v1",
+    api_key="your-api-key",  # or "not-needed" with --no-auth
+)
 
 # Chat completion
 response = client.chat.completions.create(
@@ -147,7 +196,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="your-distllm-key",
+    api_key="your-api-key",  # or "not-needed" with --no-auth
 )
 
 response = client.chat.completions.create(
@@ -189,6 +238,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `CUDA out of memory` | Use a smaller model or enable quantization |
 | `Connection refused` | Check firewall, verify coordinator is running |
 | `Model not found` | Run `distllm model load <model-name>` first |
+| `Unauthorized` | Set `API_KEY` env var or use `--no-auth` flag |
 | Slow inference | Check GPU utilization with `nvidia-smi` |
 
 See [Troubleshooting Guide](TROUBLESHOOTING.md) for more.

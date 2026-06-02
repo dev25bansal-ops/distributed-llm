@@ -189,6 +189,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "Set DISTLLM_TLS_ENABLED=true for production deployments."
         )
 
+    # Display API key for users
+    from distllm.core.api_key_store import get_api_key_store
+    store = get_api_key_store()
+    display_key = store.get_display_key()
+    if display_key:
+        logger.info(f"API Key: {display_key}")
+        logger.info(f"Use: curl -H 'Authorization: Bearer {display_key}' http://localhost:8000/health")
+    else:
+        logger.info("API keys loaded from config file. Use 'distllm config keys' to manage.")
+
     _start_ws_broadcaster()
     yield
     if state.plugin_system:
@@ -852,18 +862,29 @@ async def api_cluster_nodes() -> dict:
         return {"nodes": []}
     nodes_list = []
     for node_id, node in coord.nodes.items():
-        nodes_list.append({
-            "node_id": node_id,
-            "host": node.host,
-            "port": node.port,
-            "healthy": getattr(node, 'healthy', False),
-            "start_layer": node.start_layer,
-            "end_layer": node.end_layer,
-            "gpu_name": getattr(node, 'gpu_name', ''),
-            "gpu_memory_free": getattr(node, 'gpu_memory_free', 0),
-            "gpu_memory_total": getattr(node, 'gpu_memory_total', 0),
-            "gpu_sm_count": getattr(node, 'gpu_sm_count', 0),
-        })
+        if isinstance(node, dict):
+            nodes_list.append({
+                "node_id": node_id,
+                "host": node.get("host", ""),
+                "port": node.get("port", 0),
+                "healthy": node.get("healthy", False),
+                "start_layer": node.get("start_layer", 0),
+                "end_layer": node.get("end_layer", 0),
+                "gpu_name": node.get("gpu_name", ""),
+            })
+        else:
+            nodes_list.append({
+                "node_id": node_id,
+                "host": getattr(node, "host", ""),
+                "port": getattr(node, "port", 0),
+                "healthy": getattr(node, 'healthy', False),
+                "start_layer": getattr(node, 'start_layer', 0),
+                "end_layer": getattr(node, 'end_layer', 0),
+                "gpu_name": getattr(node, 'gpu_name', ''),
+                "gpu_memory_free": getattr(node, 'gpu_memory_free', 0),
+                "gpu_memory_total": getattr(node, 'gpu_memory_total', 0),
+                "gpu_sm_count": getattr(node, 'gpu_sm_count', 0),
+            })
     return {"nodes": nodes_list, "total_layers": coord.total_layers}
 
 

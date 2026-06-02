@@ -12,8 +12,27 @@ http://localhost:8000/v1
 
 All requests require an `Authorization: Bearer <api-key>` header.
 
+### Development (No Auth)
+
+For local development, disable authentication:
+
 ```bash
-export DISTLLM_API_KEY=sk-your-master-key
+distllm system api --model <model> --local --no-auth
+```
+
+No API key needed — anyone on localhost can connect.
+
+### With API Key
+
+```bash
+export API_KEY="your-secret-key"
+distllm system api --model <model> --local
+```
+
+The API key is shown on startup. Use it in requests:
+
+```bash
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8000/v1/models
 ```
 
 ## Endpoints

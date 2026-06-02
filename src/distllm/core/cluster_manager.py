@@ -119,8 +119,12 @@ class ClusterManager:
     def _register_weight_source(self, node_id, model_name, start_layer, end_layer):
         key = f"{model_name}:{start_layer}:{end_layer}"
         node = self._pipeline.nodes.get(node_id)
-        host = node.host if node else "unknown"
-        port_b = node.port if node else 0
+        if isinstance(node, dict):
+            host = node.get("host", "unknown")
+            port_b = node.get("port", 0)
+        else:
+            host = getattr(node, "host", "unknown") if node else "unknown"
+            port_b = getattr(node, "port", 0) if node else 0
         self._model_registry[key] = {
             "node_id": node_id, "host": host, "port": port_b,
             "start_layer": start_layer, "end_layer": end_layer,

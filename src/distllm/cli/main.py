@@ -1202,9 +1202,11 @@ def system_api(
     dtype: str = typer.Option("float16", "--dtype", help="Data type"),
     local: bool = typer.Option(False, "--local", "-l", help="Load model locally"),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
+    no_auth: bool = typer.Option(False, "--no-auth", help="Disable API key authentication (development only)"),
 ):
     """Start the OpenAI-compatible REST API server."""
     import uvicorn
+    import os
     from loguru import logger
 
     from distllm.api.server import app, create_coordinator
@@ -1213,6 +1215,10 @@ def system_api(
     if debug:
         set_debug_mode(True)
         logger.info("Debug mode enabled: tensor shape logging active")
+
+    if no_auth:
+        os.environ["DISTLLM_NO_AUTH"] = "1"
+        logger.info("API authentication DISABLED (--no-auth)")
 
     create_coordinator(model_name=model, dtype=dtype, local=local)
     logger.info(f"Starting API server on {host}:{port}")

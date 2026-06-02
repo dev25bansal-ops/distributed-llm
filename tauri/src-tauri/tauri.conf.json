@@ -47,29 +47,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "python",
-          "cmd": "python",
-          "args": true
-        },
-        {
-          "name": "python3",
-          "cmd": "python3",
-          "args": true
-        },
-        {
-          "name": "distllm-coordinator",
-          "cmd": "distllm-coordinator",
-          "args": true
-        },
-        {
-          "name": "distllm-node",
-          "cmd": "distllm-node",
-          "args": true
-        }
-      ]
+      "open": true
     }
   }
 }

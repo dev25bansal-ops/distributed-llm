@@ -206,6 +206,8 @@ class ApiKeyStore:
             key_id="auto",
             created_at=time.time(),
         ))
+        # Store the raw key so it can be displayed to the user
+        self._auto_generated_key = generated
         logger.warning(
             "No API keys configured. Generated an in-memory admin API key. "
             "Set API_KEYS, API_KEYS_FILE, or API_KEY in the environment."
@@ -235,6 +237,25 @@ class ApiKeyStore:
                 key_id=key_id,
                 created_at=time.time(),
             ))
+
+
+    def get_display_key(self) -> str | None:
+        """Return the API key for display to the user.
+
+        Returns the raw key if it was auto-generated, or the API_KEY
+        env var value if set. Returns None if keys were loaded from
+        a file or JSON config.
+        """
+        # Auto-generated key
+        if hasattr(self, '_auto_generated_key'):
+            return self._auto_generated_key
+
+        # Single API_KEY env var
+        env_key = os.environ.get("API_KEY")
+        if env_key:
+            return env_key
+
+        return None
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────

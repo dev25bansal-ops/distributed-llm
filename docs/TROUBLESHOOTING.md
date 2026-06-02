@@ -616,13 +616,15 @@ done
 **Fix:**
 ```bash
 # Step 1: Verify the key is set in the environment
-echo $DISTLLM_API_KEY
+echo $API_KEY
 
 # Step 2: Test with curl
-curl -H "Authorization: Bearer $DISTLLM_API_KEY" http://coordinator:8000/v1/models
+curl -H "Authorization: Bearer $API_KEY" http://coordinator:8000/v1/models
 
-# Step 3: If the key is wrong, generate a new one
-distllm config setup
+# Step 3: If no key is set, either set one or disable auth
+export API_KEY="your-secret-key"
+# Or disable auth for development:
+distllm system api --model <model> --local --no-auth
 
 # Step 4: Check the key store for the hash
 distllm config list-keys

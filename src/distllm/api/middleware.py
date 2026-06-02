@@ -105,6 +105,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         store = get_api_key_store()
 
+        # Skip auth for health endpoints (K8s probes, load balancers), OPTIONS (CORS preflight), or --no-auth
+        if request.url.path in ("/health", "/ready", "/live", "/metrics") or request.method == "OPTIONS" or os.environ.get("DISTLLM_NO_AUTH") == "1":
+            return await call_next(request)
+
         auth_header = request.headers.get("Authorization", "")
         if os.environ.get("DISTLLM_TRUST_PROXY_HEADERS") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
             client_ip = request.headers.get("X-Real-IP") or ""

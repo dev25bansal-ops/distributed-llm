@@ -265,6 +265,9 @@ fn join_cluster(
     *worker = Some(child);
     update_tray_icon(&app, true);
 
+    // Store the API port so the dashboard can query the coordinator
+    *state.api_port.lock().map_err(|e| e.to_string())? = Some(port);
+
     Ok(ClusterStatus {
         running: true,
         node_id: Some("worker".into()),
@@ -296,7 +299,8 @@ fn leave_cluster(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result
 
 fn fetch_from_api(port: u16) -> ClusterStatus {
     let mut nodes = vec![];
-    if let Ok(val) = api_get(port, "/v1/cluster/status") {
+    // Try the admin nodes endpoint first
+    if let Ok(val) = api_get(port, "/admin/v1/nodes") {
         if let Some(list) = val.get("nodes").and_then(|n| n.as_array()) {
             for n in list {
                 nodes.push(PeerInfo {
@@ -316,10 +320,17 @@ fn fetch_from_api(port: u16) -> ClusterStatus {
         }
     }
 
+    // Get model info from health endpoint
+    let _model = if let Ok(val) = api_get(port, "/health") {
+        val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    } else {
+        String::new()
+    };
+
     ClusterStatus {
         running: true,
         node_id: None,
-        role: None,
+        role: Some("coordinator".into()),
         coordinator_addr: Some(format!("http://127.0.0.1:{}", port)),
         nodes,
         uptime_secs: 0,

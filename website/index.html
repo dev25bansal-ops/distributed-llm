@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DistLLM — Distributed LLM Inference for Everyone</title>
+    <meta name="description" content="Run 70B+ parameter LLMs across multiple GPUs and machines. Open-source, OpenAI-compatible, 10x cheaper than cloud APIs.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #09090b;
+            --bg-elevated: #111113;
+            --bg-card: #18181b;
+            --border: #27272a;
+            --text: #fafafa;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent: #22c55e;
+            --accent-hover: #16a34a;
+            --accent-glow: rgba(34, 197, 94, 0.12);
+            --accent-border: rgba(34, 197, 94, 0.3);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Animations ──────────────────────────── */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(40px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideInLeft {
+            from { opacity: 0; transform: translateX(-40px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(40px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes scaleIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 20px rgba(34, 197, 94, 0.2); }
+            50% { box-shadow: 0 0 40px rgba(34, 197, 94, 0.4); }
+        }
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        @keyframes typewriter {
+            from { width: 0; }
+            to { width: 100%; }
+        }
+        @keyframes blink {
+            0%, 100% { border-color: transparent; }
+            50% { border-color: var(--accent); }
+        }
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-10px); }
+            60% { transform: translateY(-5px); }
+        }
+
+        .animate-on-scroll {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.6s ease, transform 0.6s ease;
+        }
+        .animate-on-scroll.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .animate-delay-1 { transition-delay: 0.1s; }
+        .animate-delay-2 { transition-delay: 0.2s; }
+        .animate-delay-3 { transition-delay: 0.3s; }
+        .animate-delay-4 { transition-delay: 0.4s; }
+        .animate-delay-5 { transition-delay: 0.5s; }
+
+        /* ── Navigation ─────────────────────────── */
+        .nav {
+            position: fixed; top: 0; width: 100%; z-index: 100;
+            background: rgba(9, 9, 11, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            animation: fadeInDown 0.5s ease;
+        }
+        .nav-inner {
+            max-width: 1200px; margin: 0 auto; padding: 0 24px;
+            display: flex; align-items: center; justify-content: space-between;
+            height: 64px;
+        }
+        .nav-logo {
+            font-size: 20px; font-weight: 800; color: var(--text);
+            text-decoration: none;
+        }
+        .nav-logo .dot { color: var(--accent); }
+        .nav-links { display: flex; gap: 32px; align-items: center; }
+        .nav-links a {
+            color: var(--text-secondary); text-decoration: none;
+            font-size: 14px; font-weight: 500;
+            transition: color 0.2s, transform 0.2s;
+            position: relative;
+        }
+        .nav-links a:hover { color: var(--text); transform: translateY(-1px); }
+        .nav-links a::after {
+            content: ''; position: absolute; bottom: -4px; left: 0;
+            width: 0; height: 2px; background: var(--accent);
+            transition: width 0.3s;
+        }
+        .nav-links a:hover::after { width: 100%; }
+        .nav-cta {
+            background: var(--accent) !important; color: var(--bg) !important;
+            padding: 8px 20px; border-radius: 8px; font-weight: 600 !important;
+            transition: all 0.2s;
+        }
+        .nav-cta:hover { 
+            background: var(--accent-hover) !important; 
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+        }
+
+        /* ── Hero ────────────────────────────────── */
+        .hero {
+            padding: 160px 24px 100px; text-align: center;
+            position: relative; min-height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .hero-particles {
+            position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+        }
+        .particle {
+            position: absolute; width: 4px; height: 4px;
+            background: var(--accent); border-radius: 50%;
+            opacity: 0.3;
+            animation: float 6s ease-in-out infinite;
+        }
+        .hero-glow {
+            position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
+            width: 800px; height: 600px; pointer-events: none;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            animation: pulse 4s ease-in-out infinite;
+        }
+        .hero-grid {
+            position: absolute; inset: 0; pointer-events: none;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
+        }
+        .hero-content { position: relative; z-index: 1; max-width: 800px; }
+        .hero-badge {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: var(--accent-glow); border: 1px solid var(--accent-border);
+            color: var(--accent); padding: 8px 20px; border-radius: 100px;
+            font-size: 13px; font-weight: 600; margin-bottom: 32px;
+            animation: fadeIn 0.8s ease, scaleIn 0.8s ease;
+        }
+        .hero-badge .pulse {
+            width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+            animation: pulse 2s infinite;
+        }
+        .hero h1 {
+            font-size: clamp(40px, 7vw, 80px); font-weight: 900;
+            line-height: 1.05; letter-spacing: -3px; margin-bottom: 24px;
+            animation: fadeInUp 0.8s ease 0.2s both;
+        }
+        .hero h1 .accent {
+            background: linear-gradient(135deg, #22c55e, #06b6d4, #8b5cf6);
+            background-size: 200% 200%;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradientShift 3s ease infinite;
+        }
+        .hero p {
+            font-size: 20px; color: var(--text-secondary); max-width: 560px;
+            margin: 0 auto 40px; line-height: 1.7;
+            animation: fadeInUp 0.8s ease 0.4s both;
+        }
+        .hero-buttons {
+            display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+            animation: fadeInUp 0.8s ease 0.6s both;
+        }
+        .btn {
+            padding: 14px 28px; border-radius: 10px; font-size: 15px; font-weight: 600;
+            text-decoration: none; transition: all 0.3s; display: inline-flex;
+            align-items: center; gap: 8px; border: none; cursor: pointer;
+        }
+        .btn-primary { 
+            background: var(--accent); color: var(--bg);
+            animation: glow 3s ease-in-out infinite;
+        }
+        .btn-primary:hover { 
+            background: var(--accent-hover); 
+            transform: translateY(-3px); 
+            box-shadow: 0 10px 30px rgba(34, 197, 94, 0.3);
+        }
+        .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+        .btn-ghost:hover { 
+            border-color: var(--accent); 
+            background: var(--accent-glow);
+            transform: translateY(-2px);
+        }
+
+        /* ── Stats ───────────────────────────────── */
+        .stats {
+            display: grid; grid-template-columns: repeat(5, 1fr);
+            border-bottom: 1px solid var(--border);
+        }
+        .stat {
+            padding: 40px 24px; text-align: center;
+            border-right: 1px solid var(--border);
+            transition: background 0.3s;
+        }
+        .stat:hover { background: var(--bg-elevated); }
+        .stat-value {
+            font-size: 36px; font-weight: 800; letter-spacing: -1px;
+            background: linear-gradient(135deg, #22c55e, #06b6d4);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .stat-label { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+
+        /* ── Features ────────────────────────────── */
+        .features-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+        }
+        .feature-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 32px; 
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative; overflow: hidden;
+        }
+        .feature-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #22c55e, #06b6d4, #8b5cf6);
+            background-size: 200% 100%;
+            animation: gradientShift 3s ease infinite;
+            opacity: 0; transition: opacity 0.3s;
+        }
+        .feature-card::after {
+            content: ''; position: absolute; inset: 0;
+            background: radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), 
+                        rgba(34, 197, 94, 0.06) 0%, transparent 50%);
+            opacity: 0; transition: opacity 0.3s;
+        }
+        .feature-card:hover {
+            border-color: var(--accent-border);
+            transform: translateY(-8px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+        .feature-card:hover::before { opacity: 1; }
+        .feature-card:hover::after { opacity: 1; }
+        .feature-icon {
+            width: 52px; height: 52px; border-radius: 14px;
+            background: var(--accent-glow); border: 1px solid var(--accent-border);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 24px; margin-bottom: 20px;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        .feature-card:hover .feature-icon {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+        .feature-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+        .feature-card p { font-size: 14px; color: var(--text-secondary); line-height: 1.7; }
+
+        /* ── Code Demo ───────────────────────────── */
+        .code-demo {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; overflow: hidden; margin-top: 48px;
+            transition: box-shadow 0.3s;
+        }
+        .code-demo:hover { box-shadow: 0 0 40px rgba(34, 197, 94, 0.1); }
+        .code-header {
+            display: flex; align-items: center; gap: 12px;
+            padding: 16px 20px; border-bottom: 1px solid var(--border);
+        }
+        .code-dot { width: 12px; height: 12px; border-radius: 50%; }
+        .code-dot.r { background: #ef4444; } 
+        .code-dot.y { background: #eab308; } 
+        .code-dot.g { background: #22c55e; }
+        .code-title { font-size: 13px; color: var(--text-muted); margin-left: 8px; }
+        .code-body {
+            padding: 24px; font-family: 'JetBrains Mono', monospace;
+            font-size: 14px; line-height: 1.8; overflow-x: auto;
+        }
+        .code-line {
+            opacity: 0;
+            animation: fadeInUp 0.3s ease forwards;
+        }
+        .code-comment { color: #6a737d; }
+        .code-keyword { color: #ff7b72; }
+        .code-string { color: #a5d6ff; }
+        .code-func { color: #d2a8ff; }
+
+        /* ── Comparison Table ────────────────────── */
+        .comparison-table {
+            width: 100%; border-collapse: collapse;
+            background: var(--bg-card); border-radius: 16px; overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .comparison-table th, .comparison-table td {
+            padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border);
+            transition: background 0.2s;
+        }
+        .comparison-table th {
+            background: var(--bg-elevated); font-size: 12px; font-weight: 600;
+            color: var(--text-muted); text-transform: uppercase;
+        }
+        .comparison-table tr:hover td { background: var(--bg-elevated); }
+        .comparison-table .yes { color: var(--accent); font-weight: 600; }
+        .comparison-table .no { color: var(--text-muted); }
+
+        /* ── Pricing ─────────────────────────────── */
+        .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+        .pricing-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 32px; position: relative;
+            transition: all 0.3s;
+        }
+        .pricing-card:hover { transform: translateY(-4px); }
+        .pricing-card.featured {
+            border-color: var(--accent);
+            box-shadow: 0 0 40px var(--accent-glow);
+            animation: glow 4s ease-in-out infinite;
+        }
+        .pricing-badge {
+            position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+            background: linear-gradient(135deg, #22c55e, #06b6d4);
+            color: var(--bg); padding: 4px 16px; border-radius: 100px;
+            font-size: 12px; font-weight: 700;
+        }
+        .pricing-name { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+        .pricing-price { font-size: 48px; font-weight: 900; letter-spacing: -2px; }
+        .pricing-price span { font-size: 16px; color: var(--text-muted); font-weight: 400; }
+        .pricing-desc { font-size: 14px; color: var(--text-muted); margin: 8px 0 24px; }
+        .pricing-features { list-style: none; margin-bottom: 24px; }
+        .pricing-features li {
+            padding: 8px 0; font-size: 14px; display: flex; align-items: center; gap: 10px;
+            color: var(--text-secondary);
+        }
+        .pricing-features li::before {
+            content: '✓'; color: var(--accent); font-weight: 700; font-size: 16px;
+        }
+        .pricing-btn {
+            display: block; width: 100%; padding: 14px; text-align: center;
+            border-radius: 10px; font-weight: 600; text-decoration: none;
+            transition: all 0.3s; border: none; cursor: pointer; font-size: 15px;
+        }
+        .pricing-btn-primary { background: var(--accent); color: var(--bg); }
+        .pricing-btn-primary:hover { 
+            background: var(--accent-hover); 
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(34, 197, 94, 0.3);
+        }
+        .pricing-btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+        .pricing-btn-ghost:hover { 
+            border-color: var(--accent); 
+            background: var(--accent-glow);
+        }
+
+        /* ── Testimonials ────────────────────────── */
+        .testimonials-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+        .testimonial {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 28px;
+            transition: all 0.3s;
+        }
+        .testimonial:hover { 
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+        }
+        .testimonial-stars { color: #eab308; margin-bottom: 12px; }
+        .testimonial-text { font-size: 14px; color: var(--text-secondary); line-height: 1.7; margin-bottom: 16px; }
+        .testimonial-author { font-size: 14px; font-weight: 600; }
+        .testimonial-role { font-size: 12px; color: var(--text-muted); }
+
+        /* ── CTA ─────────────────────────────────── */
+        .cta {
+            text-align: center; padding: 100px 24px;
+            position: relative; overflow: hidden;
+        }
+        .cta-glow {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 800px; height: 400px; pointer-events: none;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            animation: pulse 4s ease-in-out infinite;
+        }
+        .cta-content { position: relative; z-index: 1; }
+        .cta h2 {
+            font-size: clamp(28px, 4vw, 48px); font-weight: 800;
+            letter-spacing: -1.5px; margin-bottom: 16px;
+        }
+        .cta p { font-size: 18px; color: var(--text-secondary); margin-bottom: 32px; }
+
+        /* ── Footer ──────────────────────────────── */
+        footer { border-top: 1px solid var(--border); padding: 64px 24px 32px; }
+        .footer-grid {
+            max-width: 1200px; margin: 0 auto;
+            display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 48px;
+        }
+        .footer-brand p { font-size: 14px; color: var(--text-muted); margin-top: 12px; max-width: 280px; }
+        .footer-col h4 {
+            font-size: 13px; font-weight: 600; margin-bottom: 16px;
+            text-transform: uppercase; color: var(--text-muted);
+        }
+        .footer-col a {
+            display: block; color: var(--text-secondary); text-decoration: none;
+            font-size: 14px; padding: 4px 0; transition: all 0.2s;
+        }
+        .footer-col a:hover { color: var(--accent); transform: translateX(4px); }
+        .footer-bottom {
+            max-width: 1200px; margin: 48px auto 0; padding-top: 24px;
+            border-top: 1px solid var(--border);
+            display: flex; justify-content: space-between;
+            font-size: 13px; color: var(--text-muted);
+        }
+
+        /* ── Scroll Progress ─────────────────────── */
+        .scroll-progress {
+            position: fixed; top: 64px; left: 0; height: 2px;
+            background: linear-gradient(90deg, #22c55e, #06b6d4);
+            z-index: 99; transition: width 0.1s;
+        }
+
+        /* ── Back to Top ─────────────────────────── */
+        .back-to-top {
+            position: fixed; bottom: 24px; right: 24px;
+            width: 48px; height: 48px; border-radius: 50%;
+            background: var(--accent); color: var(--bg);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px; text-decoration: none;
+            opacity: 0; transform: translateY(20px);
+            transition: all 0.3s; z-index: 50;
+            box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+        }
+        .back-to-top.visible { opacity: 1; transform: translateY(0); }
+        .back-to-top:hover { transform: translateY(-4px); }
+
+        /* ── Responsive ──────────────────────────── */
+        @media (max-width: 1024px) {
+            .features-grid, .pricing-grid, .testimonials-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .features-grid, .pricing-grid, .testimonials-grid { grid-template-columns: 1fr; }
+            .stats { grid-template-columns: repeat(3, 1fr); }
+            .footer-grid { grid-template-columns: 1fr 1fr; }
+            .comparison-table { font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Scroll Progress -->
+    <div class="scroll-progress" id="scrollProgress"></div>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-inner">
+            <a href="#" class="nav-logo">dist<span class="dot">llm</span></a>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#how-it-works">How It Works</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#compare">Compare</a>
+                <a href="https://github.com/distributed-llm/distributed-llm">GitHub</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-particles" id="particles"></div>
+        <div class="hero-glow"></div>
+        <div class="hero-grid"></div>
+        <div class="hero-content">
+            <div class="hero-badge">
+                <div class="pulse"></div>
+                Open Source &bull; Apache 2.0 &bull; v0.4.0
+            </div>
+            <h1>Run <span class="accent">70B+ Models</span><br>Across Any GPUs</h1>
+            <p>Distributed LLM inference that pools GPUs across machines. OpenAI-compatible API. 10x cheaper than cloud APIs.</p>
+            <div class="hero-buttons">
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="btn btn-primary">
+                    Get Started →
+                </a>
+                <a href="#how-it-works" class="btn btn-ghost">
+                    See How It Works
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="stats">
+        <div class="stat animate-on-scroll"><div class="stat-value" data-count="99">0</div><div class="stat-label">K+ Lines of Code</div></div>
+        <div class="stat animate-on-scroll animate-delay-1"><div class="stat-value" data-count="364">0</div><div class="stat-label">Tests Passing</div></div>
+        <div class="stat animate-on-scroll animate-delay-2"><div class="stat-value" data-count="8">0</div><div class="stat-label">Backends</div></div>
+        <div class="stat animate-on-scroll animate-delay-3"><div class="stat-value" data-count="4">0</div><div class="stat-label">SDK Languages</div></div>
+        <div class="stat animate-on-scroll animate-delay-4"><div class="stat-value" data-count="10">0</div><div class="stat-label">x Cheaper</div></div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features" style="padding: 120px 24px;">
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <div style="text-align: center; margin-bottom: 64px;" class="animate-on-scroll">
+                <div style="font-size: 13px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;">Features</div>
+                <h2 style="font-size: 48px; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 16px;">Everything you need</h2>
+                <p style="font-size: 18px; color: var(--text-secondary); max-width: 560px; margin: 0 auto;">One platform for distributed inference, from development to production.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card animate-on-scroll"><div class="feature-icon">⚡</div><h3>Pipeline Parallelism</h3><p>Split models across GPUs automatically. Run 70B on 4x RTX 3090s.</p></div>
+                <div class="feature-card animate-on-scroll animate-delay-1"><div class="feature-icon">🔌</div><h3>OpenAI Compatible</h3><p>Drop-in replacement. Works with any OpenAI SDK, LangChain, LlamaIndex.</p></div>
+                <div class="feature-card animate-on-scroll animate-delay-2"><div class="feature-icon">💰</div><h3>Cost Optimization</h3><p>Multi-cloud routing, spot instances. 60-80% savings on GPU costs.</p></div>
+                <div class="feature-card animate-on-scroll"><div class="feature-icon">🔒</div><h3>Enterprise Security</h3><p>mTLS, RBAC, API keys, audit logs, E2E encryption. SOC2-ready.</p></div>
+                <div class="feature-card animate-on-scroll animate-delay-1"><div class="feature-icon">📊</div><h3>Observability</h3><p>Prometheus, Grafana, OpenTelemetry, SLO tracking built-in.</p></div>
+                <div class="feature-card animate-on-scroll animate-delay-2"><div class="feature-icon">🧠</div><h3>Speculative Decoding</h3><p>2-3x faster with tree-based draft verification.</p></div>
+                <div class="feature-card animate-on-scroll"><div class="feature-icon">🌍</div><h3>Federated Fine-Tuning</h3><p>Privacy-preserving training. Differential privacy guarantees.</p></div>
+                <div class="feature-card animate-on-scroll animate-delay-1"><div class="feature-icon">🖥️</div><h3>Desktop App</h3><p>Tauri app for macOS, Windows, Linux. One-click management.</p></div>
+                <div class="feature-card animate-on-scroll animate-delay-2"><div class="feature-icon">🔌</div><h3>Plugin System</h3><p>Custom backends, routing, sampling. Extensible architecture.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section class="section" id="how-it-works" style="padding: 120px 24px; background: var(--bg-elevated);">
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <div style="text-align: center; margin-bottom: 64px;" class="animate-on-scroll">
+                <div style="font-size: 13px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;">How It Works</div>
+                <h2 style="font-size: 48px; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 16px;">3 commands to production</h2>
+            </div>
+            <div class="code-demo animate-on-scroll">
+                <div class="code-header">
+                    <div class="code-dot r"></div>
+                    <div class="code-dot y"></div>
+                    <div class="code-dot g"></div>
+                    <span class="code-title">Terminal</span>
+                </div>
+                <div class="code-body">
+<div class="code-line" style="animation-delay: 0.1s"><span class="code-comment"># 1. Install</span></div>
+<div class="code-line" style="animation-delay: 0.3s"><span class="code-func">pip install</span> distributed-llm</div>
+<div class="code-line" style="animation-delay: 0.5s">&nbsp;</div>
+<div class="code-line" style="animation-delay: 0.7s"><span class="code-comment"># 2. Start coordinator</span></div>
+<div class="code-line" style="animation-delay: 0.9s"><span class="code-func">distllm system api</span> <span class="code-keyword">--model</span> <span class="code-string">Qwen/Qwen2.5-3B</span> <span class="code-keyword">--local</span></div>
+<div class="code-line" style="animation-delay: 1.1s">&nbsp;</div>
+<div class="code-line" style="animation-delay: 1.3s"><span class="code-comment"># 3. Connect worker</span></div>
+<div class="code-line" style="animation-delay: 1.5s"><span class="code-func">distllm cluster join</span> <span class="code-keyword">--coordinator</span> <span class="code-string">192.168.1.59</span></div>
+<div class="code-line" style="animation-delay: 1.7s">&nbsp;</div>
+<div class="code-line" style="animation-delay: 1.9s"><span class="code-comment"># 4. Use from any language</span></div>
+<div class="code-line" style="animation-delay: 2.1s"><span class="code-func">curl</span> <span class="code-string">http://localhost:8000/v1/chat/completions</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Comparison -->
+    <section class="section" id="compare" style="padding: 120px 24px;">
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <div style="text-align: center; margin-bottom: 64px;" class="animate-on-scroll">
+                <div style="font-size: 13px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;">Compare</div>
+                <h2 style="font-size: 48px; font-weight: 800; letter-spacing: -1.5px;">Why DistLLM?</h2>
+            </div>
+            <table class="comparison-table animate-on-scroll">
+                <thead><tr><th>Feature</th><th>DistLLM</th><th>vLLM</th><th>Together AI</th><th>Fireworks</th></tr></thead>
+                <tbody>
+                    <tr><td>Pipeline Parallelism</td><td class="yes">✅ Native</td><td class="no">❌</td><td class="no">❌</td><td class="no">❌</td></tr>
+                    <tr><td>Multi-Backend</td><td class="yes">✅ 8 backends</td><td class="no">❌</td><td class="no">❌</td><td class="no">❌</td></tr>
+                    <tr><td>Desktop App</td><td class="yes">✅ Tauri</td><td class="no">❌</td><td class="no">❌</td><td class="no">❌</td></tr>
+                    <tr><td>Multi-Cloud</td><td class="yes">✅ Spot + Carbon</td><td class="no">❌</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+                    <tr><td>Federated FL</td><td class="yes">✅ DP + SecAgg</td><td class="no">❌</td><td class="no">❌</td><td class="no">❌</td></tr>
+                    <tr><td>Price</td><td class="yes">Free (OSS)</td><td class="yes">Free</td><td class="no">$0.0002/1K</td><td class="no">$0.0002/1K</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Pricing -->
+    <section class="section" id="pricing" style="padding: 120px 24px; background: var(--bg-elevated);">
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <div style="text-align: center; margin-bottom: 64px;" class="animate-on-scroll">
+                <div style="font-size: 13px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;">Pricing</div>
+                <h2 style="font-size: 48px; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 16px;">Simple pricing</h2>
+                <p style="font-size: 18px; color: var(--text-secondary);">Open source. Pay only for managed hosting.</p>
+            </div>
+            <div class="pricing-grid">
+                <div class="pricing-card animate-on-scroll">
+                    <div class="pricing-name">Community</div>
+                    <div class="pricing-price">$0 <span>/ forever</span></div>
+                    <div class="pricing-desc">Self-hosted, open source</div>
+                    <ul class="pricing-features">
+                        <li>All features</li><li>Unlimited models</li><li>Unlimited nodes</li><li>Apache 2.0</li>
+                    </ul>
+                    <a href="https://github.com/distributed-llm/distributed-llm" class="pricing-btn pricing-btn-ghost">Get Started</a>
+                </div>
+                <div class="pricing-card featured animate-on-scroll animate-delay-1">
+                    <div class="pricing-badge">Popular</div>
+                    <div class="pricing-name">Pro</div>
+                    <div class="pricing-price">$49 <span>/ month</span></div>
+                    <div class="pricing-desc">Managed hosting + support</div>
+                    <ul class="pricing-features">
+                        <li>Everything in Community</li><li>Managed API</li><li>1M tokens/day</li><li>99.9% SLA</li>
+                    </ul>
+                    <a href="#" class="pricing-btn pricing-btn-primary">Start Free Trial</a>
+                </div>
+                <div class="pricing-card animate-on-scroll animate-delay-2">
+                    <div class="pricing-name">Enterprise</div>
+                    <div class="pricing-price">Custom</div>
+                    <div class="pricing-desc">On-premise + dedicated support</div>
+                    <ul class="pricing-features">
+                        <li>Everything in Pro</li><li>Unlimited tokens</li><li>SSO/SAML</li><li>Custom SLA</li>
+                    </ul>
+                    <a href="mailto:enterprise@distllm.dev" class="pricing-btn pricing-btn-ghost">Contact Sales</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="cta">
+        <div class="cta-glow"></div>
+        <div class="cta-content animate-on-scroll">
+            <h2>Ready to save 10x?</h2>
+            <p>Open source. No vendor lock-in. Run on your own GPUs.</p>
+            <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="btn btn-primary">
+                Get Started on GitHub →
+            </a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-grid">
+            <div class="footer-brand">
+                <a href="#" class="nav-logo">dist<span class="dot">llm</span></a>
+                <p>Distributed LLM inference for everyone.</p>
+            </div>
+            <div class="footer-col">
+                <h4>Product</h4>
+                <a href="#features">Features</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#compare">Compare</a>
+            </div>
+            <div class="footer-col">
+                <h4>Developers</h4>
+                <a href="https://github.com/distributed-llm/distributed-llm">Docs</a>
+                <a href="https://github.com/distributed-llm/distributed-llm/tree/main/examples">Examples</a>
+                <a href="https://github.com/distributed-llm/distributed-llm/tree/main/sdk">SDKs</a>
+            </div>
+            <div class="footer-col">
+                <h4>Company</h4>
+                <a href="mailto:hello@distllm.dev">Contact</a>
+                <a href="https://github.com/distributed-llm/distributed-llm/blob/main/docs/TERMS.md">Terms</a>
+                <a href="https://github.com/distributed-llm/distributed-llm/blob/main/SECURITY.md">Security</a>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <span>© 2026 DistLLM. Apache 2.0.</span>
+            <span>Built with ❤️</span>
+        </div>
+    </footer>
+
+    <!-- Back to Top -->
+    <a href="#" class="back-to-top" id="backToTop">↑</a>
+
+    <script>
+        // ── Scroll animations ──────────────────────
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+
+        document.querySelectorAll('.animate-on-scroll').forEach(el => observer.observe(el));
+
+        // ── Scroll progress bar ────────────────────
+        window.addEventListener('scroll', () => {
+            const scrollTop = window.scrollY;
+            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            const progress = (scrollTop / docHeight) * 100;
+            document.getElementById('scrollProgress').style.width = progress + '%';
+
+            // Back to top button
+            const btn = document.getElementById('backToTop');
+            if (scrollTop > 500) {
+                btn.classList.add('visible');
+            } else {
+                btn.classList.remove('visible');
+            }
+        });
+
+        // ── Counter animation ──────────────────────
+        const counters = document.querySelectorAll('.stat-value[data-count]');
+        const counterObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const target = entry.target;
+                    const count = parseInt(target.dataset.count);
+                    let current = 0;
+                    const increment = count / 30;
+                    const timer = setInterval(() => {
+                        current += increment;
+                        if (current >= count) {
+                            current = count;
+                            clearInterval(timer);
+                        }
+                        target.textContent = Math.floor(current);
+                    }, 30);
+                    counterObserver.unobserve(target);
+                }
+            });
+        }, { threshold: 0.5 });
+        counters.forEach(counter => counterObserver.observe(counter));
+
+        // ── Feature card mouse glow ────────────────
+        document.querySelectorAll('.feature-card').forEach(card => {
+            card.addEventListener('mousemove', (e) => {
+                const rect = card.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * 100;
+                const y = ((e.clientY - rect.top) / rect.height) * 100;
+                card.style.setProperty('--mouse-x', x + '%');
+                card.style.setProperty('--mouse-y', y + '%');
+            });
+        });
+
+        // ── Hero particles ─────────────────────────
+        const particlesContainer = document.getElementById('particles');
+        for (let i = 0; i < 30; i++) {
+            const particle = document.createElement('div');
+            particle.className = 'particle';
+            particle.style.left = Math.random() * 100 + '%';
+            particle.style.top = Math.random() * 100 + '%';
+            particle.style.animationDelay = Math.random() * 6 + 's';
+            particle.style.animationDuration = (4 + Math.random() * 4) + 's';
+            particle.style.width = (2 + Math.random() * 4) + 'px';
+            particle.style.height = particle.style.width;
+            particlesContainer.appendChild(particle);
+        }
+
+        // ── Smooth scroll for anchor links ─────────
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
