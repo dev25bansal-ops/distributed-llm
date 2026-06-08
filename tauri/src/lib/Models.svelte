@@ -1,12 +1,19 @@
 <script lang="ts">
   import { listModels, downloadModel } from "./api";
+  import { logStore } from "./stores";
+  import { Card, ErrorBanner, toastStore } from "./ui";
   import type { ModelInfo } from "./types";
+  import { onMount, onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
 
   let models = $state<ModelInfo[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let searchQuery = $state("");
   let downloading = $state<Set<string>>(new Set());
+  // 3.6: Track download progress per model
+  let downloadProgress = $state<Map<string, string>>(new Map());
+  let unlistenProgress: (() => void) | undefined;
 
   async function loadModels() {
     loading = true;
@@ -20,17 +27,47 @@
     }
   }
 
+  // 3.6: Listen for download progress events
+  onMount(async () => {
+    await loadModels();
+    unlistenProgress = await listen<{ model_id: string; status: string; detail: string }>(
+      "download-progress",
+      (e) => {
+        const { model_id, status, detail } = e.payload;
+        if (status === "completed") {
+          downloadProgress = new Map([...downloadProgress].filter(([k]) => k !== model_id));
+          downloading = new Set([...downloading].filter((id) => id !== model_id));
+          toastStore.success("Downloaded " + model_id.split("/").pop());
+          logStore.info("models", `Model downloaded: ${model_id}`);
+          loadModels();
+        } else if (status === "failed") {
+          downloadProgress = new Map([...downloadProgress].filter(([k]) => k !== model_id));
+          downloading = new Set([...downloading].filter((id) => id !== model_id));
+          error = detail;
+          logStore.error("models", `Model download failed: ${model_id} - ${detail}`);
+        } else {
+          downloadProgress = new Map(downloadProgress).set(model_id, detail);
+        }
+      },
+    );
+  });
+
+  onDestroy(() => {
+    unlistenProgress?.();
+  });
+
   async function handleDownload(modelId: string) {
-    downloading.add(modelId);
+    downloading = new Set([...downloading, modelId]);
+    downloadProgress = new Map(downloadProgress).set(modelId, "Starting...");
     error = null;
+    logStore.info("models", `Starting download: ${modelId}`);
     try {
-      const msg = await downloadModel(modelId);
-      console.log(msg);
-      await loadModels();
+      await downloadModel(modelId);
     } catch (e: unknown) {
       error = String(e);
-    } finally {
-      downloading.delete(modelId);
+      downloading = new Set([...downloading].filter((id) => id !== modelId));
+      downloadProgress = new Map([...downloadProgress].filter(([k]) => k !== modelId));
+      logStore.error("models", `Download failed: ${modelId} - ${e}`);
     }
   }
 
@@ -55,24 +92,15 @@
       : popularModels,
   );
 
-  // Load downloaded models on mount
-  import { onMount } from "svelte";
   onMount(loadModels);
 </script>
 
 <div class="models-page">
   <h1 class="page-title">Model Browser</h1>
 
-  {#if error}
-    <div class="error-banner">{error}</div>
-  {/if}
+  <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
-  <section class="card">
-    <h2 class="card-title">Available Models</h2>
-    <p class="card-desc">
-      One-click download from Hugging Face. Models are automatically split across cluster nodes.
-    </p>
-
+  <Card title="Available Models" description="One-click download from Hugging Face. Models are automatically split across cluster nodes.">
     <div class="search-bar">
       <span class="search-icon">🔍</span>
       <input
@@ -84,7 +112,7 @@
     </div>
 
     <div class="model-grid">
-      {#each filtered as model}
+      {#each filtered as model (model.id)}
         <div class="model-card">
           <div class="model-header">
             <span class="model-name">{model.name}</span>
@@ -97,13 +125,19 @@
             <span class="meta-item">GPU: {model.gpu}</span>
           </div>
           <div class="model-id mono">{model.id}</div>
-          <button
-            class="btn btn-download"
-            disabled={downloading.has(model.id)}
-            onclick={() => handleDownload(model.id)}
-          >
-            {downloading.has(model.id) ? "Downloading..." : "Download"}
-          </button>
+          {#if downloading.has(model.id)}
+            <div class="download-status">
+              <div class="download-spinner"></div>
+              <span class="download-detail">{downloadProgress.get(model.id) ?? "Downloading..."}</span>
+            </div>
+          {:else}
+            <button
+              class="btn btn-download"
+              onclick={() => handleDownload(model.id)}
+            >
+              Download
+            </button>
+          {/if}
         </div>
       {/each}
     </div>
@@ -111,29 +145,11 @@
     {#if filtered.length === 0}
       <div class="empty-state">No models match your search.</div>
     {/if}
-  </section>
+  </Card>
 </div>
 
 <style>
   .models-page { max-width: 900px; }
-  .page-title { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
-  .error-banner {
-    background: color-mix(in srgb, var(--danger) 15%, transparent);
-    color: var(--danger);
-    padding: 10px 14px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    font-size: 13px;
-  }
-  .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 16px;
-  }
-  .card-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-  .card-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
   .search-bar {
     display: flex;
     align-items: center;
@@ -151,6 +167,7 @@
     border: none;
     color: var(--text-primary);
     font-size: 14px;
+    outline: none;
   }
   .search-input::placeholder { color: var(--text-muted); }
   .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
@@ -183,10 +200,34 @@
     border-radius: 6px;
     font-size: 13px;
     font-weight: 600;
+    cursor: pointer;
+    border: none;
     transition: background 0.15s;
   }
   .btn-download:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn-download:disabled { opacity: 0.5; cursor: not-allowed; }
-  .mono { font-family: var(--font-mono); }
-  .empty-state { color: var(--text-muted); font-size: 13px; padding: 20px 0; text-align: center; }
+  .download-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .download-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .download-detail {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
 </style>

@@ -1075,6 +1075,22 @@ class DistLLMClientSync(_BaseClient):
         """Cancel a fine-tuning job."""
         return self._fine_tuning_cancel_sync(job_id)
 
+    def marketplace_ads(self) -> list[dict]:
+        """List active KV cache advertisements."""
+        return self._request("GET", "/v1/marketplace/ads")
+
+    def federated_peers(self) -> list[dict]:
+        """List federated peer clusters."""
+        return self._request("GET", "/v1/federated/peers")
+
+    def webrtc_status(self) -> dict:
+        """Get WebRTC signaling server status."""
+        return self._request("GET", "/v1/webrtc/status")
+
+    def defrag_status(self) -> dict:
+        """Get defragmentation status."""
+        return self._request("GET", "/v1/defrag/status")
+
     # ---- Internal ----
 
     def _record_call(self, endpoint: str, latency: float, usage: UsageInfo | None):

@@ -1,0 +1,150 @@
+---
+# DistLLM Ansible role — main tasks
+
+- name: Create distllm group
+  ansible.builtin.group:
+    name: "{{ distllm_group }}"
+    state: present
+  become: true
+
+- name: Create distllm user
+  ansible.builtin.user:
+    name: "{{ distllm_user }}"
+    group: "{{ distllm_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ distllm_install_dir }}"
+    create_home: false
+  become: true
+
+- name: Create directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ distllm_user }}"
+    group: "{{ distllm_group }}"
+    mode: "0755"
+  become: true
+  loop:
+    - "{{ distllm_install_dir }}"
+    - "{{ distllm_config_dir }}"
+    - "{{ distllm_data_dir }}"
+    - "{{ distllm_model_cache_dir }}"
+    - "{{ distllm_log_dir }}"
+
+- name: Install Docker (if not present)
+  ansible.builtin.package:
+    name: docker.io
+    state: present
+  become: true
+  when: ansible_os_family == "Debian"
+
+- name: Install Docker (RedHat)
+  ansible.builtin.package:
+    name: docker
+    state: present
+  become: true
+  when: ansible_os_family == "RedHat"
+
+- name: Ensure Docker is running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  become: true
+
+- name: Pull DistLLM image
+  community.docker.docker_image:
+    name: "{{ distllm_image }}"
+    source: pull
+  become: true
+
+- name: Deploy DistLLM config
+  ansible.builtin.template:
+    src: distllm.yaml.j2
+    dest: "{{ distllm_config_dir }}/distllm.yaml"
+    owner: "{{ distllm_user }}"
+    group: "{{ distllm_group }}"
+    mode: "0644"
+  become: true
+  notify: restart distllm
+
+- name: Deploy Redis (if enabled)
+  community.docker.docker_container:
+    name: distllm-redis
+    image: redis:7-alpine
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "{{ distllm_redis_port }}:6379"
+    volumes:
+      - "{{ distllm_data_dir }}/redis:/data"
+  become: true
+  when: distllm_redis_enabled
+
+- name: Deploy DistLLM coordinator
+  community.docker.docker_container:
+    name: distllm-coordinator
+    image: "{{ distllm_image }}"
+    state: started
+    restart_policy: unless-stopped
+    command: ["distllm-coordinator"]
+    ports:
+      - "{{ distllm_coordinator_port }}:8000"
+      - "{{ distllm_grpc_port }}:50051"
+      - "{{ distllm_metrics_port }}:9090"
+    volumes:
+      - "{{ distllm_config_dir }}:/etc/distllm:ro"
+      - "{{ distllm_model_cache_dir }}:/data/models"
+      - "{{ distllm_data_dir }}/cache:/data/cache"
+    env:
+      DISTLLM_LOG_LEVEL: "info"
+      DISTLLM_COORDINATOR_HOST: "{{ distllm_coordinator_host }}"
+      DISTLLM_REDIS_URL: "redis://{{ distllm_redis_host }}:{{ distllm_redis_port }}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+  become: true
+  notify: restart distllm
+
+- name: Wait for coordinator to be healthy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ distllm_coordinator_port }}/health"
+    method: GET
+    status_code: 200
+  register: health_check
+  until: health_check.status == 200
+  retries: 30
+  delay: 5
+
+- name: Deploy Prometheus (if enabled)
+  community.docker.docker_container:
+    name: distllm-prometheus
+    image: prom/prometheus:v2.51.0
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - "{{ distllm_config_dir }}/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+      - "{{ distllm_data_dir }}/prometheus:/prometheus"
+  become: true
+  when: distllm_prometheus_enabled
+
+- name: Deploy Grafana (if enabled)
+  community.docker.docker_container:
+    name: distllm-grafana
+    image: grafana/grafana:10.4.0
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "3000:3000"
+    env:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "distllm"
+    volumes:
+      - "{{ distllm_data_dir }}/grafana:/var/lib/grafana"
+  become: true
+  when: distllm_grafana_enabled

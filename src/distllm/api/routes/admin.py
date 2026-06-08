@@ -286,9 +286,11 @@ async def offline_node(node_id: str):
         if isinstance(node, dict):
             # Dict from PipelineOrchestrator — update via pipeline
             pass
-        else:
+        elif isinstance(node, object) and hasattr(node, 'healthy'):
+            # M-13: Thread-safe write via attribute with instance lock
             node.healthy = False
-    logger.info(f"Admin: marked node {node_id} offline")
+        else:
+            logger.warning(f"Admin: cannot mark node {node_id} offline (unknown type: {type(node).__name__})")
     return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' marked offline")
 
 
@@ -498,6 +500,7 @@ class RegisterNodeRequest(BaseModel):
     total_layers: int = Field(..., description="Total model layers")
     device: str = Field("cpu", description="Device type")
     gpu_name: str = Field("", description="GPU name")
+    ready: bool = Field(False, description="Whether the worker has finished loading and is ready to serve")
 
 
 @router.post(
@@ -540,7 +543,16 @@ async def register_node(body: RegisterNodeRequest):
             end_layer=body.end_layer,
             total_layers=body.total_layers,
         )
-        logger.info(f"Node {body.node_id} registered (host={body.host}, port={body.port})")
+        logger.info(f"Node {body.node_id} registered (host={body.host}, port={body.port}, ready={body.ready})")
+
+        # If the node is not ready yet, mark it as unhealthy so the coordinator
+        # won't route requests to it until health probes confirm it's alive
+        if not body.ready:
+            node = coord._pipeline.get_node(body.node_id)
+            if node:
+                node.is_healthy = False
+                logger.info(f"Node {body.node_id} registered but not ready — marked unhealthy until health check passes")
+
         return {"status": "registered", "node_id": body.node_id}
     except HTTPException:
         raise

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>DistLLM — Distributed LLM Inference</title>
+    <link>https://distllm.dev</link>
+    <description>Updates, releases, and technical deep-dives from the DistLLM project.</description>
+    <language>en</language>
+    <atom:link href="https://distllm.dev/feed.xml" rel="self" type="application/rss+xml"/>
+    <lastBuildDate>Mon, 02 Jun 2026 00:00:00 GMT</lastBuildDate>
+    <item>
+      <title>How to Run Llama 3.1 70B on Consumer GPUs with Pipeline Parallelism</title>
+      <link>https://distllm.dev/blog.html#llama-70b-guide</link>
+      <guid>https://distllm.dev/blog.html#llama-70b-guide</guid>
+      <pubDate>Wed, 28 May 2026 00:00:00 GMT</pubDate>
+      <description>Step-by-step guide to pooling 3x RTX 4090s to run Llama 3.1 70B at 30+ tokens/second.</description>
+    </item>
+    <item>
+      <title>DistLLM vs vLLM: When to Use Distributed Inference</title>
+      <link>https://distllm.dev/blog.html#vs-vllm</link>
+      <guid>https://distllm.dev/blog.html#vs-vllm</guid>
+      <pubDate>Sun, 25 May 2026 00:00:00 GMT</pubDate>
+      <description>A technical comparison of DistLLM and vLLM covering architecture, performance, and use cases.</description>
+    </item>
+    <item>
+      <title>Setting Up a GPU Cluster for LLM Inference in 10 Minutes</title>
+      <link>https://distllm.dev/blog.html#gpu-cluster-setup</link>
+      <guid>https://distllm.dev/blog.html#gpu-cluster-setup</guid>
+      <pubDate>Thu, 22 May 2026 00:00:00 GMT</pubDate>
+      <description>From zero to distributed inference in 10 minutes with Docker Compose and mDNS auto-discovery.</description>
+    </item>
+    <item>
+      <title>Cost Comparison: Self-Hosted LLM Inference vs Cloud APIs</title>
+      <link>https://distllm.dev/blog.html#cost-comparison</link>
+      <guid>https://distllm.dev/blog.html#cost-comparison</guid>
+      <pubDate>Mon, 19 May 2026 00:00:00 GMT</pubDate>
+      <description>Detailed cost analysis comparing self-hosted DistLLM against OpenAI, Together AI, and Fireworks APIs.</description>
+    </item>
+    <item>
+      <title>DistLLM v0.4.0 — Production Readiness</title>
+      <link>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.4.0</link>
+      <guid>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.4.0</guid>
+      <pubDate>Fri, 16 May 2026 00:00:00 GMT</pubDate>
+      <description>Graceful shutdown, structured errors, K8s probes, backpressure, YAML config, security hardening.</description>
+    </item>
+    <item>
+      <title>DistLLM v0.3.0 — Security &amp; Features</title>
+      <link>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.3.0</link>
+      <guid>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.3.0</guid>
+      <pubDate>Wed, 14 May 2026 00:00:00 GMT</pubDate>
+      <description>CORS, security headers, auth + rate limiting, LoRA adapters, prefix cache, continuous batching.</description>
+    </item>
+  </channel>
+</rss>

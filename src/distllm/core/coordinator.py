@@ -19,7 +19,7 @@ import torch
 from loguru import logger
 from transformers import AutoTokenizer
 
-from distllm.config.settings import DistLLMSettings, NodeRole
+from distllm.core.subsystem_registry import SubsystemRegistry
 from distllm.core.batch_scheduler import BatchScheduler
 from distllm.core.cache_manager import CacheManager
 from distllm.core.cluster_manager import ClusterManager
@@ -110,10 +110,16 @@ class Coordinator:
             on_straggler_cb=self._on_straggler_detected,
         )
         self._recovery_manager = NodeRecoveryManager()
+        # ARCHITECTURE: Wire recovery callbacks so node failure recovery actually works
+        self._wire_recovery_callbacks()
         self._reputation = ReputationSystem(
             min_reputation=getattr(self.config, 'min_reputation', 0.0),
         )
         self._federation: Any = None
+
+        # ── Subsystem Registry (replaces manual lifecycle management) ──
+        self._subsystem_registry = SubsystemRegistry()
+        self._register_subsystems()
 
         self._pipeline.set_latency_tracker(self._latency_tracker)
         self._pipeline.set_straggler_detector(self._straggler_detector)
@@ -175,6 +181,9 @@ class Coordinator:
         self._request_results: dict[str, str] = {}
         self._request_events: dict[str, threading.Event] = {}
         self._request_lock = threading.Lock()  # Protects _request_results and _request_events
+        self._result_ttl_s = 300.0  # 5 minutes — stale results cleaned automatically
+        self._request_results_created: dict[str, float] = {}  # request_id -> monotonic timestamp
+        self._last_result_cleanup: float = time.monotonic()
         self._health_check_interval_s: float = 10.0
         self._straggler_check_counter: int = 0
         self._health_thread: threading.Thread | None = None
@@ -194,6 +203,9 @@ class Coordinator:
         self.model_info = None
         self._shutting_down = False
 
+        # Autoscaler (wire with real metrics from batch scheduler)
+        self._autoscaler: IntelligentAutoscaler | None = None
+
         # Per-request scheduling hints (populated by API layer before generate())
         self._pending_scheduling_hints: dict[str, dict] = {}
 
@@ -203,11 +215,91 @@ class Coordinator:
         # Model router for query-based model switching
         self._model_router: ModelRouter | None = None
 
+        # Advanced features: semantic cache, smart model routing, disaggregated P&D,
+        # carbon-aware scheduling, cost tracking, arbitrage, and privacy-preserving split
+        self._semantic_cache: Any = None
+        self._smart_router: Any = None
+        self._disaggregated_scheduler: Any = None
+        self._carbon_engine: Any = None
+        self._cost_tracker: Any = None
+        self._arbitrage_engine: Any = None
+
         # Memory defragmentation
         self._defragmenter: MemoryDefragmenter | None = None
         self._defrag_task: asyncio.Task | None = None
 
         logger.info(f"Coordinator initialized for model: {self.model_name}")
+
+    def _wire_recovery_callbacks(self) -> None:
+        """Wire NodeRecoveryManager callbacks so node failure recovery works.
+
+        Previously these callbacks were never set, making the recovery
+        manager's redistribution and sequence recovery steps no-ops.
+        """
+        self._recovery_manager.set_drain_callback(self._on_node_drain)
+        self._recovery_manager.set_mark_dead_callback(self._on_node_mark_dead)
+        self._recovery_manager.set_redistribute_layers_callback(self._on_node_redistribute)
+        self._recovery_manager.set_recover_sequences_callback(self._on_node_recover)
+
+    def _register_subsystems(self) -> None:
+        """Register all subsystems with the SubsystemRegistry for lifecycle management."""
+        reg = self._subsystem_registry
+        reg.register("pipeline", self._pipeline, start_fn=self._pipeline.start if hasattr(self._pipeline, 'start') else None)
+        reg.register("batch_scheduler", self._batch_scheduler)
+        reg.register("health_manager", self._health_mgr)
+        reg.register("metrics_collector", self._metrics_collector)
+        reg.register("straggler_detector", self._straggler_detector)
+        reg.register("latency_tracker", self._latency_tracker)
+        reg.register("reputation", self._reputation)
+
+    def _on_node_drain(self, node_id: str) -> None:
+        """Callback: mark a node as draining (stop new requests to it)."""
+        logger.info(f"Draining node {node_id} (pausing new requests)")
+        # Mark node as unhealthy in pipeline - stop routing new requests
+        node = self._pipeline.get_node(node_id)
+        if node:
+            node.is_healthy = False
+
+    def _on_node_mark_dead(self, node_id: str) -> None:
+        """Callback: remove a dead node from the pipeline."""
+        logger.info(f"Removing dead node {node_id} from pipeline")
+        self._pipeline.remove_node(node_id)
+
+    def _on_node_redistribute(self, node_id: str, plan: Any) -> None:
+        """Callback: redistribute a failed node's layers to survivors.
+
+        This implements step 3 of the recovery flow — redistributing
+        layers from the failed node to remaining healthy nodes.
+        """
+        redistributions = plan.redistributions if hasattr(plan, 'redistributions') else []
+        if not redistributions:
+            logger.warning(f"No redistributions computed for failed node {node_id}")
+            return
+
+        for rd in redistributions:
+            survivor_id = rd.surviving_node_id
+            survivor = self._pipeline.get_node(survivor_id)
+            if survivor:
+                logger.info(
+                    f"Redistributing layers {rd.added_start_layer}-{rd.added_end_layer} "
+                    f"to {survivor_id} (new range: {rd.new_start_layer}-{rd.new_end_layer})"
+                )
+                survivor.start_layer = rd.new_start_layer
+                survivor.end_layer = rd.new_end_layer
+                survivor.total_layers = max(survivor.total_layers, rd.new_end_layer + 1)
+
+    def _on_node_recover(self, node_id: str, sequence_ids: list[str]) -> list[Any]:
+        """Callback: attempt to recover in-flight sequences from a failed node.
+
+        Currently logs the recovery targets. Full sequence recovery requires
+        checkpoint replay which depends on the inference backend capability.
+        """
+        logger.info(
+            f"Recovering {len(sequence_ids)} sequences from failed node {node_id}: "
+            f"{sequence_ids[:5]}{'...' if len(sequence_ids) > 5 else ''}"
+        )
+        # Return empty list — actual reconstruction is backend-dependent
+        return []
 
     def _init_adaptive_batching(self) -> None:
         """Connect the adaptive batching engine if the module is available."""
@@ -622,6 +714,20 @@ class Coordinator:
                             elif ratio > self._defragmenter.config.l2_cpu_swap_threshold:
                                 tier = TieredCompactionLevel.L2_WARM
 
+                        # Temperature-aware defragmentation: skip or reduce
+                        # aggressiveness when active requests have high
+                        # temperatures (>1.0), since high-temperature sampling
+                        # is more sensitive to cache state changes.  Under
+                        # high-temperature workloads, L1 compaction only.
+                        active_temp = self._get_active_temperature()
+                        if active_temp is not None and active_temp > 1.0:
+                            if tier != TieredCompactionLevel.L1_HOT:
+                                logger.debug(
+                                    f"Temperature-aware defrag: reducing tier from {tier.value} "
+                                    f"to L1_HOT (active temp={active_temp:.2f})"
+                                )
+                                tier = TieredCompactionLevel.L1_HOT
+
                         result = await self._defragmenter.defragment_with_tier_async(backend, tier)
                         self.record_metric("defrag_blocks_moved", result.blocks_moved)
                         self.record_metric("defrag_duration_ms", result.time_ms)
@@ -636,6 +742,27 @@ class Coordinator:
                 break
             except Exception as e:
                 logger.warning(f"Defrag loop error: {e}")
+
+    def _get_active_temperature(self) -> float | None:
+        """Return the average temperature across active generation requests.
+
+        Used by temperature-aware defragmentation to avoid aggressive
+        cache reorganisation when high-temperature sampling is active,
+        since high-temp outputs are more sensitive to cache state changes.
+
+        Returns None if no active requests or no scheduler available.
+        """
+        if self._batch_scheduler is None:
+            return None
+        try:
+            temps = []
+            with self._request_lock if hasattr(self, '_request_lock') else threading.Lock():
+                for seq in getattr(self._batch_scheduler, 'active', {}).values():
+                    if hasattr(seq, 'temperature') and seq.temperature is not None:
+                        temps.append(seq.temperature)
+            return sum(temps) / len(temps) if temps else None
+        except Exception:
+            return None
 
     def _get_paged_backends(self) -> list[Any]:
         """Collect PagedAttentionManager instances from all backends."""
@@ -848,9 +975,11 @@ class Coordinator:
                 )
                 with self._request_lock:
                     self._request_results[request_id] = result
+                    self._request_results_created[request_id] = time.monotonic()
             except Exception as e:
                 with self._request_lock:
                     self._request_results[request_id] = f"[Error: {e}]"
+                    self._request_results_created[request_id] = time.monotonic()
             finally:
                 event.set()
 
@@ -871,12 +1000,32 @@ class Coordinator:
             except Exception as e:
                 logger.warning(f"Failed to record metric '{name}': {e}")
 
+    def _cleanup_stale_results(self) -> None:
+        """Remove stale entries from _request_results to prevent memory leaks."""
+        now = time.monotonic()
+        if now - self._last_result_cleanup < 60:  # Only run cleanup once per minute
+            return
+        self._last_result_cleanup = now
+        with self._request_lock:
+            stale = [
+                rid for rid, created in self._request_results_created.items()
+                if now - created > self._result_ttl_s
+            ]
+            for rid in stale:
+                self._request_results.pop(rid, None)
+                self._request_events.pop(rid, None)
+                self._request_results_created.pop(rid, None)
+            if stale:
+                logger.debug(f"Cleaned {len(stale)} stale request results (TTL={self._result_ttl_s}s)")
+
     def wait_for_result(self, request_id: str, timeout: float | None = None) -> str:
         """Wait for an async generation result.
 
         Checks both the request tracker (batch scheduler path) and
         the legacy event-based path (background thread fallback).
         """
+        # Periodic cleanup — called opportunistically from wait_for_result
+        self._cleanup_stale_results()
         # Try request tracker first (batch scheduler path)
         if self._request_tracker is not None:
             try:
@@ -916,8 +1065,25 @@ class Coordinator:
             self._adaptive_compression_mgr.start()
 
         if self._defragmenter is not None:
-            self._defrag_task = asyncio.ensure_future(self._defrag_loop())
-            logger.info("Defrag background loop started")
+            # BUG-007: Check for a running event loop before using ensure_future
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and loop.is_running():
+                self._defrag_task = asyncio.ensure_future(self._defrag_loop())
+                logger.info("Defrag background loop started (async)")
+            else:
+                # No running loop — start defrag in a background thread instead
+                def _run_defrag_loop():
+                    import asyncio as _asyncio
+                    _loop = _asyncio.new_event_loop()
+                    _asyncio.set_event_loop(_loop)
+                    _loop.run_until_complete(self._defrag_loop())
+                    _loop.close()
+                t = threading.Thread(target=_run_defrag_loop, daemon=True, name="defrag-loop")
+                t.start()
+                logger.info("Defrag background loop started (threaded fallback)")
 
         try:
             from distllm.dist.discovery import DiscoveryService
@@ -950,6 +1116,92 @@ class Coordinator:
                 logger.info(f"Federation started: cluster={self.config.federation_config.cluster_id}")
             except Exception as e:
                 logger.warning(f"Federation failed to start: {e}")
+
+        # --- Advanced Feature: Smart Model Router (cost-optimized cascading) ---
+        try:
+            from distllm.core.smart_model_router import SmartModelRouter
+            self._smart_router = SmartModelRouter()
+            logger.info("Smart model router initialized (model cascading)")
+        except ImportError:
+            self._smart_router = None
+            logger.debug("Smart model router not available")
+
+        # --- Advanced Feature: Semantic Cache ---
+        try:
+            from distllm.core.semantic_cache import SemanticCache
+            env_threshold = float(os.environ.get("DISTLLM_SEMANTIC_CACHE_THRESHOLD", "0.92"))
+            self._semantic_cache = SemanticCache(
+                similarity_threshold=env_threshold,
+                max_entries=10000,
+            )
+            logger.info(f"Semantic cache initialized (threshold={env_threshold})")
+        except ImportError:
+            self._semantic_cache = None
+            logger.debug("Semantic cache not available")
+
+        # --- Advanced Feature: Disaggregated Prefill/Decode ---
+        try:
+            from distllm.core.advanced_scheduling.disaggregated import DisaggregatedBatchScheduler
+            self._disaggregated_scheduler = DisaggregatedBatchScheduler()
+            logger.info("Disaggregated prefill/decode scheduler initialized")
+        except ImportError:
+            self._disaggregated_scheduler = None
+            logger.debug("Disaggregated prefill/decode scheduler not available")
+
+        # --- Advanced Feature: Carbon-Aware Scheduling ---
+        try:
+            from distllm.core.carbon_migration import CarbonMigrationEngine
+            self._carbon_engine = CarbonMigrationEngine(
+                threshold=float(os.environ.get("DISTLLM_CARBON_THRESHOLD", "400.0")),
+                check_interval_s=300.0,
+            )
+            logger.info("Carbon-aware migration engine initialized")
+        except ImportError:
+            self._carbon_engine = None
+            logger.debug("Carbon-aware engine not available")
+
+        # --- Advanced Feature: Cross-Provider Arbitrage ---
+        try:
+            from distllm.core.arbitrage_engine import ArbitrageEngine
+            self._arbitrage_engine = ArbitrageEngine(
+                min_savings_pct=float(os.environ.get("DISTLLM_ARBITRAGE_MIN_SAVINGS", "15.0")),
+                check_interval_s=float(os.environ.get("DISTLLM_ARBITRAGE_INTERVAL", "60.0")),
+            )
+            logger.info("Cross-provider arbitrage engine initialized")
+        except ImportError:
+            self._arbitrage_engine = None
+            logger.debug("Arbitrage engine not available")
+
+        # --- Advanced Feature: Cost Tracking & Prediction ---
+        try:
+            from distllm.core.cost_tracker import CostTracker
+            self._cost_tracker = CostTracker()
+            logger.info("Cost tracker initialized (per-request cost estimation)")
+        except ImportError:
+            self._cost_tracker = None
+            logger.debug("Cost tracker not available")
+
+        # Initialize autoscaler with real metrics from batch scheduler
+        try:
+            from distllm.core.intelligent_autoscaler import (
+                IntelligentAutoscaler, ScalingMetrics,
+            )
+            self._autoscaler = IntelligentAutoscaler(
+                min_nodes=1,
+                max_nodes=20,
+                target_utilization=0.7,
+            )
+            if self._batch_scheduler:
+                s = self._batch_scheduler.stats()
+                self._autoscaler.record_metrics(ScalingMetrics(
+                    active_requests=s.get("active_requests", 0),
+                    pending_requests=s.get("pending_requests", 0),
+                    current_nodes=len(getattr(self, 'nodes', {})),
+                ))
+            logger.info("Autoscaler initialized with real batch scheduler metrics")
+        except ImportError:
+            self._autoscaler = None
+            logger.debug("Autoscaler not available")
 
         logger.info(f"Coordinator started on port {self.port} "
                      f"(health check every {health_check_interval_s}s)")
@@ -1099,8 +1351,12 @@ class Coordinator:
             },
             "metrics": self.get_metrics() if hasattr(self, 'get_metrics') else {},
         }
-        state_path = os.path.join(os.getcwd(), ".distllm_shutdown_state.json")
-        with open(state_path, "w") as f:
+        # H-17: Write to a protected path — use data dir with restricted perms
+        state_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+        os.makedirs(state_dir, exist_ok=True)
+        state_path = os.path.join(state_dir, "shutdown_state.json")
+        fd = os.open(state_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(state, f, indent=2, default=str)
         logger.debug(f"Shutdown state saved to {state_path}")
 

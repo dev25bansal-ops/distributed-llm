@@ -1,0 +1,174 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Showcase — DistLLM</title>
+    <meta name="description" content="Projects and applications built with DistLLM by the community.">
+    <meta name="keywords" content="LLM projects, distributed computing applications, GPU cluster projects, AI applications, community projects">
+    <meta property="og:title" content="Showcase — DistLLM">
+    <meta property="og:description" content="Projects and applications built with DistLLM by the community.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/showcase.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Showcase — DistLLM">
+    <meta name="twitter:description" content="Projects and applications built with DistLLM by the community.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/showcase.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
+        a{color:inherit;text-decoration:none}
+        .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
+        .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
+        .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
+        .nav-links{display:flex;gap:28px;font-size:14px;color:var(--text-secondary)}.nav-links a:hover{color:var(--text)}
+        .nav-right{display:flex;align-items:center;gap:12px}
+        .gh-stars{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);padding:6px 12px;border:1px solid var(--border);border-radius:8px;transition:all 0.2s}.gh-stars:hover{border-color:var(--green-bd);color:var(--green)}
+        .nav-cta{padding:8px 18px;background:var(--green);color:#000;border-radius:8px;font-weight:600;font-size:13px;transition:opacity 0.15s}.nav-cta:hover{opacity:0.85}
+        .wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+        .page{padding-top:100px;min-height:100vh}
+        .page h1{font-size:32px;font-weight:800;letter-spacing:-1px;margin-bottom:8px}
+        .page .subtitle{color:var(--text-secondary);font-size:16px;margin-bottom:48px}
+        .tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}.tag::before{content:'';width:6px;height:6px;background:var(--green);border-radius:50%}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+        .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:28px;transition:all 0.2s cubic-bezier(0.16,1,0.3,1)}.card:hover{border-color:var(--green-bd);transform:translateY(-2px)}
+        .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+        .card-icon{width:40px;height:40px;background:var(--green-bg);border:1px solid var(--green-bd);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+        .card-stars{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dim);font-family:var(--font-mono)}
+        .card-stars svg{color:var(--green)}
+        .card h3{font-size:17px;font-weight:700;margin-bottom:6px}
+        .card p{font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:12px}
+        .card-author{font-size:12px;color:var(--dim)}.card-author a{color:var(--green)}.card-author a:hover{text-decoration:underline}
+        .card-tags{display:flex;gap:6px;flex-wrap:wrap}.card-tags span{font-size:10px;color:var(--dim);background:var(--surface);padding:2px 8px;border-radius:4px}
+        footer{border-top:1px solid var(--border);margin-top:80px}
+        .ft-bottom{max-width:1100px;margin:0 auto;padding:24px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
+        .ft-social{display:flex;gap:12px}.ft-social a{color:var(--dim);transition:color 0.15s}.ft-social a:hover{color:var(--green)}
+        @media(max-width:768px){.nav-links{display:none}.grid{grid-template-columns:1fr}}
+    </style>
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Showcase", "item": "https://distllm.dev/showcase.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/blog.html">Blog</a><a href="/#pricing">Pricing</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Community</div>
+            <h1>Showcase</h1>
+            <p class="subtitle">Projects and applications built with DistLLM by the community.</p>
+
+            <div class="grid">
+                <div class="card">
+                    <div class="card-head">
+                        <div class="card-icon">&#128274;</div>
+                        <div class="card-stars"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg> 2.4k</div>
+                    </div>
+                    <h3>LocalGPT</h3>
+                    <p>Private document chatbot that runs entirely on your hardware. Uses DistLLM for multi-GPU inference with RAG pipeline over local documents.</p>
+                    <div class="card-author">by <a href="https://github.com/PromtEngineer" target="_blank" rel="noopener noreferrer">@PromtEngineer</a></div>
+                    <div class="card-tags"><span>rag</span><span>privacy</span><span>documents</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <div class="card-icon">&#128433;</div>
+                        <div class="card-stars"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg> 1.8k</div>
+                    </div>
+                    <h3>Cursor Fork</h3>
+                    <p>AI-powered code editor using DistLLM as the inference backend. Supports multi-file editing, codebase-aware completions, and natural language commands.</p>
+                    <div class="card-author">by <a href="https://github.com" target="_blank" rel="noopener noreferrer">@cursor-fork</a></div>
+                    <div class="card-tags"><span>code</span><span>editor</span><span>ide</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <div class="card-icon">&#127979;</div>
+                        <div class="card-stars"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg> 980</div>
+                    </div>
+                    <h3>Enterprise RAG</h3>
+                    <p>Production-grade retrieval-augmented generation for enterprises. Connects DistLLM to Confluence, SharePoint, and Slack with role-based access control.</p>
+                    <div class="card-author">by <a href="https://github.com" target="_blank" rel="noopener noreferrer">@enterprise-ai</a></div>
+                    <div class="card-tags"><span>enterprise</span><span>rag</span><span>integrations</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <div class="card-icon">&#129657;</div>
+                        <div class="card-stars"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg> 1.2k</div>
+                    </div>
+                    <h3>Medical AI</h3>
+                    <p>HIPAA-compliant clinical decision support system. Runs on-premise with DistLLM for patient data analysis, medical record summarization, and diagnostic assistance.</p>
+                    <div class="card-author">by <a href="https://github.com" target="_blank" rel="noopener noreferrer">@med-ai-lab</a></div>
+                    <div class="card-tags"><span>healthcare</span><span>hipaa</span><span>clinical</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <div class="card-icon">&#128187;</div>
+                        <div class="card-stars"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg> 650</div>
+                    </div>
+                    <h3>Code Review Bot</h3>
+                    <p>GitHub bot that automatically reviews pull requests using DistLLM. Provides inline comments, security suggestions, and test coverage recommendations.</p>
+                    <div class="card-author">by <a href="https://github.com" target="_blank" rel="noopener noreferrer">@devtools-org</a></div>
+                    <div class="card-tags"><span>devtools</span><span>ci-cd</span><span>automation</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <div class="card-icon">&#9878;</div>
+                        <div class="card-stars"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg> 420</div>
+                    </div>
+                    <h3>Legal Assistant</h3>
+                    <p>Contract analysis and legal research tool. Processes sensitive legal documents on-premise with DistLLM, ensuring attorney-client privilege is maintained.</p>
+                    <div class="card-author">by <a href="https://github.com" target="_blank" rel="noopener noreferrer">@legal-tech</a></div>
+                    <div class="card-tags"><span>legal</span><span>contracts</span><span>privacy</span></div>
+                </div>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top:none;padding-top:0">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

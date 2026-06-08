@@ -1,0 +1,477 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Learning Hub — DistLLM</title>
+    <meta name="description" content="Learn distributed LLM inference with interactive tutorials, video demos, and architecture deep-dives.">
+    <meta name="keywords" content="LLM tutorial, distributed inference tutorial, pipeline parallelism explained, GPU cluster tutorial, AI infrastructure learning">
+    <meta property="og:title" content="Learning Hub — DistLLM">
+    <meta property="og:description" content="Interactive tutorials, video demos, and architecture deep-dives for distributed LLM inference.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/learn.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Learning Hub — DistLLM">
+    <meta name="twitter:description" content="Interactive tutorials, video demos, and architecture deep-dives for distributed LLM inference.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/learn.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link rel="stylesheet" href="css/advanced.css">
+    <link rel="stylesheet" href="css/print.css" media="print">
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Learning Hub", "item": "https://distllm.dev/learn.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/learn.html" class="active">Learn</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Learning Hub</div>
+            <h1>Learn Distributed LLM Inference</h1>
+            <p class="subtitle">Interactive tutorials, video demos, and architecture deep-dives to master distributed AI infrastructure.</p>
+
+            <!-- Learning Paths -->
+            <div class="learn-paths">
+                <div class="learn-path">
+                    <div class="learn-path-icon">🌱</div>
+                    <h3>Beginner</h3>
+                    <p>Get started with DistLLM in 10 minutes</p>
+                    <a href="#tutorial-quickstart" class="learn-path-link">Start Learning →</a>
+                </div>
+                <div class="learn-path">
+                    <div class="learn-path-icon">🔧</div>
+                    <h3>Intermediate</h3>
+                    <p>Multi-node clusters and optimization</p>
+                    <a href="#tutorial-multinode" class="learn-path-link">Start Learning →</a>
+                </div>
+                <div class="learn-path">
+                    <div class="learn-path-icon">🏗️</div>
+                    <h3>Advanced</h3>
+                    <p>Architecture deep-dives and custom backends</p>
+                    <a href="#architecture" class="learn-path-link">Start Learning →</a>
+                </div>
+            </div>
+
+            <!-- Interactive Tutorials -->
+            <section id="tutorials" class="learn-section">
+                <div class="learn-section-header">
+                    <h2>Interactive Tutorials</h2>
+                    <p>Step-by-step guided walkthroughs with embedded terminals.</p>
+                </div>
+
+                <div class="tutorial-grid">
+                    <!-- Tutorial 1: Quick Start -->
+                    <div id="tutorial-quickstart" class="tutorial-card">
+                        <div class="tutorial-header">
+                            <div class="tutorial-meta">
+                                <span class="tutorial-level beginner">Beginner</span>
+                                <span class="tutorial-time">10 min</span>
+                            </div>
+                            <h3>Quick Start: Your First Cluster</h3>
+                            <p>Install DistLLM and run your first distributed inference in 10 minutes.</p>
+                        </div>
+                        <div class="tutorial-steps">
+                            <div class="tutorial-step">
+                                <div class="step-number">1</div>
+                                <div class="step-content">
+                                    <h4>Install DistLLM</h4>
+                                    <div class="terminal" id="terminal1">
+                                        <div class="terminal-header">
+                                            <span class="terminal-title">Terminal</span>
+                                            <button class="terminal-copy" data-copy="pip install distributed-llm">Copy</button>
+                                        </div>
+                                        <div class="terminal-body">
+                                            <div class="terminal-line">
+                                                <span class="terminal-prompt">$</span>
+                                                <span class="terminal-cmd">pip install distributed-llm</span>
+                                            </div>
+                                            <div class="terminal-output">
+Collecting distributed-llm
+  Downloading distributed_llm-0.4.0-py3-none-any.whl
+Installing collected packages: distributed-llm
+Successfully installed distributed-llm-0.4.0
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tutorial-step">
+                                <div class="step-number">2</div>
+                                <div class="step-content">
+                                    <h4>Start the Coordinator</h4>
+                                    <div class="terminal">
+                                        <div class="terminal-header">
+                                            <span class="terminal-title">Terminal</span>
+                                            <button class="terminal-copy" data-copy="distllm cluster start --model Qwen/Qwen2.5-3B --local --no-auth">Copy</button>
+                                        </div>
+                                        <div class="terminal-body">
+                                            <div class="terminal-line">
+                                                <span class="terminal-prompt">$</span>
+                                                <span class="terminal-cmd">distllm cluster start --model Qwen/Qwen2.5-3B --local --no-auth</span>
+                                            </div>
+                                            <div class="terminal-output">
+[INFO] Starting coordinator on port 50050
+[INFO] Loading model Qwen/Qwen2.5-3B...
+[INFO] Model loaded in 12.3s
+[INFO] API server running on http://localhost:8000
+[INFO] Ready for connections!
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tutorial-step">
+                                <div class="step-number">3</div>
+                                <div class="step-content">
+                                    <h4>Test It!</h4>
+                                    <div class="terminal">
+                                        <div class="terminal-header">
+                                            <span class="terminal-title">Terminal</span>
+                                            <button class="terminal-copy" data-copy='curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d \'{"messages":[{"role":"user","content":"Hello!"}]}\''>Copy</button>
+                                        </div>
+                                        <div class="terminal-body">
+                                            <div class="terminal-line">
+                                                <span class="terminal-prompt">$</span>
+                                                <span class="terminal-cmd">curl http://localhost:8000/v1/chat/completions \</span>
+                                            </div>
+                                            <div class="terminal-line">
+                                                <span class="terminal-cmd">  -H "Content-Type: application/json" \</span>
+                                            </div>
+                                            <div class="terminal-line">
+                                                <span class="terminal-cmd">  -d '{"messages":[{"role":"user","content":"Hello!"}]}'</span>
+                                            </div>
+                                            <div class="terminal-output">
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "Hello! How can I help you today?"
+    }
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 9}
+}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="tutorial-complete">
+                            <span class="complete-icon">🎉</span>
+                            <span>Congratulations! You've set up your first DistLLM cluster.</span>
+                        </div>
+                    </div>
+
+                    <!-- Tutorial 2: Multi-Node -->
+                    <div id="tutorial-multinode" class="tutorial-card">
+                        <div class="tutorial-header">
+                            <div class="tutorial-meta">
+                                <span class="tutorial-level intermediate">Intermediate</span>
+                                <span class="tutorial-time">20 min</span>
+                            </div>
+                            <h3>Multi-Node Cluster Setup</h3>
+                            <p>Connect multiple machines for distributed inference with pipeline parallelism.</p>
+                        </div>
+                        <div class="tutorial-steps">
+                            <div class="tutorial-step">
+                                <div class="step-number">1</div>
+                                <div class="step-content">
+                                    <h4>Start Coordinator (Machine 1)</h4>
+                                    <div class="terminal">
+                                        <div class="terminal-header">
+                                            <span class="terminal-title">Machine 1</span>
+                                        </div>
+                                        <div class="terminal-body">
+                                            <div class="terminal-line">
+                                                <span class="terminal-prompt">$</span>
+                                                <span class="terminal-cmd">distllm cluster start --model meta-llama/Llama-3.1-70B --port 50050</span>
+                                            </div>
+                                            <div class="terminal-output">
+[INFO] Coordinator started on 0.0.0.0:50050
+[INFO] Waiting for workers to connect...
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tutorial-step">
+                                <div class="step-number">2</div>
+                                <div class="step-content">
+                                    <h4>Join Workers (Machine 2-4)</h4>
+                                    <div class="terminal">
+                                        <div class="terminal-header">
+                                            <span class="terminal-title">Machine 2</span>
+                                        </div>
+                                        <div class="terminal-body">
+                                            <div class="terminal-line">
+                                                <span class="terminal-prompt">$</span>
+                                                <span class="terminal-cmd">distllm cluster join --coordinator 192.168.1.100:50050</span>
+                                            </div>
+                                            <div class="terminal-output">
+[INFO] Connected to coordinator at 192.168.1.100:50050
+[INFO] Assigned layers 0-15 (RTX 4090, 24GB VRAM)
+[INFO] Ready for inference!
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Video Demos -->
+            <section id="videos" class="learn-section">
+                <div class="learn-section-header">
+                    <h2>Video Demos</h2>
+                    <p>Watch step-by-step video tutorials and demos.</p>
+                </div>
+
+                <div class="video-grid">
+                    <div class="video-card">
+                        <div class="video-thumbnail">
+                            <div class="video-play">▶</div>
+                            <div class="video-duration">12:34</div>
+                        </div>
+                        <div class="video-info">
+                            <h4>Getting Started with DistLLM</h4>
+                            <p>Complete walkthrough from installation to first inference.</p>
+                            <span class="video-meta">Beginner · June 2026</span>
+                        </div>
+                    </div>
+                    <div class="video-card">
+                        <div class="video-thumbnail">
+                            <div class="video-play">▶</div>
+                            <div class="video-duration">18:45</div>
+                        </div>
+                        <div class="video-info">
+                            <h4>Multi-Node Pipeline Parallelism</h4>
+                            <p>Deep-dive into how DistLLM splits models across GPUs.</p>
+                            <span class="video-meta">Intermediate · May 2026</span>
+                        </div>
+                    </div>
+                    <div class="video-card">
+                        <div class="video-thumbnail">
+                            <div class="video-play">▶</div>
+                            <div class="video-duration">25:10</div>
+                        </div>
+                        <div class="video-info">
+                            <h4>Production Deployment Guide</h4>
+                            <p>Security, monitoring, and scaling for production workloads.</p>
+                            <span class="video-meta">Advanced · May 2026</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Architecture Deep-Dive -->
+            <section id="architecture" class="learn-section">
+                <div class="learn-section-header">
+                    <h2>Architecture Deep-Dive</h2>
+                    <p>Animated explainers of distributed inference concepts.</p>
+                </div>
+
+                <div class="arch-explainers">
+                    <!-- Pipeline Parallelism -->
+                    <div class="arch-explainer">
+                        <div class="explainer-header">
+                            <h3>Pipeline Parallelism</h3>
+                            <p>How DistLLM splits model layers across GPUs in a pipeline.</p>
+                        </div>
+                        <div class="explainer-animation" id="pipelineAnimation">
+                            <div class="pipeline-demo">
+                                <div class="pipeline-stage">
+                                    <div class="stage-gpu">GPU 0</div>
+                                    <div class="stage-layers">Layers 0-7</div>
+                                    <div class="stage-token" id="token1">Token</div>
+                                </div>
+                                <div class="pipeline-arrow">→</div>
+                                <div class="pipeline-stage">
+                                    <div class="stage-gpu">GPU 1</div>
+                                    <div class="stage-layers">Layers 8-15</div>
+                                    <div class="stage-token" id="token2"></div>
+                                </div>
+                                <div class="pipeline-arrow">→</div>
+                                <div class="pipeline-stage">
+                                    <div class="stage-gpu">GPU 2</div>
+                                    <div class="stage-layers">Layers 16-23</div>
+                                    <div class="stage-token" id="token3"></div>
+                                </div>
+                                <div class="pipeline-arrow">→</div>
+                                <div class="pipeline-stage">
+                                    <div class="stage-gpu">GPU 3</div>
+                                    <div class="stage-layers">Layers 24-31</div>
+                                    <div class="stage-token" id="token4"></div>
+                                </div>
+                            </div>
+                            <button class="explainer-play" id="pipelinePlay">▶ Play Animation</button>
+                        </div>
+                        <div class="explainer-text">
+                            <h4>How It Works</h4>
+                            <p>Pipeline parallelism splits the model into sequential stages, each running on a different GPU. Tokens flow through the pipeline:</p>
+                            <ol>
+                                <li><strong>Stage 1 (GPU 0)</strong>: Processes layers 0-7, passes hidden states to next stage</li>
+                                <li><strong>Stage 2 (GPU 1)</strong>: Processes layers 8-15, continues the pipeline</li>
+                                <li><strong>Stage 3 (GPU 2)</strong>: Processes layers 16-23</li>
+                                <li><strong>Stage 4 (GPU 3)</strong>: Processes layers 24-31, produces output token</li>
+                            </ol>
+                            <p><strong>Advantage</strong>: Near-linear scaling. 4 GPUs ≈ 3.5-3.8× speedup.</p>
+                        </div>
+                    </div>
+
+                    <!-- Tensor Parallelism -->
+                    <div class="arch-explainer">
+                        <div class="explainer-header">
+                            <h3>Tensor Parallelism</h3>
+                            <p>Splitting individual layers across multiple GPUs.</p>
+                        </div>
+                        <div class="explainer-animation">
+                            <div class="tensor-demo">
+                                <div class="tensor-layer">
+                                    <div class="tensor-gpu">
+                                        <div class="tensor-part" style="background: #00e676;"></div>
+                                        <span>GPU 0</span>
+                                    </div>
+                                    <div class="tensor-gpu">
+                                        <div class="tensor-part" style="background: #3b82f6;"></div>
+                                        <span>GPU 1</span>
+                                    </div>
+                                    <div class="tensor-gpu">
+                                        <div class="tensor-part" style="background: #f59e0b;"></div>
+                                        <span>GPU 2</span>
+                                    </div>
+                                    <div class="tensor-gpu">
+                                        <div class="tensor-part" style="background: #ef4444;"></div>
+                                        <span>GPU 3</span>
+                                    </div>
+                                </div>
+                                <div class="tensor-label">Single Layer (e.g., Attention)</div>
+                            </div>
+                        </div>
+                        <div class="explainer-text">
+                            <h4>How It Works</h4>
+                            <p>Tensor parallelism splits individual matrix multiplications across GPUs. Each GPU computes a portion of the layer:</p>
+                            <ul>
+                                <li><strong>Column Parallel</strong>: Split weight matrix columns across GPUs</li>
+                                <li><strong>Row Parallel</strong>: Split weight matrix rows across GPUs</li>
+                                <li><strong>AllReduce</strong>: Combine results after each layer</li>
+                            </ul>
+                            <p><strong>Best for</strong>: GPUs with high-bandwidth interconnect (NVLink, InfiniBand).</p>
+                        </div>
+                    </div>
+
+                    <!-- Sequence Parallelism -->
+                    <div class="arch-explainer">
+                        <div class="explainer-header">
+                            <h3>Sequence Parallelism</h3>
+                            <p>Processing different parts of the input sequence in parallel.</p>
+                        </div>
+                        <div class="explainer-animation">
+                            <div class="sequence-demo">
+                                <div class="sequence-input">
+                                    <div class="seq-token" style="background: #00e676;">The</div>
+                                    <div class="seq-token" style="background: #00e676;">quick</div>
+                                    <div class="seq-token" style="background: #00e676;">brown</div>
+                                    <div class="seq-token" style="background: #3b82f6;">fox</div>
+                                    <div class="seq-token" style="background: #3b82f6;">jumps</div>
+                                    <div class="seq-token" style="background: #3b82f6;">over</div>
+                                    <div class="seq-token" style="background: #f59e0b;">the</div>
+                                    <div class="seq-token" style="background: #f59e0b;">lazy</div>
+                                    <div class="seq-token" style="background: #f59e0b;">dog</div>
+                                </div>
+                                <div class="sequence-gpus">
+                                    <span>GPU 0</span>
+                                    <span>GPU 1</span>
+                                    <span>GPU 2</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="explainer-text">
+                            <h4>How It Works</h4>
+                            <p>Sequence parallelism splits the input sequence across GPUs. Each GPU processes a different part of the sequence:</p>
+                            <ul>
+                                <li><strong>Long sequences</strong>: Split 8K+ token sequences across 4 GPUs</li>
+                                <li><strong>KV Cache</strong>: Each GPU maintains KV cache for its sequence portion</li>
+                                <li><strong>Communication</strong>: Minimal inter-GPU communication required</li>
+                            </ul>
+                            <p><strong>Best for</strong>: Long-context inference (8K-128K tokens).</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top: none; padding-top: 0;">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
+    <script type="module">
+        // Pipeline animation
+        document.getElementById('pipelinePlay')?.addEventListener('click', async () => {
+            const tokens = ['token1', 'token2', 'token3', 'token4'];
+            for (let i = 0; i < tokens.length; i++) {
+                const el = document.getElementById(tokens[i]);
+                if (el) {
+                    el.textContent = '●';
+                    el.style.opacity = '1';
+                    await new Promise(r => setTimeout(r, 800));
+                    if (i < tokens.length - 1) {
+                        el.style.opacity = '0.3';
+                    }
+                }
+            }
+            // Reset after animation
+            setTimeout(() => {
+                tokens.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.textContent = id === 'token1' ? 'Token' : '';
+                        el.style.opacity = id === 'token1' ? '1' : '0';
+                    }
+                });
+            }, 2000);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,325 @@
+/**
+ * Modern CSS Features
+ *
+ * Includes:
+ * - Container queries for component-based responsiveness
+ * - @supports queries for graceful fallbacks
+ * - CSS Nesting (where supported)
+ * - Subgrid
+ * - Color-mix()
+ * - View Transitions API
+ */
+
+/* ─── Container Queries ─── */
+/* These allow components to respond to their container size, not viewport */
+
+/* Card container query */
+.card-container {
+    container-type: inline-size;
+    container-name: card;
+}
+
+@container card (min-width: 400px) {
+    .card {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 16px;
+    }
+    .card-icon {
+        margin-bottom: 0;
+    }
+}
+
+@container card (min-width: 600px) {
+    .card {
+        grid-template-columns: auto 1fr auto;
+    }
+}
+
+/* Sidebar container query */
+.sidebar-container {
+    container-type: inline-size;
+    container-name: sidebar;
+}
+
+@container sidebar (max-width: 200px) {
+    .sidebar-nav a {
+        font-size: 11px;
+        padding: 6px 8px;
+    }
+    .sidebar-section h4 {
+        font-size: 10px;
+    }
+}
+
+/* Hero container query */
+.hero-container {
+    container-type: inline-size;
+    container-name: hero;
+}
+
+@container hero (max-width: 600px) {
+    .hero-title {
+        font-size: 24px;
+    }
+    .hero-subtitle {
+        font-size: 14px;
+    }
+    .hero-actions {
+        flex-direction: column;
+    }
+}
+
+/* Pricing container query */
+.pricing-container {
+    container-type: inline-size;
+    container-name: pricing;
+}
+
+@container pricing (min-width: 800px) {
+    .pricing-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@container pricing (max-width: 799px) {
+    .pricing-grid {
+        grid-template-columns: 1fr;
+    }
+    .pricing-card.featured {
+        order: -1;
+    }
+}
+
+/* Benchmark container query */
+.benchmark-container {
+    container-type: inline-size;
+    container-name: benchmark;
+}
+
+@container benchmark (min-width: 500px) {
+    .benchmark-filters {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+    .benchmark-chart {
+        height: 300px;
+    }
+}
+
+@container benchmark (max-width: 499px) {
+    .benchmark-filters {
+        flex-direction: column;
+    }
+    .benchmark-chart {
+        height: 200px;
+    }
+}
+
+/* ─── @supports Queries ─── */
+/* Graceful fallbacks for modern CSS features */
+
+/* CSS Nesting */
+@supports (selector(&)) {
+    .nav {
+        & .nav-links {
+            display: flex;
+            gap: 28px;
+        }
+        & .nav-links a {
+            color: var(--text-secondary);
+            &:hover {
+                color: var(--text);
+            }
+            &.active {
+                color: var(--green);
+            }
+        }
+    }
+}
+
+/* color-mix() */
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+    :root {
+        --green-muted: color-mix(in srgb, var(--green) 80%, transparent);
+        --green-hover: color-mix(in srgb, var(--green) 90%, white);
+        --border-subtle: color-mix(in srgb, var(--border) 50%, transparent);
+    }
+    
+    .btn-primary {
+        background: var(--green-hover);
+    }
+    .btn-primary:hover {
+        background: color-mix(in srgb, var(--green) 85%, white);
+    }
+}
+
+/* Subgrid */
+@supports (grid-template-columns: subgrid) {
+    .comparison-table {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+    }
+    .comparison-table tr {
+        display: grid;
+        grid-template-columns: subgrid;
+        grid-column: span 3;
+    }
+    .comparison-table td {
+        display: grid;
+        align-items: center;
+    }
+}
+
+/* View Transitions API */
+@supports (view-transition-name: root) {
+    .page-transition {
+        view-transition-name: main-content;
+    }
+    
+    ::view-transition-old(main-content) {
+        animation: fade-out 0.2s ease-out;
+    }
+    
+    ::view-transition-new(main-content) {
+        animation: fade-in 0.2s ease-in;
+    }
+}
+
+/* :has() selector */
+@supports selector(:has(*)) {
+    /* Card with icon */
+    .card:has(.card-icon) {
+        padding-left: 24px;
+    }
+    
+    /* Form group with error */
+    .form-group:has(.error) {
+        border-color: #ef4444;
+    }
+    
+    /* Nav with active link */
+    .nav:has(.nav-links .active) {
+        border-bottom-color: var(--green);
+    }
+    
+    /* Pricing card with badge */
+    .pricing-card:has(.pricing-badge) {
+        border-color: var(--green);
+        transform: scale(1.02);
+    }
+}
+
+/* Logical Properties */
+@supports (margin-inline-start: 0) {
+    .card {
+        margin-inline-start: 0;
+        margin-inline-end: 0;
+    }
+    
+    .nav-links {
+        gap-inline-start: 28px;
+    }
+    
+    .sidebar {
+        padding-inline-start: 16px;
+        padding-inline-end: 16px;
+    }
+}
+
+/* text-wrap: balance */
+@supports (text-wrap: balance) {
+    h1, h2, h3, h4 {
+        text-wrap: balance;
+    }
+    
+    .hero-title {
+        text-wrap: balance;
+    }
+    
+    .section-title {
+        text-wrap: balance;
+    }
+}
+
+/* scroll-behavior: smooth */
+@supports (scroll-behavior: smooth) {
+    html {
+        scroll-behavior: smooth;
+    }
+}
+
+/* backdrop-filter */
+@supports (backdrop-filter: blur(10px)) {
+    .nav {
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+    }
+    
+    .modal-overlay {
+        backdrop-filter: blur(4px);
+    }
+    
+    .dropdown {
+        backdrop-filter: blur(8px);
+    }
+}
+
+/* CSS Variables with fallbacks */
+@supports (--custom: property) {
+    :root {
+        --card-radius: var(--radius, 12px);
+        --card-padding: var(--space-lg, 24px);
+    }
+}
+
+/* ─── Feature Queries with Fallbacks ─── */
+
+/* Container queries fallback */
+@supports not (container-type: inline-size) {
+    .card-container .card {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    /* Use viewport media queries as fallback */
+    @media (min-width: 768px) {
+        .card-container .card {
+            flex-direction: row;
+        }
+    }
+}
+
+/* :has() fallback */
+@supports not selector(:has(*)) {
+    /* Use JavaScript-based class toggling instead */
+    .card.with-icon {
+        padding-left: 24px;
+    }
+    
+    .form-group.has-error {
+        border-color: #ef4444;
+    }
+}
+
+/* color-mix fallback */
+@supports not (color: color-mix(in srgb, red, blue)) {
+    :root {
+        --green-muted: rgba(0, 230, 118, 0.8);
+        --green-hover: #1aff8c;
+        --border-subtle: rgba(28, 28, 30, 0.5);
+    }
+}
+
+/* Subgrid fallback */
+@supports not (grid-template-columns: subgrid) {
+    .comparison-table {
+        display: block;
+    }
+    .comparison-table tr {
+        display: flex;
+    }
+    .comparison-table td {
+        flex: 1;
+    }
+}

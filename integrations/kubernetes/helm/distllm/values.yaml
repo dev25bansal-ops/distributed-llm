@@ -40,6 +40,9 @@ redis:
   enabled: true
   address: ""
   password: ""
+  # SECURITY: In production, always set a strong Redis password via --set redis.password=...
+  # If no password is set and Redis is enabled, a random password is auto-generated
+  # and stored in a Kubernetes Secret when using the Helm chart with rbac enabled.
 
 autoscaling:
   enabled: false
@@ -47,6 +50,11 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
   targetMemoryUtilizationPercentage: 80
+  # 4.5 — GPU-aware autoscaling
+  scalingMetric: "cpu"  # "cpu", "memory", "gpu_utilization"
+  targetGPUUtilization: 75
+  scaleDownDelay: "5m"
+  scaleUpPolicy: "aggressive"  # "aggressive" or "conservative"
 
 serviceMonitor:
   enabled: false
@@ -56,3 +64,53 @@ ingress:
   enabled: false
   host: distllm.example.com
   tls: {}
+
+# GPU scheduling — set tolerations and nodeAffinity so pods land on GPU nodes
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+nodeSelector: {}
+
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: accelerator
+              operator: In
+              values:
+                - nvidia-tesla-a100
+                - nvidia-tesla-v100
+                - nvidia-a100-80gb
+
+# Network segmentation
+networkPolicy:
+  enabled: true
+  # Allow ingress from within the cluster on REST + gRPC ports
+  allowedNamespaces: []
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 1  # alternative to minAvailable
+
+# RBAC — ServiceAccount, Role, RoleBinding
+rbac:
+  create: true
+
+# Security context for the distllm container
+securityContext:
+  enabled: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL

@@ -16,22 +16,53 @@ from distllm.core.api_key_store import get_api_key_store, role_satisfies
 
 
 class _RateLimiter:
-    """Sliding window rate limiter: tracks failed attempts per IP.
+    """Sliding window rate limiter with dual keying (IP + API key).
 
-    Memory-bounded: evicts the LRU IP when the tracked IP count exceeds
+    M-06: Can key by IP (default), API key, or both. When keying by both,
+    a request is rate limited if EITHER its IP OR its API key exceeds the
+    limit. This prevents NAT-shared IPs from causing false positives while
+    still preventing per-IP abuse.
+
+    Memory-bounded: evicts the LRU entry when the tracked count exceeds
     ``max_ips``. Uses an OrderedDict for O(1) LRU eviction instead of
     O(N) min-search.
 
-    Each IP stores up to ``max_attempts`` timestamps within a
+    Each key stores up to ``max_attempts`` timestamps within a
     ``window_seconds`` sliding window.
     """
 
-    def __init__(self, max_attempts: int = 30, window_seconds: int = 60, max_ips: int = 10000):
+    KEY_BY_IP = "ip"
+    KEY_BY_API_KEY = "api_key"
+    KEY_BY_BOTH = "both"
+
+    def __init__(self, max_attempts: int = 30, window_seconds: int = 60,
+                 max_ips: int = 10000, key_by: str = "ip"):
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
         self.max_ips = max_ips
+        self._key_by = key_by if key_by in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH) else "ip"
         self._attempts: dict[str, deque[float]] = defaultdict(deque)
         self._access_order: OrderedDict[str, None] = OrderedDict()
+
+    def set_key_by(self, mode: str) -> None:
+        """Change rate limiting key mode at runtime.
+
+        Args:
+            mode: 'ip', 'api_key', or 'both'.
+        """
+        if mode in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH):
+            self._key_by = mode
+
+    def _make_keys(self, ip: str, api_key: str | None = None) -> list[str]:
+        """Generate rate limit keys based on current keying mode."""
+        if self._key_by == self.KEY_BY_API_KEY and api_key:
+            return [f"apikey:{api_key}"]
+        elif self._key_by == self.KEY_BY_BOTH:
+            keys = [f"ip:{ip}"]
+            if api_key:
+                keys.append(f"apikey:{api_key}")
+            return keys
+        return [f"ip:{ip}"]
 
     def _prune(self, ip: str) -> None:
         """Remove expired entries for *ip* and enforce the IP cap."""
@@ -58,25 +89,43 @@ class _RateLimiter:
             del self._attempts[oldest_ip]
             del self._access_order[oldest_ip]
 
-    def is_rate_limited(self, ip: str) -> bool:
-        """Return True if the IP has exceeded the rate limit."""
-        self._prune(ip)
-        if ip not in self._attempts:
-            return False
-        return len(self._attempts[ip]) >= self.max_attempts
+    def is_rate_limited(self, ip: str, api_key: str | None = None) -> bool:
+        """Return True if the key has exceeded the rate limit.
 
-    def retry_after(self, ip: str) -> int:
-        """Return the number of seconds until the rate limit resets for this IP."""
+        Args:
+            ip: Client IP address.
+            api_key: Optional API key for dual-keyed rate limiting.
+        """
+        keys = self._make_keys(ip, api_key)
+        for key in keys:
+            self._prune(key)
+            if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
+                return True
+        return False
+
+    def retry_after(self, ip: str, api_key: str | None = None) -> int:
+        """Return the number of seconds until the rate limit resets.
+
+        Args:
+            ip: Client IP address.
+            api_key: Optional API key for dual-keyed rate limiting.
+        """
         now = time.time()
-        if ip in self._attempts and len(self._attempts[ip]) >= self.max_attempts:
-            oldest = min(self._attempts[ip])
-            return max(1, int(self.window_seconds - (now - oldest)))
-        return 0
+        keys = self._make_keys(ip, api_key)
+        max_wait = 0
+        for key in keys:
+            if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
+                oldest = min(self._attempts[key])
+                wait = max(1, int(self.window_seconds - (now - oldest)))
+                max_wait = max(max_wait, wait)
+        return max_wait
 
-    def record_attempt(self, ip: str) -> None:
+    def record_attempt(self, ip: str, api_key: str | None = None) -> None:
         """Record a failed auth attempt."""
-        self._attempts[ip].append(time.time())
-        self._prune(ip)
+        keys = self._make_keys(ip, api_key)
+        for key in keys:
+            self._attempts[key].append(time.time())
+            self._prune(key)
 
 
 # Module-level rate limiter instances
@@ -105,8 +154,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         store = get_api_key_store()
 
-        # Skip auth for health endpoints (K8s probes, load balancers), OPTIONS (CORS preflight), or --no-auth
-        if request.url.path in ("/health", "/ready", "/live", "/metrics") or request.method == "OPTIONS" or os.environ.get("DISTLLM_NO_AUTH") == "1":
+        no_auth = os.environ.get("DISTLLM_NO_AUTH") == "1"
+        if no_auth:
+            # SECURITY: DISTLLM_NO_AUTH is never allowed in production.
+            # Only PYTEST_CURRENT_TEST can bypass auth — no env var override.
+            logger.critical("DISTLLM_NO_AUTH=1 is ignored: authentication cannot be disabled via environment variable. "
+                          "Use PYTEST_CURRENT_TEST for testing, or pass --no-auth as a CLI flag to the coordinator.")
+            # Still allow PYTEST_CURRENT_TEST for test suites that set both vars
+            no_auth = False
+
+        # Skip auth for health endpoints (K8s probes, load balancers) and OPTIONS (CORS preflight)
+        if request.url.path in ("/health", "/ready", "/live", "/metrics") or request.method == "OPTIONS":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
@@ -114,8 +172,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             client_ip = request.headers.get("X-Real-IP") or ""
             if not client_ip:
                 forwarded = request.headers.get("X-Forwarded-For", "")
+                # C-05: Per RFC 7239, the leftmost IP is the original client.
                 parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-                client_ip = parts[-1] if parts else ""
+                client_ip = parts[0] if parts else ""
         else:
             client_ip = ""
         client_ip = client_ip or (request.client.host if request.client else "unknown")
@@ -214,8 +273,11 @@ class RequestRateLimitMiddleware(BaseHTTPMiddleware):
     Set to 0 to disable.
     """
 
+    # M-09: Cache env var at class level instead of reading on every request
+    _rate_limit_value = int(os.environ.get("DISTLLM_RATE_LIMIT_REQUESTS", "1000"))
+
     async def dispatch(self, request: Request, call_next):
-        limit = int(os.environ.get("DISTLLM_RATE_LIMIT_REQUESTS", "1000"))
+        limit = self._rate_limit_value
         if limit > 0:
             client_ip = request.client.host if request.client else "unknown"
             if _request_rate_limiter.is_rate_limited(client_ip):

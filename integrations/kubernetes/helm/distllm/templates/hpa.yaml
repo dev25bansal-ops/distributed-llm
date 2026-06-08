@@ -12,17 +12,43 @@ spec:
     name: {{ include "distllm.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  {{- if .Values.autoscaling.scaleDownDelay }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownDelay | default "5m" | duration "m" | int | mul 60 }}
+  {{- end }}
   metrics:
+    {{- if eq (.Values.autoscaling.scalingMetric | default "cpu") "cpu" }}
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- else if eq (.Values.autoscaling.scalingMetric | default "cpu") "memory" }}
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- else if eq (.Values.autoscaling.scalingMetric | default "cpu") "gpu_utilization" }}
+    # GPU utilization via DCGM/nvidia-device-plugin custom metric
+    - type: Pods
+      pods:
+        metric:
+          name: DCGM_FI_DEV_GPU_UTIL
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.targetGPUUtilization }}
+    {{- end }}
+    # Always include CPU as a fallback
+    {{- if ne (.Values.autoscaling.scalingMetric | default "cpu") "cpu" }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
 {{- end }}

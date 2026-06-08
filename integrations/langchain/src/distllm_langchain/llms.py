@@ -2,10 +2,20 @@ from typing import Any, AsyncIterator, Iterator, Optional
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.llms import BaseLLM
+from pydantic import PrivateAttr
 from langchain_core.outputs import Generation, GenerationChunk, LLMResult
 
 from distllm.sdk import DistLLMClient, DistLLMClientSync
 from distllm.sdk.types import CompletionResponse
+
+
+def _resolve_max_tokens(value: Optional[int], default: Optional[int], fallback: int = 256) -> int:
+    """Resolve max_tokens: explicit value wins, then instance default, then fallback."""
+    if value is not None:
+        return value
+    if default is not None:
+        return default
+    return fallback
 
 
 class DistLLM(BaseLLM):
@@ -17,8 +27,8 @@ class DistLLM(BaseLLM):
     max_tokens: Optional[int] = None
     timeout: float = 120.0
 
-    _client: DistLLMClientSync = None
-    _async_client: DistLLMClient = None
+    _client: DistLLMClientSync = PrivateAttr(default=None)
+    _async_client: DistLLMClient = PrivateAttr(default=None)
 
     class Config:
         extra = "allow"
@@ -47,7 +57,7 @@ class DistLLM(BaseLLM):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        max_tokens = kwargs.pop("max_tokens", self.max_tokens) or 256
+        max_tokens = _resolve_max_tokens(kwargs.pop("max_tokens", self.max_tokens), self.max_tokens)
         model = kwargs.pop("model", self.model)
         resp = self._client.completions(
             prompt=prompt,
@@ -66,7 +76,7 @@ class DistLLM(BaseLLM):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        max_tokens = kwargs.pop("max_tokens", self.max_tokens) or 256
+        max_tokens = _resolve_max_tokens(kwargs.pop("max_tokens", self.max_tokens), self.max_tokens)
         model = kwargs.pop("model", self.model)
         resp = await self._async_client.completions(
             prompt=prompt,
@@ -98,7 +108,7 @@ class DistLLM(BaseLLM):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> Iterator[GenerationChunk]:
-        max_tokens = kwargs.pop("max_tokens", self.max_tokens) or 256
+        max_tokens = _resolve_max_tokens(kwargs.pop("max_tokens", self.max_tokens), self.max_tokens)
         model = kwargs.pop("model", self.model)
         for chunk in self._client.completions_stream(
             prompt=prompt,
@@ -123,7 +133,7 @@ class DistLLM(BaseLLM):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> AsyncIterator[GenerationChunk]:
-        max_tokens = kwargs.pop("max_tokens", self.max_tokens) or 256
+        max_tokens = _resolve_max_tokens(kwargs.pop("max_tokens", self.max_tokens), self.max_tokens)
         model = kwargs.pop("model", self.model)
         async for chunk in self._async_client.completions_stream(
             prompt=prompt,
@@ -146,5 +156,11 @@ class DistLLM(BaseLLM):
         if isinstance(resp, CompletionResponse):
             return resp.choices[0].text if resp.choices else ""
         if isinstance(resp, dict):
-            return resp.get("choices", [{}])[0].get("text", "")
-        return getattr(resp, "choices", [{}])[0].get("text", "")
+            choices = resp.get("choices") or []
+            return choices[0].get("text", "") if choices else ""
+        choices = getattr(resp, "choices", None) or []
+        if choices and isinstance(choices[0], dict):
+            return choices[0].get("text", "")
+        if choices:
+            return getattr(choices[0], "text", "")
+        return ""

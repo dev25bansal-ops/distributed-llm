@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#050505"/>
+  <rect x="0" y="0" width="1200" height="4" fill="#00e676"/>
+
+  <!-- Logo -->
+  <rect x="80" y="80" width="48" height="48" rx="10" fill="#00e676"/>
+  <text x="104" y="114" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="30" fill="#000">D</text>
+  <text x="140" y="112" font-family="Inter, sans-serif" font-weight="800" font-size="28" fill="#ededed">dist<tspan fill="#00e676">llm</tspan></text>
+
+  <!-- Headline -->
+  <text x="80" y="220" font-family="Inter, sans-serif" font-weight="900" font-size="56" fill="#ededed" letter-spacing="-2">Your 4090 + your laptop's 4060</text>
+  <text x="80" y="290" font-family="Inter, sans-serif" font-weight="900" font-size="56" fill="#00e676" letter-spacing="-2">= Llama 3.1 70B</text>
+
+  <!-- Subtitle -->
+  <text x="80" y="350" font-family="Inter, sans-serif" font-weight="500" font-size="22" fill="#a0a0a0">Pool GPUs across devices. Run any model. Open source.</text>
+
+  <!-- Stats -->
+  <text x="80" y="460" font-family="Inter, sans-serif" font-weight="800" font-size="36" fill="#ededed">30+ tok/s</text>
+  <text x="80" y="490" font-family="Inter, sans-serif" font-weight="500" font-size="14" fill="#6b6b6b">70B model, 4x RTX 4090</text>
+
+  <text x="350" y="460" font-family="Inter, sans-serif" font-weight="800" font-size="36" fill="#ededed">&lt;100ms</text>
+  <text x="350" y="490" font-family="Inter, sans-serif" font-weight="500" font-size="14" fill="#6b6b6b">Time to first token</text>
+
+  <text x="580" y="460" font-family="Inter, sans-serif" font-weight="800" font-size="36" fill="#ededed">128K</text>
+  <text x="580" y="490" font-family="Inter, sans-serif" font-weight="500" font-size="14" fill="#6b6b6b">Max context length</text>
+
+  <text x="770" y="460" font-family="Inter, sans-serif" font-weight="800" font-size="36" fill="#ededed">10x</text>
+  <text x="770" y="490" font-family="Inter, sans-serif" font-weight="500" font-size="14" fill="#6b6b6b">Cheaper than cloud</text>
+
+  <!-- CTA -->
+  <rect x="80" y="540" width="200" height="48" rx="8" fill="#00e676"/>
+  <text x="180" y="570" text-anchor="middle" font-family="Inter, sans-serif" font-weight="700" font-size="16" fill="#000">Get Started</text>
+
+  <text x="320" y="570" font-family="Inter, sans-serif" font-weight="600" font-size="16" fill="#a0a0a0">github.com/distributed-llm</text>
+</svg>

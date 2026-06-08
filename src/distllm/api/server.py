@@ -405,15 +405,19 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
     """Cancel requests that exceed the timeout limit."""
 
     DEFAULT_TIMEOUT = 120.0  # 2 minutes default
+
+    # H-20: Use rstrip('/') for path matching to catch trailing slashes
     ENDPOINT_TIMEOUTS = {
-        "/v1/chat/completions": 300.0,  # 5 minutes for chat
-        "/v1/completions": 300.0,  # 5 minutes for completions
-        "/v1/embeddings": 60.0,  # 1 minute for embeddings
+        "/v1/chat/completions": 300.0,
+        "/v1/completions": 300.0,
+        "/v1/embeddings": 60.0,
     }
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # H-20: Normalize path before lookup — strip trailing slash and query params
+        path = request.url.path.rstrip("/")
         timeout = self.ENDPOINT_TIMEOUTS.get(
-            request.url.path, self.DEFAULT_TIMEOUT
+            path, self.DEFAULT_TIMEOUT
         )
         # Per-request timeout via X-Request-Timeout header
         per_request = getattr(request.state, "request_timeout", None)
@@ -467,8 +471,10 @@ class RequestSizeLimitMiddleware:
 
     MAX_REQUEST_SIZE = 32 * 1024 * 1024  # 32 MB default
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, max_size: int | None = None) -> None:
         self.app = app
+        if max_size is not None:
+            self.MAX_REQUEST_SIZE = max_size
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or scope.get("method") not in ("POST", "PUT", "PATCH"):
@@ -523,7 +529,7 @@ class RequestSizeLimitMiddleware:
             return
 
 
-app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware, max_size=100_000_000)
 
 
 # Backpressure middleware
@@ -701,7 +707,11 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
     # Validate API key if auth is configured
     from distllm.core.api_key_store import get_api_key_store
     store = get_api_key_store()
-    if store.get_key_count() > 0 and auth_token:
+    if store.get_key_count() > 0:
+        if not auth_token:
+            logger.warning("WebSocket connection rejected: missing API key")
+            await websocket.close(code=4001, reason="API key required")
+            return
         result = store.authenticate(auth_token)
         if result is None:
             await websocket.close(code=4001, reason="Invalid API key")
@@ -740,10 +750,32 @@ async def metrics_websocket(websocket: WebSocket) -> None:
     Unlike /ws (which requires subscribe commands), this endpoint
     auto-streams all metrics at a configurable interval.
 
+    SECURITY: Requires API key authentication (same as /ws endpoint).
+
     Query params:
         interval: Stream interval in seconds (default: 1.0)
         categories: Comma-separated metric categories to include
+        token: API key for authentication
     """
+    # SECURITY: Authenticate WebSocket connection
+    from distllm.core.api_key_store import get_api_key_store
+    store = get_api_key_store()
+    auth_token = websocket.query_params.get("token", "")
+    if not auth_token:
+        auth_header = websocket.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[7:]
+
+    if store.get_key_count() > 0:
+        if not auth_token:
+            logger.warning("Metrics WebSocket rejected: missing API key")
+            await websocket.close(code=4001, reason="API key required")
+            return
+        result = store.authenticate(auth_token)
+        if result is None:
+            await websocket.close(code=4001, reason="Invalid API key")
+            return
+
     await websocket.accept()
     # Clamp interval to safe range (0.2s - 10.0s) to prevent DoS
     interval = max(0.2, min(float(websocket.query_params.get("interval", "1.0")), 10.0))
@@ -776,6 +808,19 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                     sched_stats = coord.scheduler.stats()
                     if not requested or "scheduler" in requested:
                         snapshot["scheduler"] = sched_stats
+            except Exception:
+                pass
+
+            # Prometheus metrics snapshot (if available)
+            try:
+                from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+                prom_data = generate_latest()
+                if prom_data and (not requested or "prometheus" in requested):
+                    snapshot["prometheus"] = {
+                        "gpu_util": _extract_prom_gauge(prom_data, "distllm_gpu_utilization"),
+                        "requests_active": _extract_prom_gauge(prom_data, "distllm_active_requests"),
+                        "tokens_total": _extract_prom_counter(prom_data, "distllm_tokens_total"),
+                    }
             except Exception:
                 pass
 
@@ -1119,6 +1164,31 @@ async def api_streaming_cost_stats() -> dict:
         return {"status": "not_available"}
 
 
+def _extract_prom_gauge(data: bytes, metric_name: str) -> float | None:
+    """Extract a single gauge value from Prometheus text format."""
+    try:
+        for line in data.decode("utf-8").splitlines():
+            if line.startswith(metric_name) and " " in line:
+                parts = line.rsplit(" ", 1)
+                return float(parts[-1]) if len(parts) == 2 else None
+    except Exception:
+        return None
+    return None
+
+
+def _extract_prom_counter(data: bytes, metric_name: str) -> float | None:
+    """Extract a counter value from Prometheus text format."""
+    try:
+        for line in data.decode("utf-8").splitlines():
+            if line.startswith(metric_name) and not line.startswith("#"):
+                parts = line.rsplit(" ", 1)
+                if len(parts) == 2:
+                    return float(parts[-1])
+    except Exception:
+        return None
+    return None
+
+
 def _start_ws_broadcaster() -> None:
     """Start the WebSocket metrics broadcaster background task."""
     if state.coordinator is not None:
@@ -1226,7 +1296,8 @@ def _load_settings(args: Any) -> DistLLMSettings:
     # Resolve config path
     config_path = args.config
     if config_path is None:
-        config_path = ConfigResolver._resolve_config_path("api", args)
+        # M-08: Use public resolve_config_path instead of private _resolve_config_path
+        config_path = ConfigResolver.resolve_config_path("api", args)
 
     # Build CLI overrides
     cli_overrides = {}

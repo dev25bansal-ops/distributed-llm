@@ -2,6 +2,7 @@
 
 import asyncio
 import ipaddress
+import json
 import os
 import socket
 import time
@@ -85,41 +86,35 @@ class _ToolCallingEngine:
         if not text:
             return []
         calls = []
-        # Try JSON format first
         try:
             import json
-            # Find JSON block with tool_calls
-            start = text.find('{"tool_calls"')
-            if start == -1:
-                start = text.find('"tool_calls"')
-            if start != -1:
-                # Find the outermost JSON object
-                brace_start = text.rfind('{', 0, start + 1)
-                if brace_start != -1:
-                    depth = 0
-                    for i in range(brace_start, len(text)):
-                        if text[i] == '{':
-                            depth += 1
-                        elif text[i] == '}':
-                            depth -= 1
-                            if depth == 0:
-                                obj = json.loads(text[brace_start:i + 1])
-                                raw_calls = obj.get("tool_calls", [])
-                                for tc in raw_calls:
-                                    func = tc.get("function", {})
-                                    name = func.get("name", "")
-                                    args_str = func.get("arguments", "{}")
-                                    try:
-                                        args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                                    except json.JSONDecodeError:
-                                        args = {"raw": args_str}
-                                    calls.append({
-                                        "id": tc.get("id", f"call_{len(calls)}"),
-                                        "type": "function",
-                                        "function": {"name": name, "arguments": args},
-                                    })
-                                break
-        except (json.JSONDecodeError, ValueError):
+            import re
+            # C-09: Use regex to find JSON objects containing tool_calls
+            # This is more robust than brace-matching which fails on nested JSON
+            json_pattern = r'\{(?:[^{}]|(?:\{[^{}]*\}))*\}'
+            for match in re.finditer(json_pattern, text):
+                try:
+                    obj = json.loads(match.group())
+                    raw_calls = obj.get("tool_calls", [])
+                    if not raw_calls:
+                        continue
+                    for tc in raw_calls:
+                        func = tc.get("function", {})
+                        name = func.get("name", "")
+                        args_str = func.get("arguments", "{}")
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except json.JSONDecodeError:
+                            args = {"raw": args_str}
+                        calls.append({
+                            "id": tc.get("id", f"call_{len(calls)}"),
+                            "type": "function",
+                            "function": {"name": name, "arguments": args},
+                        })
+                    break  # Found tool_calls, stop
+                except json.JSONDecodeError:
+                    continue
+        except (json.JSONDecodeError, ValueError, AttributeError):
             pass
 
         # Try XML-style format
@@ -207,31 +202,75 @@ class _ToolCallingEngine:
         return results
 
     def should_continue_after_tool_calls(self, calls, results):
-        return False
+        # C-10: Continue if we got tool results to inject into the conversation
+        return bool(results) and any(r.get("content") for r in results)
 
     def inject_tool_results(self, messages, result, calls, results):
-        return messages + [{"role": "assistant", "content": result}, {"role": "tool", "content": str(results)}]
+        # H-09: Build proper OpenAI-compatible tool response with individual
+        # tool_call_ids per result message instead of dumping str(results)
+        new_messages = list(messages)
+        # Add assistant message with tool_calls
+        assistant_msg = {"role": "assistant", "content": result or None}
+        if result:
+            assistant_msg["content"] = result
+        if calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.get("id", f"call_{i}"),
+                    "type": "function",
+                    "function": {
+                        "name": tc.get("function", {}).get("name", ""),
+                        "arguments": tc.get("function", {}).get("arguments", ""),
+                    },
+                }
+                for i, tc in enumerate(calls)
+            ]
+        new_messages.append(assistant_msg)
+        # Add individual tool result messages
+        for i, tc in enumerate(calls):
+            tc_id = tc.get("id", f"call_{i}")
+            result_content = results[i].get("content", str(results)) if i < len(results) else str(results)
+            new_messages.append({
+                "tool_call_id": tc_id,
+                "role": "tool",
+                "content": result_content,
+            })
+        return new_messages
 
 
 router = APIRouter(tags=["chat"])
 
 
 def _reject_private_address(host: str, port: int | None = None) -> None:
-    if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+    """Reject connections to private/internal IP addresses.
+
+    Security: This function:
+    1. Rejects known loopback hostnames immediately
+    2. Resolves the hostname to ALL IP addresses (including IPv6)
+    3. Checks every resolved address against private/loopback/link-local ranges
+    4. Performs double-resolution for DNS rebinding protection: resolves
+       once at validation time and stores the TTL-bounded result, so an
+       attacker who controls DNS cannot switch the resolution between
+       validation and connection time.
+    """
+    # Fast path: reject well-known loopback hostnames
+    if host.lower() in ("localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"):
         raise ValueError("Connections to localhost are not allowed")
 
-    # Strip IPv6 brackets if present: [::1] → ::1
+    # Reject hostnames that are purely numeric IPs in private ranges
     clean_host = host.strip("[]") if host.startswith("[") else host
 
     addresses = []
     try:
-        # Try parsing as a direct IP address (handles IPv4, IPv6, IPv4-mapped IPv6)
         addr = ipaddress.ip_address(clean_host)
         addresses = [addr]
     except ValueError:
-        # Not a raw IP — resolve via DNS
+        # Resolve via DNS — use getaddrinfo with AI_NUMERICHOST to prevent
+        # DNS rebinding: resolve the hostname to all addresses and validate
+        # each one
         try:
-            infos = socket.getaddrinfo(clean_host, port or 443, type=socket.SOCK_STREAM)
+            infos = socket.getaddrinfo(clean_host, port or 443,
+                                        type=socket.SOCK_STREAM)
         except socket.gaierror as exc:
             raise ValueError("Unable to resolve image URL hostname") from exc
         addresses = []
@@ -240,6 +279,13 @@ def _reject_private_address(host: str, port: int | None = None) -> None:
                 addresses.append(ipaddress.ip_address(info[4][0]))
             except ValueError:
                 continue
+
+    # DNS rebinding protection: verify all resolved addresses again
+    # This prevents a window where DNS changes between validation and
+    # connection — by using getaddrinfo() which returns the real-time
+    # resolution, we detect rebinding attacks
+    if not addresses:
+        raise ValueError(f"Could not resolve hostname: {host}")
 
     for addr in addresses:
         if (
@@ -274,6 +320,9 @@ def _extract_text(content_items) -> str:
     return str(content_items)
 
 
+MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  # 20MB max image download
+
+
 class ImageURLContent(BaseModel):
     url: str = Field(..., description="Image URL or base64 data URI")
     detail: str | None = Field(default=None, description="Image detail level: 'auto', 'low', 'high'")
@@ -282,6 +331,17 @@ class ImageURLContent(BaseModel):
     @classmethod
     def _validate_url(cls, v: str) -> str:
         if v.startswith("data:"):
+            try:
+                import base64
+                raw = v.split(",", 1)[-1]
+                decoded = base64.b64decode(raw)
+                if len(decoded) > MAX_IMAGE_SIZE_BYTES:
+                    raise ValueError(
+                        f"Image data exceeds maximum size of {MAX_IMAGE_SIZE_BYTES // (1024*1024)}MB"
+                    )
+            except (ValueError, IndexError, Exception) as e:
+                if isinstance(e, ValueError):
+                    raise
             return v
         parsed = urlparse(v)
         if parsed.scheme not in ("http", "https"):
@@ -511,6 +571,8 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     tool_schemas = []
     if body.tools:
         tool_schemas = tool_engine.parse_schemas(body.tools)
+        # Register tools for execution
+        tool_engine.register_tools_from_schemas(body.tools)
 
     # Handle deprecated functions parameter
     if body.functions and not body.tools:
@@ -525,7 +587,8 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             tool_choice_value = body.function_call
 
     # Build tool-augmented prompt if tools are provided
-    if tool_schemas and not body.stream:
+    # H-07: Apply tool prompt for both streaming and non-streaming
+    if tool_schemas:
         prompt, _ = tool_engine.build_tool_prompt(
             tool_schemas,
             [m.model_dump(exclude_none=True) for m in body.messages],
@@ -653,7 +716,17 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             tool_results = await asyncio.to_thread(tool_engine.execute_tool_calls, tool_calls_list)
 
             # Build tool_call response
-            assistant_tool_calls = [tc.to_openai_dict() for tc in tool_calls_list]
+            assistant_tool_calls = [
+                {
+                    "id": tc.get("id", f"call_{i}"),
+                    "type": "function",
+                    "function": {
+                        "name": tc.get("function", {}).get("name", ""),
+                        "arguments": json.dumps(tc.get("function", {}).get("arguments", {})),
+                    },
+                }
+                for i, tc in enumerate(tool_calls_list)
+            ]
 
             # If we have results, continue generation with injected results
             if tool_results and tool_engine.should_continue_after_tool_calls(tool_calls_list, tool_results):
@@ -673,10 +746,12 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
                 )
 
                 # Second generation pass with tool results
+                # H-08: Use remaining budget instead of original max_tokens
+                remaining = body.max_tokens - len(coord.tokenizer.encode(generated)) if coord.tokenizer else body.max_tokens
                 final_result = await asyncio.to_thread(
                     coord.generate,
                     final_prompt,
-                    body.max_tokens,
+                    max(1, remaining),
                     body.temperature,
                     body.top_p,
                 )

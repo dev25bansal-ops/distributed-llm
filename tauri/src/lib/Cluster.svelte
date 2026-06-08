@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { createCluster, joinCluster, leaveCluster, getClusterStatus } from "./api";
+  import { createCluster, joinCluster, leaveCluster } from "./api";
+  import { clusterStore, logStore } from "./stores";
+  import { Card, Button, Input, ErrorBanner, StatusDot, toastStore } from "./ui";
   import type { ClusterStatus } from "./types";
+  import { onMount, onDestroy } from "svelte";
 
-  let { initialAction }: { initialAction?: string | null } = $props();
+  let { initialAction, connectAddr }: { initialAction?: string | null; connectAddr?: string | null } = $props();
 
   let status = $state<ClusterStatus | null>(null);
   let loading = $state(false);
@@ -16,36 +19,39 @@
   let joinHost = $state("127.0.0.1");
   let joinPort = $state(8000);
 
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  // 3.4: Subscribe to shared cluster store instead of own polling
+  let unsubscribe: (() => void) | undefined;
 
-  function startPoll() {
-    stopPoll();
-    pollTimer = setInterval(refreshStatus, 3000);
-  }
-
-  function stopPoll() {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = undefined;
+  onMount(() => {
+    unsubscribe = clusterStore.subscribe((d) => {
+      status = d.cluster;
+    });
+    // 5.8: Pre-fill join form from deep link address
+    if (connectAddr) {
+      const parts = connectAddr.split(":");
+      if (parts.length === 2) {
+        joinHost = parts[0];
+        joinPort = parseInt(parts[1]) || 8000;
+      }
     }
-  }
+  });
 
-  async function refreshStatus() {
-    try {
-      status = await getClusterStatus();
-    } catch {
-      // ignore poll errors
-    }
-  }
+  onDestroy(() => {
+    unsubscribe?.();
+  });
 
   async function handleCreate() {
     loading = true;
     error = null;
     try {
-      status = await createCluster(createPort, createModel || undefined);
-      startPoll();
+      logStore.info("cluster", `Creating cluster on port ${createPort}`);
+      await createCluster(createPort, createModel || undefined);
+      await clusterStore.refresh();
+      toastStore.success("Cluster created on port " + createPort);
+      logStore.info("cluster", `Cluster created successfully on port ${createPort}`);
     } catch (e: unknown) {
       error = String(e);
+      logStore.error("cluster", `Failed to create cluster: ${e}`);
     } finally {
       loading = false;
     }
@@ -55,31 +61,37 @@
     loading = true;
     error = null;
     try {
-      status = await joinCluster(joinHost, joinPort);
-      startPoll();
+      logStore.info("cluster", `Joining cluster at ${joinHost}:${joinPort}`);
+      await joinCluster(joinHost, joinPort);
+      await clusterStore.refresh();
+      toastStore.success("Joined cluster at " + joinHost + ":" + joinPort);
+      logStore.info("cluster", `Successfully joined cluster at ${joinHost}:${joinPort}`);
     } catch (e: unknown) {
       error = String(e);
+      logStore.error("cluster", `Failed to join cluster: ${e}`);
     } finally {
       loading = false;
     }
   }
 
   async function handleLeave() {
+    if (!window.confirm("Are you sure you want to leave the cluster? This will stop all distributed inference.")) {
+      return;
+    }
     loading = true;
     error = null;
     try {
+      logStore.info("cluster", "Leaving cluster");
       await leaveCluster();
-      status = null;
-      stopPoll();
+      await clusterStore.refresh();
+      toastStore.info("Left the cluster");
+      logStore.info("cluster", "Left the cluster successfully");
     } catch (e: unknown) {
       error = String(e);
+      logStore.error("cluster", `Failed to leave cluster: ${e}`);
     } finally {
       loading = false;
     }
-  }
-
-  async function handleRefresh() {
-    await refreshStatus();
   }
 
   function fmtAddr(addr: string | null | undefined): string {
@@ -90,16 +102,12 @@
 <div class="cluster-page">
   <h1 class="page-title">Cluster</h1>
 
-  {#if error}
-    <div class="error-banner">{error}</div>
-  {/if}
+  <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
   {#if status?.running}
-    <!-- Running state -->
-    <section class="card">
-      <h2 class="card-title">Cluster Running</h2>
+    <Card title="Cluster Running">
       <div class="status-row">
-        <span class="status-dot green"></span>
+        <StatusDot variant="green" />
         <span>Active</span>
         <span class="mono">— {fmtAddr(status.coordinator_addr)}</span>
       </div>
@@ -109,105 +117,51 @@
           <span class="info-value">{status.nodes.length}</span>
         </div>
       </div>
-      <button class="btn btn-danger" onclick={handleLeave} disabled={loading}>
-        {loading ? "Stopping..." : "Leave Cluster"}
-      </button>
-      <button class="btn btn-ghost" onclick={handleRefresh} disabled={loading}>
-        Refresh Status
-      </button>
-    </section>
+      <div class="button-row">
+        <Button variant="danger" onclick={handleLeave} disabled={loading}>
+          {loading ? "Stopping..." : "Leave Cluster"}
+        </Button>
+        <Button variant="ghost" onclick={() => clusterStore.refresh()} disabled={loading}>
+          Refresh Status
+        </Button>
+      </div>
+    </Card>
   {:else}
-    <!-- Create -->
-    <section class="card">
-      <h2 class="card-title">Create Cluster</h2>
-      <p class="card-desc">Start a new coordinator on this machine. Others can join via your IP address.</p>
+    <Card title="Create Cluster" description="Start a new coordinator on this machine. Others can join via your IP address.">
       <div class="form-row">
         <label class="form-label" for="create-port">Port</label>
-        <input id="create-port" type="number" class="input" bind:value={createPort} min={1024} max={65535} />
+        <Input id="create-port" type="number" bind:value={createPort} min={1024} max={65535} />
       </div>
       <div class="form-row">
         <label class="form-label" for="create-model">Model (optional)</label>
-        <input id="create-model" type="text" class="input" placeholder="e.g. HuggingFaceTB/SmolLM-135M" bind:value={createModel} />
+        <Input id="create-model" placeholder="e.g. HuggingFaceTB/SmolLM-135M" bind:value={createModel} />
       </div>
-      <button class="btn btn-primary" onclick={handleCreate} disabled={loading}>
+      <Button onclick={handleCreate} disabled={loading}>
         {loading ? "Creating..." : "Create Cluster"}
-      </button>
-    </section>
+      </Button>
+    </Card>
 
-    <!-- Join -->
-    <section class="card">
-      <h2 class="card-title">Join Cluster</h2>
-      <p class="card-desc">Connect to an existing coordinator.</p>
+    <Card title="Join Cluster" description="Connect to an existing coordinator.">
       <div class="form-row">
         <label class="form-label" for="join-host">Coordinator Host</label>
-        <input id="join-host" type="text" class="input" placeholder="192.168.1.100" bind:value={joinHost} />
+        <Input id="join-host" placeholder="192.168.1.100" bind:value={joinHost} />
       </div>
       <div class="form-row">
         <label class="form-label" for="join-port">Port</label>
-        <input id="join-port" type="number" class="input" bind:value={joinPort} min={1024} max={65535} />
+        <Input id="join-port" type="number" bind:value={joinPort} min={1024} max={65535} />
       </div>
-      <button class="btn btn-primary" onclick={handleJoin} disabled={loading}>
+      <Button onclick={handleJoin} disabled={loading}>
         {loading ? "Joining..." : "Join Cluster"}
-      </button>
-    </section>
+      </Button>
+    </Card>
   {/if}
 </div>
 
 <style>
   .cluster-page { max-width: 600px; }
-  .page-title { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
-  .error-banner {
-    background: color-mix(in srgb, var(--danger) 15%, transparent);
-    color: var(--danger);
-    padding: 10px 14px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    font-size: 13px;
-  }
-  .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 16px;
-  }
-  .card-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-  .card-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
-  .status-row { display: flex; align-items: center; gap: 10px; font-size: 14px; margin-bottom: 14px; }
-  .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .status-dot.green { background: var(--success); box-shadow: 0 0 6px var(--success); }
-  .mono { font-family: var(--font-mono); font-size: 12px; }
-  .form-row { margin-bottom: 14px; }
-  .form-label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-  .input {
-    width: 100%;
-    padding: 10px 12px;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text-primary);
-    font-size: 14px;
-    transition: border-color 0.15s;
-  }
-  .input:focus { border-color: var(--accent); }
   .cluster-info { margin-bottom: 16px; }
   .info-item { display: flex; gap: 8px; font-size: 14px; }
   .info-label { color: var(--text-secondary); }
   .info-value { font-family: var(--font-mono); font-weight: 600; }
-  .btn {
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    transition: all 0.15s;
-    margin-right: 8px;
-    margin-top: 4px;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn-danger { background: var(--danger); color: #fff; }
-  .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 80%, #fff); }
-  .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
-  .btn-ghost:hover:not(:disabled) { background: var(--bg-input); }
+  .button-row { display: flex; gap: 8px; margin-top: 4px; }
 </style>

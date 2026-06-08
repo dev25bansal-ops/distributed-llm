@@ -1,5 +1,6 @@
 from typing import Any, List, Optional
 
+from pydantic import PrivateAttr
 from llama_index.core.embeddings import BaseEmbedding
 
 from distllm.sdk import DistLLMClient, DistLLMClientSync
@@ -12,8 +13,8 @@ class DistLLMEmbeddings(BaseEmbedding):
     api_key: Optional[str] = None
     timeout: float = 120.0
 
-    _client: DistLLMClientSync = None
-    _async_client: DistLLMClient = None
+    _client: DistLLMClientSync = PrivateAttr(default=None)
+    _async_client: DistLLMClient = PrivateAttr(default=None)
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)

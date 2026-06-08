@@ -1,0 +1,17 @@
+{
+  "name": "DistLLM — Distributed LLM Inference",
+  "short_name": "DistLLM",
+  "description": "Pool GPUs from every device to run models no single machine can handle.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050505",
+  "theme_color": "#00e676",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["developer", "utilities"]
+}

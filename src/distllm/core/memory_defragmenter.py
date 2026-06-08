@@ -167,6 +167,10 @@ class MemoryDefragmenter:
         # Predictive state
         self._fragmentation_history: list[float] = []
         self._history_max_len = 100
+        # M-10: Block cooldown — prevents moving the same block repeatedly.
+        # A block moved within _block_cooldown_seconds is skipped on next pass.
+        self._block_cooldown_seconds: float = 30.0
+        self._block_last_moved: dict[int, float] = {}
 
         # Prometheus-style gauges (lazy init)
         self._metric_frag_ratio: Any = None
@@ -350,6 +354,20 @@ class MemoryDefragmenter:
             result.fragmentation_after = result.fragmentation_before
             return result
 
+        # M-10: Filter out blocks moved recently (cooldown).
+        # Prevents thrashing where the same block is moved on every pass.
+        now = time.monotonic()
+        filtered_moves = []
+        for src_idx, dst_idx, ref_count in moves:
+            src_block = blocks[src_idx]
+            last_moved = self._block_last_moved.get(src_block.block_id, 0)
+            if now - last_moved > self._block_cooldown_seconds:
+                filtered_moves.append((src_idx, dst_idx, ref_count))
+        moves = filtered_moves
+        if not moves:
+            result.fragmentation_after = result.fragmentation_before
+            return result
+
         # L2/L3 tier: swap cold sequences to CPU/NVMe before compacting
         if tier in (TieredCompactionLevel.L2_WARM, TieredCompactionLevel.L3_COLD):
             self._offload_cold_sequences(mgr, tier)
@@ -412,6 +430,12 @@ class MemoryDefragmenter:
 
         # Rebuild free list
         self._set_free_blocks(mgr, [b.block_id for b in blocks if not b.is_allocated])
+
+        # M-10: Record when each block was last moved (for cooldown)
+        now_cd = time.monotonic()
+        for src_idx, _dst_idx, _ref_count in moves:
+            src_block = blocks[src_idx]
+            self._block_last_moved[src_block.block_id] = now_cd
 
         result.fragmentation_after = self._compute_fragmentation_ratio(blocks)
         result.blocks_moved = len(moves)

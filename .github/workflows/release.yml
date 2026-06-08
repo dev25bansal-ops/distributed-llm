@@ -107,6 +107,49 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
+  publish-integrations:
+    runs-on: ubuntu-latest
+    needs: [build-test]
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: distllm-langchain
+            path: integrations/langchain
+          - name: distllm-llamaindex
+            path: integrations/llamaindex
+          - name: distllm-crewai
+            path: integrations/crewai
+          - name: distllm-litellm
+            path: integrations/litellm
+          - name: distllm-haystack
+            path: integrations/haystack
+          - name: distllm-autogen
+            path: integrations/autogen
+          - name: distllm-ollama-compat
+            path: integrations/ollama_compat
+          - name: distllm-fastapi
+            path: integrations/fastapi_middleware
+          - name: distllm-semantic-kernel
+            path: integrations/semantic_kernel
+          - name: distllm-grpc-client
+            path: integrations/grpc_client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install build twine
+      - name: Build ${{ matrix.package.name }}
+        working-directory: ${{ matrix.package.path }}
+        run: python -m build
+      - name: Publish ${{ matrix.package.name }}
+        working-directory: ${{ matrix.package.path }}
+        run: twine upload dist/* --non-interactive --skip-existing
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
   publish-helm:
     runs-on: ubuntu-latest
     needs: [build-test]

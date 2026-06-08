@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+  <ShortName>DistLLM</ShortName>
+  <LongName>DistLLM — Distributed LLM Inference</LongName>
+  <Description>Search DistLLM documentation, blog posts, and resources. Pool GPUs from every device to run 70B+ models.</Description>
+  <Tags>LLM inference distributed GPU cluster pipeline parallelism openai compatible</Tags>
+  <Contact>hello@distllm.dev</Contact>
+  <Url type="text/html" template="https://distllm.dev/?q={searchTerms}"/>
+  <Url type="application/html" template="https://distllm.dev/?q={searchTerms}"/>
+  <Image width="16" height="16" type="image/svg+xml">https://distllm.dev/favicon.svg</Image>
+  <Image width="64" height="64" type="image/png">https://distllm.dev/favicon.png</Image>
+  <InputEncoding>UTF-8</InputEncoding>
+  <OutputEncoding>UTF-8</OutputEncoding>
+  <Language>en-us</Language>
+  <SyndicationRight>open</SyndicationRight>
+  <AdultContent>false</AdultContent>
+  <moz:SearchForm xmlns:moz="http://www.mozilla.org/2006/browser/search/">https://distllm.dev</moz:SearchForm>
+</OpenSearchDescription>

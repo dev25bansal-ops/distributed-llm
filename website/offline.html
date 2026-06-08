@@ -1,0 +1,282 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline — DistLLM</title>
+    <meta name="description" content="You're offline. DistLLM works offline for cached pages.">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #050505;
+            color: #ededed;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container {
+            text-align: center;
+            padding: 24px;
+            max-width: 480px;
+        }
+        .icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 24px;
+            background: rgba(0, 230, 118, 0.1);
+            border: 2px solid rgba(0, 230, 118, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            margin-bottom: 12px;
+        }
+        p {
+            font-size: 15px;
+            color: #888;
+            line-height: 1.6;
+            margin-bottom: 32px;
+        }
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: 100px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #ef4444;
+            margin-bottom: 32px;
+        }
+        .status::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: #ef4444;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            cursor: pointer;
+            border: none;
+        }
+        .btn-primary {
+            background: #00e676;
+            color: #000;
+        }
+        .btn-primary:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: #ededed;
+            border: 1px solid #333;
+        }
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: #00e676;
+        }
+        .cached-pages {
+            margin-top: 48px;
+            padding-top: 32px;
+            border-top: 1px solid #222;
+        }
+        .cached-pages h2 {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            color: #888;
+        }
+        .page-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 8px;
+            text-align: left;
+        }
+        .page-link {
+            display: block;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid #222;
+            border-radius: 8px;
+            color: #ededed;
+            text-decoration: none;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .page-link:hover {
+            background: rgba(0, 230, 118, 0.05);
+            border-color: rgba(0, 230, 118, 0.2);
+        }
+        .page-link .page-name {
+            font-weight: 600;
+            display: block;
+            margin-bottom: 4px;
+        }
+        .page-link .page-desc {
+            color: #888;
+            font-size: 11px;
+        }
+        .network-status {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            padding: 8px 16px;
+            border-radius: 100px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 1000;
+            transition: all 0.3s;
+        }
+        .network-status.online {
+            background: rgba(0, 230, 118, 0.1);
+            border: 1px solid rgba(0, 230, 118, 0.2);
+            color: #00e676;
+        }
+        .network-status.offline {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+    </style>
+</head>
+<body>
+    <div class="network-status offline" id="networkStatus">
+        <span id="statusText">Offline</span>
+    </div>
+
+    <div class="container">
+        <div class="icon">📡</div>
+        <h1>You're Offline</h1>
+        <p>It looks like you've lost your internet connection. Don't worry — you can still access cached pages below.</p>
+
+        <div class="status">
+            <span id="connectionStatus">No internet connection</span>
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-primary" onclick="window.location.reload()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                </svg>
+                Try Again
+            </button>
+            <a href="/" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+                    <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+                Go Home
+            </a>
+        </div>
+
+        <div class="cached-pages">
+            <h2>Available Offline</h2>
+            <div class="page-list" id="cachedPages">
+                <!-- Dynamically populated -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Network status detection
+        const statusEl = document.getElementById('networkStatus');
+        const statusText = document.getElementById('statusText');
+        const connectionStatus = document.getElementById('connectionStatus');
+
+        function updateNetworkStatus() {
+            if (navigator.onLine) {
+                statusEl.className = 'network-status online';
+                statusText.textContent = 'Online';
+                connectionStatus.textContent = 'Connected — redirecting...';
+                setTimeout(() => window.location.href = '/', 1000);
+            } else {
+                statusEl.className = 'network-status offline';
+                statusText.textContent = 'Offline';
+                connectionStatus.textContent = 'No internet connection';
+            }
+        }
+
+        window.addEventListener('online', updateNetworkStatus);
+        window.addEventListener('offline', updateNetworkStatus);
+        updateNetworkStatus();
+
+        // Populate cached pages
+        async function loadCachedPages() {
+            const container = document.getElementById('cachedPages');
+            try {
+                const cache = await caches.open('distllm-v0.4.0');
+                const requests = await cache.keys();
+                const pages = requests
+                    .filter(r => r.url.endsWith('.html') || r.url.endsWith('/'))
+                    .map(r => {
+                        const url = new URL(r.url);
+                        const path = url.pathname;
+                        const name = path === '/' ? 'Home' : path.replace('.html', '').replace('/', '').replace(/-/g, ' ');
+                        return { path, name: name.charAt(0).toUpperCase() + name.slice(1) };
+                    });
+
+                if (pages.length === 0) {
+                    container.innerHTML = '<p style="color: #888; font-size: 13px;">No cached pages available</p>';
+                    return;
+                }
+
+                container.innerHTML = pages.map(page => `
+                    <a href="${page.path}" class="page-link">
+                        <span class="page-name">${page.name}</span>
+                        <span class="page-desc">Available offline</span>
+                    </a>
+                `).join('');
+            } catch (e) {
+                container.innerHTML = '<p style="color: #888; font-size: 13px;">Unable to load cached pages</p>';
+            }
+        }
+
+        loadCachedPages();
+
+        // Auto-retry connection every 30 seconds
+        setInterval(() => {
+            if (navigator.onLine) {
+                window.location.reload();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

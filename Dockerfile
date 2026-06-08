@@ -91,7 +91,7 @@ USER distllm
 
 # Default env for deployment
 ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=roneneldan/TinyStories-1M
+ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
 ENV DISTLLM_START_LAYER=0
 ENV DISTLLM_END_LAYER=3
 ENV DISTLLM_TOTAL_LAYERS=8
@@ -102,3 +102,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 EXPOSE 8000 50051
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+# L-11: To use a different CUDA version, pass --build-arg CUDA_VERSION=12.6
+#   docker build --build-arg CUDA_VERSION=12.6 -t distllm:custom .
+# The Dockerfile.cuda12.1 and Dockerfile.cuda12.6 variants are aliases
+# for backward compatibility.

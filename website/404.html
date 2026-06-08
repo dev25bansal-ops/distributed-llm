@@ -1,0 +1,43 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>404 — DistLLM</title>
+    <meta name="description" content="Page not found. The page you're looking for doesn't exist or has been moved.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        .error-page { display: flex; align-items: center; justify-content: center; min-height: 80vh; padding: 24px; text-align: center; }
+        .error-code { font-size: clamp(64px, 20vw, 120px); font-weight: 800; color: var(--green); letter-spacing: -4px; line-height: 1; }
+        .error-page h1 { font-size: 24px; font-weight: 800; margin: 16px 0 8px; }
+        .error-page p { font-size: 15px; color: var(--dim); margin-bottom: 24px; }
+        .error-page .btn { display: inline-block; }
+        .error-links { margin-top: 24px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+        .error-links a { background: none; color: var(--dim); padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-xs); font-size: 13px; font-weight: 500; text-decoration: none; }
+        .error-links a:hover { color: var(--text); border-color: var(--green); }
+    </style>
+</head>
+<body>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <main id="main" class="error-page">
+        <div>
+            <div class="error-code">404</div>
+            <h1>Page not found</h1>
+            <p>The page you're looking for doesn't exist or has been moved.</p>
+            <a href="/" class="btn btn-primary">Go to homepage</a>
+            <div class="error-links">
+                <a href="/docs.html">Docs</a>
+                <a href="/blog.html">Blog</a>
+                <a href="https://github.com/distributed-llm/distributed-llm">GitHub</a>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

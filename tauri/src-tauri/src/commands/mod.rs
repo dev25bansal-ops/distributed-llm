@@ -1,0 +1,10 @@
+pub mod cluster;
+pub mod discovery;
+pub mod gpu;
+pub mod models;
+pub mod multimodel;
+pub mod ollama;
+pub mod plugins;
+pub mod system;
+pub mod tray;
+pub mod webdashboard;

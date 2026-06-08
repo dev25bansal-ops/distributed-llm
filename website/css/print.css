@@ -1,0 +1,71 @@
+/* ─── Print Stylesheet ─── */
+@media print {
+    body {
+        background: white;
+        color: black;
+    }
+
+    .nav,
+    .scroll-progress,
+    .menu-btn,
+    .theme-btn,
+    .cmd-k-hint,
+    .gh-stars,
+    .cmd-palette-overlay,
+    .cta-bg,
+    .integrations,
+    .newsletter {
+        display: none !important;
+    }
+
+    .hero {
+        padding-top: 20px;
+    }
+
+    .hero::before,
+    .hero::after,
+    body::after {
+        display: none;
+    }
+
+    .section {
+        padding: 30px 0;
+        page-break-inside: avoid;
+    }
+
+    .card,
+    .feat-card,
+    .step-card,
+    .ps-card,
+    .pr-card,
+    .use-card,
+    .test-card,
+    .terminal {
+        border-color: #ddd;
+        background: white;
+        box-shadow: none;
+    }
+
+    a {
+        color: black;
+        text-decoration: underline;
+    }
+
+    .highlight,
+    .perf-value,
+    .pr-price,
+    .calc-result-value {
+        color: black !important;
+        -webkit-text-fill-color: black !important;
+        background: none !important;
+    }
+
+    .btn-primary {
+        background: black;
+        color: white;
+    }
+
+    footer {
+        page-break-before: always;
+    }
+}

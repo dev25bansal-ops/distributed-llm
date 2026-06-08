@@ -220,8 +220,10 @@ class SmartModelRouter:
         large_model: str = "llama-3.1-70b",
         code_model: str = "",
         math_model: str = "",
+        base_router: Any = None,
     ):
         self._estimator = TaskComplexityEstimator()
+        self._base_router = base_router  # Optional ModelRouter for rule-based fallback
         self._tiers = [
             ModelTier("small", small_model, 0.35, 0.1),
             ModelTier("medium", medium_model, 0.55, 0.5),
@@ -248,6 +250,20 @@ class SmartModelRouter:
             Tuple of (model_name, complexity_estimate).
         """
         estimate = self._estimator.estimate(text)
+
+        # Low-confidence → fall through to base_router for rule-based routing
+        if estimate.confidence < 0.4 and self._base_router is not None:
+            base_result = self._base_router.resolve(text)
+            if base_result and base_result != self._default_model:
+                model = base_result
+                route_type = "rule_based"
+                estimate.recommended_model = model
+                with self._lock:
+                    self._stats["total_routes"] += 1
+                    self._stats["routes_by_type"]["rule_based"] = (
+                        self._stats["routes_by_type"].get("rule_based", 0) + 1
+                    )
+                return model, estimate
 
         # Specialized routing
         if estimate.signals.get("code", 0) > 0.3:

@@ -1,5 +1,6 @@
 from typing import Any, AsyncGenerator, Generator, Optional, Sequence
 
+from pydantic import Field, PrivateAttr
 from llama_index.core.llms import (
     ChatMessage,
     ChatResponse,
@@ -21,6 +22,15 @@ _ROLE_MAP = {
     MessageRole.TOOL: "tool",
     MessageRole.FUNCTION: "function",
 }
+
+
+def _resolve_max_tokens(value: Optional[int], default: Optional[int], fallback: int = 256) -> int:
+    """Resolve max_tokens: explicit value wins, then instance default, then fallback."""
+    if value is not None:
+        return value
+    if default is not None:
+        return default
+    return fallback
 
 
 def _to_chat_message(msg: ChatMessage) -> dict[str, Any]:
@@ -66,9 +76,16 @@ class DistLLM(LLM):
     timeout: float = 120.0
     context_window: int = 4096
     num_output: int = 256
+    is_streaming: bool = True
+    model_download_progress: Optional[float] = Field(
+        default=None, description="Model download progress (0.0-1.0), None if already cached"
+    )
+    pipeline_info: Optional[dict[str, Any]] = Field(
+        default=None, description="Pipeline parallelism metadata (layers, nodes, etc.)"
+    )
 
-    _client: DistLLMClientSync = None
-    _async_client: DistLLMClient = None
+    _client: DistLLMClientSync = PrivateAttr(default=None)
+    _async_client: DistLLMClient = PrivateAttr(default=None)
 
     model_config = {"extra": "allow"}
 
@@ -89,11 +106,48 @@ class DistLLM(LLM):
     def metadata(self) -> LLMMetadata:
         return LLMMetadata(
             model_name=self.model,
-            context_window=self.context_window,
+            context_window=self._get_live_context_window(),
             num_output=self.num_output,
             is_chat_model=True,
             is_function_calling_model=True,
+            is_streaming=self.is_streaming,
         )
+
+    def _get_live_context_window(self) -> int:
+        """Try to fetch the actual context window from the server."""
+        try:
+            import httpx
+
+            resp = httpx.get(
+                f"{self.base_url}/v1/models",
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                for m in data:
+                    if m.get("id") == self.model:
+                        return m.get("context_window", self.context_window)
+        except Exception:
+            pass
+        return self.context_window
+
+    def get_pipeline_info(self) -> Optional[dict[str, Any]]:
+        """Fetch pipeline parallelism info from the server."""
+        try:
+            import httpx
+
+            resp = httpx.get(
+                f"{self.base_url}/health",
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("pipeline_info", data.get("pipeline", None))
+        except Exception:
+            pass
+        return self.pipeline_info
 
     def _build_chat_payload(self, messages: Sequence[ChatMessage], **kwargs: Any) -> dict:
         raw_messages = [_to_chat_message(m) for m in messages]
@@ -102,7 +156,7 @@ class DistLLM(LLM):
             "model": kwargs.pop("model", self.model),
             "temperature": kwargs.pop("temperature", self.temperature),
             "top_p": kwargs.pop("top_p", self.top_p),
-            "max_tokens": kwargs.pop("max_tokens", self.max_tokens) or self.num_output,
+            "max_tokens": _resolve_max_tokens(kwargs.pop("max_tokens", None), self.max_tokens, self.num_output),
         }
         payload.update(kwargs)
         return payload
@@ -113,7 +167,7 @@ class DistLLM(LLM):
             "model": kwargs.pop("model", self.model),
             "temperature": kwargs.pop("temperature", self.temperature),
             "top_p": kwargs.pop("top_p", self.top_p),
-            "max_tokens": kwargs.pop("max_tokens", self.max_tokens) or self.num_output,
+            "max_tokens": _resolve_max_tokens(kwargs.pop("max_tokens", None), self.max_tokens, self.num_output),
         }
 
     def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:

@@ -1,0 +1,167 @@
+{
+  "meta": {
+    "title": "DistLLM — Distributed LLM Inference Across All Your Devices",
+    "description": "Pool GPUs from every device you own to run models no single machine can handle. OpenAI-compatible. Open source. 10x cheaper than cloud APIs."
+  },
+  "nav": {
+    "home": "Home",
+    "features": "Features",
+    "docs": "Docs",
+    "blog": "Blog",
+    "pricing": "Pricing",
+    "github": "GitHub",
+    "getStarted": "Get Started",
+    "enterprise": "Enterprise",
+    "community": "Community",
+    "learn": "Learn",
+    "api": "API",
+    "integrations": "Integrations"
+  },
+  "hero": {
+    "badge": "Open Source · Apache 2.0",
+    "title": "Run 70B Models on Consumer GPUs",
+    "subtitle": "Pool GPUs from every device you own to run models no single machine can handle. OpenAI-compatible API. 10x cheaper than cloud APIs.",
+    "cta": "Get Started",
+    "ctaSecondary": "View on GitHub",
+    "stats": {
+      "stars": "GitHub Stars",
+      "downloads": "PyPI Downloads",
+      "contributors": "Contributors"
+    }
+  },
+  "features": {
+    "title": "Why DistLLM?",
+    "subtitle": "The only open-source solution for distributed LLM inference across consumer GPUs.",
+    "items": {
+      "pipeline": {
+        "title": "Pipeline Parallelism",
+        "description": "Split model layers across GPUs in a pipeline. Near-linear scaling with each GPU added."
+      },
+      "openai": {
+        "title": "OpenAI Compatible",
+        "description": "Drop-in replacement for OpenAI API. Works with LangChain, LlamaIndex, and any OpenAI SDK."
+      },
+      "multiBackend": {
+        "title": "Multi-Backend",
+        "description": "Supports vLLM, llama.cpp, ExLlamaV2. Use the best backend for each GPU type."
+      },
+      "wan": {
+        "title": "WAN Support",
+        "description": "Connect GPUs across the internet with QUIC transport and NAT traversal."
+      },
+      "security": {
+        "title": "Enterprise Security",
+        "description": "mTLS, RBAC, audit logging. Air-gapped deployment for compliance requirements."
+      },
+      "cost": {
+        "title": "10x Cheaper",
+        "description": "~$0.01/1K tokens for 70B models. 10x cheaper than OpenAI, 5x cheaper than cloud GPUs."
+      }
+    }
+  },
+  "calculator": {
+    "title": "Cost Calculator",
+    "subtitle": "Estimate your savings vs. cloud APIs",
+    "gpus": "GPUs in cluster",
+    "tokens": "Monthly tokens (millions)",
+    "model": "Model size",
+    "hours": "Hours/day running",
+    "electricity": "Electricity ($/kWh)",
+    "savings": "Monthly savings vs. OpenAI",
+    "disclaimer": "Based on $0.002/1K tokens (GPT-4 class)"
+  },
+  "pricing": {
+    "title": "Pricing",
+    "subtitle": "Open source. Pay only for managed hosting.",
+    "community": {
+      "name": "Community",
+      "price": "$0",
+      "period": "/ forever",
+      "description": "Self-hosted, open source",
+      "features": ["All features included", "Unlimited models", "Unlimited nodes", "Community support", "Apache 2.0 license"],
+      "cta": "Get Started"
+    },
+    "pro": {
+      "name": "Pro",
+      "price": "$49",
+      "period": "/ month",
+      "description": "Managed hosting + priority support",
+      "features": ["Everything in Community", "Managed API endpoint", "1M tokens/day included", "99.9% SLA", "Priority support"],
+      "cta": "Join Waitlist",
+      "badge": "Popular"
+    },
+    "enterprise": {
+      "name": "Enterprise",
+      "price": "Custom",
+      "period": "",
+      "description": "On-premise + dedicated support",
+      "features": ["Everything in Pro", "Unlimited tokens", "SSO / SAML", "Custom SLA", "Dedicated support engineer"],
+      "cta": "Contact Sales"
+    }
+  },
+  "faq": {
+    "title": "Common Questions",
+    "items": {
+      "gpus": {
+        "question": "What GPUs are supported?",
+        "answer": "Any NVIDIA GPU with CUDA 12+ (RTX 30xx, 40xx, A100, H100), AMD via ROCm, Apple Silicon via Metal, CPU-only via llama.cpp."
+      },
+      "vllm": {
+        "question": "How does it compare to vLLM?",
+        "answer": "vLLM is excellent for single-node inference. DistLLM's differentiator is multi-node pipeline parallelism."
+      },
+      "security": {
+        "question": "Is my data safe?",
+        "answer": "Yes. All data stays on your devices. DistLLM supports mTLS, E2E encryption, and standard authentication."
+      },
+      "internet": {
+        "question": "Can I run it over the internet?",
+        "answer": "Yes. WAN support with QUIC transport, NAT traversal (STUN/TURN), and token accumulation."
+      },
+      "models": {
+        "question": "What models are supported?",
+        "answer": "Any HuggingFace model: Llama 2/3, Mistral, Mixtral, Qwen, Phi, DeepSeek, StableLM, GPT-2, and more."
+      },
+      "start": {
+        "question": "How do I get started?",
+        "answer": "pip install distributed-llm, then distllm cluster start, then distllm cluster join on other machines."
+      }
+    }
+  },
+  "footer": {
+    "copyright": "© 2026 DistLLM. Apache 2.0 License.",
+    "product": "Product",
+    "resources": "Resources",
+    "company": "Company",
+    "legal": "Legal",
+    "links": {
+      "features": "Features",
+      "pricing": "Pricing",
+      "docs": "Documentation",
+      "api": "API Reference",
+      "blog": "Blog",
+      "tutorials": "Tutorials",
+      "community": "Community",
+      "github": "GitHub",
+      "discord": "Discord",
+      "twitter": "Twitter",
+      "about": "About",
+      "careers": "Careers",
+      "contact": "Contact",
+      "privacy": "Privacy Policy",
+      "terms": "Terms of Service",
+      "security": "Security"
+    }
+  },
+  "common": {
+    "learnMore": "Learn More",
+    "getStarted": "Get Started",
+    "viewDocs": "View Documentation",
+    "viewOnGitHub": "View on GitHub",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success"
+  }
+}

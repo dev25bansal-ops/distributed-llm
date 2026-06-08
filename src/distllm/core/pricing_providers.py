@@ -549,12 +549,22 @@ class PricingManager:
         logger.info(f"Background pricing refresh started (every {interval_s}s)")
 
     def _background_refresh_loop(self, interval_s: float) -> None:
-        while True:
-            time.sleep(interval_s)
+        if not hasattr(self, '_shutdown'):
+            self._shutdown = threading.Event()
+        while not self._shutdown.is_set():
+            if self._shutdown.wait(interval_s):
+                break
             try:
                 self.refresh()
             except Exception as e:
                 logger.error(f"Background pricing refresh failed: {e}")
+
+    def shutdown(self) -> None:
+        """Signal the background refresh thread to stop."""
+        if not hasattr(self, '_shutdown'):
+            self._shutdown = threading.Event()
+        self._shutdown.set()
+        logger.info("Pricing provider background refresh stopped.")
 
     @property
     def last_refresh(self) -> float:
@@ -563,3 +573,4 @@ class PricingManager:
     @property
     def is_stale(self) -> bool:
         return (time.time() - self._last_refresh) > self._cache_ttl
+

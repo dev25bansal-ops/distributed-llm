@@ -1,0 +1,7 @@
+---
+- name: restart distllm
+  community.docker.docker_container:
+    name: distllm-coordinator
+    state: started
+    restart: true
+  become: true

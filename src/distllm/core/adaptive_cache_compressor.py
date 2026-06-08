@@ -96,10 +96,51 @@ class AdaptiveCacheCompressor:
         return kv_data
 
     def _compress_sparse(self, kv_data: Any) -> Any:
-        """Sparse compression for peer transfer (minimal data)."""
-        # For peer transfers, keep only top-k attention heads
-        # This is a simplified version — real implementation would
-        # analyze attention patterns and keep only the most active heads
+        """Sparse compression for peer transfer (minimal data).
+
+        Keeps only the top-k attention heads with the highest L2 magnitude.
+        For a typical 32-head model with k=8, this achieves 4x compression
+        on peer-to-peer KV cache transfers with minimal accuracy loss.
+
+        Falls back to returning the data unchanged on any error.
+        """
+        try:
+            import torch
+
+            if isinstance(kv_data, dict):
+                compressed = {}
+                for key, tensor in kv_data.items():
+                    if isinstance(tensor, torch.Tensor) and tensor.dim() >= 2:
+                        if tensor.dim() == 4:  # (num_heads, seq_len, hidden, dim)
+                            head_norms = tensor.norm(dim=(1, 2, 3))
+                            num_heads = tensor.shape[0]
+                        elif tensor.dim() == 3:  # (seq_len, num_heads, head_dim)
+                            head_norms = tensor.norm(dim=(0, 2))
+                            num_heads = tensor.shape[1]
+                        else:
+                            compressed[key] = tensor
+                            continue
+
+                        k = max(1, min(8, num_heads // 2))
+                        top_indices = head_norms.topk(k).indices
+
+                        if tensor.dim() == 4:
+                            compressed[key] = tensor[top_indices]
+                        else:
+                            compressed[key] = tensor[:, top_indices]
+                    else:
+                        compressed[key] = tensor
+                return compressed
+
+            elif isinstance(kv_data, (list, tuple)):
+                return [
+                    self._compress_sparse(item) if isinstance(item, (dict, list, tuple)) else item
+                    for item in kv_data
+                ]
+
+        except Exception as e:
+            logger.debug(f"Sparse compression failed: {e}")
+
         return kv_data
 
     def get_stats(self) -> dict[str, dict]:

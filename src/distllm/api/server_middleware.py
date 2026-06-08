@@ -75,7 +75,9 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
     }
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        timeout = self.ENDPOINT_TIMEOUTS.get(request.url.path, self.DEFAULT_TIMEOUT)
+        # H-20: Normalize path before lookup — strip trailing slash
+        path = request.url.path.rstrip("/")
+        timeout = self.ENDPOINT_TIMEOUTS.get(path, self.DEFAULT_TIMEOUT)
         per_request = getattr(request.state, "request_timeout", None)
         if per_request is not None:
             timeout = per_request

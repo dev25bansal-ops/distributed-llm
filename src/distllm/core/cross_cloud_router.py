@@ -104,6 +104,8 @@ _INSTANCE_GPU_TYPE: dict[str, str] = {
 }
 
 # Per-region latency baselines (ms, approximate from US-East)
+# M-05: To get latency between any two regions, use compute_relative_latency().
+# This allows callers from different origins to get correct estimates.
 _REGION_LATENCY: dict[str, float] = {
     "us-east-1": 10, "us-east-2": 15, "us-west-1": 65, "us-west-2": 70,
     "eu-west-1": 80, "eu-west-2": 75, "eu-west-3": 85, "eu-central-1": 90,
@@ -156,6 +158,30 @@ _REGIONAL_CARBON_INTENSITY: dict[str, float] = {
     "japaneast": 470,       # Tokyo
     "australiaeast": 650,   # Sydney
 }
+
+# M-05: Relative latency offsets between major region pairs.
+# Key format: "origin:target" -> milliseconds delta.
+_REGION_LATENCY_DELTAS: dict[str, int] = {
+    "us-east-1:ap-southeast-1": 170, "ap-southeast-1:us-east-1": -170,
+    "us-east-1:eu-west-1": 70, "eu-west-1:us-east-1": -70,
+    "us-east-1:ap-northeast-1": 140, "ap-northeast-1:us-east-1": -140,
+    "us-east-1:sa-east-1": 120, "sa-east-1:us-east-1": -120,
+    "us-east-1:eu-central-1": 80, "eu-central-1:us-east-1": -80,
+    "us-east-1:us-west-2": 60, "us-west-2:us-east-1": -60,
+}
+
+
+def compute_relative_latency(origin_region: str, target_region: str) -> float:
+    """Compute estimated latency between two regions in milliseconds."""
+    if origin_region == target_region:
+        return float(_REGION_LATENCY.get(origin_region, 10))
+    key = f"{origin_region}:{target_region}"
+    if key in _REGION_LATENCY_DELTAS:
+        base = _REGION_LATENCY.get(origin_region, 50)
+        return float(max(5, base + _REGION_LATENCY_DELTAS[key]))
+    base = _REGION_LATENCY.get(origin_region, 50)
+    target = _REGION_LATENCY.get(target_region, 50)
+    return float(max(5, (base + target) / 2))
 
 
 class CarbonProvider(Enum):

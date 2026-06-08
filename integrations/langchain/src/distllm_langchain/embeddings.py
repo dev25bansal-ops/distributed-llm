@@ -14,12 +14,7 @@ class DistLLMEmbeddings(Embeddings):
     batch_size: int = 32
 
     def __init__(self, **kwargs: Any) -> None:
-        self.model = kwargs.pop("model", "distributed-llm")
-        self.base_url = kwargs.pop("base_url", "http://localhost:8000")
-        self.api_key = kwargs.pop("api_key", None)
-        self.timeout = kwargs.pop("timeout", 120.0)
-        self.batch_size = kwargs.pop("batch_size", 32)
-        super().__init__()
+        super().__init__(**kwargs)
         self._client = DistLLMClientSync(
             base_url=self.base_url,
             api_key=self.api_key or None,

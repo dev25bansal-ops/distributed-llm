@@ -198,6 +198,62 @@ with open('benchmarks/results.json', 'w') as f:
           echo "❌ Benchmark regression detected. Check benchmark-results artifact for details."
           exit 1
 
+  # ------------------------------------------------------------------
+  # Test — framework integrations
+  # ------------------------------------------------------------------
+  test-integrations:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        integration:
+          - langchain
+          - llamaindex
+          - crewai
+          - litellm
+          - haystack
+          - autogen
+          - ollama_compat
+          - fastapi_middleware
+          - semantic_kernel
+          - grpc_client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install core + integration
+        run: |
+          pip install -e ".[dev]"
+          pip install -e "integrations/${{ matrix.integration }}[dev]" 2>/dev/null || \
+            pip install -e "integrations/${{ matrix.integration }}" 2>/dev/null || \
+            echo "No setup.py/pyproject.toml for ${{ matrix.integration }}, skipping install"
+      - name: Run integration tests
+        run: |
+          TEST_DIR="integrations/${{ matrix.integration }}/tests"
+          if [ -d "$TEST_DIR" ]; then
+            pytest "$TEST_DIR" -v --tb=short
+          else
+            echo "No tests found for ${{ matrix.integration }}, skipping"
+          fi
+
+  # ------------------------------------------------------------------
+  # Test — Terraform provider
+  # ------------------------------------------------------------------
+  test-terraform:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: integrations/terraform/provider/go.sum
+      - name: Run Terraform provider tests
+        working-directory: integrations/terraform/provider
+        run: go test ./provider/... -v -count=1
+
   build-docker:
     runs-on: ubuntu-latest
     needs: [test, security-sast, security-deps]

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blog — DistLLM</title>
+    <meta name="description" content="Technical articles, tutorials, and updates from the DistLLM project.">
+    <meta name="keywords" content="LLM inference, distributed computing, GPU cluster, pipeline parallelism, vLLM comparison, self-hosted AI, cost optimization">
+    <meta property="og:title" content="Blog — DistLLM">
+    <meta property="og:description" content="Technical articles, tutorials, and updates from the DistLLM project.">
+    <meta property="og:type" content="blog">
+    <meta property="og:url" content="https://distllm.dev/blog.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Blog — DistLLM">
+    <meta name="twitter:description" content="Technical articles, tutorials, and updates from the DistLLM project.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/blog.html">
+    <link rel="alternate" type="application/rss+xml" title="DistLLM Blog RSS" href="/feed.xml">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io; object-src 'none'; base-uri 'self'">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link rel="stylesheet" href="css/print.css" media="print">
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Blog", "item": "https://distllm.dev/blog.html" }
+        ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "Blog",
+        "name": "DistLLM Blog",
+        "url": "https://distllm.dev/blog.html",
+        "description": "Technical articles, tutorials, and updates from the DistLLM project.",
+        "publisher": { "@type": "Organization", "name": "DistLLM", "url": "https://distllm.dev" },
+        "blogPost": [
+            {
+                "@type": "BlogPosting",
+                "headline": "How to Run Llama 3.1 70B on Consumer GPUs with Pipeline Parallelism",
+                "url": "https://distllm.dev/blog.html#llama-70b-guide",
+                "datePublished": "2026-05-28",
+                "description": "Step-by-step guide to pooling 3x RTX 4090s to run Llama 3.1 70B at 30+ tokens/second.",
+                "keywords": ["pipeline-parallelism", "llama", "tutorial"]
+            },
+            {
+                "@type": "BlogPosting",
+                "headline": "DistLLM vs vLLM: When to Use Distributed Inference",
+                "url": "https://distllm.dev/blog.html#vs-vllm",
+                "datePublished": "2026-05-25",
+                "description": "A technical comparison of DistLLM and vLLM covering architecture, performance, use cases.",
+                "keywords": ["vllm", "benchmarking", "architecture"]
+            },
+            {
+                "@type": "BlogPosting",
+                "headline": "Setting Up a GPU Cluster for LLM Inference in 10 Minutes",
+                "url": "https://distllm.dev/blog.html#gpu-cluster-setup",
+                "datePublished": "2026-05-22",
+                "description": "From zero to distributed inference in 10 minutes with Docker Compose and mDNS auto-discovery.",
+                "keywords": ["docker", "getting-started", "monitoring"]
+            },
+            {
+                "@type": "BlogPosting",
+                "headline": "Cost Comparison: Self-Hosted LLM Inference vs Cloud APIs",
+                "url": "https://distllm.dev/blog.html#cost-comparison",
+                "datePublished": "2026-05-19",
+                "description": "Detailed cost analysis comparing self-hosted DistLLM against OpenAI, Together AI, and Fireworks APIs.",
+                "keywords": ["cost", "analysis", "cloud"]
+            }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/docs.html">Docs</a><a href="/blog.html" class="active">Blog</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap blog-page">
+            <h1>Blog</h1>
+            <p class="subtitle">Technical articles, tutorials, and updates from the DistLLM project.</p>
+
+            <article class="blog-post">
+                <div class="blog-post-meta"><span class="blog-post-date">2026-05-28</span><span class="blog-post-tag">Tutorial</span><span class="blog-post-read">12 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
+                <h2><span class="blog-post-title-disabled">How to Run Llama 3.1 70B on Consumer GPUs with Pipeline Parallelism</span></h2>
+                <p>Step-by-step guide to pooling 3x RTX 4090s to run Llama 3.1 70B at 30+ tokens/second. Covers hardware setup, network configuration, quantization options, and performance tuning.</p>
+                <div class="blog-post-tags"><span>pipeline-parallelism</span><span>llama</span><span>tutorial</span></div>
+            </article>
+
+            <article class="blog-post">
+                <div class="blog-post-meta"><span class="blog-post-date">2026-05-25</span><span class="blog-post-tag">Comparison</span><span class="blog-post-read">9 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
+                <h2><span class="blog-post-title-disabled">DistLLM vs vLLM: When to Use Distributed Inference</span></h2>
+                <p>A technical comparison of DistLLM and vLLM covering architecture, performance, use cases, and when each tool is the right choice.</p>
+                <div class="blog-post-tags"><span>vllm</span><span>benchmarking</span><span>architecture</span></div>
+            </article>
+
+            <article class="blog-post">
+                <div class="blog-post-meta"><span class="blog-post-date">2026-05-22</span><span class="blog-post-tag">Guide</span><span class="blog-post-read">5 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
+                <h2><span class="blog-post-title-disabled">Setting Up a GPU Cluster for LLM Inference in 10 Minutes</span></h2>
+                <p>From zero to distributed inference in 10 minutes with Docker Compose and mDNS auto-discovery.</p>
+                <div class="blog-post-tags"><span>docker</span><span>getting-started</span><span>monitoring</span></div>
+            </article>
+
+            <article class="blog-post">
+                <div class="blog-post-meta"><span class="blog-post-date">2026-05-19</span><span class="blog-post-tag">Analysis</span><span class="blog-post-read">10 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
+                <h2><span class="blog-post-title-disabled">Cost Comparison: Self-Hosted LLM Inference vs Cloud APIs</span></h2>
+                <p>Detailed cost analysis comparing self-hosted DistLLM against OpenAI, Together AI, and Fireworks APIs.</p>
+                <div class="blog-post-tags"><span>cost</span><span>analysis</span><span>cloud</span></div>
+            </article>
+
+            <article class="blog-post">
+                <div class="blog-post-meta"><span class="blog-post-date">2026-05-16</span><span class="blog-post-tag">Release</span><span class="blog-post-read">4 min read</span></div>
+                <h2><a href="https://github.com/distributed-llm/distributed-llm/releases/tag/v0.4.0" target="_blank" rel="noopener noreferrer">DistLLM v0.4.0 — Production Readiness</a></h2>
+                <p>Graceful shutdown, structured errors, K8s probes, backpressure, YAML config, security hardening.</p>
+                <div class="blog-post-tags"><span>release</span><span>production</span><span>security</span></div>
+            </article>
+
+            <article class="blog-post">
+                <div class="blog-post-meta"><span class="blog-post-date">2026-05-14</span><span class="blog-post-tag">Release</span><span class="blog-post-read">3 min read</span></div>
+                <h2><a href="https://github.com/distributed-llm/distributed-llm/releases/tag/v0.3.0" target="_blank" rel="noopener noreferrer">DistLLM v0.3.0 — Security &amp; Features</a></h2>
+                <p>CORS, security headers, auth + rate limiting, LoRA adapters, prefix cache, continuous batching.</p>
+                <div class="blog-post-tags"><span>release</span><span>security</span><span>features</span></div>
+            </article>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top: none; padding-top: 0;">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
+</body>
+</html>

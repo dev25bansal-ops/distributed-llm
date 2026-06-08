@@ -34,6 +34,15 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+[project.entry-points."llama_index.llms"]
+distllm = "distllm_llamaindex.llms:DistLLM"
+
+[project.entry-points."llama_index.embeddings"]
+distllm = "distllm_llamaindex.embeddings:DistLLMEmbeddings"
+
+[project.entry-points."llama_index.tools"]
+distllm = "distllm_llamaindex.tools:DistLLMToolProvider"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/distllm_llamaindex"]
 

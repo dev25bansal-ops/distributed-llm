@@ -86,8 +86,35 @@ async def simple_agent_example():
         return weather_data.get(location.lower(), f"Weather data unavailable for {location}")
 
     def calculate(expression: str) -> str:
+        import ast
+        import operator
+
+        _SAFE_OPS = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.FloorDiv: operator.floordiv,
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos,
+        }
+
+        def _eval(node):
+            if isinstance(node, ast.Expression):
+                return _eval(node.body)
+            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+                return node.value
+            if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_OPS:
+                return _SAFE_OPS[type(node.op)](_eval(node.operand))
+            if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_OPS:
+                return _SAFE_OPS[type(node.op)](_eval(node.left), _eval(node.right))
+            raise ValueError(f"Unsupported expression")
+
         try:
-            result = eval(expression)  # noqa: S307 — demo only
+            tree = ast.parse(expression, mode='eval')
+            result = _eval(tree)
             return f"{expression} = {result}"
         except Exception as e:
             return f"Error: {e}"

@@ -1,12 +1,13 @@
 <script lang="ts">
   import { generateInvite, getClusterStatus } from "./api";
+  import { Card, Button, Input, ErrorBanner, toastStore } from "./ui";
+  import QRCode from "./QRCode.svelte";
   import type { InviteInfo, ClusterStatus } from "./types";
 
   let invite = $state<InviteInfo | null>(null);
   let cluster = $state<ClusterStatus | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  let copied = $state(false);
 
   async function handleGenerate() {
     loading = true;
@@ -19,6 +20,7 @@
         return;
       }
       invite = await generateInvite();
+      toastStore.success("Invite link generated");
     } catch (e: unknown) {
       error = String(e);
     } finally {
@@ -30,18 +32,16 @@
     if (!invite) return;
     try {
       await navigator.clipboard.writeText(invite.link);
-      copied = true;
-      setTimeout(() => (copied = false), 2000);
+      toastStore.success("Link copied to clipboard");
     } catch {
-      // Fallback
+      // Fallback for older webviews
       const ta = document.createElement("textarea");
       ta.value = invite.link;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-      copied = true;
-      setTimeout(() => (copied = false), 2000);
+      toastStore.success("Link copied to clipboard");
     }
   }
 </script>
@@ -49,19 +49,12 @@
 <div class="friends-page">
   <h1 class="page-title">Friends & Invites</h1>
 
-  {#if error}
-    <div class="error-banner">{error}</div>
-  {/if}
+  <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
-  <section class="card">
-    <h2 class="card-title">Invite Friends</h2>
-    <p class="card-desc">
-      Generate a shareable link so your friends can join your cluster. They just need to paste it into their Distributed LLM app.
-    </p>
-
-    <button class="btn btn-primary" onclick={handleGenerate} disabled={loading}>
+  <Card title="Invite Friends" description="Generate a shareable link so your friends can join your cluster. They just need to paste it into their Distributed LLM app.">
+    <Button onclick={handleGenerate} disabled={loading}>
       {loading ? "Generating..." : invite ? "Regenerate Invite" : "Generate Invite Link"}
-    </button>
+    </Button>
 
     {#if invite}
       <div class="invite-card">
@@ -71,33 +64,22 @@
         </div>
 
         <div class="invite-link-row">
-          <input
-            type="text"
-            class="input mono"
+          <Input
             readonly
             value={invite.link}
             onfocus={(e) => (e.target as HTMLInputElement).select()}
           />
-          <button class="btn btn-copy" onclick={copyLink}>
-            {copied ? "Copied!" : "Copy"}
-          </button>
+          <Button variant="ghost" onclick={copyLink}>Copy</Button>
         </div>
 
         <div class="qr-section">
-          <div class="qr-placeholder">
-            <div class="qr-icon">▦</div>
-            <span class="qr-hint">
-              QR code will be rendered here.<br />
-              <small>Requires qrcode library (pip install qrcode[pil])</small>
-            </span>
-          </div>
+          <QRCode text={invite.link} size={180} />
         </div>
       </div>
     {/if}
-  </section>
+  </Card>
 
-  <section class="card">
-    <h2 class="card-title">How It Works</h2>
+  <Card title="How It Works">
     <ol class="steps">
       <li>Create or join a cluster on your machine</li>
       <li>Generate an invite link above</li>
@@ -108,39 +90,11 @@
     <p class="card-desc" style="margin-top: 12px;">
       Your cluster is secured with a unique cluster key. Only people with the invite link can join.
     </p>
-  </section>
+  </Card>
 </div>
 
 <style>
   .friends-page { max-width: 600px; }
-  .page-title { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
-  .error-banner {
-    background: color-mix(in srgb, var(--danger) 15%, transparent);
-    color: var(--danger);
-    padding: 10px 14px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    font-size: 13px;
-  }
-  .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 16px;
-  }
-  .card-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-  .card-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
-  .btn {
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    transition: all 0.15s;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
   .invite-card {
     margin-top: 16px;
     padding: 16px;
@@ -152,44 +106,7 @@
   .code-label { font-size: 12px; color: var(--text-secondary); }
   .code-value { font-size: 18px; font-weight: 700; color: var(--accent); letter-spacing: 2px; }
   .invite-link-row { display: flex; gap: 8px; margin-bottom: 16px; }
-  .input {
-    flex: 1;
-    padding: 10px 12px;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text-primary);
-    font-size: 13px;
-  }
-  .mono { font-family: var(--font-mono); }
-  .btn-copy {
-    padding: 10px 16px;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text-primary);
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .btn-copy:hover { background: var(--border); }
   .qr-section { display: flex; justify-content: center; }
-  .qr-placeholder {
-    width: 180px;
-    height: 180px;
-    background: var(--bg-input);
-    border: 2px dashed var(--border);
-    border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    color: var(--text-muted);
-  }
-  .qr-icon { font-size: 40px; opacity: 0.4; }
-  .qr-hint { font-size: 11px; text-align: center; line-height: 1.4; }
-  .qr-hint small { opacity: 0.6; }
   .steps {
     padding-left: 20px;
     display: flex;

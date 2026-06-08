@@ -5,6 +5,9 @@ individual .py files directly with exec() into fresh module namespaces,
 pre-populating sys.modules with fake parent packages.
 """
 import sys, json, hashlib, types, torch
+from pathlib import Path
+
+_ALLOWED_DIR = Path(__file__).resolve().parent
 
 
 def _load_as_module(filepath, dotted_name):
@@ -14,6 +17,11 @@ def _load_as_module(filepath, dotted_name):
     'from distllm.verification.comparator import ...' works inside
     the exec'd code without triggering the real distllm import.
     """
+    resolved = Path(filepath).resolve()
+    if not resolved.is_relative_to(_ALLOWED_DIR):
+        raise ValueError(f"Refusing to exec file outside allowed directory: {resolved}")
+    if not resolved.suffix == ".py":
+        raise ValueError(f"Refusing to exec non-Python file: {resolved}")
     # Ensure all parent packages exist as namespace holders
     parts = dotted_name.split(".")
     parent = None
@@ -45,9 +53,9 @@ def _load_as_module(filepath, dotted_name):
     if parent is not None:
         setattr(parent, parts[-1], mod)
 
-    with open(filepath) as f:
+    with open(resolved) as f:
         src = f.read()
-    exec(compile(src, filepath, "exec"), mod.__dict__)
+    exec(compile(src, str(resolved), "exec"), mod.__dict__)
     return mod
 
 

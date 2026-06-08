@@ -17,6 +17,7 @@ Usage::
 
 from __future__ import annotations
 
+import time
 from loguru import logger
 
 
@@ -60,12 +61,20 @@ class SpeculativeAdaptor:
 
         # Disable if acceptance is critically low
         if acceptance_rate < self._disable_threshold:
-            self._disabled = True
-            self._current_tokens = 0
-            logger.debug(
-                "Speculative decoding disabled: acceptance_rate={:.3f} < threshold={:.3f}",
-                acceptance_rate, self._disable_threshold,
-            )
+            if not self._disabled:
+                self._disabled = True
+                self._current_tokens = 0
+                self._disabled_at = time.time()
+                logger.debug(
+                    "Speculative decoding disabled: acceptance_rate={:.3f} < threshold={:.3f}",
+                    acceptance_rate, self._disable_threshold,
+                )
+            # M-15: Auto-recover after cooldown period (60 seconds)
+            elif hasattr(self, '_disabled_at') and time.time() - self._disabled_at > 60:
+                self._disabled = False
+                self._current_tokens = max(1, self._current_tokens // 2)
+                self._disabled_at = None
+                logger.debug("Speculative decoding re-enabled after cooldown")
             return 0
 
         # Increase if above target

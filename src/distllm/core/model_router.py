@@ -719,6 +719,11 @@ class ModelRouter:
 
         if rule.match_type == "regex":
             try:
+                # H-16: ReDoS protection — reject patterns with catastrophic backtracking risk
+                # Patterns longer than 100 chars with nested quantifiers are rejected
+                if len(rule.pattern) > 100 and re.search(r'\(.*[+*].*\)[+*]', rule.pattern):
+                    logger.warning(f"Rejected potentially dangerous regex in rule '{rule.name}'")
+                    return False
                 return bool(re.search(rule.pattern, text, re.IGNORECASE))
             except re.error:
                 logger.warning(f"Invalid regex pattern in rule '{rule.name}': {rule.pattern}")

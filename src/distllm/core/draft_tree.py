@@ -211,7 +211,11 @@ class DraftTree:
                         target_logits[:, pos, :] / self._temperature, dim=-1,
                     )
                     p = target_probs[0, token_id].item()
-                    if torch.rand(1).item() >= p:
+                    # M-14: Use deterministic RNG when seed is set for reproducibility
+                    rng = torch.Generator()
+                    if hasattr(self, '_seed') and self._seed is not None:
+                        rng = torch.Generator().manual_seed(self._seed + accepted)
+                    if torch.rand(1, generator=rng).item() >= p:
                         break
 
                 accepted += 1

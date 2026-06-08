@@ -1,61 +1,100 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { getClusterStatus, getGpuMetrics, getSystemInfo, joinCluster } from "./api";
+  import { joinCluster, checkCoordinator, updateTrayStatus } from "./api";
+  import { clusterStore, logStore } from "./stores";
+  import { Card, ErrorBanner, StatusDot, Skeleton } from "./ui";
   import type { ClusterStatus, GpuInfo, SystemInfo } from "./types";
+  import { listen } from "@tauri-apps/api/event";
+  import OllamaConfig from "./OllamaConfig.svelte";
+
+  let { grafanaToggle = 0 }: { grafanaToggle?: number } = $props();
 
   let cluster = $state<ClusterStatus | null>(null);
   let gpus = $state<GpuInfo[]>([]);
   let sysInfo = $state<SystemInfo | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
   let grafanaUrl = $state<string>("http://localhost:3000");
   let showGrafana = $state(false);
   let coordinatorDetected = $state(false);
 
+  // 3.4: Subscribe to shared cluster store (single polling source)
+  let unsubscribe: (() => void) | undefined;
+  let unlistenCrash: (() => void) | undefined;
+  let unlistenDismiss: (() => void) | undefined;
+
+  // H3: Validate Grafana URL to prevent iframe injection
+  let validGrafanaUrl = $derived.by(() => {
+    try {
+      const url = new URL(grafanaUrl);
+      if (url.protocol === "http:" || url.protocol === "https:") {
+        return grafanaUrl;
+      }
+    } catch {
+      // invalid URL
+    }
+    return null;
+  });
+
+  // 4.10: Handle Grafana toggle via keyboard shortcut
+  $effect(() => {
+    if (grafanaToggle > 0) {
+      showGrafana = !showGrafana;
+    }
+  });
+
   onMount(async () => {
     await autoDetectCoordinator();
-    await loadAll();
-    pollTimer = setInterval(loadAll, 3000);
+
+    // Subscribe to shared store
+    unsubscribe = clusterStore.subscribe((d) => {
+      cluster = d.cluster;
+      gpus = d.gpus;
+      sysInfo = d.sysInfo;
+      loading = d.loading;
+      error = d.error;
+    });
+
+    // 3.5: Listen for process crash events from health monitor
+    unlistenCrash = await listen<string>("process-crashed", (e) => {
+      const msg = `${e.payload} process crashed unexpectedly. The cluster may be unavailable.`;
+      error = msg;
+      logStore.error("dashboard", msg);
+      updateTrayStatus(false, 0);
+    });
+
+    // 4.10: Listen for Escape key dismiss
+    function handleDismiss() {
+      error = null;
+    }
+    window.addEventListener("dismiss-errors", handleDismiss);
+    unlistenDismiss = () => window.removeEventListener("dismiss-errors", handleDismiss);
   });
 
   onDestroy(() => {
-    if (pollTimer) clearInterval(pollTimer);
+    unsubscribe?.();
+    unlistenCrash?.();
+    unlistenDismiss?.();
   });
 
   async function autoDetectCoordinator() {
-    // Try to detect a running coordinator on localhost
     try {
-      const resp = await fetch("http://localhost:8000/health");
-      if (resp.ok) {
+      logStore.info("dashboard", "Auto-detecting coordinator on localhost:8000");
+      const detected = await checkCoordinator("127.0.0.1", 8000);
+      if (detected) {
         coordinatorDetected = true;
-        // Auto-join the cluster
+        logStore.info("dashboard", "Coordinator detected, auto-joining");
         try {
           await joinCluster("127.0.0.1", 8000);
+          logStore.info("dashboard", "Auto-joined cluster successfully");
         } catch {
           // Already joined or failed, that's ok
         }
+      } else {
+        logStore.info("dashboard", "No coordinator detected on localhost:8000");
       }
     } catch {
-      // No coordinator running
-    }
-  }
-
-  async function loadAll() {
-    try {
-      const [c, g, s] = await Promise.all([
-        getClusterStatus(),
-        getGpuMetrics(),
-        getSystemInfo(),
-      ]);
-      cluster = c;
-      gpus = g;
-      sysInfo = s;
-      error = null;
-    } catch (e: unknown) {
-      error = String(e);
-    } finally {
-      loading = false;
+      logStore.info("dashboard", "No coordinator running");
     }
   }
 
@@ -80,28 +119,35 @@
     <h1 class="page-title">Dashboard</h1>
     <div class="coordinator-status">
       {#if coordinatorDetected}
-        <span class="status-dot connected"></span>
+        <StatusDot variant="green" />
         <span>Coordinator detected on localhost:8000</span>
       {:else}
-        <span class="status-dot disconnected"></span>
+        <StatusDot variant="red" />
         <span>No coordinator detected</span>
       {/if}
     </div>
   </div>
 
-  {#if error}
-    <div class="error-banner">{error}</div>
-  {/if}
+  <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
   {#if loading}
-    <div class="loading">Loading system information...</div>
+    <div class="loading-grid">
+      <Card title="Cluster Status">
+        <Skeleton height="60px" />
+      </Card>
+      <Card title="GPU Monitoring">
+        <Skeleton height="80px" />
+      </Card>
+      <Card title="System">
+        <Skeleton height="40px" />
+      </Card>
+    </div>
   {:else}
     <!-- Cluster Status Card -->
-    <section class="card">
-      <h2 class="card-title">Cluster Status</h2>
+    <Card title="Cluster Status">
       {#if cluster?.running}
         <div class="status-row">
-          <span class="status-dot green"></span>
+          <StatusDot variant="green" />
           <span>Running</span>
           {#if cluster.coordinator_addr}
             <span class="mono">— {cluster.coordinator_addr}</span>
@@ -116,7 +162,7 @@
               <span>Layers</span>
               <span>Health</span>
             </div>
-            {#each cluster.nodes as node}
+            {#each cluster.nodes as node (node.node_id)}
               <div class="node-row">
                 <span class="mono">{node.node_id}</span>
                 <span>{node.gpu_name}</span>
@@ -124,7 +170,7 @@
                   {fmtPct(node.gpu_utilization)}
                 </span>
                 <span class="mono">{node.layers}</span>
-                <span class="status-dot {node.healthy ? 'green' : 'red'}"></span>
+                <StatusDot variant={node.healthy ? 'green' : 'red'} />
               </div>
             {/each}
           </div>
@@ -133,24 +179,23 @@
         {/if}
       {:else}
         <div class="status-row">
-          <span class="status-dot gray"></span>
+          <StatusDot variant="gray" />
           <span>Inactive</span>
         </div>
         <div class="empty-state">
           Create or join a cluster to get started.
         </div>
       {/if}
-    </section>
+    </Card>
 
     <!-- GPU Monitoring -->
-    <section class="card">
-      <h2 class="card-title">GPU Monitoring</h2>
+    <Card title="GPU Monitoring">
       {#if gpus.length === 0}
         <div class="empty-state">
           No NVIDIA GPUs detected, or NVML driver not available.
         </div>
       {:else}
-        {#each gpus as gpu}
+        {#each gpus as gpu (gpu.index)}
           <div class="gpu-card">
             <div class="gpu-header">
               <span class="gpu-name">GPU {gpu.index}: {gpu.name}</span>
@@ -181,16 +226,23 @@
           </div>
         {/each}
       {/if}
-    </section>
+    </Card>
 
     <!-- System Info -->
     {#if sysInfo}
-      <section class="card">
-        <h2 class="card-title">System</h2>
+      <Card title="System">
         <div class="sys-grid">
           <div class="sys-item">
             <span class="sys-label">OS</span>
             <span class="sys-value">{sysInfo.os}</span>
+          </div>
+          <div class="sys-item">
+            <span class="sys-label">CPU</span>
+            <span class="sys-value">{sysInfo.cpu}</span>
+          </div>
+          <div class="sys-item">
+            <span class="sys-label">RAM</span>
+            <span class="sys-value">{sysInfo.ram_gb} GB</span>
           </div>
           <div class="sys-item">
             <span class="sys-label">Python</span>
@@ -205,8 +257,13 @@
             <span class="sys-value">{sysInfo.gpus.length} detected</span>
           </div>
         </div>
-      </section>
+      </Card>
     {/if}
+
+    <!-- Ollama Compatibility -->
+    <Card title="Ollama">
+      <OllamaConfig />
+    </Card>
 
     <!-- Grafana Observability Dashboard -->
     <section class="card">
@@ -226,12 +283,19 @@
       </div>
       {#if showGrafana}
         <div class="grafana-container">
-          <iframe
-            src="{grafanaUrl}/d/distllm/distllm-overview?orgId=1&refresh=10s&kiosk"
-            title="Grafana Dashboard"
-            frameborder="0"
-            allowfullscreen
-          ></iframe>
+          {#if validGrafanaUrl}
+            <iframe
+              src="{validGrafanaUrl}/d/distllm/distllm-overview?orgId=1&refresh=10s&kiosk"
+              title="Grafana Dashboard"
+              frameborder="0"
+              sandbox="allow-scripts allow-same-origin allow-popups"
+              allowfullscreen
+            ></iframe>
+          {:else}
+            <div class="empty-state" style="color: var(--danger);">
+              Invalid Grafana URL. Must start with http:// or https://
+            </div>
+          {/if}
         </div>
       {:else}
         <div class="empty-state">
@@ -245,40 +309,13 @@
 
 <style>
   .dashboard { max-width: 900px; }
-  .page-title { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
   .dashboard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
   .coordinator-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-  .status-dot.connected { background: #3fb950; }
-  .status-dot.disconnected { background: #f85149; }
-  .loading { color: var(--text-secondary); padding: 40px 0; text-align: center; }
-  .error-banner {
-    background: color-mix(in srgb, var(--danger) 15%, transparent);
-    color: var(--danger);
-    padding: 10px 14px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    font-size: 13px;
-  }
-  .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 16px;
-  }
-  .card-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
-  .status-row { display: flex; align-items: center; gap: 10px; font-size: 14px; margin-bottom: 12px; }
-  .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .status-dot.green { background: var(--success); box-shadow: 0 0 6px var(--success); }
-  .status-dot.red { background: var(--danger); }
-  .status-dot.gray { background: var(--text-muted); }
-  .mono { font-family: var(--font-mono); font-size: 12px; }
+  .loading-grid { display: flex; flex-direction: column; gap: 16px; }
   .node-table { width: 100%; font-size: 13px; }
   .node-header, .node-row { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr 0.5fr; gap: 8px; padding: 8px 0; align-items: center; }
   .node-header { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
   .node-row { border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
-  .empty-state { color: var(--text-muted); font-size: 13px; padding: 12px 0; }
   .gpu-card { margin-bottom: 12px; }
   .gpu-card:last-child { margin-bottom: 0; }
   .gpu-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }

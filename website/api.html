@@ -1,0 +1,547 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Reference — DistLLM</title>
+    <meta name="description" content="Complete API reference for DistLLM. Interactive Swagger/OpenAPI explorer, SDK downloads, and playground.">
+    <meta name="keywords" content="DistLLM API, OpenAI compatible API, LLM API reference, chat completions API, distributed inference API">
+    <meta property="og:title" content="API Reference — DistLLM">
+    <meta property="og:description" content="Complete API reference with interactive explorer, SDK downloads, and playground.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/api.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="API Reference — DistLLM">
+    <meta name="twitter:description" content="Complete API reference with interactive explorer, SDK downloads, and playground.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/api.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link rel="stylesheet" href="css/advanced.css">
+    <link rel="stylesheet" href="css/print.css" media="print">
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "API Reference", "item": "https://distllm.dev/api.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/integrations.html">Integrations</a><a href="/api.html" class="active">API</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Developer Experience</div>
+            <h1>API Reference</h1>
+            <p class="subtitle">Complete API documentation with interactive explorer, SDK downloads, and live playground.</p>
+
+            <!-- API Navigation -->
+            <div class="api-nav">
+                <a href="#explorer" class="api-nav-item active">API Explorer</a>
+                <a href="#sdks" class="api-nav-item">SDKs</a>
+                <a href="#playground" class="api-nav-item">Playground</a>
+            </div>
+
+            <!-- API Explorer -->
+            <section id="explorer" class="api-section">
+                <div class="api-section-header">
+                    <h2>API Explorer</h2>
+                    <p>Interactive OpenAPI/Swagger documentation. Try endpoints directly from the browser.</p>
+                </div>
+
+                <div class="api-explorer-container">
+                    <div class="api-explorer-sidebar">
+                        <div class="api-endpoint-group">
+                            <h4>Chat</h4>
+                            <a href="#chat-completions" class="api-endpoint active">
+                                <span class="api-method post">POST</span>
+                                <span>/v1/chat/completions</span>
+                            </a>
+                        </div>
+                        <div class="api-endpoint-group">
+                            <h4>Models</h4>
+                            <a href="#list-models" class="api-endpoint">
+                                <span class="api-method get">GET</span>
+                                <span>/v1/models</span>
+                            </a>
+                            <a href="#get-model" class="api-endpoint">
+                                <span class="api-method get">GET</span>
+                                <span>/v1/models/{id}</span>
+                            </a>
+                        </div>
+                        <div class="api-endpoint-group">
+                            <h4>Embeddings</h4>
+                            <a href="#embeddings" class="api-endpoint">
+                                <span class="api-method post">POST</span>
+                                <span>/v1/embeddings</span>
+                            </a>
+                        </div>
+                        <div class="api-endpoint-group">
+                            <h4>Cluster</h4>
+                            <a href="#cluster-status" class="api-endpoint">
+                                <span class="api-method get">GET</span>
+                                <span>/v1/cluster/status</span>
+                            </a>
+                            <a href="#cluster-nodes" class="api-endpoint">
+                                <span class="api-method get">GET</span>
+                                <span>/v1/cluster/nodes</span>
+                            </a>
+                        </div>
+                        <div class="api-endpoint-group">
+                            <h4>Health</h4>
+                            <a href="#health" class="api-endpoint">
+                                <span class="api-method get">GET</span>
+                                <span>/health</span>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="api-explorer-content">
+                        <!-- Chat Completions -->
+                        <div id="chat-completions" class="api-endpoint-detail">
+                            <div class="api-endpoint-header">
+                                <span class="api-method-badge post">POST</span>
+                                <h3>/v1/chat/completions</h3>
+                            </div>
+                            <p class="api-endpoint-desc">Create a chat completion. Compatible with OpenAI Chat Completions API.</p>
+
+                            <div class="api-params">
+                                <h4>Request Body</h4>
+                                <table class="api-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Parameter</th>
+                                            <th>Type</th>
+                                            <th>Required</th>
+                                            <th>Description</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><code>model</code></td>
+                                            <td>string</td>
+                                            <td>Yes</td>
+                                            <td>Model ID or "auto" for automatic selection</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>messages</code></td>
+                                            <td>array</td>
+                                            <td>Yes</td>
+                                            <td>Array of message objects with role and content</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>temperature</code></td>
+                                            <td>number</td>
+                                            <td>No</td>
+                                            <td>Sampling temperature (0-2). Default: 1</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>max_tokens</code></td>
+                                            <td>integer</td>
+                                            <td>No</td>
+                                            <td>Maximum tokens to generate</td>
+                                        </tr>
+                                        <tr>
+                                            <td><code>stream</code></td>
+                                            <td>boolean</td>
+                                            <td>No</td>
+                                            <td>Enable streaming responses</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="api-example">
+                                <h4>Example Request</h4>
+                                <div class="api-code">
+                                    <div class="api-code-header">
+                                        <span>curl</span>
+                                        <button class="copy-btn" data-copy='curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d \'{
+    "model": "meta-llama/Llama-3.1-8B",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "temperature": 0.7
+  }\''>Copy</button>
+                                    </div>
+                                    <pre><code>curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{
+    "model": "meta-llama/Llama-3.1-8B",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "temperature": 0.7
+  }'</code></pre>
+                                </div>
+                            </div>
+
+                            <div class="api-example">
+                                <h4>Example Response</h4>
+                                <div class="api-code">
+                                    <div class="api-code-header">
+                                        <span>JSON</span>
+                                        <button class="copy-btn" data-copy='{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1717436800,
+  "model": "meta-llama/Llama-3.1-8B",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Hello! How can I help you today?"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 9,
+    "total_tokens": 19
+  }
+}'>Copy</button>
+                                    </div>
+                                    <pre><code>{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1717436800,
+  "model": "meta-llama/Llama-3.1-8B",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Hello! How can I help you today?"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 9,
+    "total_tokens": 19
+  }
+}</code></pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SDKs -->
+            <section id="sdks" class="api-section">
+                <div class="api-section-header">
+                    <h2>SDK Downloads</h2>
+                    <p>Official client libraries for every language.</p>
+                </div>
+
+                <div class="sdk-grid">
+                    <div class="sdk-card">
+                        <div class="sdk-header">
+                            <div class="sdk-logo">🐍</div>
+                            <div>
+                                <h3>Python</h3>
+                                <span class="sdk-version">v0.4.0</span>
+                            </div>
+                        </div>
+                        <div class="sdk-install">
+                            <code>pip install distributed-llm</code>
+                            <button class="copy-btn" data-copy="pip install distributed-llm">Copy</button>
+                        </div>
+                        <div class="sdk-links">
+                            <a href="https://pypi.org/project/distributed-llm/" target="_blank" rel="noopener noreferrer">PyPI</a>
+                            <a href="https://github.com/distributed-llm/python-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="/docs/python">Docs</a>
+                        </div>
+                    </div>
+
+                    <div class="sdk-card">
+                        <div class="sdk-header">
+                            <div class="sdk-logo">📦</div>
+                            <div>
+                                <h3>Node.js</h3>
+                                <span class="sdk-version">v0.4.0</span>
+                            </div>
+                        </div>
+                        <div class="sdk-install">
+                            <code>npm install distllm</code>
+                            <button class="copy-btn" data-copy="npm install distllm">Copy</button>
+                        </div>
+                        <div class="sdk-links">
+                            <a href="https://www.npmjs.com/package/distllm" target="_blank" rel="noopener noreferrer">npm</a>
+                            <a href="https://github.com/distributed-llm/node-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="/docs/nodejs">Docs</a>
+                        </div>
+                    </div>
+
+                    <div class="sdk-card">
+                        <div class="sdk-header">
+                            <div class="sdk-logo">🐹</div>
+                            <div>
+                                <h3>Go</h3>
+                                <span class="sdk-version">v0.4.0</span>
+                            </div>
+                        </div>
+                        <div class="sdk-install">
+                            <code>go get github.com/distributed-llm/go-sdk</code>
+                            <button class="copy-btn" data-copy="go get github.com/distributed-llm/go-sdk">Copy</button>
+                        </div>
+                        <div class="sdk-links">
+                            <a href="https://pkg.go.dev/github.com/distributed-llm/go-sdk" target="_blank" rel="noopener noreferrer">pkg.go.dev</a>
+                            <a href="https://github.com/distributed-llm/go-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="/docs/go">Docs</a>
+                        </div>
+                    </div>
+
+                    <div class="sdk-card">
+                        <div class="sdk-header">
+                            <div class="sdk-logo">🦀</div>
+                            <div>
+                                <h3>Rust</h3>
+                                <span class="sdk-version">v0.4.0</span>
+                            </div>
+                        </div>
+                        <div class="sdk-install">
+                            <code>cargo add distllm</code>
+                            <button class="copy-btn" data-copy="cargo add distllm">Copy</button>
+                        </div>
+                        <div class="sdk-links">
+                            <a href="https://crates.io/crates/distllm" target="_blank" rel="noopener noreferrer">crates.io</a>
+                            <a href="https://github.com/distributed-llm/rust-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="/docs/rust">Docs</a>
+                        </div>
+                    </div>
+
+                    <div class="sdk-card">
+                        <div class="sdk-header">
+                            <div class="sdk-logo">☕</div>
+                            <div>
+                                <h3>Java</h3>
+                                <span class="sdk-version">v0.4.0</span>
+                            </div>
+                        </div>
+                        <div class="sdk-install">
+                            <code>implementation 'dev.distllm:client:0.4.0'</code>
+                            <button class="copy-btn" data-copy="implementation 'dev.distllm:client:0.4.0'">Copy</button>
+                        </div>
+                        <div class="sdk-links">
+                            <a href="https://central.sonatype.com/artifact/dev.distllm/client" target="_blank" rel="noopener noreferrer">Maven Central</a>
+                            <a href="https://github.com/distributed-llm/java-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="/docs/java">Docs</a>
+                        </div>
+                    </div>
+
+                    <div class="sdk-card">
+                        <div class="sdk-header">
+                            <div class="sdk-logo">💎</div>
+                            <div>
+                                <h3>Ruby</h3>
+                                <span class="sdk-version">v0.4.0</span>
+                            </div>
+                        </div>
+                        <div class="sdk-install">
+                            <code>gem install distllm</code>
+                            <button class="copy-btn" data-copy="gem install distllm">Copy</button>
+                        </div>
+                        <div class="sdk-links">
+                            <a href="https://rubygems.org/gems/distllm" target="_blank" rel="noopener noreferrer">RubyGems</a>
+                            <a href="https://github.com/distributed-llm/ruby-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="/docs/ruby">Docs</a>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Playground -->
+            <section id="playground" class="api-section">
+                <div class="api-section-header">
+                    <h2>API Playground</h2>
+                    <p>Try the API directly in your browser. Configurations are saved in the URL for easy sharing.</p>
+                </div>
+
+                <div class="playground-container">
+                    <div class="playground-sidebar">
+                        <div class="playground-field">
+                            <label>Endpoint</label>
+                            <select id="playgroundEndpoint">
+                                <option value="/v1/chat/completions">Chat Completions</option>
+                                <option value="/v1/embeddings">Embeddings</option>
+                                <option value="/v1/models">List Models</option>
+                            </select>
+                        </div>
+                        <div class="playground-field">
+                            <label>Model</label>
+                            <select id="playgroundModel">
+                                <option value="auto">Auto (recommended)</option>
+                                <option value="meta-llama/Llama-3.1-8B">Llama 3.1 8B</option>
+                                <option value="mistralai/Mistral-7B">Mistral 7B</option>
+                            </select>
+                        </div>
+                        <div class="playground-field">
+                            <label>Temperature</label>
+                            <input type="range" id="playgroundTemp" min="0" max="2" step="0.1" value="0.7">
+                            <span class="playground-range-value" id="playgroundTempValue">0.7</span>
+                        </div>
+                        <div class="playground-field">
+                            <label>Max Tokens</label>
+                            <input type="number" id="playgroundMaxTokens" value="100" min="1" max="4096">
+                        </div>
+                        <div class="playground-field">
+                            <label>Messages</label>
+                            <textarea id="playgroundMessages" rows="4">[{"role": "user", "content": "Hello!"}]</textarea>
+                        </div>
+                        <button class="btn btn-primary" id="playgroundSend">Send Request</button>
+                        <button class="btn btn-secondary" id="playgroundShare">Share Link</button>
+                    </div>
+
+                    <div class="playground-response">
+                        <div class="playground-response-header">
+                            <span>Response</span>
+                            <span class="playground-status" id="playgroundStatus"></span>
+                        </div>
+                        <pre class="playground-output" id="playgroundOutput">Click "Send Request" to try the API...</pre>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top: none; padding-top: 0;">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
+    <script type="module">
+        // Load playground state from URL
+        function loadPlaygroundState() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('endpoint')) document.getElementById('playgroundEndpoint').value = params.get('endpoint');
+            if (params.has('model')) document.getElementById('playgroundModel').value = params.get('model');
+            if (params.has('temp')) {
+                document.getElementById('playgroundTemp').value = params.get('temp');
+                document.getElementById('playgroundTempValue').textContent = params.get('temp');
+            }
+            if (params.has('max_tokens')) document.getElementById('playgroundMaxTokens').value = params.get('max_tokens');
+            if (params.has('messages')) document.getElementById('playgroundMessages').value = params.get('messages');
+        }
+
+        // Save playground state to URL
+        function savePlaygroundState() {
+            const params = new URLSearchParams();
+            params.set('endpoint', document.getElementById('playgroundEndpoint').value);
+            params.set('model', document.getElementById('playgroundModel').value);
+            params.set('temp', document.getElementById('playgroundTemp').value);
+            params.set('max_tokens', document.getElementById('playgroundMaxTokens').value);
+            params.set('messages', document.getElementById('playgroundMessages').value);
+            window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+        }
+
+        // Initialize
+        loadPlaygroundState();
+
+        // Temperature slider
+        document.getElementById('playgroundTemp')?.addEventListener('input', (e) => {
+            document.getElementById('playgroundTempValue').textContent = e.target.value;
+        });
+
+        // Share button
+        document.getElementById('playgroundShare')?.addEventListener('click', () => {
+            savePlaygroundState();
+            navigator.clipboard.writeText(window.location.href).then(() => {
+                alert('Link copied to clipboard!');
+            });
+        });
+
+        // Send button
+        document.getElementById('playgroundSend')?.addEventListener('click', async () => {
+            const endpoint = document.getElementById('playgroundEndpoint').value;
+            const model = document.getElementById('playgroundModel').value;
+            const temp = parseFloat(document.getElementById('playgroundTemp').value);
+            const maxTokens = parseInt(document.getElementById('playgroundMaxTokens').value);
+            const messages = document.getElementById('playgroundMessages').value;
+            const output = document.getElementById('playgroundOutput');
+            const status = document.getElementById('playgroundStatus');
+
+            output.textContent = 'Sending request...';
+            status.textContent = '';
+            status.className = 'playground-status';
+
+            try {
+                const body = {
+                    model,
+                    messages: JSON.parse(messages),
+                    temperature: temp,
+                    max_tokens: maxTokens,
+                };
+
+                const response = await fetch(`http://localhost:8000${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+
+                const data = await response.json();
+                output.textContent = JSON.stringify(data, null, 2);
+                status.textContent = `${response.status} ${response.statusText}`;
+                status.className = `playground-status ${response.ok ? 'success' : 'error'}`;
+
+                savePlaygroundState();
+            } catch (e) {
+                output.textContent = `Error: ${e.message}\n\nMake sure DistLLM is running on localhost:8000`;
+                status.textContent = 'Error';
+                status.className = 'playground-status error';
+            }
+        });
+
+        // API endpoint navigation
+        document.querySelectorAll('.api-endpoint').forEach(link => {
+            link.addEventListener('click', (e) => {
+                document.querySelectorAll('.api-endpoint').forEach(l => l.classList.remove('active'));
+                link.classList.add('active');
+            });
+        });
+
+        // Copy buttons
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                navigator.clipboard.writeText(btn.dataset.copy).then(() => {
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+                });
+            });
+        });
+    </script>
+</body>
+</html>

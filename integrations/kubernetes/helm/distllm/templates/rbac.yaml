@@ -1,0 +1,47 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "distllm.fullname" . }}
+  labels:
+    {{- include "distllm.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "distllm.fullname" . }}
+  labels:
+    {{- include "distllm.labels" . | nindent 4 }}
+rules:
+  # Allow reading pod info for leader election and discovery
+  - apiGroups: [""]
+    resources: ["pods", "pods/status"]
+    verbs: ["get", "list", "watch"]
+  # Allow reading endpoints for service discovery
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+  # Allow leader election via leases
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Allow reading events for logging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "distllm.fullname" . }}
+  labels:
+    {{- include "distllm.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "distllm.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "distllm.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

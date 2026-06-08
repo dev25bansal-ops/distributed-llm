@@ -1,0 +1,8 @@
+---
+# DistLLM deployment playbook
+# Usage: ansible-playbook -i inventory.ini playbook.yml
+
+- hosts: distllm_nodes
+  become: true
+  roles:
+    - distllm

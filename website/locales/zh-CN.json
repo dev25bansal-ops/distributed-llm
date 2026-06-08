@@ -1,0 +1,167 @@
+{
+  "meta": {
+    "title": "DistLLM — 跨设备分布式LLM推理",
+    "description": "汇集所有设备的GPU，运行单机无法处理的模型。兼容OpenAI API。开源。比云API便宜10倍。"
+  },
+  "nav": {
+    "home": "首页",
+    "features": "功能",
+    "docs": "文档",
+    "blog": "博客",
+    "pricing": "定价",
+    "github": "GitHub",
+    "getStarted": "快速开始",
+    "enterprise": "企业版",
+    "community": "社区",
+    "learn": "学习",
+    "api": "API",
+    "integrations": "集成"
+  },
+  "hero": {
+    "badge": "开源 · Apache 2.0",
+    "title": "在消费级GPU上运行70B模型",
+    "subtitle": "汇集所有设备的GPU，运行单机无法处理的模型。兼容OpenAI API。比云API便宜10倍。",
+    "cta": "快速开始",
+    "ctaSecondary": "在GitHub上查看",
+    "stats": {
+      "stars": "GitHub Stars",
+      "downloads": "PyPI下载量",
+      "contributors": "贡献者"
+    }
+  },
+  "features": {
+    "title": "为什么选择DistLLM？",
+    "subtitle": "唯一支持消费级GPU分布式LLM推理的开源方案。",
+    "items": {
+      "pipeline": {
+        "title": "流水线并行",
+        "description": "将模型层分布在GPU上进行流水线处理。每增加一个GPU，性能近似线性提升。"
+      },
+      "openai": {
+        "title": "兼容OpenAI",
+        "description": "OpenAI API的直接替代品。支持LangChain、LlamaIndex和任何OpenAI SDK。"
+      },
+      "multiBackend": {
+        "title": "多后端支持",
+        "description": "支持vLLM、llama.cpp、ExLlamaV2。为每种GPU类型选择最佳后端。"
+      },
+      "wan": {
+        "title": "广域网支持",
+        "description": "通过QUIC传输和NAT穿越，跨互联网连接GPU。"
+      },
+      "security": {
+        "title": "企业级安全",
+        "description": "mTLS、RBAC、审计日志。支持气隙部署满足合规要求。"
+      },
+      "cost": {
+        "title": "便宜10倍",
+        "description": "70B模型约$0.01/1K tokens。比OpenAI便宜10倍，比云GPU便宜5倍。"
+      }
+    }
+  },
+  "calculator": {
+    "title": "成本计算器",
+    "subtitle": "估算与云API相比的节省",
+    "gpus": "集群GPU数量",
+    "tokens": "每月tokens（百万）",
+    "model": "模型大小",
+    "hours": "每天运行小时数",
+    "electricity": "电价 ($/kWh)",
+    "savings": "相比OpenAI每月节省",
+    "disclaimer": "基于$0.002/1K tokens (GPT-4级别)"
+  },
+  "pricing": {
+    "title": "定价",
+    "subtitle": "开源免费。仅托管服务收费。",
+    "community": {
+      "name": "社区版",
+      "price": "$0",
+      "period": "/ 永久",
+      "description": "自托管，开源",
+      "features": ["包含所有功能", "无限模型", "无限节点", "社区支持", "Apache 2.0许可证"],
+      "cta": "快速开始"
+    },
+    "pro": {
+      "name": "专业版",
+      "price": "$49",
+      "period": "/ 月",
+      "description": "托管服务 + 优先支持",
+      "features": ["包含社区版所有功能", "托管API端点", "每日1M tokens", "99.9% SLA", "优先支持"],
+      "cta": "加入等待列表",
+      "badge": "热门"
+    },
+    "enterprise": {
+      "name": "企业版",
+      "price": "定制",
+      "period": "",
+      "description": "本地部署 + 专属支持",
+      "features": ["包含专业版所有功能", "无限tokens", "SSO / SAML", "定制SLA", "专属支持工程师"],
+      "cta": "联系销售"
+    }
+  },
+  "faq": {
+    "title": "常见问题",
+    "items": {
+      "gpus": {
+        "question": "支持哪些GPU？",
+        "answer": "任何支持CUDA 12+的NVIDIA GPU（RTX 30xx、40xx、A100、H100）、通过ROCm支持AMD、通过Metal支持Apple Silicon、通过llama.cpp支持纯CPU。"
+      },
+      "vllm": {
+        "question": "与vLLM相比如何？",
+        "answer": "vLLM非常适合单节点推理。DistLLM的差异化在于多节点流水线并行。"
+      },
+      "security": {
+        "question": "我的数据安全吗？",
+        "answer": "是的。所有数据都保存在您的设备上。DistLLM支持mTLS、端到端加密和标准认证。"
+      },
+      "internet": {
+        "question": "可以通过互联网运行吗？",
+        "answer": "可以。支持QUIC传输、NAT穿越（STUN/TURN）和token累积的广域网支持。"
+      },
+      "models": {
+        "question": "支持哪些模型？",
+        "answer": "任何HuggingFace模型：Llama 2/3、Mistral、Mixtral、Qwen、Phi、DeepSeek、StableLM、GPT-2等。"
+      },
+      "start": {
+        "question": "如何开始？",
+        "answer": "pip install distributed-llm，然后distllm cluster start，然后在其他机器上distllm cluster join。"
+      }
+    }
+  },
+  "footer": {
+    "copyright": "© 2026 DistLLM. Apache 2.0 许可证。",
+    "product": "产品",
+    "resources": "资源",
+    "company": "公司",
+    "legal": "法律",
+    "links": {
+      "features": "功能",
+      "pricing": "定价",
+      "docs": "文档",
+      "api": "API参考",
+      "blog": "博客",
+      "tutorials": "教程",
+      "community": "社区",
+      "github": "GitHub",
+      "discord": "Discord",
+      "twitter": "Twitter",
+      "about": "关于",
+      "careers": "招聘",
+      "contact": "联系我们",
+      "privacy": "隐私政策",
+      "terms": "服务条款",
+      "security": "安全"
+    }
+  },
+  "common": {
+    "learnMore": "了解更多",
+    "getStarted": "快速开始",
+    "viewDocs": "查看文档",
+    "viewOnGitHub": "在GitHub上查看",
+    "copy": "复制",
+    "copied": "已复制！",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功"
+  }
+}

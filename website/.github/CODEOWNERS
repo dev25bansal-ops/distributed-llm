@@ -1,0 +1,49 @@
+# DistLLM Website CODEOWNERS
+# These owners will be automatically requested for review when someone opens a pull request.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the website
+* @distllm/website-maintainers
+
+# CSS files
+*.css @distllm/design-team @distllm/website-maintainers
+css/ @distllm/design-team @distllm/website-maintainers
+
+# JavaScript files
+*.js @distllm/website-maintainers
+js/ @distllm/website-maintainers
+
+# HTML files
+*.html @distllm/website-maintainers @distllm/content-team
+
+# Tests
+tests/ @distllm/qa-team @distllm/website-maintainers
+*.spec.js @distllm/qa-team
+*.test.js @distllm/qa-team
+
+# Infrastructure
+Dockerfile @distllm/devops @distllm/website-maintainers
+docker-compose.yml @distllm/devops @distllm/website-maintainers
+.github/ @distllm/devops @distllm/website-maintainers
+nginx*.conf @distllm/devops
+
+# Configuration files
+package.json @distllm/website-maintainers
+vite.config.js @distllm/website-maintainers
+*.config.js @distllm/website-maintainers
+
+# Documentation
+CONTRIBUTING.md @distllm/website-maintainers @distllm/content-team
+README.md @distllm/website-maintainers @distllm/content-team
+
+# SEO & Meta
+sitemap.xml @distllm/seo-team @distllm/website-maintainers
+robots.txt @distllm/seo-team
+feed.xml @distllm/content-team
+opensearch.xml @distllm/seo-team
+
+# Security
+security.spec.js @distllm/security-team @distllm/qa-team
+
+# Accessibility
+accessibility.spec.js @distllm/a11y-team @distllm/qa-team

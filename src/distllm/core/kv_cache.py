@@ -891,20 +891,6 @@ def _bytes_to_tensor(
     return torch.from_numpy(arr.copy()).to(torch_dtype).to(device)
 
 
-def save_kv_cache_to_disk(cache: KVCache, path: str) -> None:
-    """Save KV cache to disk using torch.save."""
-    import torch
-    data = serialize_kv_cache(cache)
-    torch.save(data, path)
-
-
-def load_kv_cache_from_disk(path: str) -> KVCache:
-    """Load KV cache from disk."""
-    import torch
-    data = torch.load(path, weights_only=False)
-    return deserialize_kv_cache(data)
-
-
 def serialize_kv_cache(cache: KVCache) -> dict:
     """Serialize KV cache for transmission (e.g., via gRPC).
 

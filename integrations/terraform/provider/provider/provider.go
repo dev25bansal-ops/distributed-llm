@@ -83,6 +83,9 @@ func resourceModel() *schema.Resource {
 		ReadContext:   resourceModelRead,
 		UpdateContext: resourceModelUpdate,
 		DeleteContext: resourceModelDelete,
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 		Schema: map[string]*schema.Schema{
 			"name": {
 				Type:        schema.TypeString,
@@ -107,15 +110,14 @@ func resourceModelCreate(ctx context.Context, d *schema.ResourceData, m interfac
 	config := m.(*ProviderConfig)
 	name := d.Get("name").(string)
 
+	payload := fmt.Sprintf(`{"model": %q}`, name)
 	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("%s/v1/models", config.Endpoint), nil)
+		fmt.Sprintf("%s/v1/models", config.Endpoint),
+		strings.NewReader(payload))
 	if err != nil {
 		return diag.FromErr(err)
 	}
-
-	q := req.URL.Query()
-	q.Add("model", name)
-	req.URL.RawQuery = q.Encode()
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := config.Client.Do(req)
 	if err != nil {
@@ -203,6 +205,9 @@ func resourceDeployment() *schema.Resource {
 		ReadContext:   resourceDeploymentRead,
 		UpdateContext: resourceDeploymentUpdate,
 		DeleteContext: resourceDeploymentDelete,
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 		Schema: map[string]*schema.Schema{
 			"model_name": {
 				Type:        schema.TypeString,
@@ -344,6 +349,9 @@ func resourceNode() *schema.Resource {
 		ReadContext:   resourceNodeRead,
 		UpdateContext: resourceNodeUpdate,
 		DeleteContext: resourceNodeDelete,
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 		Schema: map[string]*schema.Schema{
 			"host": {
 				Type:        schema.TypeString,
@@ -741,6 +749,9 @@ func resourceFederation() *schema.Resource {
 		ReadContext:   resourceFederationRead,
 		UpdateContext: resourceFederationUpdate,
 		DeleteContext: resourceFederationDelete,
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 		Schema: map[string]*schema.Schema{
 			"cluster_id": {
 				Type:        schema.TypeString,
@@ -879,6 +890,43 @@ func resourceFederationRead(ctx context.Context, d *schema.ResourceData, m inter
 }
 
 func resourceFederationUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
+	config := m.(*ProviderConfig)
+	clusterID := d.Get("cluster_id").(string)
+
+	payload := map[string]interface{}{
+		"cluster_id":         clusterID,
+		"listen_port":        d.Get("listen_port").(int),
+		"spillover_enabled":  d.Get("spillover_enabled").(bool),
+		"spillover_threshold": d.Get("spillover_threshold").(float64),
+	}
+
+	if seeds, ok := d.Get("seed_nodes").([]interface{}); ok {
+		seedList := make([]string, len(seeds))
+		for i, s := range seeds {
+			seedList[i] = s.(string)
+		}
+		payload["seed_nodes"] = seedList
+	}
+
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequestWithContext(ctx, "PUT",
+		fmt.Sprintf("%s/api/federation/config", config.Endpoint),
+		strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	if config.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	}
+
+	resp, err := config.Client.Do(req)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return diag.Errorf("failed to update federation config: HTTP %d", resp.StatusCode)
+	}
+
 	return resourceFederationRead(ctx, d, m)
 }
 

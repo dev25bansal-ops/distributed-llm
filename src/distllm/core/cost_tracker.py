@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 # Cost per GPU-hour for different hardware (self-hosted cost)
 GPU_COST_PER_HOUR: dict[str, float] = {
+    "H200": 3.50,
+    "B200": 5.00,
     "H100": 2.50,
     "A100-80GB": 1.80,
     "A100-40GB": 1.20,

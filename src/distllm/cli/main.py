@@ -568,7 +568,8 @@ def cluster_join(
     if not resolved_key:
         key_path = os.path.expanduser("~/.distllm/cluster_key")
         if os.path.isfile(key_path):
-            resolved_key = open(key_path).read().strip()
+            with open(key_path) as kf:
+                resolved_key = kf.read().strip()
     from distllm.cli.cluster import _cluster_join
     _cluster_join(
         coordinator_host, coordinator_port, node_id,

@@ -3,13 +3,32 @@
   import Nav from "./lib/Nav.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import Cluster from "./lib/Cluster.svelte";
+  import Chat from "./lib/Chat.svelte";
   import Models from "./lib/Models.svelte";
+  import Benchmark from "./lib/Benchmark.svelte";
+  import Topology from "./lib/Topology.svelte";
+  import MultiModel from "./lib/MultiModel.svelte";
+  import Discovery from "./lib/Discovery.svelte";
+  import WebDashboard from "./lib/WebDashboard.svelte";
+  import Plugins from "./lib/Plugins.svelte";
   import Friends from "./lib/Friends.svelte";
+  import OnboardingWizard from "./lib/OnboardingWizard.svelte";
+  import Settings from "./lib/Settings.svelte";
+  import ActivityLogs from "./lib/ActivityLogs.svelte";
+  import { Toast, toastStore } from "./lib/ui";
+  import { applyTheme } from "./lib/stores/settings-store";
+  import { joinCluster, updateTrayStatus, addRecentCluster } from "./lib/api";
+  import { clusterStore } from "./lib/stores";
   import { listen } from "@tauri-apps/api/event";
+  import { onDestroy, onMount } from "svelte";
   import type { Page } from "./lib/types";
 
   let currentPage = $state<Page>("dashboard");
   let traySource = $state<string | null>(null);
+  let grafanaToggle = $state(0);
+  let connectAddr = $state<string | null>(null);
+  // 5.1: Show onboarding wizard on first launch
+  let showWizard = $state(!localStorage.getItem("distllm_onboarded"));
 
   const unlisten = listen<string>("navigate", (e) => {
     traySource = e.payload;
@@ -20,25 +39,148 @@
     }
   });
 
+  // 5.8: Handle deep link connect events from tray recent clusters and protocol handler
+  const unlistenDeepLink = listen<string>("deep-link-connect", (e) => {
+    const url = e.payload;
+    // Parse distllm://connect/<host>:<port>/<invite_code>
+    const match = url.match(/^distllm:\/\/connect\/([^:/]+):(\d+)\/(.+)$/);
+    if (match) {
+      const [, host, port, code] = match;
+      connectAddr = `${host}:${port}`;
+      currentPage = "cluster";
+      traySource = "join_cluster";
+      // Auto-join after a short delay to let the cluster page mount
+      setTimeout(async () => {
+        try {
+          await joinCluster(host, parseInt(port));
+          await addRecentCluster(`${host}:${port}`);
+          toastStore.success(`Joined cluster at ${host}:${port}`);
+          updateTrayStatus(true, 1, `http://${host}:${port}`);
+        } catch (err) {
+          toastStore.error(`Failed to join: ${err}`);
+        }
+        connectAddr = null;
+      }, 300);
+    }
+  });
+
+  // 5.7: Update tray when cluster status changes
+  let unsubCluster = clusterStore.subscribe((d) => {
+    const c = d.cluster;
+    if (c?.running) {
+      const nodeCount = c.nodes?.length ?? 1;
+      updateTrayStatus(true, nodeCount, c.coordinator_addr ?? undefined);
+    }
+  });
+
+  // 4.10: Keyboard shortcuts
+  const pageMap: Record<string, Page> = {
+    "1": "dashboard",
+    "2": "cluster",
+    "3": "chat",
+    "4": "models",
+    "5": "benchmark",
+    "6": "topology",
+    "7": "multimodel",
+    "8": "discovery",
+    "9": "plugins",
+  };
+
+  function handleKeydown(e: KeyboardEvent) {
+    const isCtrl = e.ctrlKey || e.metaKey;
+
+    // Ctrl+1-9: Navigate to page
+    if (isCtrl && !e.shiftKey && !e.altKey && !e.key.match(/[^1-9]/)) {
+      const target = pageMap[e.key];
+      if (target) {
+        e.preventDefault();
+        currentPage = target;
+        traySource = null;
+      }
+    }
+
+    // Ctrl+G: Toggle Grafana
+    if (isCtrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
+      e.preventDefault();
+      grafanaToggle++;
+    }
+
+    // Ctrl+,: Open settings
+    if (isCtrl && e.key === ",") {
+      e.preventDefault();
+      currentPage = "settings";
+      traySource = null;
+    }
+
+    // Escape: Dismiss errors (triggered via custom event)
+    if (e.key === "Escape") {
+      window.dispatchEvent(new CustomEvent("dismiss-errors"));
+    }
+  }
+
+  onMount(() => {
+    // Apply saved theme on load
+    applyTheme();
+    window.addEventListener("keydown", handleKeydown);
+
+    // Listen for system theme changes (for "auto" mode)
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", () => applyTheme());
+  });
+
+  onDestroy(() => {
+    unlisten.then((fn) => fn());
+    unlistenDeepLink.then((fn) => fn());
+    unsubCluster();
+    window.removeEventListener("keydown", handleKeydown);
+  });
+
   function navigate(page: Page) {
     currentPage = page;
     traySource = null;
   }
+
+  function onWizardComplete() {
+    showWizard = false;
+  }
 </script>
+
+{#if showWizard}
+  <OnboardingWizard oncomplete={onWizardComplete} />
+{/if}
 
 <div class="app-layout">
   <Nav {currentPage} onNavigate={navigate} />
-  <main class="main-content">
+  <main class="main-content" class:chat-active={currentPage === "chat"}>
     {#if currentPage === "dashboard"}
-      <Dashboard />
+      <Dashboard {grafanaToggle} />
     {:else if currentPage === "cluster"}
-      <Cluster initialAction={traySource} />
+      <Cluster initialAction={traySource} {connectAddr} />
+    {:else if currentPage === "chat"}
+      <Chat />
     {:else if currentPage === "models"}
       <Models />
+    {:else if currentPage === "benchmark"}
+      <Benchmark />
+    {:else if currentPage === "topology"}
+      <Topology />
+    {:else if currentPage === "multimodel"}
+      <MultiModel />
+    {:else if currentPage === "discovery"}
+      <Discovery />
+    {:else if currentPage === "webdashboard"}
+      <WebDashboard />
+    {:else if currentPage === "plugins"}
+      <Plugins />
     {:else if currentPage === "friends"}
       <Friends />
+    {:else if currentPage === "logs"}
+      <ActivityLogs />
+    {:else if currentPage === "settings"}
+      <Settings />
     {/if}
   </main>
+  <Toast />
 </div>
 
 <style>
@@ -51,5 +193,10 @@
     flex: 1;
     overflow-y: auto;
     padding: 24px 32px;
+  }
+  .main-content.chat-active {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 </style>

@@ -137,14 +137,18 @@ class QuotaMiddleware(BaseHTTPMiddleware):
             try:
                 body = getattr(request, "_json", None) or getattr(request.state, "parsed_body", None)
                 if body is None and hasattr(request, "body"):
-                    import asyncio
+                    # C-06: Use asyncio.get_event_loop() instead of None
                     try:
-                        raw = asyncio.run_coroutine_threadsafe(
-                            request.body(), None
-                        )
-                    except Exception as e:
-                        logger.debug(f"Failed to read request body for quota: {e}")
-                        raw = None
+                        loop = asyncio.get_event_loop()
+                        raw = loop.create_task(request.body())
+                    except RuntimeError:
+                        # No running loop — use run_coroutine_threadsafe with the main loop
+                        try:
+                            loop = asyncio.get_running_loop()
+                            raw = asyncio.run_coroutine_threadsafe(request.body(), loop)
+                        except RuntimeError:
+                            logger.debug("No event loop available for quota body read")
+                            raw = None
                 prompt = ""
                 if body:
                     if isinstance(body, dict):

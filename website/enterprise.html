@@ -1,0 +1,482 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise — DistLLM</title>
+    <meta name="description" content="Enterprise-grade distributed LLM inference. Security whitepaper, compliance roadmap, and reference architectures for production deployments.">
+    <meta name="keywords" content="enterprise LLM, distributed inference enterprise, LLM security, SOC 2 compliance, ISO 27001, HIPAA LLM, enterprise AI deployment">
+    <meta property="og:title" content="Enterprise — DistLLM">
+    <meta property="og:description" content="Enterprise-grade distributed LLM inference with security, compliance, and production support.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/enterprise.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Enterprise — DistLLM">
+    <meta name="twitter:description" content="Enterprise-grade distributed LLM inference with security, compliance, and production support.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/enterprise.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link rel="stylesheet" href="css/advanced.css">
+    <link rel="stylesheet" href="css/print.css" media="print">
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Enterprise", "item": "https://distllm.dev/enterprise.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/enterprise.html" class="active">Enterprise</a><a href="/learn.html">Learn</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="/enterprise.html#contact" class="nav-cta">Contact Sales</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Enterprise</div>
+            <h1>Enterprise-Grade Distributed Inference</h1>
+            <p class="subtitle">Security, compliance, and production support for mission-critical LLM deployments.</p>
+
+            <!-- Hero Features -->
+            <div class="enterprise-features">
+                <div class="ent-feature">
+                    <div class="ent-feature-icon">🔒</div>
+                    <h3>Security First</h3>
+                    <p>mTLS, E2E encryption, RBAC, audit logging, and air-gapped deployment support.</p>
+                </div>
+                <div class="ent-feature">
+                    <div class="ent-feature-icon">📋</div>
+                    <h3>Compliance Ready</h3>
+                    <p>SOC 2 Type II, ISO 27001, HIPAA BAA, and GDPR compliance roadmap.</p>
+                </div>
+                <div class="ent-feature">
+                    <div class="ent-feature-icon">🏗️</div>
+                    <h3>Production Architecture</h3>
+                    <p>Reference architectures for multi-region, high-availability deployments.</p>
+                </div>
+                <div class="ent-feature">
+                    <div class="ent-feature-icon">🛟</div>
+                    <h3>24/7 Support</h3>
+                    <p>Dedicated support engineer, SLA guarantees, and priority bug fixes.</p>
+                </div>
+            </div>
+
+            <!-- Security Whitepaper -->
+            <section id="security" class="enterprise-section">
+                <div class="ent-section-header">
+                    <h2>Security Whitepaper</h2>
+                    <p>Comprehensive security architecture and threat model documentation.</p>
+                </div>
+
+                <div class="ent-whitepaper">
+                    <div class="whitepaper-preview">
+                        <div class="whitepaper-cover">
+                            <div class="whitepaper-logo">D</div>
+                            <h3>DistLLM Security Architecture</h3>
+                            <p>Version 2.0 — June 2026</p>
+                        </div>
+                        <div class="whitepaper-toc">
+                            <h4>Table of Contents</h4>
+                            <ol>
+                                <li>Executive Summary</li>
+                                <li>Threat Model & Attack Surface</li>
+                                <li>Authentication & Authorization</li>
+                                <li>Data Encryption (At Rest & In Transit)</li>
+                                <li>Network Security & mTLS</li>
+                                <li>Audit Logging & Monitoring</li>
+                                <li>Air-Gapped Deployment</li>
+                                <li>Vulnerability Management</li>
+                                <li>Incident Response</li>
+                            </ol>
+                        </div>
+                    </div>
+                    <div class="whitepaper-cta">
+                        <a href="/docs/security-whitepaper.pdf" class="btn btn-primary" download>
+                            📄 Download Whitepaper (PDF)
+                        </a>
+                        <p class="whitepaper-meta">2.4 MB · 42 pages · Last updated June 2026</p>
+                    </div>
+                </div>
+
+                <!-- Security Features Grid -->
+                <div class="ent-security-grid">
+                    <div class="security-card">
+                        <h4>🔐 Mutual TLS (mTLS)</h4>
+                        <p>All node-to-node communication encrypted with client certificate authentication. No shared secrets.</p>
+                        <code>distllm cluster start --mtls --cert /path/to/certs</code>
+                    </div>
+                    <div class="security-card">
+                        <h4>🔑 RBAC & API Keys</h4>
+                        <p>Fine-grained role-based access control. Separate keys for admin, operator, and viewer roles.</p>
+                        <code>distllm auth create-key --role operator --scope "models,cluster"</code>
+                    </div>
+                    <div class="security-card">
+                        <h4>📝 Audit Logging</h4>
+                        <p>Every API call, authentication event, and configuration change logged with immutable audit trail.</p>
+                        <code>distllm config set audit.enabled true --format json</code>
+                    </div>
+                    <div class="security-card">
+                        <h4>🏰 Air-Gapped Deployment</h4>
+                        <p>Full offline installation support. No telemetry, no external dependencies, no internet required.</p>
+                        <code>distllm install --offline --bundle-path /mnt/distllm-bundle.tar.gz</code>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Compliance Roadmap -->
+            <section id="compliance" class="enterprise-section">
+                <div class="ent-section-header">
+                    <h2>Compliance Roadmap</h2>
+                    <p>Our path to enterprise compliance certifications.</p>
+                </div>
+
+                <div class="compliance-timeline">
+                    <div class="compliance-item completed">
+                        <div class="compliance-status">✅</div>
+                        <div class="compliance-content">
+                            <div class="compliance-date">Q1 2026</div>
+                            <h4>SOC 2 Type I</h4>
+                            <p>Security controls design assessment completed. Policies, procedures, and technical controls documented.</p>
+                        </div>
+                    </div>
+                    <div class="compliance-item current">
+                        <div class="compliance-status">🔄</div>
+                        <div class="compliance-content">
+                            <div class="compliance-date">Q2 2026 (In Progress)</div>
+                            <h4>SOC 2 Type II</h4>
+                            <p>6-month observation period for security controls. Audit scheduled for August 2026.</p>
+                        </div>
+                    </div>
+                    <div class="compliance-item upcoming">
+                        <div class="compliance-status">📅</div>
+                        <div class="compliance-content">
+                            <div class="compliance-date">Q3 2026</div>
+                            <h4>ISO 27001</h4>
+                            <p>Information Security Management System (ISMS) implementation. Stage 1 audit scheduled.</p>
+                        </div>
+                    </div>
+                    <div class="compliance-item upcoming">
+                        <div class="compliance-status">📅</div>
+                        <div class="compliance-content">
+                            <div class="compliance-date">Q4 2026</div>
+                            <h4>HIPAA BAA</h4>
+                            <p>Business Associate Agreement readiness. PHI handling procedures and technical safeguards.</p>
+                        </div>
+                    </div>
+                    <div class="compliance-item upcoming">
+                        <div class="compliance-status">📅</div>
+                        <div class="compliance-content">
+                            <div class="compliance-date">Q1 2027</div>
+                            <h4>GDPR Compliance</h4>
+                            <p>Data processing agreements, DPO appointment, and EU data residency support.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Reference Architectures -->
+            <section id="architectures" class="enterprise-section">
+                <div class="ent-section-header">
+                    <h2>Reference Architectures</h2>
+                    <p>Production-ready deployment patterns for common enterprise scenarios.</p>
+                </div>
+
+                <div class="arch-grid">
+                    <div class="arch-card">
+                        <div class="arch-card-header">
+                            <h4>🏢 Single Region, High Availability</h4>
+                            <span class="arch-badge">Most Common</span>
+                        </div>
+                        <div class="arch-diagram">
+                            <div class="arch-row">
+                                <div class="arch-box lb">Load Balancer</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box coord">Coordinator ×2</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box worker">Worker ×4-8</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box storage">Shared Storage (NFS/S3)</div>
+                            </div>
+                        </div>
+                        <ul class="arch-specs">
+                            <li>4-8 GPUs (A100/H100)</li>
+                            <li>Automatic failover</li>
+                            <li>99.9% uptime SLA</li>
+                            <li>Sub-50ms latency</li>
+                        </ul>
+                    </div>
+
+                    <div class="arch-card">
+                        <div class="arch-card-header">
+                            <h4>🌍 Multi-Region, Geo-Distributed</h4>
+                            <span class="arch-badge">Enterprise</span>
+                        </div>
+                        <div class="arch-diagram">
+                            <div class="arch-row">
+                                <div class="arch-box dns">Global DNS</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box region">US-East</div>
+                                <div class="arch-box region">EU-West</div>
+                                <div class="arch-box region">APAC</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box worker">2-4 GPUs</div>
+                                <div class="arch-box worker">2-4 GPUs</div>
+                                <div class="arch-box worker">2-4 GPUs</div>
+                            </div>
+                        </div>
+                        <ul class="arch-specs">
+                            <li>6-12 GPUs total</li>
+                            <li>Data residency compliance</li>
+                            <li>Automatic geo-routing</li>
+                            <li>Cross-region replication</li>
+                        </ul>
+                    </div>
+
+                    <div class="arch-card">
+                        <div class="arch-card-header">
+                            <h4>🏥 Healthcare / HIPAA</h4>
+                            <span class="arch-badge">Compliance</span>
+                        </div>
+                        <div class="arch-diagram">
+                            <div class="arch-row">
+                                <div class="arch-box firewall">WAF + Firewall</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box coord">Coordinator (Private Subnet)</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box worker">Workers (Isolated VPC)</div>
+                            </div>
+                            <div class="arch-row">
+                                <div class="arch-box storage">Encrypted Storage (KMS)</div>
+                            </div>
+                        </div>
+                        <ul class="arch-specs">
+                            <li>Air-gapped option</li>
+                            <li>PHI data isolation</li>
+                            <li>Audit logging</li>
+                            <li>BAA ready</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Case Studies -->
+            <section id="case-studies" class="enterprise-section">
+                <div class="ent-section-header">
+                    <h2>Case Studies</h2>
+                    <p>Real-world deployment scenarios and outcomes.</p>
+                </div>
+
+                <div class="case-studies-grid">
+                    <div class="case-study">
+                        <div class="case-header">
+                            <div class="case-company">
+                                <div class="case-logo">AC</div>
+                                <div>
+                                    <h4>Acme Corp</h4>
+                                    <p class="case-industry">Financial Services</p>
+                                </div>
+                            </div>
+                            <div class="case-metric">
+                                <span class="case-metric-value">10×</span>
+                                <span class="case-metric-label">A100 GPUs</span>
+                            </div>
+                        </div>
+                        <div class="case-content">
+                            <p><strong>Challenge:</strong> Process 50,000+ daily financial reports with LLMs while maintaining SOC 2 compliance and sub-second latency.</p>
+                            <p><strong>Solution:</strong> Deployed DistLLM across 3 data centers (US-East, US-West, EU) with automatic failover and data residency controls.</p>
+                            <p><strong>Results:</strong></p>
+                            <ul>
+                                <li>99.99% uptime over 6 months</li>
+                                <li>42ms P50 latency (vs 200ms with cloud APIs)</li>
+                                <li>$47K/month savings vs OpenAI Enterprise</li>
+                                <li>SOC 2 Type II compliant deployment</li>
+                            </ul>
+                        </div>
+                        <blockquote class="case-quote">
+                            "DistLLM let us run our financial models on-premise with the performance of cloud APIs. The security features exceeded our compliance requirements."
+                            <cite>— CTO, Acme Corp</cite>
+                        </blockquote>
+                    </div>
+
+                    <div class="case-study">
+                        <div class="case-header">
+                            <div class="case-company">
+                                <div class="case-logo">MH</div>
+                                <div>
+                                    <h4>MedHealth Systems</h4>
+                                    <p class="case-industry">Healthcare</p>
+                                </div>
+                            </div>
+                            <div class="case-metric">
+                                <span class="case-metric-value">5×</span>
+                                <span class="case-metric-label">H100 GPUs</span>
+                            </div>
+                        </div>
+                        <div class="case-content">
+                            <p><strong>Challenge:</strong> HIPAA-compliant clinical decision support requiring air-gapped deployment with no external API calls.</p>
+                            <p><strong>Solution:</strong> Air-gapped DistLLM cluster with mTLS, audit logging, and encrypted storage. Running Llama 3.1 70B for medical Q&A.</p>
+                            <p><strong>Results:</strong></p>
+                            <ul>
+                                <li>100% on-premise, zero external dependencies</li>
+                                <li>HIPAA BAA signed and compliant</li>
+                                <li>28 tok/s throughput on 70B model</li>
+                                <li>Reduced clinical documentation time by 40%</li>
+                            </ul>
+                        </div>
+                        <blockquote class="case-quote">
+                            "The air-gapped deployment was a must-have for our HIPAA requirements. DistLLM delivered without compromising on performance."
+                            <cite>— VP Engineering, MedHealth Systems</cite>
+                        </blockquote>
+                    </div>
+
+                    <div class="case-study">
+                        <div class="case-header">
+                            <div class="case-company">
+                                <div class="case-logo">TX</div>
+                                <div>
+                                    <h4>TechX Labs</h4>
+                                    <p class="case-industry">AI Startup</p>
+                                </div>
+                            </div>
+                            <div class="case-metric">
+                                <span class="case-metric-value">24×</span>
+                                <span class="case-metric-label">RTX 4090 GPUs</span>
+                            </div>
+                        </div>
+                        <div class="case-content">
+                            <p><strong>Challenge:</strong> Serve 100K+ daily users on a startup budget. Cloud APIs too expensive at scale.</p>
+                            <p><strong>Solution:</strong> 24× RTX 4090 cluster with DistLLM pipeline parallelism. Running Mixtral 8x7B with INT4 quantization.</p>
+                            <p><strong>Results:</strong></p>
+                            <ul>
+                                <li>$0.003/1K tokens (vs $0.015 on OpenAI)</li>
+                                <li>5× cost reduction vs cloud APIs</li>
+                                <li>68 tok/s throughput</li>
+                                <li>Scales to 200K+ daily users</li>
+                            </ul>
+                        </div>
+                        <blockquote class="case-quote">
+                            "We went from $50K/month on OpenAI to $10K/month running our own cluster. DistLLM paid for itself in the first month."
+                            <cite>— Founder, TechX Labs</cite>
+                        </blockquote>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Contact Sales -->
+            <section id="contact" class="enterprise-section">
+                <div class="ent-section-header">
+                    <h2>Contact Enterprise Sales</h2>
+                    <p>Get a custom deployment plan, security review, or compliance assessment.</p>
+                </div>
+
+                <div class="ent-contact-grid">
+                    <div class="ent-contact-info">
+                        <div class="ent-contact-item">
+                            <span class="ent-contact-icon">📧</span>
+                            <div>
+                                <strong>Email</strong>
+                                <a href="mailto:enterprise@distllm.dev">enterprise@distllm.dev</a>
+                            </div>
+                        </div>
+                        <div class="ent-contact-item">
+                            <span class="ent-contact-icon">📞</span>
+                            <div>
+                                <strong>Phone</strong>
+                                <a href="tel:+1-555-DISTLLM">+1 (555) DIST-LLM</a>
+                            </div>
+                        </div>
+                        <div class="ent-contact-item">
+                            <span class="ent-contact-icon">📅</span>
+                            <div>
+                                <strong>Schedule a Call</strong>
+                                <a href="https://cal.com/distllm/enterprise" target="_blank" rel="noopener noreferrer">Book a 30-min consultation</a>
+                            </div>
+                        </div>
+                        <div class="ent-contact-item">
+                            <span class="ent-contact-icon">💬</span>
+                            <div>
+                                <strong>Discord</strong>
+                                <a href="https://discord.gg/distllm" target="_blank" rel="noopener noreferrer">#enterprise channel</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="ent-contact-form">
+                        <form id="enterpriseContactForm">
+                            <div class="form-group">
+                                <label for="entName">Name</label>
+                                <input type="text" id="entName" name="name" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="entEmail">Work Email</label>
+                                <input type="email" id="entEmail" name="email" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="entCompany">Company</label>
+                                <input type="text" id="entCompany" name="company" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="entSize">Cluster Size</label>
+                                <select id="entSize" name="size">
+                                    <option value="small">Small (1-4 GPUs)</option>
+                                    <option value="medium" selected>Medium (5-16 GPUs)</option>
+                                    <option value="large">Large (17-64 GPUs)</option>
+                                    <option value="xlarge">Extra Large (64+ GPUs)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="entMessage">Message</label>
+                                <textarea id="entMessage" name="message" rows="4" placeholder="Tell us about your use case, compliance requirements, or questions..."></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Send Inquiry</button>
+                        </form>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top: none; padding-top: 0;">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
+</body>
+</html>

@@ -279,7 +279,6 @@ class InferenceEngine:
                 )
             finally:
                 decoder.close()
-            return
 
         # Single remote draft endpoint
         # Redact API key from any log output

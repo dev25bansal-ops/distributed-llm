@@ -335,11 +335,45 @@ class PluginSystem:
             ]
             return self._started_cache
 
+    def _verify_plugin_integrity(self, path: Path) -> bool:
+        """Verify plugin file integrity against a content hash allowlist.
+
+        The allowlist is read from ``distllm_plugin_hashes.txt`` in each
+        trusted directory. Each line is ``sha256:<hexhash> <filename>``.
+        If no allowlist file exists, the plugin is rejected (fail closed).
+        """
+        allowlist_path = path.parent / "distllm_plugin_hashes.txt"
+        if not allowlist_path.exists():
+            logger.error(f"No plugin hash allowlist found at {allowlist_path} — rejecting {path.name}")
+            return False
+
+        import hashlib
+        file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        for line in allowlist_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                algo, rest = line.split(":", 1)
+                if algo != "sha256":
+                    continue
+                expected_hash, expected_name = rest.split(None, 1)
+                if expected_name == path.name and expected_hash == file_hash:
+                    return True
+            except (ValueError, IndexError):
+                continue
+
+        logger.warning(f"Plugin {path.name} rejected: hash {file_hash} not in allowlist")
+        return False
+
     def _discover_from_file(self, path: Path) -> PluginMetadata | None:
         """Scan a single Python file for PluginBase subclasses.
 
-        Security: Only loads plugins from trusted directories (those passed
-        to ``discover()``). Rejects symlinks pointing outside trusted dirs.
+        Security:
+        - Only loads plugins from trusted directories (those passed to ``discover()``)
+        - Rejects symlinks pointing outside trusted dirs
+        - Verifies file SHA-256 hash against ``distllm_plugin_hashes.txt`` allowlist
         """
         try:
             # Security: verify file is within a trusted plugin directory
@@ -362,6 +396,11 @@ class PluginSystem:
                 if not any(str(link_target).startswith(str(Path(d).resolve())) for d in getattr(self, '_trusted_dirs', [])):
                     logger.warning(f"Rejected symlinked plugin: {path} -> {link_target}")
                     return None
+
+            # Security: verify plugin integrity via hash allowlist
+            if not self._verify_plugin_integrity(path):
+                logger.warning(f"Rejected plugin {path.name} — integrity check failed")
+                return None
 
             module_name = path.stem
             spec = importlib.util.spec_from_file_location(module_name, str(path))
@@ -395,8 +434,20 @@ class PluginSystem:
 
         Returns:
             True if installation succeeded.
+
+        Security:
+        - Plugin name is sanitised to prevent shell injection
+        - Only alphanumeric, dash, and underscore characters are allowed
+        - Installation runs with a timeout (120s) to prevent resource exhaustion
         """
+        import hashlib
+        import re
         import subprocess
+
+        # SECURITY: sanitise plugin name — only allow safe characters
+        if not re.match(r'^[a-zA-Z0-9_-]+$', plugin_name):
+            logger.error(f"Rejected plugin name with unsafe characters: {plugin_name!r}")
+            return False
 
         package_name = f"distllm-plugin-{plugin_name}"
         cmd = [sys.executable, "-m", "pip", "install"]

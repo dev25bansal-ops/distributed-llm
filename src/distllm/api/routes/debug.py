@@ -147,17 +147,39 @@ async def set_deterministic_mode(body: DeterministicModeRequest, _admin=Depends(
 @router.get(
     "/v1/debug/buffer/export",
     summary="Export replay buffer",
-    description="Export all requests from the replay buffer for external analysis and debugging. Returns the full buffer contents as JSON for offline inspection.",
-    response_description="Complete replay buffer contents with entry count",
+    description="Export recent requests from the replay buffer for external analysis and debugging. Returns up to max_entries (default 50, max 200) buffer contents as JSON.",
+    response_description="Replay buffer contents with entry count",
     responses={
         503: {"description": "No coordinator available"},
     },
 )
-async def export_replay_buffer(_admin=Depends(_verify_debug_access)):  # noqa: B008
-    """Export all requests from the replay buffer for external debugging."""
+async def export_replay_buffer(
+    max_entries: int = 50,
+    _admin=Depends(_verify_debug_access),  # noqa: B008
+):
+    """Export recent requests from the replay buffer for external debugging."""
     coord = g.coordinator
     if coord is None:
         raise HTTPException(status_code=503, detail="No coordinator available")
 
-    entries = coord._replay_buffer.export()
-    return {"entries": entries, "count": len(entries)}
+    clamped = max(1, min(max_entries, 200))
+    all_entries = coord._replay_buffer.export()
+    entries = all_entries[-clamped:]
+    return {"entries": _truncate_sensitive_fields(entries), "count": len(entries)}
+
+
+def _truncate_sensitive_fields(entries: list) -> list:
+    """Truncate sensitive fields (prompts, responses) in exported entries.
+
+    Prevents accidental leakage of full prompt/response data through the
+    debug export endpoint.
+    """
+    result = []
+    for entry in entries:
+        safe_entry = dict(entry)
+        if "prompt" in safe_entry and isinstance(safe_entry["prompt"], str) and len(safe_entry["prompt"]) > 200:
+            safe_entry["prompt"] = safe_entry["prompt"][:200] + "..."
+        if "response" in safe_entry and isinstance(safe_entry["response"], str) and len(safe_entry["response"]) > 500:
+            safe_entry["response"] = safe_entry["response"][:500] + "..."
+        result.append(safe_entry)
+    return result

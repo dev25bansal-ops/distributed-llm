@@ -1,0 +1,110 @@
+version: "3.9"
+
+# DistLLM — one-command local deployment
+# Usage: docker compose up -d
+# Dashboard: http://localhost:3000 (Grafana)
+# API: http://localhost:8000
+# gRPC: localhost:50051
+
+services:
+  # ------------------------------------------------------------------
+  # DistLLM Coordinator
+  # ------------------------------------------------------------------
+  coordinator:
+    image: distributed-llm:latest
+    build:
+      context: ../../
+      dockerfile: integrations/kubernetes/Dockerfile
+    container_name: distllm-coordinator
+    command: ["distllm-coordinator"]
+    ports:
+      - "8000:8000"   # REST API
+      - "50051:50051" # gRPC
+      - "9090:9090"   # Metrics
+    environment:
+      - DISTLLM_LOG_LEVEL=info
+      - DISTLLM_COORDINATOR_HOST=0.0.0.0
+      - DISTLLM_REDIS_URL=redis://redis:6379
+    volumes:
+      - model-cache:/data/models
+      - distllm-cache:/data/cache
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+  # ------------------------------------------------------------------
+  # Redis (cache + pub/sub)
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: distllm-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+  # ------------------------------------------------------------------
+  # Prometheus (metrics collection)
+  # ------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: distllm-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+  # ------------------------------------------------------------------
+  # Grafana (dashboards)
+  # ------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: distllm-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=distllm
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+volumes:
+  model-cache:
+  distllm-cache:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  distllm-net:
+    driver: bridge

@@ -1,0 +1,193 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security — DistLLM</title>
+    <meta name="description" content="DistLLM security architecture, encryption, authentication, and compliance details.">
+    <meta name="keywords" content="LLM security, distributed computing security, GPU cluster encryption, mTLS authentication, data privacy">
+    <meta property="og:title" content="Security — DistLLM">
+    <meta property="og:description" content="DistLLM security architecture, encryption, authentication, and compliance details.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/security.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Security — DistLLM">
+    <meta name="twitter:description" content="DistLLM security architecture, encryption, authentication, and compliance details.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/security.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--red:#ef4444;--amber:#f59e0b;--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        *{margin:0;padding:0;box-sizing:border-box}
+        html{scroll-padding-top:64px}
+        body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
+        a{color:inherit;text-decoration:none}
+        .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
+        .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
+        .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
+        .nav-links{display:flex;gap:28px;font-size:14px;color:var(--text-secondary)}.nav-links a:hover{color:var(--text)}
+        .nav-right{display:flex;align-items:center;gap:12px}
+        .gh-stars{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);padding:6px 12px;border:1px solid var(--border);border-radius:8px;transition:all 0.2s}.gh-stars:hover{border-color:var(--green-bd);color:var(--green)}
+        .nav-cta{padding:8px 18px;background:var(--green);color:#000;border-radius:8px;font-weight:600;font-size:13px;transition:opacity 0.15s}.nav-cta:hover{opacity:0.85}
+        .wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+        .page{padding-top:100px;min-height:100vh}
+        .page h1{font-size:32px;font-weight:800;letter-spacing:-1px;margin-bottom:8px}
+        .page .subtitle{color:var(--text-secondary);font-size:16px;margin-bottom:48px}
+        .tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}.tag::before{content:'';width:6px;height:6px;background:var(--green);border-radius:50%}
+        h2{font-size:22px;font-weight:700;margin-top:48px;margin-bottom:16px;padding-top:24px;border-top:1px solid var(--border)}
+        h2:first-of-type{margin-top:0;border-top:none;padding-top:0}
+        h3{font-size:16px;font-weight:700;margin-top:24px;margin-bottom:8px}
+        p{font-size:14px;color:var(--text-secondary);line-height:1.7;margin-bottom:12px}
+        ul{padding-left:20px;margin-bottom:16px}li{font-size:14px;color:var(--text-secondary);line-height:1.8;margin-bottom:4px}
+        code{background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)}
+        .grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:24px}
+        .sec-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px}
+        .sec-card h3{margin-top:0}
+        .sec-card-icon{font-size:28px;margin-bottom:12px}
+        .badge{display:inline-block;font-size:10px;font-weight:600;padding:3px 10px;border-radius:100px;margin-bottom:12px}
+        .badge-green{color:var(--green);background:var(--green-bg);border:1px solid var(--green-bd)}
+        .badge-amber{color:var(--amber);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2)}
+        .vuln-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-top:16px}
+        .vuln-box a{color:var(--green);text-decoration:underline;text-underline-offset:2px}
+        footer{border-top:1px solid var(--border);margin-top:80px}
+        .ft-bottom{max-width:1100px;margin:0 auto;padding:24px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
+        .ft-social{display:flex;gap:12px}.ft-social a{color:var(--dim);transition:color 0.15s}.ft-social a:hover{color:var(--green)}
+        @media(max-width:768px){.nav-links{display:none}.grid-2{grid-template-columns:1fr}}
+    </style>
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Security", "item": "https://distllm.dev/security.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/blog.html">Blog</a><a href="/#pricing">Pricing</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Security</div>
+            <h1>Security Whitepaper</h1>
+            <p class="subtitle">How DistLLM protects your data, infrastructure, and inference workloads at every layer.</p>
+
+            <div class="grid-2">
+                <div class="sec-card">
+                    <div class="sec-card-icon">&#128274;</div>
+                    <h3>Authentication</h3>
+                    <p>Multiple authentication methods for different trust levels.</p>
+                    <ul>
+                        <li><strong>API Keys</strong> — Scoped keys with configurable permissions and expiration</li>
+                        <li><strong>mTLS</strong> — Mutual TLS for worker-to-coordinator and coordinator-to-client</li>
+                        <li><strong>Cluster Keys</strong> — Shared secrets for cluster node authentication</li>
+                        <li><strong>JWT Tokens</strong> — Short-lived tokens for session-based access</li>
+                    </ul>
+                </div>
+                <div class="sec-card">
+                    <div class="sec-card-icon">&#128272;</div>
+                    <h3>Encryption</h3>
+                    <p>End-to-end encryption for all data in transit and at rest.</p>
+                    <ul>
+                        <li><strong>TLS 1.3</strong> — All API and inter-node communication encrypted</li>
+                        <li><strong>E2E Encryption</strong> — Request/response payloads encrypted client-to-worker</li>
+                        <li><strong>KV Cache Encryption</strong> — In-memory cache encrypted with per-session keys</li>
+                        <li><strong>At-Rest</strong> — Model weights and configs encrypted on disk (optional)</li>
+                    </ul>
+                </div>
+                <div class="sec-card">
+                    <div class="sec-card-icon">&#128101;</div>
+                    <h3>Access Control</h3>
+                    <p>Role-based access control with fine-grained permissions.</p>
+                    <ul>
+                        <li><strong>RBAC</strong> — Admin, Operator, Developer, and Viewer roles</li>
+                        <li><strong>Model ACLs</strong> — Per-model access restrictions</li>
+                        <li><strong>Rate Limiting</strong> — Token bucket per-user, per-model rate limits</li>
+                        <li><strong>IP Allowlists</strong> — Restrict access by IP range or CIDR block</li>
+                    </ul>
+                </div>
+                <div class="sec-card">
+                    <div class="sec-card-icon">&#128221;</div>
+                    <h3>Audit Logging</h3>
+                    <p>Comprehensive audit trail for all operations.</p>
+                    <ul>
+                        <li><strong>Request Logging</strong> — Every API call logged with user, model, timestamp</li>
+                        <li><strong>Admin Actions</strong> — Configuration changes, key rotations, node events</li>
+                        <li><strong>Export Formats</strong> — JSON, syslog, OpenTelemetry export</li>
+                        <li><strong>Retention</strong> — Configurable retention with automatic rotation</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h2>Compliance</h2>
+            <p>DistLLM is designed to help organizations meet regulatory requirements for AI workloads.</p>
+            <div class="grid-2">
+                <div class="sec-card">
+                    <span class="badge badge-green">SOC 2 Ready</span>
+                    <h3>SOC 2 Type II</h3>
+                    <p>DistLLM's architecture supports SOC 2 compliance requirements including access controls, audit logging, encryption, and incident response. Self-hosted deployment keeps data within your perimeter.</p>
+                </div>
+                <div class="sec-card">
+                    <span class="badge badge-green">GDPR Compliant</span>
+                    <h3>GDPR</h3>
+                    <p>Data stays on your infrastructure by default. No telemetry, no phone-home, no third-party data sharing. Full data residency control for EU requirements.</p>
+                </div>
+            </div>
+
+            <h2>Vulnerability Reporting</h2>
+            <p>We take security seriously. If you discover a vulnerability in DistLLM, please report it responsibly.</p>
+            <div class="vuln-box">
+                <h3>How to Report</h3>
+                <ul>
+                    <li>Email: <a href="mailto:security@distllm.dev">security@distllm.dev</a></li>
+                    <li>PGP key available at <a href="https://distllm.dev/pgp-key.txt">distllm.dev/pgp-key.txt</a></li>
+                    <li>GitHub Security Advisories for private disclosure</li>
+                </ul>
+                <h3>Response Timeline</h3>
+                <ul>
+                    <li><strong>Acknowledgment:</strong> Within 24 hours</li>
+                    <li><strong>Initial assessment:</strong> Within 72 hours</li>
+                    <li><strong>Fix timeline:</strong> Critical: 7 days, High: 14 days, Medium: 30 days</li>
+                    <li><strong>CVE assignment:</strong> Coordinated with reporters</li>
+                </ul>
+                <p style="margin-top:12px"><span class="badge badge-amber">Bug Bounty</span> We offer bounties for qualifying vulnerabilities. See our <a href="https://github.com/distributed-llm/distributed-llm/security/policy" target="_blank" rel="noopener noreferrer">security policy</a> for scope and rewards.</p>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top:none;padding-top:0">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

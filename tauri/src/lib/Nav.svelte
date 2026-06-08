@@ -6,8 +6,17 @@
   const items: { id: Page; label: string; icon: string }[] = [
     { id: "dashboard", label: "Dashboard", icon: "◉" },
     { id: "cluster", label: "Cluster", icon: "⚡" },
+    { id: "chat", label: "Chat", icon: "💬" },
     { id: "models", label: "Models", icon: "▤" },
+    { id: "benchmark", label: "Benchmark", icon: "Ѓ" },
+    { id: "topology", label: "Topology", icon: "⬡" },
+    { id: "multimodel", label: "Multi-Model", icon: "⊞" },
+    { id: "discovery", label: "Discovery", icon: "◎" },
+    { id: "webdashboard", label: "Web UI", icon: "◫" },
+    { id: "plugins", label: "Plugins", icon: "⬢" },
     { id: "friends", label: "Friends", icon: "⊕" },
+    { id: "logs", label: "Logs", icon: "☰" },
+    { id: "settings", label: "Settings", icon: "⚙" },
   ];
 </script>
 

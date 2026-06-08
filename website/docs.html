@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documentation — DistLLM</title>
+    <meta name="description" content="DistLLM documentation: installation, configuration, API reference, and deployment guides.">
+    <meta name="keywords" content="LLM inference documentation, distributed computing guide, GPU cluster setup, pipeline parallelism tutorial">
+    <meta property="og:title" content="Documentation — DistLLM">
+    <meta property="og:description" content="DistLLM documentation: installation, configuration, API reference, and deployment guides.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/docs.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Documentation — DistLLM">
+    <meta name="twitter:description" content="DistLLM documentation: installation, configuration, API reference, and deployment guides.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/docs.html">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io; object-src 'none'; base-uri 'self'">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link rel="stylesheet" href="css/print.css" media="print">
+    <link rel="stylesheet" href="css/advanced.css">
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://distllm.dev/docs.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/docs.html" class="active">Docs</a><a href="/blog.html">Blog</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+        </div>
+    </nav>
+    <div class="wrap">
+        <div class="docs-layout">
+            <aside class="docs-sidebar">
+                <h4>Getting Started</h4>
+                <a href="#installation">Installation</a>
+                <a href="#quick-start">Quick Start</a>
+                <a href="#configuration">Configuration</a>
+                <h4>Core Concepts</h4>
+                <a href="#architecture">Architecture</a>
+                <a href="#pipeline-parallelism">Pipeline Parallelism</a>
+                <a href="#auto-discovery">Auto-Discovery</a>
+                <h4>API Reference</h4>
+                <a href="#chat-completions">Chat Completions</a>
+                <a href="#embeddings">Embeddings</a>
+                <a href="#health">Health Checks</a>
+                <h4>Deployment</h4>
+                <a href="#docker">Docker</a>
+                <a href="#kubernetes">Kubernetes</a>
+                <a href="#multi-node">Multi-Node</a>
+                <h4>Production</h4>
+                <a href="#models">Models</a>
+                <a href="#performance">Performance</a>
+                <a href="#security">Security</a>
+                <a href="#observability">Observability</a>
+                <a href="#integrations">Integrations</a>
+            </aside>
+            <main id="main" class="docs-content">
+                <h1>Documentation</h1>
+                <p>Everything you need to run distributed LLM inference with DistLLM.</p>
+
+                <h2 id="installation">Installation</h2>
+                <pre><code># Core package
+pip install distributed-llm
+
+# Self-hosted model loading
+pip install "distributed-llm[self-hosted]"
+
+# vLLM, SGLang, and llama.cpp backends
+pip install "distributed-llm[backends]"
+
+# All extras
+pip install "distributed-llm[all]"</code></pre>
+
+                <h2 id="quick-start">Quick Start</h2>
+                <pre><code># 1. Start coordinator and API
+distllm cluster start --model meta-llama/Llama-3.2-7B --qr
+
+# 2. Join workers on the same LAN
+distllm cluster join --discover
+
+# 3. Or run a single-node API for development
+distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
+
+# 4. Query the OpenAI-compatible API
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"meta-llama/Llama-3.2-7B","messages":[{"role":"user","content":"Hello!"}]}'</code></pre>
+
+                <h2 id="configuration">Configuration</h2>
+                <p>DistLLM uses YAML configuration with environment variable overrides:</p>
+                <pre><code># config.yaml
+model:
+  name: "meta-llama/Llama-3.2-7B"
+  dtype: "float16"
+
+coordinator:
+  host: "0.0.0.0"
+  port: 50050
+  api_port: 8000
+
+tls:
+  enabled: true
+  cert_dir: "certs"</code></pre>
+                <p>Environment variables override YAML: <code>DISTLLM_MODEL_NAME</code>, <code>DISTLLM_COORDINATOR_HOST</code>, etc.</p>
+
+                <h2 id="architecture">Architecture</h2>
+                <p>DistLLM uses a coordinator-worker architecture with pipeline parallelism:</p>
+                <ul>
+                    <li><strong>Coordinator</strong> — API server, request scheduling, node management, health monitoring</li>
+                    <li><strong>Workers</strong> — Execute model layers on local GPUs, report health to coordinator</li>
+                    <li><strong>Pipeline</strong> — Hidden states flow from worker to worker through the model layers</li>
+                </ul>
+
+                <h2 id="pipeline-parallelism">Pipeline Parallelism</h2>
+                <p>The model is split across devices by layers. Start the coordinator, then let workers join with automatically assigned or manually provided layer ranges.</p>
+                <pre><code># Start coordinator
+distllm cluster start --model meta-llama/Llama-3.2-7B --port 50050 --api-port 8000
+
+# Worker with explicit layer assignment
+distllm cluster join --coordinator 192.168.1.100 --port 50050 \
+  --start-layer 0 --end-layer 15 --total-layers 80</code></pre>
+
+                <h2 id="auto-discovery">Auto-Discovery</h2>
+                <p>On trusted LANs, DistLLM can discover worker nodes with mDNS so operators do not have to hand-edit coordinator IPs for every machine.</p>
+                <pre><code># Coordinator
+distllm cluster start --model meta-llama/Llama-3.2-7B --qr
+
+# Workers
+distllm cluster join --discover</code></pre>
+
+                <h2 id="chat-completions">Chat Completions API</h2>
+                <p>OpenAI-compatible endpoint at <code>/v1/chat/completions</code>:</p>
+                <table>
+                    <thead><tr><th scope="col">Parameter</th><th scope="col">Type</th><th scope="col">Description</th></tr></thead>
+                    <tbody>
+                        <tr><th scope="row"><code>model</code></th><td>string</td><td>Model name (HuggingFace ID)</td></tr>
+                        <tr><th scope="row"><code>messages</code></th><td>array</td><td>Chat messages</td></tr>
+                        <tr><th scope="row"><code>stream</code></th><td>boolean</td><td>Enable streaming</td></tr>
+                        <tr><th scope="row"><code>temperature</code></th><td>float</td><td>Sampling temperature (0-2)</td></tr>
+                        <tr><th scope="row"><code>max_tokens</code></th><td>integer</td><td>Max tokens to generate</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="embeddings">Embeddings API</h2>
+                <p>Embedding requests use the OpenAI-compatible <code>/v1/embeddings</code> endpoint when an embedding-capable model is loaded.</p>
+                <pre><code>curl http://localhost:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"BAAI/bge-large-en-v1.5","input":"distributed inference"}'</code></pre>
+
+                <h2 id="health">Health Checks</h2>
+                <p>Use health endpoints for load balancers, Kubernetes probes, and operational dashboards.</p>
+                <pre><code>curl http://localhost:8000/health
+curl http://localhost:8000/v1/health/readiness
+curl http://localhost:8000/v1/health/liveness
+curl http://localhost:8000/metrics</code></pre>
+
+                <h2 id="docker">Docker Deployment</h2>
+                <pre><code># docker-compose.yml
+services:
+  coordinator:
+    image: ghcr.io/distributed-llm/coordinator:latest
+    ports: ["8000:8000", "50050:50050"]
+  worker:
+    image: ghcr.io/distributed-llm/worker:latest
+    deploy:
+      resources:
+        reservations:
+          devices: [{capabilities: [gpu]}]</code></pre>
+
+                <h2 id="kubernetes">Kubernetes Deployment</h2>
+                <p>Run the coordinator behind a service and workers as GPU-scheduled deployments or daemonsets. Use readiness probes before routing production traffic.</p>
+                <pre><code>helm install distllm ./integrations/kubernetes/helm/distllm \
+  --set model.name=meta-llama/Llama-3.2-7B \
+  --set workers.replicas=3</code></pre>
+
+                <h2 id="multi-node">Multi-Node Deployment</h2>
+                <p>For multiple physical machines, keep coordinator and workers on a low-latency network, enable TLS, and size layer partitions by each node's available VRAM.</p>
+                <pre><code># Coordinator
+distllm cluster start --model meta-llama/Llama-3.2-70B --port 50050 --api-port 8000 --qr
+
+# Workers
+distllm cluster join --coordinator 192.168.1.100 --port 50050
+
+# API-only local development
+distllm system api --model meta-llama/Llama-3.2-1B --local --host 0.0.0.0 --port 8000 --no-auth</code></pre>
+
+                <h2 id="models">Model Compatibility</h2>
+                <p>The repository includes a compatibility matrix for Llama, Mistral, Mixtral, Qwen, DeepSeek, Falcon, Phi, Gemma, and CodeLlama, plus backend and quantization guidance.</p>
+                <table>
+                    <thead><tr><th scope="col">Model Size</th><th scope="col">Recommended Minimum</th><th scope="col">Notes</th></tr></thead>
+                    <tbody>
+                        <tr><th scope="row">7-8B</th><td>8GB VRAM</td><td>Runs on common consumer GPUs.</td></tr>
+                        <tr><th scope="row">34B</th><td>24GB VRAM</td><td>RTX 4090/A5000 class, or split across nodes.</td></tr>
+                        <tr><th scope="row">70B</th><td>48GB+ pooled VRAM</td><td>Typically 2-4 GPUs with quantization options.</td></tr>
+                        <tr><th scope="row">405B</th><td>160GB+ pooled VRAM</td><td>Large multi-node setups.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="performance">Performance Tuning</h2>
+                <p>DistLLM exposes tuning flags for pipeline overlap, PagedAttention, chunked prefill, KV cache quantization, activation compression, and WAN transport.</p>
+                <pre><code>export DISTLLM_ENABLE_PIPELINE_OVERLAP=true
+export DISTLLM_PAGED_ATTENTION=true
+export DISTLLM_CHUNKED_PREFILL=true
+export DISTLLM_KV_CACHE_QUANT_BITS=8
+
+distllm benchmark run --model llama-3-8b
+distllm benchmark compare --baseline results/baseline.json</code></pre>
+
+                <h2 id="security">Security</h2>
+                <p>For production, enable TLS, API keys, cluster keys, rate limiting, audit logging, restricted CORS, and firewall rules.</p>
+                <pre><code>export API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export DISTLLM_CLUSTER_KEY="shared-cluster-secret"
+
+distllm security cert create --hostname my-cluster.example.com
+distllm system api --model meta-llama/Llama-3.2-1B --local</code></pre>
+
+                <h2 id="observability">Observability</h2>
+                <p>The repo includes Prometheus, Grafana, Loki, OpenTelemetry, SLO reporting, and scheduler visualization assets.</p>
+                <pre><code>distllm system observe
+distllm system slo-report
+distllm system schedule-viz --output schedule.html</code></pre>
+
+                <h2 id="integrations">Integrations</h2>
+                <p>DistLLM includes integration packages and examples for LangChain, LlamaIndex, CrewAI, Haystack, LiteLLM, AutoGen, Semantic Kernel, OpenWebUI, Dify, Ollama compatibility, FastAPI middleware, Kubernetes, Terraform, Ansible, and Grafana.</p>
+
+                <p>See the <a href="https://github.com/distributed-llm/distributed-llm/tree/main/docs" target="_blank" rel="noopener noreferrer">full documentation on GitHub</a> for more details.</p>
+            </main>
+        </div>
+    </div>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top: none; padding-top: 0;">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <!-- Model Optimizer -->
+    <section class="section">
+        <div class="wrap">
+            <div class="sec-h fade-up"><div class="tag">Optimizer</div><h2>Find Your Optimal Model Config</h2></div>
+            <p class="sec-p fade-up">Enter your hardware specs and get top-3 model recommendations with quantization, expected throughput, and CLI commands.</p>
+            <div id="modelOptimizer" data-lazy-module="modelOptimizer"></div>
+        </div>
+    </section>
+
+    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
+</body>
+</html>

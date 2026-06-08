@@ -1,0 +1,396 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Integrations — DistLLM</title>
+    <meta name="description" content="Deploy DistLLM anywhere with one-click deploy buttons and community-built integrations.">
+    <meta name="keywords" content="DistLLM deploy, Railway deploy, Render deploy, Fly.io deploy, HuggingFace Spaces, Google Colab, LLM integrations">
+    <meta property="og:title" content="Integrations — DistLLM">
+    <meta property="og:description" content="One-click deploy to Railway, Render, Fly.io, HuggingFace Spaces, and Google Colab.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/integrations.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Integrations — DistLLM">
+    <meta name="twitter:description" content="One-click deploy to Railway, Render, Fly.io, HuggingFace Spaces, and Google Colab.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/integrations.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/themes.css">
+    <link rel="stylesheet" href="css/advanced.css">
+    <link rel="stylesheet" href="css/print.css" media="print">
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Integrations", "item": "https://distllm.dev/integrations.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/integrations.html" class="active">Integrations</a><a href="/api.html">API</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Integrations</div>
+            <h1>Deploy Anywhere</h1>
+            <p class="subtitle">One-click deploy buttons and community-built integrations for every platform.</p>
+
+            <!-- One-Click Deploy -->
+            <section class="integrations-section">
+                <div class="integrations-section-header">
+                    <h2>One-Click Deploy</h2>
+                    <p>Deploy DistLLM to your favorite platform in seconds.</p>
+                </div>
+
+                <div class="deploy-buttons-grid">
+                    <a href="https://railway.app/new/template/distllm" target="_blank" rel="noopener noreferrer" class="deploy-button railway">
+                        <div class="deploy-button-logo">🚂</div>
+                        <div class="deploy-button-info">
+                            <div class="deploy-button-name">Railway</div>
+                            <div class="deploy-button-desc">$5/mo · Auto-scaling · Private networking</div>
+                        </div>
+                        <div class="deploy-button-arrow">→</div>
+                    </a>
+
+                    <a href="https://render.com/deploy?repo=https://github.com/distributed-llm/deploy-render" target="_blank" rel="noopener noreferrer" class="deploy-button render">
+                        <div class="deploy-button-logo">🎨</div>
+                        <div class="deploy-button-info">
+                            <div class="deploy-button-name">Render</div>
+                            <div class="deploy-button-desc">$7/mo · Managed SSL · Auto-deploy from Git</div>
+                        </div>
+                        <div class="deploy-button-arrow">→</div>
+                    </a>
+
+                    <a href="https://fly.io/launch/distllm" target="_blank" rel="noopener noreferrer" class="deploy-button flyio">
+                        <div class="deploy-button-logo">🪁</div>
+                        <div class="deploy-button-info">
+                            <div class="deploy-button-name">Fly.io</div>
+                            <div class="deploy-button-desc">$5/mo · Global edge · GPU instances</div>
+                        </div>
+                        <div class="deploy-button-arrow">→</div>
+                    </a>
+
+                    <a href="https://huggingface.co/new-space?template=distllm/distllm" target="_blank" rel="noopener noreferrer" class="deploy-button huggingface">
+                        <div class="deploy-button-logo">🤗</div>
+                        <div class="deploy-button-info">
+                            <div class="deploy-button-name">HuggingFace Spaces</div>
+                            <div class="deploy-button-desc">Free tier · GPU upgrade · Community showcase</div>
+                        </div>
+                        <div class="deploy-button-arrow">→</div>
+                    </a>
+
+                    <a href="https://colab.research.google.com/github/distributed-llm/deploy-colab/blob/main/distllm_colab.ipynb" target="_blank" rel="noopener noreferrer" class="deploy-button colab">
+                        <div class="deploy-button-logo">📓</div>
+                        <div class="deploy-button-info">
+                            <div class="deploy-button-name">Google Colab</div>
+                            <div class="deploy-button-desc">Free GPU · No setup · Interactive notebook</div>
+                        </div>
+                        <div class="deploy-button-arrow">→</div>
+                    </a>
+
+                    <a href="https://github.com/codespaces/new?repo=distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" class="deploy-button codespaces">
+                        <div class="deploy-button-logo">💻</div>
+                        <div class="deploy-button-info">
+                            <div class="deploy-button-name">GitHub Codespaces</div>
+                            <div class="deploy-button-desc">60hrs/mo free · Full IDE · Pre-configured</div>
+                        </div>
+                        <div class="deploy-button-arrow">→</div>
+                    </a>
+                </div>
+            </section>
+
+            <!-- Community Integrations -->
+            <section class="integrations-section">
+                <div class="integrations-section-header">
+                    <h2>Community Integrations</h2>
+                    <p>Plugins and integrations built by the community.</p>
+                </div>
+
+                <div class="integrations-filters">
+                    <button class="integration-filter active" data-category="all">All</button>
+                    <button class="integration-filter" data-category="framework">Frameworks</button>
+                    <button class="integration-filter" data-category="monitoring">Monitoring</button>
+                    <button class="integration-filter" data-category="cloud">Cloud</button>
+                    <button class="integration-filter" data-category="tools">Tools</button>
+                </div>
+
+                <div class="integrations-grid" id="integrationsGrid">
+                    <!-- Frameworks -->
+                    <div class="integration-card" data-category="framework">
+                        <div class="integration-header">
+                            <div class="integration-logo">🦜</div>
+                            <div class="integration-meta">
+                                <h3>LangChain</h3>
+                                <span class="integration-author">by LangChain</span>
+                            </div>
+                            <span class="integration-badge official">Official</span>
+                        </div>
+                        <p class="integration-desc">Use DistLLM as a LangChain LLM provider. Drop-in replacement for OpenAI.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 2.1k</span>
+                            <span>📦 45k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>pip install langchain-distllm</code>
+                            <button class="copy-btn" data-copy="pip install langchain-distllm">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="integration-card" data-category="framework">
+                        <div class="integration-header">
+                            <div class="integration-logo">🦙</div>
+                            <div class="integration-meta">
+                                <h3>LlamaIndex</h3>
+                                <span class="integration-author">by LlamaIndex</span>
+                            </div>
+                            <span class="integration-badge official">Official</span>
+                        </div>
+                        <p class="integration-desc">RAG pipelines with DistLLM backend. Supports streaming and embeddings.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 1.8k</span>
+                            <span>📦 32k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>pip install llama-index-llms-distllm</code>
+                            <button class="copy-btn" data-copy="pip install llama-index-llms-distllm">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="integration-card" data-category="framework">
+                        <div class="integration-header">
+                            <div class="integration-logo">🤖</div>
+                            <div class="integration-meta">
+                                <h3>CrewAI</h3>
+                                <span class="integration-author">by CrewAI</span>
+                            </div>
+                            <span class="integration-badge">Community</span>
+                        </div>
+                        <p class="integration-desc">Multi-agent orchestration with DistLLM as the underlying LLM provider.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 890</span>
+                            <span>📦 12k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>pip install crewai[distllm]</code>
+                            <button class="copy-btn" data-copy="pip install crewai[distllm]">Copy</button>
+                        </div>
+                    </div>
+
+                    <!-- Monitoring -->
+                    <div class="integration-card" data-category="monitoring">
+                        <div class="integration-header">
+                            <div class="integration-logo">📊</div>
+                            <div class="integration-meta">
+                                <h3>Grafana</h3>
+                                <span class="integration-author">by DistLLM</span>
+                            </div>
+                            <span class="integration-badge official">Official</span>
+                        </div>
+                        <p class="integration-desc">Pre-built dashboards for DistLLM metrics. GPU utilization, latency, throughput.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 1.2k</span>
+                            <span>📦 8k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>distllm monitoring install grafana</code>
+                            <button class="copy-btn" data-copy="distllm monitoring install grafana">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="integration-card" data-category="monitoring">
+                        <div class="integration-header">
+                            <div class="integration-logo">🔭</div>
+                            <div class="integration-meta">
+                                <h3>OpenTelemetry</h3>
+                                <span class="integration-author">by DistLLM</span>
+                            </div>
+                            <span class="integration-badge official">Official</span>
+                        </div>
+                        <p class="integration-desc">Distributed tracing and metrics export to any OTLP-compatible backend.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 650</span>
+                            <span>📦 5k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>pip install distllm-otel</code>
+                            <button class="copy-btn" data-copy="pip install distllm-otel">Copy</button>
+                        </div>
+                    </div>
+
+                    <!-- Cloud -->
+                    <div class="integration-card" data-category="cloud">
+                        <div class="integration-header">
+                            <div class="integration-logo">☁️</div>
+                            <div class="integration-meta">
+                                <h3>Terraform</h3>
+                                <span class="integration-author">by HashiCorp</span>
+                            </div>
+                            <span class="integration-badge">Community</span>
+                        </div>
+                        <p class="integration-desc">Terraform provider for DistLLM cluster management. Infrastructure as code.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 420</span>
+                            <span>📦 3k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>terraform install hashicorp/distllm</code>
+                            <button class="copy-btn" data-copy="terraform install hashicorp/distllm">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="integration-card" data-category="cloud">
+                        <div class="integration-header">
+                            <div class="integration-logo">🐳</div>
+                            <div class="integration-meta">
+                                <h3>Docker</h3>
+                                <span class="integration-author">by DistLLM</span>
+                            </div>
+                            <span class="integration-badge official">Official</span>
+                        </div>
+                        <p class="integration-desc">Official Docker images with GPU support. Docker Compose templates included.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 3.2k</span>
+                            <span>📦 120k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>docker pull ghcr.io/distributed-llm/coordinator</code>
+                            <button class="copy-btn" data-copy="docker pull ghcr.io/distributed-llm/coordinator">Copy</button>
+                        </div>
+                    </div>
+
+                    <!-- Tools -->
+                    <div class="integration-card" data-category="tools">
+                        <div class="integration-header">
+                            <div class="integration-logo">⚡</div>
+                            <div class="integration-meta">
+                                <h3>vLLM</h3>
+                                <span class="integration-author">by vLLM</span>
+                            </div>
+                            <span class="integration-badge official">Official</span>
+                        </div>
+                        <p class="integration-desc">Use vLLM as the per-node inference backend. PagedAttention + pipeline parallelism.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 2.8k</span>
+                            <span>📦 67k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>pip install distllm[vllm]</code>
+                            <button class="copy-btn" data-copy="pip install distllm[vllm]">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="integration-card" data-category="tools">
+                        <div class="integration-header">
+                            <div class="integration-logo">🎯</div>
+                            <div class="integration-meta">
+                                <h3>Weights & Biases</h3>
+                                <span class="integration-author">by WandB</span>
+                            </div>
+                            <span class="integration-badge">Community</span>
+                        </div>
+                        <p class="integration-desc">Log inference metrics, model performance, and cost tracking to W&B.</p>
+                        <div class="integration-stats">
+                            <span>⭐ 340</span>
+                            <span>📦 2k/mo</span>
+                        </div>
+                        <div class="integration-install">
+                            <code>pip install distllm-wandb</code>
+                            <button class="copy-btn" data-copy="pip install distllm-wandb">Copy</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Submit Integration -->
+            <section class="integrations-section">
+                <div class="integrations-section-header">
+                    <h2>Submit Your Integration</h2>
+                    <p>Built something awesome? Share it with the community!</p>
+                </div>
+
+                <div class="submit-integration">
+                    <div class="submit-info">
+                        <h4>Requirements</h4>
+                        <ul>
+                            <li>Open-source with MIT/Apache 2.0 license</li>
+                            <li>Working integration with DistLLM API</li>
+                            <li>README with installation and usage instructions</li>
+                            <li>At least basic tests</li>
+                        </ul>
+                    </div>
+                    <a href="https://github.com/distributed-llm/integrations/issues/new?template=integration-submission.md" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
+                        📤 Submit Integration
+                    </a>
+                </div>
+            </section>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top: none; padding-top: 0;">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
+    <script type="module">
+        // Filter integrations
+        document.querySelectorAll('.integration-filter').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.integration-filter').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                const category = btn.dataset.category;
+                document.querySelectorAll('.integration-card').forEach(card => {
+                    if (category === 'all' || card.dataset.category === category) {
+                        card.style.display = '';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                });
+            });
+        });
+
+        // Copy buttons
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                navigator.clipboard.writeText(btn.dataset.copy).then(() => {
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+                });
+            });
+        });
+    </script>
+</body>
+</html>

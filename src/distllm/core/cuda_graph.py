@@ -101,6 +101,11 @@ class CudaGraphCapture:
         Falls back to eager execution if no graph is available for the
         current batch size.
 
+        PERFORMANCE: If the exact batch size isn't captured, rounds UP to
+        the next captured size and replays with padding, then masks the
+        extra outputs. This avoids falling back to eager execution for
+        intermediate batch sizes.
+
         Returns:
             Model output logits tensor.
         """
@@ -108,6 +113,36 @@ class CudaGraphCapture:
         entry = self._graphs.get(batch_size)
 
         if entry is None:
+            # Round UP to the next captured batch size
+            captured_sizes = sorted(self._graphs.keys())
+            rounded_size = None
+            for bs in captured_sizes:
+                if bs >= batch_size:
+                    rounded_size = bs
+                    break
+
+            if rounded_size is not None and rounded_size != batch_size:
+                # Pad input to the captured batch size
+                pad_size = rounded_size - batch_size
+                padded_input = torch.cat([input_ids, input_ids[:pad_size]], dim=0)
+                padded_mask = None
+                if attention_mask is not None:
+                    padded_mask = torch.cat([attention_mask, attention_mask[:pad_size]], dim=0)
+
+                entry = self._graphs.get(rounded_size)
+                if entry is not None:
+                    graph, buffers = entry
+                    buffers["input"].copy_(padded_input)
+                    if padded_mask is not None:
+                        buffers["mask"].copy_(padded_mask)
+
+                    graph.replay()
+                    output = buffers["output"]
+                    logits = output.logits[:, -1, :] if hasattr(output, "logits") else output[:, -1, :]
+                    # Mask extra outputs — only return logits for the original batch
+                    return logits[:batch_size]
+
+            # Fall back to eager execution
             return self._model(
                 input_ids,
                 attention_mask=attention_mask,

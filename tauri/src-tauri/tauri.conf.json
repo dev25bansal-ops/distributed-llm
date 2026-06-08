@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:*; frame-src http://localhost:3000 https://localhost:3000; object-src 'none'; base-uri 'self'"
     },
     "trayIcon": {
       "id": "main-tray",
@@ -47,7 +47,13 @@
   },
   "plugins": {
     "shell": {
-      "open": true
+      "open": false
+    },
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["distllm"]
+      }
     }
   }
 }

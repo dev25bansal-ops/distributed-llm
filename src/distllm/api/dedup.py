@@ -146,10 +146,17 @@ class DedupMiddleware(BaseHTTPMiddleware):
             logger.debug(f"Dedup wait completed for {fp[:16]}")
             return Response(content=blocked, media_type="application/json")
 
-        _cache.mark_in_flight(fp, str(id(request)))
+        # H-10: Use fp (content fingerprint) as identifier instead of id(request)
+        req_id = fp
+        _cache.mark_in_flight(fp, req_id)
 
         try:
             response = await call_next(request)
+            # H-11: For streaming responses, pass through without buffering
+            content_type = response.headers.get("content-type", "")
+            if "text/event-stream" in content_type or "stream" in content_type:
+                return response
+
             response_body = b""
             async for chunk in response.body_iterator:
                 response_body += chunk
@@ -158,4 +165,4 @@ class DedupMiddleware(BaseHTTPMiddleware):
             return Response(content=response_body, status_code=response.status_code,
                             media_type=response.media_type, headers=dict(response.headers))
         finally:
-            _cache.clear_in_flight(fp, str(id(request)))
+            _cache.clear_in_flight(fp, req_id)

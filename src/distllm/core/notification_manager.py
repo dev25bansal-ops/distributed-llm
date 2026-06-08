@@ -57,6 +57,9 @@ class NotificationChannelConfig:
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
+    # H-15: SMTP password is stored in memory as plaintext.
+    # In production, use a secret manager or env var that is
+    # only loaded at send time and immediately cleared.
     smtp_password: str = ""
     rate_limit_per_minute: int = 10
     min_severity: NotificationSeverity = NotificationSeverity.INFO

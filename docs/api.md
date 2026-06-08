@@ -139,3 +139,43 @@ const response = await client.chat.completions.create({
 | 429 | rate_limit | Rate limit exceeded |
 | 504 | timeout_error | Request exceeded timeout |
 | 503 | node_unavailable | Worker node unavailable or unreachable |
+
+## Additional Endpoints (v0.4.0+)
+
+### Marketplace API
+
+- `GET  /v1/marketplace/ads` — List active KV cache advertisements
+- `POST /v1/marketplace/ads` — Advertise a cached KV state
+- `POST /v1/marketplace/purchase` — Purchase a cache advertisement
+
+### Federation API
+
+- `POST /v1/federated/heartbeat` — Receive heartbeat from federated peers
+- `GET  /v1/federated/peers` — List federated peer clusters
+
+### WebRTC API
+
+- `POST /v1/webrtc/offer` — Exchange SDP offer/answer for WebRTC
+- `POST /v1/webrtc/ice` — Exchange ICE candidates
+- `GET  /v1/webrtc/status` — Get signaling server status
+
+### Defrag API
+
+- `GET  /v1/defrag/status` — Get defragmentation status
+- `GET  /v1/defrag/stats` — Get historical defrag stats
+- `POST /v1/defrag/run` — Trigger immediate defragmentation
+
+### Batch API
+
+- `POST /v1/batch` — Submit batch inference requests
+
+### Gossip API
+
+- `POST /v1/gossip/message` — Exchange gossip messages
+- `GET  /v1/gossip/peers` — List gossip peers
+
+### Admin API
+
+- `POST /admin/v1/nodes/register` — Register a worker node
+- `GET  /admin/v1/nodes` — List all nodes
+- `POST /admin/v1/models/compress` — Start model compression

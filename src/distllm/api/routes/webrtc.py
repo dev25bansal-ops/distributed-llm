@@ -150,10 +150,11 @@ async def webrtc_ice(req: ICECandidateRequest):
 
     try:
         from aiortc import RTCIceCandidate
+        # C-07: Use the actual ICE candidate from the request body
         candidate = RTCIceCandidate(
             component=1,
             foundation="1",
-            ip="0.0.0.0",
+            ip=req.candidate.split("/")[0] if req.candidate else "0.0.0.0",
             port=0,
             priority=0,
             protocol="UDP",

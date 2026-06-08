@@ -108,7 +108,7 @@ class CacheSnapshot:
 
         if filepath.suffix == ".pt":
             import torch
-            snapshot = torch.load(path, weights_only=False, map_location="cpu")
+            snapshot = torch.load(path, weights_only=True, map_location="cpu")
         else:
             with open(filepath) as f:
                 snapshot = json.load(f)

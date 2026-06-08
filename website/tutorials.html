@@ -1,0 +1,198 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tutorials — DistLLM</title>
+    <meta name="description" content="Step-by-step tutorials for DistLLM — from quickstart to advanced multi-node setups.">
+    <meta name="keywords" content="LLM tutorials, distributed computing tutorial, GPU cluster setup guide, pipeline parallelism tutorial, self-hosted AI tutorial">
+    <meta property="og:title" content="Tutorials — DistLLM">
+    <meta property="og:description" content="Step-by-step tutorials for DistLLM — from quickstart to advanced multi-node setups.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://distllm.dev/tutorials.html">
+    <meta property="og:image" content="https://distllm.dev/og-image.svg">
+    <meta property="og:site_name" content="DistLLM">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@distllm">
+    <meta name="twitter:title" content="Tutorials — DistLLM">
+    <meta name="twitter:description" content="Step-by-step tutorials for DistLLM — from quickstart to advanced multi-node setups.">
+    <meta name="twitter:image" content="https://distllm.dev/og-image.svg">
+    <link rel="canonical" href="https://distllm.dev/tutorials.html">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--amber:#f59e0b;--blue:#3b82f6;--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
+        a{color:inherit;text-decoration:none}
+        .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
+        .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
+        .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
+        .nav-links{display:flex;gap:28px;font-size:14px;color:var(--text-secondary)}.nav-links a:hover{color:var(--text)}
+        .nav-right{display:flex;align-items:center;gap:12px}
+        .gh-stars{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);padding:6px 12px;border:1px solid var(--border);border-radius:8px;transition:all 0.2s}.gh-stars:hover{border-color:var(--green-bd);color:var(--green)}
+        .nav-cta{padding:8px 18px;background:var(--green);color:#000;border-radius:8px;font-weight:600;font-size:13px;transition:opacity 0.15s}.nav-cta:hover{opacity:0.85}
+        .wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+        .page{padding-top:100px;min-height:100vh}
+        .page h1{font-size:32px;font-weight:800;letter-spacing:-1px;margin-bottom:8px}
+        .page .subtitle{color:var(--text-secondary);font-size:16px;margin-bottom:48px}
+        .tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}.tag::before{content:'';width:6px;height:6px;background:var(--green);border-radius:50%}
+        .tutorial-list{display:flex;flex-direction:column;gap:12px}
+        .tutorial{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px 28px;display:flex;align-items:center;gap:20px;transition:all 0.2s cubic-bezier(0.16,1,0.3,1);cursor:pointer}.tutorial:hover{border-color:var(--green-bd);transform:translateY(-1px)}
+        .tutorial-num{width:44px;height:44px;background:var(--green-bg);border:1px solid var(--green-bd);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--green);font-family:var(--font-mono);flex-shrink:0}
+        .tutorial-body{flex:1;min-width:0}
+        .tutorial-body h3{font-size:16px;font-weight:700;margin-bottom:4px}
+        .tutorial-body p{font-size:13px;color:var(--text-secondary);margin-bottom:0;line-height:1.6}
+        .tutorial-meta{display:flex;gap:8px;align-items:center;margin-top:8px}
+        .tutorial-tag{font-size:10px;font-weight:600;padding:2px 8px;border-radius:100px;text-transform:uppercase}
+        .tag-beginner{color:var(--green);background:var(--green-bg);border:1px solid var(--green-bd)}
+        .tag-intermediate{color:var(--amber);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2)}
+        .tag-advanced{color:var(--blue);background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2)}
+        .tutorial-time{font-size:11px;color:var(--dim);font-family:var(--font-mono)}
+        .tutorial-arrow{color:var(--dim);font-size:18px;flex-shrink:0;transition:color 0.15s}.tutorial:hover .tutorial-arrow{color:var(--green)}
+        footer{border-top:1px solid var(--border);margin-top:80px}
+        .ft-bottom{max-width:1100px;margin:0 auto;padding:24px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
+        .ft-social{display:flex;gap:12px}.ft-social a{color:var(--dim);transition:color 0.15s}.ft-social a:hover{color:var(--green)}
+        @media(max-width:768px){.nav-links{display:none}.tutorial{flex-direction:column;align-items:flex-start;gap:12px}.tutorial-arrow{display:none}}
+    </style>
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://distllm.dev/" },
+            { "@type": "ListItem", "position": 2, "name": "Tutorials", "item": "https://distllm.dev/tutorials.html" }
+        ]
+    }
+    </script>
+</head>
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></symbol>
+    </svg>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <nav class="nav" role="navigation" aria-label="Main navigation">
+        <div class="nav-in">
+            <a href="/" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
+            <div class="nav-links"><a href="/">Home</a><a href="/#features">Features</a><a href="/docs.html">Docs</a><a href="/blog.html">Blog</a><a href="/#pricing">Pricing</a><a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/distributed-llm/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+    <main id="main">
+        <div class="wrap page">
+            <div class="tag">Learn</div>
+            <h1>Tutorials</h1>
+            <p class="subtitle">Step-by-step guides to get the most out of DistLLM, from first install to advanced configurations.</p>
+
+            <div class="tutorial-list">
+                <div class="tutorial" onclick="window.open('https://github.com/distributed-llm/distributed-llm#getting-started','_blank')">
+                    <div class="tutorial-num">1</div>
+                    <div class="tutorial-body">
+                        <h3>5-Minute Quickstart</h3>
+                        <p>Install DistLLM, load a model, and make your first API call. Covers single-node setup, Python client, and streaming responses.</p>
+                        <div class="tutorial-meta">
+                            <span class="tutorial-tag tag-beginner">Beginner</span>
+                            <span class="tutorial-time">5 min</span>
+                        </div>
+                    </div>
+                    <span class="tutorial-arrow">&rarr;</span>
+                </div>
+
+                <div class="tutorial" onclick="window.open('https://github.com/distributed-llm/distributed-llm/blob/main/docs/REMOTE_CONNECTIONS.md','_blank')">
+                    <div class="tutorial-num">2</div>
+                    <div class="tutorial-body">
+                        <h3>Multi-Node Cluster Setup</h3>
+                        <p>Connect multiple machines into a single inference cluster. Covers network configuration, TLS setup, layer partitioning, and performance tuning.</p>
+                        <div class="tutorial-meta">
+                            <span class="tutorial-tag tag-intermediate">Intermediate</span>
+                            <span class="tutorial-time">20 min</span>
+                        </div>
+                    </div>
+                    <span class="tutorial-arrow">&rarr;</span>
+                </div>
+
+                <div class="tutorial" onclick="window.open('https://github.com/distributed-llm/distributed-llm/blob/main/docs/REMOTE_CONNECTIONS.md#colab--kaggle','_blank')">
+                    <div class="tutorial-num">3</div>
+                    <div class="tutorial-body">
+                        <h3>Connecting Colab / Kaggle</h3>
+                        <p>Use free GPU instances from Google Colab or Kaggle as workers in your local cluster. Covers Tailscale networking and NAT traversal.</p>
+                        <div class="tutorial-meta">
+                            <span class="tutorial-tag tag-intermediate">Intermediate</span>
+                            <span class="tutorial-time">15 min</span>
+                        </div>
+                    </div>
+                    <span class="tutorial-arrow">&rarr;</span>
+                </div>
+
+                <div class="tutorial" onclick="window.open('https://github.com/distributed-llm/distributed-llm/tree/main/src/distributed_llm/backends','_blank')">
+                    <div class="tutorial-num">4</div>
+                    <div class="tutorial-body">
+                        <h3>Custom Backend Plugin</h3>
+                        <p>Build a custom inference backend for DistLLM. Implement the backend interface, register your plugin, and integrate with the pipeline scheduler.</p>
+                        <div class="tutorial-meta">
+                            <span class="tutorial-tag tag-advanced">Advanced</span>
+                            <span class="tutorial-time">30 min</span>
+                        </div>
+                    </div>
+                    <span class="tutorial-arrow">&rarr;</span>
+                </div>
+
+                <div class="tutorial" onclick="window.open('https://github.com/distributed-llm/distributed-llm/blob/main/docs/FEDERATED.md','_blank')">
+                    <div class="tutorial-num">5</div>
+                    <div class="tutorial-body">
+                        <h3>Federated Fine-Tuning</h3>
+                        <p>Run federated learning experiments across distributed nodes. Configure differential privacy, secure aggregation, and LoRA-based fine-tuning.</p>
+                        <div class="tutorial-meta">
+                            <span class="tutorial-tag tag-advanced">Advanced</span>
+                            <span class="tutorial-time">45 min</span>
+                        </div>
+                    </div>
+                    <span class="tutorial-arrow">&rarr;</span>
+                </div>
+
+                <div class="tutorial" onclick="window.open('https://github.com/distributed-llm/distributed-llm/blob/main/docs/PERFORMANCE_TUNING.md','_blank')">
+                    <div class="tutorial-num">6</div>
+                    <div class="tutorial-body">
+                        <h3>Cost Optimization Guide</h3>
+                        <p>Minimize inference costs with quantization, speculative decoding, spot instances, carbon-aware scheduling, and multi-cloud routing.</p>
+                        <div class="tutorial-meta">
+                            <span class="tutorial-tag tag-intermediate">Intermediate</span>
+                            <span class="tutorial-time">25 min</span>
+                        </div>
+                    </div>
+                    <span class="tutorial-arrow">&rarr;</span>
+                </div>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <div class="wrap">
+            <div class="ft-bottom" style="border-top:none;padding-top:0">
+                <span>&copy; 2026 DistLLM. Apache 2.0 License.</span>
+                <div class="ft-social">
+                    <a href="https://github.com/distributed-llm/distributed-llm" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Video Tutorials -->
+    <section class="section" id="video-tutorials">
+        <div class="wrap">
+            <div class="sec-h fade-up"><div class="tag">Videos</div><h2>Video Tutorial Library</h2></div>
+            <p class="sec-p fade-up">Watch step-by-step tutorials for installation, configuration, and advanced optimization.</p>
+            <div id="videoTutorials" data-lazy-module="videoTutorials"></div>
+        </div>
+    </section>
+</body>
+</html>

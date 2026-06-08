@@ -1,0 +1,167 @@
+{
+  "meta": {
+    "title": "DistLLM — 모든 기기의 GPU를 활용한 분산 LLM 추론",
+    "description": "소유한 모든 기기의 GPU를 풀링하여 단일 머신으로는 실행할 수 없는 모델을 실행합니다. OpenAI 호환. 오픈소스. 클라우드 API 대비 10배 저렴."
+  },
+  "nav": {
+    "home": "홈",
+    "features": "기능",
+    "docs": "문서",
+    "blog": "블로그",
+    "pricing": "가격",
+    "github": "GitHub",
+    "getStarted": "시작하기",
+    "enterprise": "엔터프라이즈",
+    "community": "커뮤니티",
+    "learn": "학습",
+    "api": "API",
+    "integrations": "통합"
+  },
+  "hero": {
+    "badge": "오픈소스 · Apache 2.0",
+    "title": "소비자 GPU에서 70B 모델 실행",
+    "subtitle": "소유한 모든 기기의 GPU를 풀링하여 단일 머신으로는 실행할 수 없는 모델을 실행합니다. OpenAI 호환 API. 클라우드 API 대비 10배 저렴.",
+    "cta": "시작하기",
+    "ctaSecondary": "GitHub에서 보기",
+    "stats": {
+      "stars": "GitHub Stars",
+      "downloads": "PyPI 다운로드",
+      "contributors": "기여자"
+    }
+  },
+  "features": {
+    "title": "왜 DistLLM인가요?",
+    "subtitle": "소비자 GPU를 활용한 분산 LLM 추론을 지원하는 유일한 오픈소스 솔루션입니다.",
+    "items": {
+      "pipeline": {
+        "title": "파이프라인 병렬화",
+        "description": "모델 레이어를 GPU에 분산하여 파이프라인 처리. GPU 추가마다 거의 선형적으로 확장됩니다."
+      },
+      "openai": {
+        "title": "OpenAI 호환",
+        "description": "OpenAI API의 드롭인 대체. LangChain, LlamaIndex 및 모든 OpenAI SDK에서 작동합니다."
+      },
+      "multiBackend": {
+        "title": "멀티 백엔드",
+        "description": "vLLM, llama.cpp, ExLlamaV2 지원. GPU 유형별 최적의 백엔드를 사용하세요."
+      },
+      "wan": {
+        "title": "WAN 지원",
+        "description": "QUIC 전송 및 NAT 트버설을 통해 인터넷을 통해 GPU를 연결합니다."
+      },
+      "security": {
+        "title": "엔터프라이즈 보안",
+        "description": "mTLS, RBAC, 감사 로깅. 컴플라이언스 요구사항을 위한 에어갭 배포 지원."
+      },
+      "cost": {
+        "title": "10배 저렴",
+        "description": "70B 모델 기준 ~$0.01/1K 토큰. OpenAI 대비 10배, 클라우드 GPU 대비 5배 저렴."
+      }
+    }
+  },
+  "calculator": {
+    "title": "비용 계산기",
+    "subtitle": "클라우드 API 대비 절감액 추정",
+    "gpus": "클러스터 GPU 수",
+    "tokens": "월간 토큰 수 (백만)",
+    "model": "모델 크기",
+    "hours": "일일 실행 시간",
+    "electricity": "전기세 ($/kWh)",
+    "savings": "OpenAI 대비 월간 절감액",
+    "disclaimer": "$0.002/1K 토큰 (GPT-4 클래스) 기준"
+  },
+  "pricing": {
+    "title": "가격",
+    "subtitle": "오픈소스. 매니지드 호스팅에만 과금.",
+    "community": {
+      "name": "커뮤니티",
+      "price": "$0",
+      "period": "/ 영구",
+      "description": "셀프 호스팅, 오픈소스",
+      "features": ["모든 기능 포함", "무제한 모델", "무제한 노드", "커뮤니티 지원", "Apache 2.0 라이선스"],
+      "cta": "시작하기"
+    },
+    "pro": {
+      "name": "프로",
+      "price": "$49",
+      "period": "/ 월",
+      "description": "매니지드 호스팅 + 우선 지원",
+      "features": ["커뮤니티의 모든 기능", "매니지드 API 엔드포인트", "일 1M 토큰 포함", "99.9% SLA", "우선 지원"],
+      "cta": "웨이트리스트 등록",
+      "badge": "인기"
+    },
+    "enterprise": {
+      "name": "엔터프라이즈",
+      "price": "맞춤",
+      "period": "",
+      "description": "온프레미스 + 전담 지원",
+      "features": ["프로의 모든 기능", "무제한 토큰", "SSO / SAML", "맞춤 SLA", "전담 지원 엔지니어"],
+      "cta": "영업팀 문의"
+    }
+  },
+  "faq": {
+    "title": "자주 묻는 질문",
+    "items": {
+      "gpus": {
+        "question": "어떤 GPU를 지원하나요?",
+        "answer": "CUDA 12+를 지원하는 NVIDIA GPU(RTX 30xx, 40xx, A100, H100), ROCm을 통한 AMD, Metal을 통한 Apple Silicon, llama.cpp를 통한 CPU 전용."
+      },
+      "vllm": {
+        "question": "vLLM과 비교하면 어떤가요?",
+        "answer": "vLLM은 단일 노드 추론에 탁월합니다. DistLLM의 차별점은 멀티 노드 파이프라인 병렬화입니다."
+      },
+      "security": {
+        "question": "데이터가 안전한가요?",
+        "answer": "네. 모든 데이터는 기기 내에 저장됩니다. DistLLM은 mTLS, E2E 암호화, 표준 인증을 지원합니다."
+      },
+      "internet": {
+        "question": "인터넷을 통해 실행할 수 있나요?",
+        "answer": "네. QUIC 전송, NAT 트버설(STUN/TURN), 토큰 누적을 지원하는 WAN 지원이 가능합니다."
+      },
+      "models": {
+        "question": "어떤 모델을 지원하나요?",
+        "answer": "모든 HuggingFace 모델: Llama 2/3, Mistral, Mixtral, Qwen, Phi, DeepSeek, StableLM, GPT-2 등."
+      },
+      "start": {
+        "question": "어떻게 시작하나요?",
+        "answer": "pip install distributed-llm, 그 다음 distllm cluster start, 그 다음 다른 머신에서 distllm cluster join."
+      }
+    }
+  },
+  "footer": {
+    "copyright": "© 2026 DistLLM. Apache 2.0 라이선스.",
+    "product": "제품",
+    "resources": "리소스",
+    "company": "회사",
+    "legal": "법률",
+    "links": {
+      "features": "기능",
+      "pricing": "가격",
+      "docs": "문서",
+      "api": "API 레퍼런스",
+      "blog": "블로그",
+      "tutorials": "튜토리얼",
+      "community": "커뮤니티",
+      "github": "GitHub",
+      "discord": "Discord",
+      "twitter": "Twitter",
+      "about": "회사 소개",
+      "careers": "채용",
+      "contact": "문의하기",
+      "privacy": "개인정보처리방침",
+      "terms": "이용약관",
+      "security": "보안"
+    }
+  },
+  "common": {
+    "learnMore": "자세히 보기",
+    "getStarted": "시작하기",
+    "viewDocs": "문서 보기",
+    "viewOnGitHub": "GitHub에서 보기",
+    "copy": "복사",
+    "copied": "복사됨!",
+    "loading": "로딩 중...",
+    "error": "오류",
+    "success": "성공"
+  }
+}

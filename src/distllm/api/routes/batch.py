@@ -81,8 +81,8 @@ async def process_batch(batch: BatchRequest, request: Request):
     t0 = time.monotonic()
 
     # Get coordinator reference
-    state = request.app.state
-    coordinator = getattr(state, "coordinator", None)
+    from distllm.api.api_state import g as _g
+    coordinator = _g.coordinator
     if coordinator is None:
         raise HTTPException(status_code=503, detail="Coordinator not initialized")
 

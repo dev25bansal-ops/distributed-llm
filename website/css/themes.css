@@ -1,0 +1,63 @@
+/* ─── Light Theme ─── */
+[data-theme="light"] {
+    --bg: #fafafa;
+    --surface: #f0f0f0;
+    --card: #ffffff;
+    --card-hover: #f8f8f8;
+    --border: #e0e0e0;
+    --border-hover: #ccc;
+    --text: #111;
+    --text-secondary: #555;
+    --dim: #767676;
+    --muted: #666;
+    --green: #00c853;
+    --green-dim: #00a844;
+    --green-glow: rgba(0, 200, 83, 0.1);
+    --green-bg: rgba(0, 200, 83, 0.05);
+    --green-bd: rgba(0, 200, 83, 0.2);
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.05);
+    --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .nav {
+    background: rgba(250, 250, 250, 0.92);
+}
+
+[data-theme="light"] .nav.scrolled {
+    background: rgba(250, 250, 250, 0.98);
+}
+
+[data-theme="light"] .hero::after {
+    opacity: 0;
+}
+
+[data-theme="light"] body::after {
+    display: none;
+}
+
+/* Terminal colors for light theme */
+[data-theme="light"] .t-prompt { color: #00a844; }
+[data-theme="light"] .t-output { color: #666; }
+[data-theme="light"] .t-comment { color: #999; }
+[data-theme="light"] .t-cmd { color: #6f42c1; }
+[data-theme="light"] .t-flag { color: #d73a49; }
+[data-theme="light"] .t-str { color: #032f62; }
+
+/* Command palette overlay for light theme */
+[data-theme="light"] .cmd-palette-overlay {
+    background: rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] .cmd-palette {
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+/* Architecture diagram particles */
+[data-theme="light"] .arch-flow-particle {
+    box-shadow: 0 0 6px rgba(0, 200, 83, 0.5);
+}
+
+/* CTA background orbs */
+[data-theme="light"] .cta-bg-orb {
+    opacity: 0.08;
+}

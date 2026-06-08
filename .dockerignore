@@ -1,71 +1,74 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-*.egg
-dist/
-build/
-
-# Virtual environments
-.venv/
-venv/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Testing
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
-.coverage
-
-# Docker
-Dockerfile*
-docker-compose*.yml
-.dockerignore
-
-# Deployment (Helm/Kustomize source files are excluded; CRDs are included via chart)
-deploy/kustomize/
-deploy/helm/templates/
-deploy/operator/
-deploy/monitoring/
-deploy/logging/
-deploy/karpenter/
-deploy/gitops/
-deploy/webhook/
-
-# CI/CD
-.github/
-
-# Tests & Benchmarks
-tests/
-benchmarks/
-
-# OS
-.DS_Store
-Thumbs.db
+# ==========================================================================
+# DistLLM .dockerignore — exclude build context bloat and secrets
+# ==========================================================================
 
 # Git
 .git/
 .gitignore
+.gitattributes
+.gitmodules
+.github/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests and benchmarks
+tests/
+benchmarks/
+test-results/
 
 # Docs
+docs/
+website/
 *.md
-LICENSE
-!README.md
-!LICENSE
+*.rst
 
-# Config
-config.yaml
+# Development
+.devcontainer/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.envrc
+.env
+*.env
+.tox/
 
-# Scripts
-scripts/
+# Tauri desktop app (Rust build artifacts)
+tauri/target/
+tauri/node_modules/
+tauri/src-tauri/target/
 
-# Examples
-examples/
+# SDK build artifacts
+sdk/go/
+sdk/rust/
+sdk/node_modules/
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Secrets and credentials
+**/credentials.json
+**/service-account.json
+**/*.pem
+**/*.key
+**/id_rsa*
+**/*.p12
+**/*.cert
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log

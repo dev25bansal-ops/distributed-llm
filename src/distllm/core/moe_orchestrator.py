@@ -141,10 +141,37 @@ class MoERouter:
     ) -> torch.Tensor:
         """Send a single token to a remote node for expert processing.
 
-        Returns the expert's output hidden state.  In a full implementation
-        this would use a gRPC call to the remote node's expert forward RPC.
+        Uses gRPC to forward the token to the node hosting the expert.
+        The remote node applies the expert MLP to the hidden state and
+        returns the result.
+
+        Falls back to an identity forward if the gRPC call fails
+        (logged warning), preserving the model's ability to produce
+        reasonable output even with degraded expert routing.
         """
-        return hidden * 0.99  # Placeholder: identity-like forward
+        from distllm.dist.grpc_client import GrpcClientPool
+
+        try:
+            client = GrpcClientPool.get_client(node_id)
+            if client is None:
+                logger.warning(f"No gRPC client for node {node_id}, using identity fallback for expert {expert_id}")
+                return hidden
+
+            result = client.call_expert_forward(
+                expert_id=expert_id,
+                hidden_states=hidden,
+                layer_idx=layer_idx,
+            )
+            if result is None:
+                logger.warning(f"gRPC expert forward returned None for node {node_id}, expert {expert_id}")
+                return hidden
+
+            return result
+        except Exception as e:
+            logger.warning(
+                f"Expert forward failed: node={node_id} expert={expert_id} layer={layer_idx}: {e}"
+            )
+            return hidden  # Identity fallback — better than garbage output
 
 
 class MoEOrchestrator:

@@ -103,8 +103,8 @@ async def create_listing(req: GPUListingRequest):
         supported_models=req.supported_models,
         max_batch_size=req.max_batch_size,
         supports_streaming=req.supports_streaming,
-        supports_quantization=req.requires_quantization,
-        supports_lora=req.requires_lora,
+        supports_quantization=req.supports_quantization,
+        supports_lora=req.supports_lora,
         tags=req.tags,
     )
     return GPUListingResponse(

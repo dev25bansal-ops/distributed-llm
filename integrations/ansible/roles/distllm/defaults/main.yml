@@ -1,0 +1,36 @@
+---
+# DistLLM Ansible role — default variables
+
+distllm_version: "latest"
+distllm_image: "distributed-llm:{{ distllm_version }}"
+distllm_install_dir: "/opt/distllm"
+distllm_config_dir: "/etc/distllm"
+distllm_data_dir: "/data/distllm"
+distllm_log_dir: "/var/log/distllm"
+
+# Coordinator
+distllm_coordinator_host: "0.0.0.0"
+distllm_coordinator_port: 8000
+distllm_grpc_port: 50051
+distllm_metrics_port: 9090
+
+# Worker
+distllm_worker_count: 1
+distllm_worker_gpu: "1"
+
+# Model
+distllm_default_model: "distributed-llm"
+distllm_model_cache_dir: "{{ distllm_data_dir }}/models"
+
+# Redis
+distllm_redis_enabled: true
+distllm_redis_host: "localhost"
+distllm_redis_port: 6379
+
+# Monitoring
+distllm_prometheus_enabled: true
+distllm_grafana_enabled: true
+
+# System
+distllm_user: "distllm"
+distllm_group: "distllm"

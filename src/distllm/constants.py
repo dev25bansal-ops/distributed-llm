@@ -24,7 +24,6 @@ class Device(str, Enum):
     ROCM = "rocm"
     MPS = "mps"
     XPU = "xpu"
-    VULKAN = "vulkan"
 
 
 class DeviceFamily(str, Enum):

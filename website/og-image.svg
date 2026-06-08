@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+    <rect width="1200" height="630" fill="#000"/>
+    <rect x="40" y="40" width="1120" height="550" rx="16" fill="#111" stroke="#222" stroke-width="1"/>
+    <text x="80" y="220" font-family="Inter, sans-serif" font-size="64" font-weight="900" fill="#ededed">
+        <tspan>Run </tspan><tspan fill="#22c55e">70B+ Models</tspan>
+    </text>
+    <text x="80" y="290" font-family="Inter, sans-serif" font-size="64" font-weight="900" fill="#ededed">
+        Across Any GPUs
+    </text>
+    <text x="80" y="350" font-family="Inter, sans-serif" font-size="22" fill="#888">
+        Distributed LLM inference. OpenAI-compatible. 10x cheaper than cloud APIs.
+    </text>
+    <rect x="80" y="400" width="120" height="44" rx="8" fill="#22c55e"/>
+    <text x="110" y="428" font-family="Inter, sans-serif" font-size="16" font-weight="600" fill="#000">
+        Get Started
+    </text>
+    <text x="80" y="520" font-family="Inter, sans-serif" font-size="14" fill="#555">
+        distllm.dev
+    </text>
+</svg>

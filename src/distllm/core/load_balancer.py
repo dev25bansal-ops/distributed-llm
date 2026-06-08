@@ -146,7 +146,8 @@ class LoadBalancer:
                 target = random.choice(healthy)
 
             elif strategy == LBStrategy.ROUND_ROBIN:
-                self._rr_index = (self._rr_index + 1) % len(healthy)
+                # H-18: Snapshots modulo base to handle shrinking healthy list
+                self._rr_index = (self._rr_index + 1) % max(len(healthy), 1)
                 target = healthy[self._rr_index]
 
             elif strategy == LBStrategy.LEAST_CONNECTIONS:

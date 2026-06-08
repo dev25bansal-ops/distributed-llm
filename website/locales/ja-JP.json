@@ -1,0 +1,167 @@
+{
+  "meta": {
+    "title": "DistLLM — 全デバイスのGPUを活用した分散LLM推論",
+    "description": "所有する全デバイスのGPUをプールし、単一マシンでは実行できないモデルを実行。OpenAI互換。オープンソース。クラウドAPIの10分の1のコスト。"
+  },
+  "nav": {
+    "home": "ホーム",
+    "features": "機能",
+    "docs": "ドキュメント",
+    "blog": "ブログ",
+    "pricing": "料金",
+    "github": "GitHub",
+    "getStarted": "始めましょう",
+    "enterprise": "エンタープライズ",
+    "community": "コミュニティ",
+    "learn": "学ぶ",
+    "api": "API",
+    "integrations": "インテグレーション"
+  },
+  "hero": {
+    "badge": "オープンソース · Apache 2.0",
+    "title": "コンシューマGPUで70Bモデルを実行",
+    "subtitle": "所有する全デバイスのGPUをプールし、単一マシンでは実行できないモデルを実行。OpenAI互換API。クラウドAPIの10分の1のコスト。",
+    "cta": "始めましょう",
+    "ctaSecondary": "GitHubで見る",
+    "stats": {
+      "stars": "GitHub Stars",
+      "downloads": "PyPIダウンロード",
+      "contributors": "貢献者"
+    }
+  },
+  "features": {
+    "title": "なぜDistLLM？",
+    "subtitle": "コンシューマGPUによる分散LLM推論をサポートする唯一のオープンソースソリューション。",
+    "items": {
+      "pipeline": {
+        "title": "パイプライン並列",
+        "description": "モデルレイヤーをGPUに分散してパイプライン処理。GPU追加ごとにほぼ線形にスケーリング。"
+      },
+      "openai": {
+        "title": "OpenAI互換",
+        "description": "OpenAI APIのドロップイン置換。LangChain、LlamaIndex、すべてのOpenAI SDKで動作。"
+      },
+      "multiBackend": {
+        "title": "マルチバックエンド",
+        "description": "vLLM、llama.cpp、ExLlamaV2をサポート。GPUタイプごとに最適なバックエンドを使用。"
+      },
+      "wan": {
+        "title": "WANサポート",
+        "description": "QUICトランスポートとNATトラバーサルでインターネット経由でGPUを接続。"
+      },
+      "security": {
+        "title": "エンタープライズセキュリティ",
+        "description": "mTLS、RBAC、監査ログ。コンプライアンス要件に対応するエアギャップデプロイメント。"
+      },
+      "cost": {
+        "title": "10倍安い",
+        "description": "70Bモデルで約$0.01/1Kトークン。OpenAIより10倍、クラウドGPUより5倍安い。"
+      }
+    }
+  },
+  "calculator": {
+    "title": "コスト計算機",
+    "subtitle": "クラウドAPIとの比較による節約額を推定",
+    "gpus": "クラスターのGPU数",
+    "tokens": "月間トークン数（百万）",
+    "model": "モデルサイズ",
+    "hours": "1日の稼働時間",
+    "electricity": "電気代 ($/kWh)",
+    "savings": "OpenAIとの月間節約額",
+    "disclaimer": "$0.002/1Kトークン（GPT-4クラス）に基づく"
+  },
+  "pricing": {
+    "title": "料金",
+    "subtitle": "オープンソース。マネージドホスティングのみ課金。",
+    "community": {
+      "name": "コミュニティ",
+      "price": "$0",
+      "period": "/ 永久",
+      "description": "セルフホスト、オープンソース",
+      "features": ["全機能含む", "無制限モデル", "無制限ノード", "コミュニティサポート", "Apache 2.0ライセンス"],
+      "cta": "始めましょう"
+    },
+    "pro": {
+      "name": "プロ",
+      "price": "$49",
+      "period": "/ 月",
+      "description": "マネージドホスティング + 優先サポート",
+      "features": ["コミュニティの全機能", "マネージドAPIエンドポイント", "日1Mトークン含む", "99.9% SLA", "優先サポート"],
+      "cta": "ウェイトリストに登録",
+      "badge": "人気"
+    },
+    "enterprise": {
+      "name": "エンタープライズ",
+      "price": "カスタム",
+      "period": "",
+      "description": "オンプレミス + 専任サポート",
+      "features": ["プロの全機能", "無制限トークン", "SSO / SAML", "カスタムSLA", "専任サポートエンジニア"],
+      "cta": "営業に連絡"
+    }
+  },
+  "faq": {
+    "title": "よくある質問",
+    "items": {
+      "gpus": {
+        "question": "どのGPUをサポートしていますか？",
+        "answer": "CUDA 12+をサポートするNVIDIA GPU（RTX 30xx、40xx、A100、H100）、ROCm経由のAMD、Metal経由のApple Silicon、llama.cpp経由のCPUのみ。"
+      },
+      "vllm": {
+        "question": "vLLMと比較するとどうですか？",
+        "answer": "vLLMは単一ノードの推論に優れています。DistLLMの差別化はマルチノードパイプライン並列です。"
+      },
+      "security": {
+        "question": "データは安全ですか？",
+        "answer": "はい。すべてのデータはデバイス上に保存されます。DistLLMはmTLS、E2E暗号化、標準認証をサポートします。"
+      },
+      "internet": {
+        "question": "インターネット経由で実行できますか？",
+        "answer": "はい。QUICトランスポート、NATトラバーサル（STUN/TURN）、トークン蓄積によるWANサポート。"
+      },
+      "models": {
+        "question": "どのモデルをサポートしていますか？",
+        "answer": "任意のHuggingFaceモデル：Llama 2/3、Mistral、Mixtral、Qwen、Phi、DeepSeek、StableLM、GPT-2など。"
+      },
+      "start": {
+        "question": "始め方は？",
+        "answer": "pip install distributed-llm、次にdistllm cluster start、次に他のマシンでdistllm cluster join。"
+      }
+    }
+  },
+  "footer": {
+    "copyright": "© 2026 DistLLM. Apache 2.0ライセンス。",
+    "product": "製品",
+    "resources": "リソース",
+    "company": "会社",
+    "legal": "法務",
+    "links": {
+      "features": "機能",
+      "pricing": "料金",
+      "docs": "ドキュメント",
+      "api": "APIリファレンス",
+      "blog": "ブログ",
+      "tutorials": "チュートリアル",
+      "community": "コミュニティ",
+      "github": "GitHub",
+      "discord": "Discord",
+      "twitter": "Twitter",
+      "about": "会社概要",
+      "careers": "採用情報",
+      "contact": "お問い合わせ",
+      "privacy": "プライバシーポリシー",
+      "terms": "利用規約",
+      "security": "セキュリティ"
+    }
+  },
+  "common": {
+    "learnMore": "詳しく見る",
+    "getStarted": "始めましょう",
+    "viewDocs": "ドキュメントを見る",
+    "viewOnGitHub": "GitHubで見る",
+    "copy": "コピー",
+    "copied": "コピーしました！",
+    "loading": "読み込み中...",
+    "error": "エラー",
+    "success": "成功"
+  }
+}
