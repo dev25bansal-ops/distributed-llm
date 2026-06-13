@@ -28,20 +28,19 @@ from distllm.errors.types import (
     CircuitBreakerError,
 )
 
-# Map HTTP status codes to OpenAI-compatible error codes
 _HTTP_CODE_MAP: dict[int, str] = {
-    400: "invalid_request_error",
-    401: "invalid_api_key",
-    403: "permission_denied",
-    404: "not_found",
-    408: "timeout",
-    413: "request_too_large",
-    422: "invalid_request_error",
-    429: "rate_limit_exceeded",
-    500: "internal_error",
-    502: "bad_gateway",
-    503: "service_unavailable",
-    504: "timeout",
+    400: "400",
+    401: "401",
+    403: "403",
+    404: "404",
+    408: "408",
+    413: "413",
+    422: "422",
+    429: "429",
+    500: "500",
+    502: "502",
+    503: "503",
+    504: "504",
 }
 
 # Map DistLLM exception types to error codes

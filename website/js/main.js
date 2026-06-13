@@ -14,7 +14,7 @@ import { initCmdPalette } from './cmd-palette.js';
 import { initGitHubStars } from './github-stars.js';
 import { initNewsletter } from './newsletter.js';
 import { initCommunityStats } from './community-stats.js';
-import { initToast, checkNewVersion } from './toast.js';
+import { checkNewVersion } from './toast.js';
 
 // ── LAZY: Load when scrolled into view (IntersectionObserver) ──
 const LAZY_MODULES = [
@@ -117,7 +117,29 @@ function initCopyButtons() {
 
             if (!text) return;
 
-            navigator.clipboard.writeText(text)
+            const copyToClipboard = () => {
+                if (navigator.clipboard && window.isSecureContext) {
+                    return navigator.clipboard.writeText(text);
+                } else {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = text;
+                    textArea.style.position = "fixed";
+                    textArea.style.opacity = "0";
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    try {
+                        const successful = document.execCommand('copy');
+                        document.body.removeChild(textArea);
+                        return successful ? Promise.resolve() : Promise.reject(new Error('Copy command failed'));
+                    } catch (err) {
+                        document.body.removeChild(textArea);
+                        return Promise.reject(err);
+                    }
+                }
+            };
+
+            copyToClipboard()
                 .then(() => {
                     btn.textContent = 'Copied!';
                     setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
@@ -296,7 +318,7 @@ document.addEventListener('DOMContentLoaded', () => {
     safeInit('githubStars', initGitHubStars);
     safeInit('newsletter', initNewsletter);
     safeInit('communityStats', initCommunityStats);
-    safeInit('toast', () => { initToast(); checkNewVersion(); });
+    safeInit('toast', () => { checkNewVersion(); });
 
     // LAZY: Load when scrolled into view
     initLazyModules();

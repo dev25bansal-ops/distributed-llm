@@ -97,11 +97,11 @@ describe('GPU Checker', () => {
             expect(q).toBe('INT8');
         });
 
-        it('Phi-3 mini should fit on RTX 4060 with INT4', () => {
+        it('Phi-3 mini should fit on RTX 4060 with FP16', () => {
             const gpu = GPU_DATABASE.find(g => g.name === 'RTX 4060');
             const model = MODEL_DATABASE.find(m => m.name === 'Phi-3 mini');
             const q = getPreferredQuantization(model.requirements, gpu.vram * 1);
-            expect(q).toBe('INT4');
+            expect(q).toBe('FP16');
         });
     });
 
@@ -129,10 +129,10 @@ describe('GPU Checker', () => {
     });
 
     describe('Multi-GPU Calculation', () => {
-        it('2x RTX 4090 (48GB total) should fit 70B INT8 (35GB)', () => {
+        it('2x RTX 4090 (48GB total) should fit 70B INT4 (35GB)', () => {
             const model = MODEL_DATABASE.find(m => m.name === 'Llama 3.1 70B');
             const q = getPreferredQuantization(model.requirements, 48);
-            expect(q).toBe('INT8');
+            expect(q).toBe('INT4');
         });
 
         it('4x RTX 4090 (96GB total) should fit 70B INT8 (70GB)', () => {

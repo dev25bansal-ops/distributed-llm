@@ -55,7 +55,6 @@ describe('Deploy Wizard', () => {
                 gpus: 2, network: 'wan', backend: 'vllm', model: 'llama-3.1-8b',
             });
             expect(cmd).toContain('DISTLLM_WAN_ENABLED=true');
-            DISTLLM/distllm_distllm
             expect(cmd).toContain('DISTLLM_WAN_TRANSPORT=quic');
         });
 

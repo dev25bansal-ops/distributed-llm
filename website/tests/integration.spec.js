@@ -14,19 +14,19 @@ test.describe('Navigation', () => {
 
     test('should have working nav links', async ({ page }) => {
         await page.goto('/');
-        const featuresLink = page.locator('a[href="#features"]');
+        const featuresLink = page.locator('a[href="#features"]').first();
         await expect(featuresLink).toBeVisible();
     });
 
     test('should have working GitHub link', async ({ page }) => {
         await page.goto('/');
-        const githubLink = page.locator('a[href*="github.com"]');
+        const githubLink = page.locator('a[href*="github.com"]').first();
         await expect(githubLink).toBeVisible();
     });
 
     test('should navigate to docs', async ({ page }) => {
         await page.goto('/docs.html');
-        await expect(page).toHaveTitle(/Docs/);
+        await expect(page).toHaveTitle(/Documentation/);
     });
 
     test('should navigate to blog', async ({ page }) => {
@@ -55,7 +55,7 @@ test.describe('Command Palette', () => {
 test.describe('Theme Toggle', () => {
     test('should toggle dark/light mode', async ({ page }) => {
         await page.goto('/');
-        const toggle = page.locator('#themeToggle');
+        const toggle = page.locator('#themeBtn');
         await toggle.click();
         // Check that the body class or data attribute changed
         const html = page.locator('html');
@@ -104,6 +104,7 @@ test.describe('Mobile Menu', () => {
 
     test('should toggle mobile menu', async ({ page }) => {
         await page.goto('/');
+        await expect(page.locator('html')).toHaveClass(/js-enabled/);
         const menuBtn = page.locator('#menuBtn');
         await menuBtn.click();
         const navLinks = page.locator('#navLinks');

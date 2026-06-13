@@ -33,7 +33,7 @@ const BENCHMARKS = {
         { name: 'OpenAI GPT-4o-mini', tok_s: 120, latency_p50: 200, cost_1k: 0.00015 },
         { name: 'Together AI (Llama 3.1 70B)', tok_s: 40, latency_p50: 150, cost_1k: 0.0009 },
         { name: 'Fireworks (Llama 3.1 70B)', tok_s: 45, latency_p50: 120, cost_1k: 0.0009 },
-        { name: 'Anthropic Claude 3.5 Sonnet', tok_s: 70, latency_p50: 250, tok_s: 70, cost_1k: 0.003 },
+        { name: 'Anthropic Claude 3.5 Sonnet', tok_s: 70, latency_p50: 250, cost_1k: 0.003 },
     ],
 };
 

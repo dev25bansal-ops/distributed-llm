@@ -1,82 +1,75 @@
-#!/bin/bash
-set -e
-
-# ==========================================================================
-# DistLLM Docker Entrypoint
+#!/usr/bin/env bash
+# docker-entrypoint.sh — unified entrypoint for distllm Docker images.
 #
-# Handles:
-#   - Dynamic command selection (coordinator, worker, API server)
-#   - Environment variable passthrough
-#   - Graceful shutdown on SIGTERM/SIGINT
-#   - Configuration from mounted config files
-# ==========================================================================
+# Routes to coordinator, worker (node), or API server based on DISTLLM_ROLE.
+# Falls through to exec "$@" for arbitrary commands.
 
-# --- Signal handling ---
-cleanup() {
-    echo "[entrypoint] Received shutdown signal, terminating..."
-    if [ -n "$CHILD_PID" ]; then
+set -euo pipefail
+
+# ── Graceful shutdown ────────────────────────────────────────────────────────
+# Forward SIGTERM/SIGINT to the child process so it can clean up (NCCL, GPU
+# memory, open sockets) instead of being hard-killed by Docker.
+_term() {
+    echo "[entrypoint] Caught signal, shutting down gracefully..."
+    if [ -n "${CHILD_PID:-}" ]; then
         kill -TERM "$CHILD_PID" 2>/dev/null || true
         wait "$CHILD_PID" 2>/dev/null || true
     fi
-    echo "[entrypoint] Shutdown complete"
     exit 0
 }
-trap cleanup SIGTERM SIGINT
+trap _term SIGTERM SIGINT
 
-# --- Runtime detection ---
+# ── GPU detection ────────────────────────────────────────────────────────────
+# Best-effort: print GPU info if nvidia-smi is available, otherwise continue.
 if command -v nvidia-smi &>/dev/null; then
-    GPU_COUNT=$(nvidia-smi --list-gpus 2>/dev/null | wc -l)
-    echo "[entrypoint] Detected $GPU_COUNT NVIDIA GPU(s)"
+    GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "0")
+    GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "unknown")
+    echo "[entrypoint] Detected ${GPU_COUNT} GPU(s), first GPU memory: ${GPU_MEM} MiB"
 else
-    echo "[entrypoint] No NVIDIA GPU detected (running CPU mode)"
+    echo "[entrypoint] nvidia-smi not found — GPU detection skipped"
 fi
 
-if command -v free &>/dev/null; then
-    TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
-    echo "[entrypoint] System memory: ${TOTAL_MEM_MB}MB"
+# ── Config file ──────────────────────────────────────────────────────────────
+# If the operator mounted a YAML config, surface it so the Python resolver can
+# pick it up via the standard config-candidate list (/etc/distllm/config.yaml).
+CONFIG_PATH="/etc/distllm/config.yaml"
+if [ -f "$CONFIG_PATH" ]; then
+    echo "[entrypoint] Found config at ${CONFIG_PATH}"
+else
+    echo "[entrypoint] No config file at ${CONFIG_PATH} — using env vars / defaults"
 fi
 
-# --- Configuration ---
-if [ -f "/etc/distllm/distllm.yaml" ]; then
-    echo "[entrypoint] Loading configuration from /etc/distllm/distllm.yaml"
-    export DISTLLM_CONFIG="/etc/distllm/distllm.yaml"
-fi
-
-# --- Role-based entry ---
-ROLE="${DISTLLM_ROLE:-coordinator}"
+# ── Role routing ─────────────────────────────────────────────────────────────
+ROLE="${DISTLLM_ROLE:-}"
 
 case "$ROLE" in
     coordinator)
-        echo "[entrypoint] Starting DistLLM coordinator..."
-        exec distllm-coordinator \
-            --model "${DISTLLM_MODEL}" \
-            --port "${DISTLLM_PORT:-50050}" \
-            ${DISTLLM_NODES:+--nodes "$DISTLLM_NODES"} \
-            ${DISTLLM_LOCAL:+--local} \
-            "$@"
+        echo "[entrypoint] Starting coordinator..."
+        exec distllm-coordinator "$@"
         ;;
-    worker)
-        echo "[entrypoint] Starting DistLLM worker node..."
-        exec distllm-node \
-            --node-id "${DISTLLM_NODE_ID:-worker-0}" \
-            --model "${DISTLLM_MODEL}" \
-            --start-layer "${DISTLLM_START_LAYER:-0}" \
-            --end-layer "${DISTLLM_END_LAYER:-3}" \
-            --total-layers "${DISTLLM_TOTAL_LAYERS:-8}" \
-            --coordinator-host "${DISTLLM_COORDINATOR_HOST}" \
-            --coordinator-port "${DISTLLM_COORDINATOR_PORT:-50050}" \
-            "$@"
+    worker|node)
+        echo "[entrypoint] Starting worker node..."
+        exec distllm-node "$@"
         ;;
     api)
-        echo "[entrypoint] Starting DistLLM API server..."
-        exec distllm-api \
-            --model "${DISTLLM_MODEL}" \
-            --port "${DISTLLM_PORT:-8000}" \
-            ${DISTLLM_LOCAL:+--local} \
-            "$@"
+        echo "[entrypoint] Starting API server..."
+        exec distllm-api "$@"
+        ;;
+    "")
+        # No role set — fall through to user-supplied command
         ;;
     *)
-        echo "[entrypoint] Unknown DISTLLM_ROLE '$ROLE'. Falling through to command."
-        exec "$@"
+        echo "[entrypoint] Unknown DISTLLM_ROLE='${ROLE}', falling through to exec"
         ;;
 esac
+
+# ── Fall-through ─────────────────────────────────────────────────────────────
+# If DISTLLM_ROLE is unset or unrecognised, exec whatever the user passed.
+if [ $# -gt 0 ]; then
+    exec "$@"
+else
+    echo "[entrypoint] No DISTLLM_ROLE and no command provided."
+    echo "  Set DISTLLM_ROLE to one of: coordinator, worker, api"
+    echo "  Or pass a command: docker run distllm <command>"
+    exit 1
+fi

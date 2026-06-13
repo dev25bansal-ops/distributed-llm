@@ -20,7 +20,7 @@ const LINES = [
     { text: '', cls: '', prompt: false },
     { text: '# Query the OpenAI-compatible API', cls: 't-comment', prompt: false },
     { text: 'curl http://localhost:8000/v1/chat/completions \\', cls: 't-cmd', prompt: true },
-    { text: '  -d \'{"model":"llama-3.2-7b","messages\":[...]}\'', cls: 't-str', prompt: false },
+    { text: '  -d \'{"model":"llama-3.2-7b","messages":[...]}\'', cls: 't-str', prompt: false },
     { text: '{"choices":[{"message":{"content":"Hi! How can I help?"}}]}', cls: 't-output', prompt: false },
 ];
 

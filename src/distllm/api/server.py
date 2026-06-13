@@ -117,8 +117,16 @@ def _get_cors_origins() -> list[str]:
 
     valid = []
     for origin in origins:
-        if origin == "*" and os.environ.get("DISTLLM_DEV_MODE") != "1":
-            valid.extend(DEFAULT_ORIGINS)
+        if origin == "*":
+            if os.environ.get("DISTLLM_CORS_ALLOW_ALL", "").lower() in ("1", "true"):
+                logger.critical(
+                    "SECURITY: Wildcard CORS origins are enabled via DISTLLM_CORS_ALLOW_ALL. "
+                    "This allows ANY origin to make cross-origin requests. "
+                    "Do NOT use in production. Set DISTLLM_CORS_ALLOW_ALL=0 or unset to disable."
+                )
+                valid.append(origin)
+            else:
+                valid.extend(DEFAULT_ORIGINS)
             continue
         valid.append(origin)
     return valid
@@ -270,7 +278,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         tls_enabled = os.environ.get("DISTLLM_TLS_ENABLED", "false").lower() == "true"
-        if tls_enabled:
+        trust_proxy_tls = os.environ.get("DISTLLM_TRUST_PROXY_TLS", "").lower() in ("1", "true")
+        if tls_enabled or trust_proxy_tls:
             response.headers["Strict-Transport-Security"] = f"max-age={HSTS_MAX_AGE}; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"

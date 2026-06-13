@@ -1,74 +1,28 @@
-# ==========================================================================
-# DistLLM .dockerignore — exclude build context bloat and secrets
-# ==========================================================================
-
-# Git
-.git/
+.git
 .gitignore
-.gitattributes
-.gitmodules
-.github/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-__pycache__/
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
 *.pyc
 *.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Tests and benchmarks
-tests/
-benchmarks/
-test-results/
-
-# Docs
-docs/
-website/
-*.md
-*.rst
-
-# Development
-.devcontainer/
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.envrc
-.env
-*.env
-.tox/
-
-# Tauri desktop app (Rust build artifacts)
-tauri/target/
-tauri/node_modules/
-tauri/src-tauri/target/
-
-# SDK build artifacts
-sdk/go/
-sdk/rust/
-sdk/node_modules/
-node_modules/
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-
-# Secrets and credentials
-**/credentials.json
-**/service-account.json
-**/*.pem
-**/*.key
-**/id_rsa*
-**/*.p12
-**/*.cert
-
-# OS files
-.DS_Store
-Thumbs.db
-Desktop.ini
+*.egg-info
+dist
+build
+.eggs
+tests
+benchmarks
+docs
+website
+tauri
+extensions/vscode/node_modules
+extensions/vscode/out
+.sdk
+.hypothesis
+.coverage
 *.log
+.env
+.env.local
+secrets
+*.key
+*.pem

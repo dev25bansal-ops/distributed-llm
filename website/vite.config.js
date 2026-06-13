@@ -31,6 +31,8 @@ export default defineConfig({
         manualChunks: {
           'vendor-theme': ['./js/theme.js'],
           'vendor-utils': ['./js/utils.js'],
+          dashboard: ['./js/cluster-viz.js', './js/monitoring.js', './js/live-dashboard.js'],
+          models: ['./js/model-explorer.js', './js/model-rec.js', './js/model-optimizer.js'],
         },
       },
     },
@@ -57,7 +59,11 @@ export default defineConfig({
   server: {
     port: 3000,
     open: false,
-    // HMR is enabled by default
+    headers: {
+      'Content-Security-Policy': "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://plausible.io; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss: https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com",
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff',
+    },
   },
 
   // CSS configuration
@@ -75,19 +81,3 @@ export default defineConfig({
     },
   },
 });
-
-// L-08: Enable JS minification for production builds
-export default {
-  build: {
-    minify: "terser",
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          vendor: ["js/utils.js", "js/theme.js"],
-          dashboard: ["js/cluster-viz.js", "js/monitoring.js", "js/live-dashboard.js"],
-          models: ["js/model-explorer.js", "js/model-rec.js", "js/model-optimizer.js"],
-        },
-      },
-    },
-  },
-};

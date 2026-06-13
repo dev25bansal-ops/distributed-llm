@@ -111,7 +111,7 @@ function getFilteredData() {
 
 // ── Chart Rendering ────────────────────────────────────────────────────
 
-function renderChart(containerId, data, chartType) {
+function renderChart(containerId, data, chartType, onSelect) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
@@ -212,7 +212,9 @@ function renderChart(containerId, data, chartType) {
         point.addEventListener('click', () => {
             const index = parseInt(point.dataset.index);
             state.selectedBenchmark = index;
-            render();
+            if (typeof onSelect === 'function') {
+                onSelect();
+            }
         });
     });
 }
@@ -364,7 +366,7 @@ export function initBenchmarkExplorer() {
         `;
 
         // Render chart
-        renderChart('benchChart', filteredData, state.chartType);
+        renderChart('benchChart', filteredData, state.chartType, render);
 
         // Add event listeners
         setupEventListeners(container, filteredData);

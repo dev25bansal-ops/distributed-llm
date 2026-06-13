@@ -128,8 +128,7 @@ export function initClusterViz() {
     }
     canvas.addEventListener('click', handleClick);
 
-    // Animation state
-    let animTime = 0;
+    // Animation flow speed
     const flowSpeed = 2;
 
     function spawnParticle(fromNode, toNode) {

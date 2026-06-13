@@ -127,9 +127,35 @@ class _RateLimiter:
             self._attempts[key].append(time.time())
             self._prune(key)
 
+def _get_or_generate_api_key() -> str | None:
+    """Get API_KEY from env, or generate one if not set.
+
+    If API_KEY is not set, generates a secure random key and logs it.
+    This ensures auth is never disabled by default in production.
+    """
+    api_key = os.environ.get("API_KEY")
+    if api_key:
+        # Mark explicitly configured keys without reclassifying keys that
+        # this middleware generated earlier in the same process.
+        if "API_KEY_WAS_SET" not in os.environ:
+            os.environ["API_KEY_WAS_SET"] = "1"
+        return api_key
+
+    # Generate a secure random API key if not set
+    generated_key = secrets.token_urlsafe(48)
+    os.environ["API_KEY"] = generated_key
+    os.environ["API_KEY_WAS_SET"] = "0"
+    logger.warning(
+        "API_KEY not set. Generated a secure random API key for production use.\n"
+        "Save this key and set API_KEY=<your-key> in your environment:\n"
+        f"API_KEY={generated_key}"
+    )
+    return generated_key
+
 
 # Module-level rate limiter instances
 _rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60)
+_get_or_generate_api_key()
 
 try:
     _rate_limit_req = int(os.environ.get("DISTLLM_RATE_LIMIT_REQUESTS", "1000"))
@@ -152,16 +178,36 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
+        _get_or_generate_api_key()
         store = get_api_key_store()
 
-        no_auth = os.environ.get("DISTLLM_NO_AUTH") == "1"
+        no_auth = False
+        if os.environ.get("DISTLLM_NO_AUTH") == "1":
+            if os.environ.get("DISTLLM_PROFILE") == "production":
+                raise RuntimeError("Security violation: DISTLLM_NO_AUTH=1 is not allowed in production profile.")
+            if os.environ.get("DISTLLM_DEV_MODE") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
+                no_auth = True
+            else:
+                logger.critical("DISTLLM_NO_AUTH=1 is ignored: dev mode is not enabled.")
+
+        if os.environ.get("DISABLE_AUTH") == "1":
+            if os.environ.get("DISTLLM_PROFILE") == "production":
+                raise RuntimeError("Security violation: DISABLE_AUTH=1 is not allowed in production profile.")
+            if (
+                os.environ.get("DISTLLM_DEV_MODE") == "1"
+                and os.environ.get("API_KEY_WAS_SET") != "1"
+                and not os.environ.get("API_KEY")
+            ):
+                no_auth = True
+
         if no_auth:
-            # SECURITY: DISTLLM_NO_AUTH is never allowed in production.
-            # Only PYTEST_CURRENT_TEST can bypass auth — no env var override.
-            logger.critical("DISTLLM_NO_AUTH=1 is ignored: authentication cannot be disabled via environment variable. "
-                          "Use PYTEST_CURRENT_TEST for testing, or pass --no-auth as a CLI flag to the coordinator.")
-            # Still allow PYTEST_CURRENT_TEST for test suites that set both vars
-            no_auth = False
+            if not getattr(self, "_warned", False):
+                logger.warning(
+                    "AUTHENTICATION DISABLED. "
+                    "This is a security risk and should only be used in development."
+                )
+                self._warned = True
+            return await call_next(request)
 
         # Skip auth for health endpoints (K8s probes, load balancers) and OPTIONS (CORS preflight)
         if request.url.path in ("/health", "/ready", "/live", "/metrics") or request.method == "OPTIONS":

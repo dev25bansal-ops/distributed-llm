@@ -23,6 +23,7 @@ from distllm.core.subsystem_registry import SubsystemRegistry
 from distllm.core.batch_scheduler import BatchScheduler
 from distllm.core.cache_manager import CacheManager
 from distllm.core.cluster_manager import ClusterManager
+from distllm.config.settings import NodeRole
 from distllm.core.coordinator_config import CoordinatorConfig
 from distllm.core.debug import set_debug_mode
 from distllm.core.health_manager import HealthManager
@@ -117,9 +118,7 @@ class Coordinator:
         )
         self._federation: Any = None
 
-        # ── Subsystem Registry (replaces manual lifecycle management) ──
-        self._subsystem_registry = SubsystemRegistry()
-        self._register_subsystems()
+
 
         self._pipeline.set_latency_tracker(self._latency_tracker)
         self._pipeline.set_straggler_detector(self._straggler_detector)
@@ -171,6 +170,11 @@ class Coordinator:
             straggler_detector=self._straggler_detector,
             recovery_manager=self._recovery_manager,
         )
+
+        # ── Subsystem Registry (replaces manual lifecycle management) ──
+        self._subsystem_registry = SubsystemRegistry()
+        self._register_subsystems()
+
 
         # High-availability election (optional)
         self._ha_election: Any = None
@@ -756,7 +760,7 @@ class Coordinator:
             return None
         try:
             temps = []
-            with self._request_lock if hasattr(self, '_request_lock') else threading.Lock():
+            with self._request_lock:
                 for seq in getattr(self._batch_scheduler, 'active', {}).values():
                     if hasattr(seq, 'temperature') and seq.temperature is not None:
                         temps.append(seq.temperature)
@@ -1220,7 +1224,27 @@ class Coordinator:
                 finally:
                     if on_stop:
                         on_stop()
-            asyncio.ensure_future(_wait_and_callback_async())
+            # CRIT-003 fix: Check for a running event loop before using ensure_future
+            try:
+                _loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _loop = None
+            if _loop is not None and _loop.is_running():
+                asyncio.ensure_future(_wait_and_callback_async())
+            else:
+                # No running loop — run callback in a background thread
+                def _run_shutdown_callback():
+                    import asyncio as _asyncio
+                    __loop = _asyncio.new_event_loop()
+                    _asyncio.set_event_loop(__loop)
+                    __loop.run_until_complete(_wait_and_callback_async())
+                    __loop.close()
+                t = threading.Thread(
+                    target=_run_shutdown_callback,
+                    daemon=True,
+                    name="shutdown-callback",
+                )
+                t.start()
 
     def stop(self, timeout: float = 30.0) -> None:
         """Graceful shutdown with in-flight request draining.
@@ -1306,11 +1330,14 @@ class Coordinator:
             except Exception as e:
                 logger.warning(f"Error closing sync connection pool: {e}")
             try:
-                import asyncio
                 try:
                     loop = asyncio.get_running_loop()
-                    asyncio.ensure_future(self._resource_mgr._async_conn_pool.close_all())
                 except RuntimeError:
+                    loop = None
+                if loop is not None and loop.is_running():
+                    asyncio.ensure_future(self._resource_mgr._async_conn_pool.close_all())
+                else:
+                    # No running loop — close synchronously in a new event loop
                     asyncio.run(self._resource_mgr._async_conn_pool.close_all())
             except Exception as e:
                 logger.warning(f"Error closing async connection pool: {e}")

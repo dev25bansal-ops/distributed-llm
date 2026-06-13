@@ -42,13 +42,11 @@
     <link rel="stylesheet" href="css/themes.css">
     <link rel="stylesheet" href="css/print.css" media="print">
 
-    <!-- Advanced features CSS (deferred — not critical for first paint) -->
-    <link rel="stylesheet" href="css/advanced.css" media="print" onload="this.media='all'">
-    <noscript><link rel="stylesheet" href="css/advanced.css"></noscript>
+    <!-- Advanced features CSS -->
+    <link rel="stylesheet" href="css/advanced.css">
 
-    <!-- Modern CSS features (container queries, @supports; deferred) -->
-    <link rel="stylesheet" href="css/modern.css" media="print" onload="this.media='all'">
-    <noscript><link rel="stylesheet" href="css/modern.css"></noscript>
+    <!-- Modern CSS features (container queries, @supports) -->
+    <link rel="stylesheet" href="css/modern.css">
 
     <!-- JS module preload -->
     <link rel="modulepreload" href="js/main.js">
@@ -133,7 +131,7 @@
     <!-- Command palette -->
     <div class="cmd-palette-overlay" id="cmdPalette">
         <div class="cmd-palette" role="dialog" aria-label="Command palette" aria-modal="true">
-            <input class="cmd-input" id="cmdInput" type="text" placeholder="Search sections, features, docs..." autocomplete="off">
+            <input class="cmd-input" id="cmdInput" type="text" placeholder="Search sections, features, docs..." autocomplete="off" aria-label="Search sections, features, and documentation">
             <div class="cmd-results" id="cmdResults" aria-live="polite"></div>
         </div>
     </div>
@@ -154,7 +152,7 @@
                 <a href="/docs.html">Docs</a>
             </div>
             <div class="nav-right">
-                <input type="text" id="searchInput" placeholder="Search docs... (Ctrl+K)" class="nav-search" style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px;width:180px;">
+                <input type="text" id="searchInput" placeholder="Search docs... (Ctrl+K)" class="nav-search" style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px;width:180px;" aria-label="Search documentation">
                 <a href="https://github.com/distributed-llm/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub Stars">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>
                     <span id="starCount">---</span>

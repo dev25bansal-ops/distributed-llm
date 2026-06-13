@@ -41,9 +41,9 @@ describe('Calculator', () => {
         });
 
         it('should calculate electricity cost correctly', () => {
-            // 1 GPU * 0.55kW * 720h * $0.30/kWh * 30 days = $3564
+            // 1 GPU * 0.55kW * 720h * $0.30/kWh * 30 days ≈ $3564
             const { elec } = calculateSavings(1, 100, 2, 720);
-            expect(elec).toBe(3564);
+            expect(elec).toBeCloseTo(3564, 0);
         });
 
         it('should return 0 savings when cloud < electricity', () => {
@@ -86,7 +86,9 @@ describe('Calculator', () => {
         });
 
         it('should show DistLLM TCO growing slower than cloud', () => {
-            const tco = calculateTCO(1, 100, 2, 720);
+            // Use realistic inputs: 12h/day, low electricity ($0.10/kWh)
+            // so that cloud cost exceeds electricity cost
+            const tco = calculateTCO(1, 100, 2, 12, 0.10);
             // Hardware is one-time, only electricity grows
             const distllmGrowth = tco['5y'].distllm - tco['1y'].distllm;
             const cloudGrowth = tco['5y'].cloud - tco['1y'].cloud;

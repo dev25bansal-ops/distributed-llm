@@ -143,7 +143,7 @@ services:
         --coordinator coordinator
         --port 50050
         --node-id worker-${i}
-        ${isSecure ? '--api-key \${API_KEY:-changeme}' : ''}
+        ${isSecure ? '--api-key ${API_KEY:-changeme}' : ''}
     deploy:
       resources:
         reservations:
