@@ -338,14 +338,27 @@ class PluginSystem:
     def _verify_plugin_integrity(self, path: Path) -> bool:
         """Verify plugin file integrity against a content hash allowlist.
 
-        The allowlist is read from ``distllm_plugin_hashes.txt`` in each
-        trusted directory. Each line is ``sha256:<hexhash> <filename>``.
-        If no allowlist file exists, the plugin is rejected (fail closed).
+        The allowlist is read from ``distllm_plugin_hashes.txt`` in the
+        plugin's directory. Each line is ``sha256:<hexhash> <filename>``.
+
+        When *strict* mode is enabled (via ``config["verify_plugins"]``),
+        a missing allowlist or mismatched hash rejects the plugin (fail
+        closed).  Otherwise a missing allowlist logs a warning and allows
+        loading (fail open, backward compatible).
         """
+        strict = self._config.get("verify_plugins", False)
         allowlist_path = path.parent / "distllm_plugin_hashes.txt"
+
         if not allowlist_path.exists():
-            logger.error(f"No plugin hash allowlist found at {allowlist_path} — rejecting {path.name}")
-            return False
+            if strict:
+                logger.error(f"No plugin hash allowlist found at {allowlist_path} — rejecting {path.name}")
+                return False
+            logger.warning(
+                f"No plugin hash allowlist at {allowlist_path} — "
+                f"loading {path.name} without verification. "
+                f"Run with --verify-plugins to require hash checks."
+            )
+            return True
 
         import hashlib
         file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -374,6 +387,7 @@ class PluginSystem:
         - Only loads plugins from trusted directories (those passed to ``discover()``)
         - Rejects symlinks pointing outside trusted dirs
         - Verifies file SHA-256 hash against ``distllm_plugin_hashes.txt`` allowlist
+          (fail-open by default; fail-closed when ``config["verify_plugins"]`` is set)
         """
         try:
             # Security: verify file is within a trusted plugin directory
@@ -439,6 +453,8 @@ class PluginSystem:
         - Plugin name is sanitised to prevent shell injection
         - Only alphanumeric, dash, and underscore characters are allowed
         - Installation runs with a timeout (120s) to prevent resource exhaustion
+        - ``--require-hashes`` is passed to pip to enforce hash verification
+        - A warning is logged when installing from a public PyPI index
         """
         import hashlib
         import re
@@ -450,7 +466,14 @@ class PluginSystem:
             return False
 
         package_name = f"distllm-plugin-{plugin_name}"
-        cmd = [sys.executable, "-m", "pip", "install"]
+
+        # Warn that we are pulling from a public index
+        logger.warning(
+            f"Installing {package_name} from PyPI — "
+            f"ensure the package is trusted before use in production."
+        )
+
+        cmd = [sys.executable, "-m", "pip", "install", "--require-hashes"]
         if upgrade:
             cmd.append("--upgrade")
         cmd.append(package_name)

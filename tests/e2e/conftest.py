@@ -5,9 +5,14 @@ Provides fixtures that spin up a fully mocked API server:
 - FastAPI test client hitting the real API server with middleware
 """
 
+import os
+
 import pytest
 import torch
 from unittest.mock import MagicMock
+
+# Set a stable API key before the app module loads (prevents random key generation)
+os.environ.setdefault("API_KEY", "test-e2e-api-key")
 
 
 @pytest.fixture
@@ -53,6 +58,10 @@ def e2e_coordinator():
     coord.list_models.return_value = ["distributed-llm"]
     coord._shutting_down = False
 
+    # Mock _model_router.resolve() to return the model name as a string
+    coord._model_router = MagicMock()
+    coord._model_router.resolve.return_value = "distributed-llm"
+
     return coord
 
 
@@ -64,13 +73,20 @@ def e2e_api_client(e2e_coordinator):
     """
     from fastapi.testclient import TestClient
 
-    import distllm.api.server as server_module
     from distllm.api.server import app
+    import distllm.api.api_state as api_state_module
 
-    original_coordinator = server_module.coordinator
-    server_module.coordinator = e2e_coordinator
+    original_coordinator = api_state_module._state.coordinator
+    api_state_module._state.coordinator = e2e_coordinator
 
-    client = TestClient(app, raise_server_exceptions=True)
+    client = TestClient(app, raise_server_exceptions=False)
     yield client
 
-    server_module.coordinator = original_coordinator
+    api_state_module._state.coordinator = original_coordinator
+
+
+@pytest.fixture
+def e2e_auth_headers():
+    """Authorization headers for E2E API requests."""
+    api_key = os.environ.get("API_KEY", "test-e2e-api-key")
+    return {"Authorization": f"Bearer {api_key}"}

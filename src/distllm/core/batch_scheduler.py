@@ -27,6 +27,9 @@ from distllm.core.scheduler.sequence import (
 from distllm.core.scheduler.pressure import DecodePressureTracker
 from distllm.core.scheduler.budget import IterationBudget
 from distllm.core.scheduler.chunked_prefill import ChunkedPrefillInfo
+from distllm.core.scheduler.kv_cache_manager import KVCacheManager
+from distllm.core.scheduler.preemption_manager import PreemptionManager
+from distllm.core.scheduler.budget_computer import BudgetComputer
 
 if TYPE_CHECKING:
     from distllm.core.adaptive_batching import AdaptiveBatchingEngine
@@ -80,7 +83,19 @@ class BatchScheduler:
         self._base_batch_size = max_batch_size
         self._base_tokens_per_batch = max_tokens_per_batch
         self._paged_attention_mgr = paged_attention_mgr
-        self.max_tokens_per_batch = self._compute_dynamic_budget(max_tokens_per_batch)
+
+        # Extracted sub-managers
+        self._kv_cache_mgr = KVCacheManager(paged_attention_mgr)
+        self._pressure_tracker = DecodePressureTracker()
+        self._budget_computer = BudgetComputer(
+            kv_cache_mgr=self._kv_cache_mgr,
+            pressure_tracker=self._pressure_tracker,
+            adapt_prefill_budget=True,
+        )
+
+        self.max_tokens_per_batch = self._budget_computer.compute_dynamic_budget(
+            max_tokens_per_batch, self._paged_attention_mgr,
+        )
         self._pending_heap: list = []  # Min-heap of (priority, counter, Sequence)
         self._overflow_buffer: list = []  # Overflow from split_overflow
         self._counter: int = 0  # Tiebreaker for FIFO within same priority
@@ -119,20 +134,21 @@ class BatchScheduler:
 
         # Priority weights for within-batch token allocation (configurable)
         self._priority_weights: dict[int, float] = priority_weights or {
-            0: 1.5,   # critical — 50% bonus tokens/iteration
-            1: 1.25,  # high    — 25% bonus
-            2: 1.0,   # normal  — baseline
-            3: 0.5,   # low     — half the tokens (slower prefill)
+            0: 1.5,   # critical -- 50% bonus tokens/iteration
+            1: 1.25,  # high    -- 25% bonus
+            2: 1.0,   # normal  -- baseline
+            3: 0.5,   # low     -- half the tokens (slower prefill)
         }
 
         # Sarathi-Serve style adaptive pressure tracking
-        self._pressure_tracker = DecodePressureTracker()
+        # (shared instance with _budget_computer, created above)
         self._adapt_prefill_budget = True
 
-        # Preemption state
-        self._preempted: dict[str, Sequence] = {}  # request_id -> Sequence
-        self._preempted_kv_state: dict[str, dict] = {}  # request_id -> KV cache state
-        self._max_preempted: int = 4  # Max concurrent preempted sequences
+        # Preemption manager (extracted from inline state)
+        self._preemption_mgr = PreemptionManager(
+            kv_cache_mgr=self._kv_cache_mgr,
+            max_preempted=4,
+        )
 
         # Adaptive batching engine (set externally by coordinator)
         self._adaptive_engine: AdaptiveBatchingEngine | None = None
@@ -142,7 +158,7 @@ class BatchScheduler:
         # Cache manager for radix tree prefix storage (set by coordinator)
         self._cache_mgr = None
 
-        # ── Advanced scheduling integrations (lazy-initialized) ──
+        # -- Advanced scheduling integrations (lazy-initialized) --
 
         # 1. Heterogeneous P2P scheduling
         self._het_budget: HeterogeneousBudgetComputer | None = None
@@ -159,14 +175,13 @@ class BatchScheduler:
         # 5. Pluggable scheduling policy (overrides Sarathi-Serve when set)
         self._scheduling_policy: SchedulingPolicy | None = None
 
-        # 6. Preemption policy (from dist/preemption.py)
-        self._preemption_policy: PreemptionPolicy | None = None
+        # 6. Preemption policy (delegated to PreemptionManager)
 
     def set_cache_manager(self, cache_mgr) -> None:
         """Set the cache manager for radix tree prefix storage."""
         self._cache_mgr = cache_mgr
 
-    # ── Advanced scheduling configuration ──────────────────────────────────
+    # -- Advanced scheduling configuration ---------------------------------
 
     def set_node_capabilities(self, nodes: dict[str, "NodeCapabilityInfo"]) -> None:
         """Register cluster node capabilities for heterogeneous scheduling.
@@ -254,7 +269,7 @@ class BatchScheduler:
         ))
         logger.info(
             f"WAN scheduling mode {'enabled' if enabled else 'disabled'}: "
-            f"chunk×{chunk_multiplier}, batch×{batch_multiplier}, "
+            f"chunk*{chunk_multiplier}, batch*{batch_multiplier}, "
             f"RTT threshold={rtt_threshold_ms}ms"
         )
 
@@ -317,9 +332,7 @@ class BatchScheduler:
             policy: A PreemptionPolicy instance from dist/preemption.py,
                     or None to disable policy-driven preemption.
         """
-        self._preemption_policy = policy
-        if policy is not None:
-            logger.info("Preemption policy connected")
+        self._preemption_mgr.set_preemption_policy(policy)
 
     def preempt_if_needed(self) -> Sequence | None:
         """Check preemption policy and preempt if conditions are met.
@@ -332,24 +345,12 @@ class BatchScheduler:
         Returns:
             The preempted Sequence, or None if no preemption was needed.
         """
-        if self._preemption_policy is None:
-            return None
-
-        if self._preemption_policy.should_preempt(
+        return self._preemption_mgr.preempt_if_needed(
             pending_count=self.pending_count,
-            min_priority=3,
-        ):
-            preempted = self.preempt_lowest(min_priority=2)
-            if preempted is not None:
-                logger.info(
-                    f"Policy preempted {preempted.request_id} "
-                    f"(priority={preempted.priority})"
-                )
-            return preempted
+            preempt_fn=self.preempt_lowest,
+        )
 
-        return None
-
-    # ── Runtime update methods (called by coordinator during inference) ────
+    # -- Runtime update methods (called by coordinator during inference) ---
 
     def update_node_power(self, node_id: str, watts: float) -> None:
         """Update power draw for a node (from NVML monitoring).
@@ -391,57 +392,15 @@ class BatchScheduler:
         3. Energy-adjusted budget (if energy monitor active)
         4. Base budget
         """
-        base = self._budget if (self._budget.enable_chunked_prefill and self._enable_chunked_prefill) else IterationBudget(
-            max_prefill_tokens=self.max_tokens_per_batch,
-            max_decode_tokens=self.max_tokens_per_batch,
+        return self._budget_computer.get_iteration_budget(
+            base_budget=self._budget,
+            enable_chunked_prefill=self._enable_chunked_prefill,
+            max_tokens_per_batch=self.max_tokens_per_batch,
             max_batch_size=self.max_batch_size,
-            max_total_tokens=self.max_tokens_per_batch,
-            enable_chunked_prefill=False,
+            het_budget=self._het_budget,
+            wan_policy=self._wan_policy,
+            energy_scheduler=self._energy_scheduler,
         )
-
-        # 1. Heterogeneous budget: scale based on cluster device capabilities
-        if self._het_budget is not None:
-            base = self._het_budget.compute_budget(
-                base_prefill_tokens=base.max_prefill_tokens,
-                base_decode_tokens=base.max_decode_tokens,
-                base_batch_size=base.max_batch_size,
-                base_total_tokens=base.max_total_tokens,
-            )
-
-        # 2. WAN adjustment: scale chunks and batches for high-latency links
-        if self._wan_policy is not None and self._wan_policy.is_wan_active:
-            adj_prefill, adj_batch, adj_total = self._wan_policy.adjust_budget_for_wan(
-                base_prefill_tokens=base.max_prefill_tokens,
-                base_batch_size=base.max_batch_size,
-                base_total_tokens=base.max_total_tokens,
-            )
-            base = IterationBudget(
-                max_prefill_tokens=adj_prefill,
-                max_decode_tokens=base.max_decode_tokens,
-                max_batch_size=adj_batch,
-                max_total_tokens=adj_total,
-                enable_chunked_prefill=base.enable_chunked_prefill,
-                prefill_slack_ratio=base.prefill_slack_ratio,
-            )
-
-        # 3. Energy adjustment: reduce batch size if over power budget
-        if self._energy_scheduler is not None:
-            adj_batch, adj_prefill = self._energy_scheduler.adjust_for_energy(
-                base_batch_size=base.max_batch_size,
-                base_prefill_tokens=base.max_prefill_tokens,
-            )
-            if adj_batch != base.max_batch_size or adj_prefill != base.max_prefill_tokens:
-                base = IterationBudget(
-                    max_prefill_tokens=adj_prefill,
-                    max_decode_tokens=base.max_decode_tokens,
-                    max_batch_size=adj_batch,
-                    max_total_tokens=base.max_total_tokens,
-                    enable_chunked_prefill=base.enable_chunked_prefill,
-                    prefill_slack_ratio=base.prefill_slack_ratio,
-                )
-
-        return base
-
 
     def _check_starvation(self) -> None:
         """Check pending heap for requests that have been waiting too long.
@@ -455,7 +414,7 @@ class BatchScheduler:
         # Sample at most 20 items from the top of the heap (highest priority).
         # Starvation is most likely to affect low-priority items at the bottom,
         # but we can't efficiently inspect those without a full scan.  Instead,
-        # we check the items most likely to be scheduled next — if even those
+        # we check the items most likely to be scheduled next -- if even those
         # are old, something is very wrong.
         sample_count = min(20, len(self._pending_heap))
         for i in range(sample_count):
@@ -466,7 +425,7 @@ class BatchScheduler:
                 if seq.request_id not in self._last_starvation_warn:
                     logger.warning(
                         f"Request {seq.request_id} pending for {elapsed:.0f}s "
-                        f"(priority={seq.priority}) — possible starvation"
+                        f"(priority={seq.priority}) -- possible starvation"
                     )
         self._last_starvation_warn = current_starved
 
@@ -526,11 +485,11 @@ class BatchScheduler:
         base = self._base_batch_size
 
         if gpu_utilization < 0.7:
-            # GPU is underutilized — increase batch size
+            # GPU is underutilized -- increase batch size
             scale = min(2.0, 1.0 + (0.7 - gpu_utilization) * 3.0)
             new_size = min(int(base * scale), base * 2)
         elif gpu_utilization > 0.9:
-            # GPU is overloaded — decrease batch size
+            # GPU is overloaded -- decrease batch size
             scale = max(0.5, 1.0 - (gpu_utilization - 0.9) * 5.0)
             new_size = max(int(base * scale), max(1, base // 2))
         else:
@@ -566,6 +525,7 @@ class BatchScheduler:
     def set_paged_attention(self, mgr: object) -> None:
         """Connect to PagedAttention manager for KV block-aware scheduling."""
         self._paged_attention_mgr = mgr
+        self._kv_cache_mgr.set_paged_attention(mgr)
 
     def allocate_paged_blocks(self, seq: Sequence) -> list[int] | None:
         """Allocate PagedAttention blocks for a sequence.
@@ -576,25 +536,11 @@ class BatchScheduler:
         Returns:
             List of allocated block IDs, or None if PagedAttention not active.
         """
-        if self._paged_attention_mgr is None:
-            return None
-        try:
-            num_tokens = len(seq.prompt_tokens) + seq.max_new_tokens
-            block_ids = self._paged_attention_mgr.allocate_sequence(
-                seq.request_id, num_tokens,
-            )
-            return block_ids
-        except RuntimeError as e:
-            logger.warning(f"PagedAttention allocation failed for {seq.request_id}: {e}")
-            return None
+        return self._kv_cache_mgr.allocate_paged_blocks(seq)
 
     def free_paged_blocks(self, request_id: str) -> None:
         """Free PagedAttention blocks for a completed sequence."""
-        if self._paged_attention_mgr is not None:
-            try:
-                self._paged_attention_mgr.free_sequence(request_id)
-            except Exception as e:
-                logger.warning(f"Failed to free paged blocks for {request_id}: {e}")
+        self._kv_cache_mgr.free_paged_blocks(request_id)
 
     def swap_evict_to_cpu(self, min_blocks: int = 1) -> int:
         """Evict lowest-priority active sequences to CPU to free GPU blocks.
@@ -608,47 +554,17 @@ class BatchScheduler:
         Returns:
             Number of blocks freed.
         """
-        if self._paged_attention_mgr is None:
-            return 0
-
-        # Find lowest-priority active sequences (highest numeric priority first,
-        # then oldest first — evict cheap/old work before expensive/new work)
-        with self._lock:
-            candidates = sorted(
-                self.active.values(),
-                key=lambda s: (s.priority, -s.created_at),
-            )
-
-        freed = 0
-        for seq in candidates:
-            if freed >= min_blocks:
-                break
-            try:
-                blocks_freed = self._paged_attention_mgr.swap_blocks_to_cpu(seq.request_id)
-                freed += blocks_freed
-                logger.debug(f"Swapped {blocks_freed} blocks to CPU for {seq.request_id}")
-            except Exception as e:
-                logger.debug(f"Failed to swap blocks to CPU for {seq.request_id}: {e}")
-                continue
-        return freed
+        return self._kv_cache_mgr.swap_evict_to_cpu(
+            self.active, self._lock, min_blocks,
+        )
 
     def restore_from_cpu(self, request_id: str) -> int:
         """Restore a sequence's blocks from CPU back to GPU."""
-        if self._paged_attention_mgr is None:
-            return 0
-        try:
-            return self._paged_attention_mgr.swap_blocks_to_gpu(request_id)
-        except Exception as e:
-            logger.warning(f"Failed to restore blocks from CPU for {request_id}: {e}")
-            return 0
+        return self._kv_cache_mgr.restore_from_cpu(request_id)
 
     def copy_on_write(self, source_id: str, dest_id: str) -> None:
         """Copy-on-write for shared prefixes (beam search, speculative decoding)."""
-        if self._paged_attention_mgr is not None:
-            try:
-                self._paged_attention_mgr.copy_on_write(source_id, dest_id)
-            except Exception as e:
-                logger.warning(f"Copy-on-write failed from {source_id} to {dest_id}: {e}")
+        self._kv_cache_mgr.copy_on_write(source_id, dest_id)
 
     def _compute_sarathi_budget(self, budget: IterationBudget) -> IterationBudget:
         """Sarathi-Serve style adaptive budget: reserve decode slots first.
@@ -659,72 +575,11 @@ class BatchScheduler:
 
         Returns a modified deep copy of the budget.
 
-        Note: Skipped when WAN mode is active — WAN latency variance
+        Note: Skipped when WAN mode is active -- WAN latency variance
         dominates the pressure signal, causing oscillation.
         """
-        # WAN mode: skip pressure adaptation (RTT jitter dominates)
-        if self._wan_policy is not None and self._wan_policy.should_disable_pressure_adaptation():
-            return budget
-
-        pressure = self._pressure_tracker.pressure
-        with self._lock:
-            active_snapshot = list(self.active.values())
-        active_decode_count = sum(
-            1 for s in active_snapshot
-            if s.status == SequenceStatus.DECODING
-        )
-        pending_decode_count = sum(
-            1 for s in active_snapshot
-            if s.status == SequenceStatus.PREFILLING
-            and len(s.generated_tokens) > 0
-        )
-        total_decode_demand = active_decode_count + pending_decode_count
-
-        # Guarantee decode slots: at least enough for all active decoders.
-        # max_decode_tokens here represents *decode slots* (each decode = 1 token).
-        base_decode_slots = min(budget.max_batch_size, budget.max_decode_tokens)
-        guaranteed_decode = max(base_decode_slots, total_decode_demand)
-
-        if pressure > 0.7:
-            # Saturate decode slots up to batch_size under pressure
-            adjusted_decode = min(budget.max_batch_size, int(guaranteed_decode * (1.0 + pressure)))
-        elif pressure < 0.3:
-            # Relax decode slots when idle
-            adjusted_decode = max(1, int(base_decode_slots * 0.6))
-        else:
-            adjusted_decode = base_decode_slots
-
-        adjusted_decode = min(adjusted_decode, budget.max_batch_size)
-
-        # Compute remaining budget for prefill after decode reservation.
-        # Each decode consumes position_offsets tracking (≈1 token of budget).
-        total_after_decode = max(0, budget.max_total_tokens - adjusted_decode)
-
-        # Adjust prefill budget: throttle under high pressure.
-        if pressure > 0.8:
-            prefill_scale = max(0.25, 1.0 - pressure)
-        elif pressure > 0.5:
-            prefill_scale = 0.75
-        else:
-            prefill_scale = 1.0
-
-        adjusted_prefill = min(
-            int(budget.max_prefill_tokens * prefill_scale),
-            total_after_decode,
-        )
-
-        # Under severe pressure, limit batch size for stability
-        adjusted_batch = budget.max_batch_size
-        if pressure > 0.9:
-            adjusted_batch = max(adjusted_decode, int(budget.max_batch_size * 0.5))
-
-        return IterationBudget(
-            max_prefill_tokens=adjusted_prefill,
-            max_decode_tokens=adjusted_decode,
-            max_batch_size=adjusted_batch,
-            max_total_tokens=budget.max_total_tokens,
-            enable_chunked_prefill=budget.enable_chunked_prefill,
-            prefill_slack_ratio=budget.prefill_slack_ratio,
+        return self._budget_computer.compute_sarathi_budget(
+            budget, self.active, self._lock, self._wan_policy,
         )
 
     def _compute_dynamic_budget(self, base_budget: int) -> int:
@@ -733,25 +588,9 @@ class BatchScheduler:
         If PagedAttention is available, uses pool utilization to adjust down
         under memory pressure. Otherwise keeps the base budget.
         """
-        budget = min(base_budget, 131072)
-        if self._paged_attention_mgr is not None:
-            # Try to get precise block-level info from the pool
-            pool = getattr(self._paged_attention_mgr, 'pool', None)
-            if pool is not None:
-                free_blocks = getattr(pool, 'free_count', 0)
-                block_size = getattr(pool, 'block_size', 16)
-                # Convert free blocks to a token budget: each free block
-                # can hold block_size tokens.  Leave 10% headroom so we
-                # don't exhaust the pool between budget recalculations.
-                block_token_budget = int(free_blocks * block_size * 0.9)
-                budget = min(budget, block_token_budget)
-            else:
-                pool_util = getattr(self._paged_attention_mgr, 'pool_utilization', 0.0)
-                if pool_util > 0.85:
-                    budget = int(budget * 0.75)
-                elif pool_util > 0.70:
-                    budget = int(budget * 0.9)
-        return budget
+        return self._budget_computer.compute_dynamic_budget(
+            base_budget, self._paged_attention_mgr,
+        )
 
     def adjust_budget(self) -> None:
         """Recompute the dynamic token budget based on current memory state.
@@ -759,15 +598,13 @@ class BatchScheduler:
         Call this between batches to adapt to changing memory conditions.
         """
         with self._lock:
-            self.max_tokens_per_batch = self._compute_dynamic_budget(self._base_tokens_per_batch)
+            self.max_tokens_per_batch = self._budget_computer.compute_dynamic_budget(
+                self._base_tokens_per_batch, self._paged_attention_mgr,
+            )
 
     def paged_kv_block_count(self, tokens: int) -> int:
         """Estimate number of PagedAttention blocks needed for this many tokens."""
-        if self._paged_attention_mgr is not None:
-            block_size = getattr(self._paged_attention_mgr, 'block_size', 16)
-        else:
-            block_size = 16
-        return (tokens + block_size - 1) // block_size
+        return self._kv_cache_mgr.paged_kv_block_count(tokens)
 
     def add(self, seq: Sequence) -> None:
         """Add a new request to the pending queue (priority-ordered).
@@ -827,10 +664,9 @@ class BatchScheduler:
         self.update_batch_size_from_adaptive()
 
         # Apply budget policy: pluggable > Sarathi-Serve > passthrough
-        if self._scheduling_policy is not None:
-            budget = self._scheduling_policy.compute_budget(budget)
-        elif self._adapt_prefill_budget:
-            budget = self._compute_sarathi_budget(budget)
+        budget = self._budget_computer.apply_budget_policy(
+            budget, self._scheduling_policy, self.active, self._lock, self._wan_policy,
+        )
 
         # Starvation check: warn if any request has been pending too long
         self._check_starvation()
@@ -1241,7 +1077,7 @@ class BatchScheduler:
             decode_elapsed_ms=(time.monotonic() - decode_start) * 1000 if decode_count > 0 else 0.0,
         )
 
-        # Prune completed sequences from active set (under lock — shared with get_sequence)
+        # Prune completed sequences from active set (under lock -- shared with get_sequence)
         with self._lock:
             done_rids = [s.request_id for s in batch.sequences if s.is_complete]
             for rid in done_rids:
@@ -1306,7 +1142,7 @@ class BatchScheduler:
             seq.priority = new_priority
             self._pending_heap[idx] = (new_priority, _cnt, seq)
 
-            # Bubble up or down — O(log n) instead of O(n) heapify
+            # Bubble up or down -- O(log n) instead of O(n) heapify
             if new_priority < _pri:
                 heapq._siftup(self._pending_heap, idx)
             else:
@@ -1333,35 +1169,21 @@ class BatchScheduler:
             The preempted Sequence, or None if no eligible candidate exists.
         """
         with self._lock:
-            if len(self._preempted) >= self._max_preempted:
-                return None
-
-            victim_seq = None
-            victim_pri = -1
-            for _rid, seq in self.active.items():
-                if seq.priority >= min_priority and (victim_seq is None or seq.priority > victim_pri):
-                    victim_seq = seq
-                    victim_pri = seq.priority
-
-            if victim_seq is None:
-                return None
-
-            req_id = victim_seq.request_id
-            self._save_kv_state(req_id, kv_cache_state)
-
-            if self._paged_attention_mgr is not None:
-                try:
-                    self._paged_attention_mgr.swap_out_sequence(req_id)
-                except Exception as e:
-                    logger.debug("PagedAttention swap failed: {}", e)
-
-            del self.active[req_id]
-            self._total_tokens -= victim_seq.total_len
-            victim_seq.status = SequenceStatus.PENDING
-            self._counter += 1
-            heapq.heappush(self._pending_heap, (victim_seq.priority, self._counter, victim_seq))
-            self._preempted[req_id] = victim_seq
-            return victim_seq
+            total_ref = [self._total_tokens]
+            counter_ref = [self._counter]
+            result = self._preemption_mgr.preempt_lowest(
+                active=self.active,
+                total_tokens_ref=total_ref,
+                pending_heap=self._pending_heap,
+                counter_ref=counter_ref,
+                paged_attention_mgr=self._paged_attention_mgr,
+                min_priority=min_priority,
+                kv_cache_state=kv_cache_state,
+            )
+            # Sync mutable refs back to instance state
+            self._total_tokens = total_ref[0]
+            self._counter = counter_ref[0]
+            return result
 
     def _save_kv_state(self, request_id: str, kv_cache_state: dict | None = None) -> None:
         """Save KV cache state for a preempted sequence.
@@ -1374,12 +1196,11 @@ class BatchScheduler:
             kv_cache_state: External dict mapping request_id -> KV cache data.
                 If the dict contains request_id, its value is saved.
         """
-        if kv_cache_state is not None and request_id in kv_cache_state:
-            data = kv_cache_state[request_id]
-            compressed = self._compress_kv_for_preemption(data)
-            self._preempted_kv_state[request_id] = compressed
+        self._kv_cache_mgr.save_kv_state(
+            request_id, self._preemption_mgr._preempted_kv_state, kv_cache_state,
+        )
 
-    def _compress_kv_for_preemption(self, kv_data: Any, method: str = "int4") -> Any:
+    def _compress_kv_for_preemption(self, kv_data, method: str = "int4"):
         """Compress KV cache data before storing for preemption.
 
         Applies int4 quantization (8x reduction) to KV tensors if they
@@ -1387,27 +1208,12 @@ class BatchScheduler:
 
         Args:
             kv_data: KV cache data (tensor, list of tensors, dict, or any).
-            method: Compression method — "int4" (8x), "int8" (4x), or "none".
+            method: Compression method -- "int4" (8x), "int8" (4x), or "none".
 
         Returns:
             Compressed data with metadata for decompression.
         """
-        if method == "none" or kv_data is None:
-            return kv_data
-
-        import torch
-
-        if isinstance(kv_data, torch.Tensor):
-            return self._compress_tensor(kv_data, method)
-
-        if isinstance(kv_data, dict):
-            return {k: self._compress_kv_for_preemption(v, method) for k, v in kv_data.items()}
-
-        if isinstance(kv_data, (list, tuple)):
-            return [self._compress_kv_for_preemption(item, method) for item in kv_data]
-
-        # Non-tensor data (strings, ints, etc.) — store as-is
-        return kv_data
+        return self._kv_cache_mgr._compress_kv_for_preemption(kv_data, method)
 
     @staticmethod
     def _compress_tensor(tensor: "torch.Tensor", method: str) -> dict:
@@ -1416,41 +1222,14 @@ class BatchScheduler:
         Returns a dict with the quantized tensor and scale factors,
         which can be restored with _decompress_tensor().
         """
-        import torch
-
-        if method == "int4":
-            scale = tensor.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / 7.0
-            quantized = (tensor / scale).clamp(-7, 7).to(torch.int8)
-            return {"_compressed": True, "method": "int4", "data": quantized, "scale": scale}
-
-        if method == "int8":
-            scale = tensor.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / 127.0
-            quantized = (tensor / scale).round().clamp(-128, 127).to(torch.int8)
-            return {"_compressed": True, "method": "int8", "data": quantized, "scale": scale}
-
-        return {"_compressed": False, "data": tensor}
+        return KVCacheManager._compress_tensor(tensor, method)
 
     @staticmethod
     def _decompress_tensor(compressed: dict) -> "torch.Tensor":
         """Restore a tensor compressed by _compress_tensor()."""
-        import torch
+        return KVCacheManager._decompress_tensor(compressed)
 
-        if not compressed.get("_compressed", False):
-            return compressed["data"]
-
-        data = compressed["data"]
-        scale = compressed["scale"]
-        method = compressed.get("method", "int8")
-
-        if method == "int4":
-            return data.to(torch.float16) * scale
-
-        if method == "int8":
-            return data.to(torch.float16) * scale
-
-        return data
-
-    def decompress_preempted_kv(self, kv_data: Any) -> Any:
+    def decompress_preempted_kv(self, kv_data) -> object:
         """Recursively decompress KV data that was compressed for preemption.
 
         Args:
@@ -1459,17 +1238,7 @@ class BatchScheduler:
         Returns:
             Decompressed data ready for use.
         """
-
-        if isinstance(kv_data, dict) and kv_data.get("_compressed"):
-            return self._decompress_tensor(kv_data)
-
-        if isinstance(kv_data, dict):
-            return {k: self.decompress_preempted_kv(v) for k, v in kv_data.items()}
-
-        if isinstance(kv_data, list):
-            return [self.decompress_preempted_kv(item) for item in kv_data]
-
-        return kv_data
+        return self._kv_cache_mgr.decompress_preempted_kv(kv_data)
 
     def _restore_kv_state(self, request_id: str, kv_cache_state: dict | None = None) -> bool:
         """Restore KV cache state for a preempted sequence.
@@ -1484,11 +1253,9 @@ class BatchScheduler:
         Returns:
             True if KV state was found and restored, False otherwise.
         """
-        saved = self._preempted_kv_state.pop(request_id, None)
-        if saved is not None and kv_cache_state is not None:
-            kv_cache_state[request_id] = self.decompress_preempted_kv(saved)
-            return True
-        return False
+        return self._kv_cache_mgr.restore_kv_state(
+            request_id, self._preemption_mgr._preempted_kv_state, kv_cache_state,
+        )
 
     def restore_preempted(self, kv_cache_state: dict | None = None) -> list[Sequence]:
         """Restore all preempted sequences back to active with KV state.
@@ -1504,54 +1271,30 @@ class BatchScheduler:
         is held.
         """
         with self._lock:
-            if not self._preempted:
-                return []
-
-            restored = []
-            remove_ids: set[str] = set()
-
-            for req_id, seq in list(self._preempted.items()):
-                self._restore_kv_state(req_id, kv_cache_state)
-                remove_ids.add(req_id)
-
-                if self._paged_attention_mgr is not None:
-                    try:
-                        self._paged_attention_mgr.pool.restore_block(
-                            self._paged_attention_mgr.get_physical_blocks(req_id)[0]
-                        )
-                    except Exception as e:
-                        logger.debug("PagedAttention restore failed: {}", e)
-
-                seq.status = SequenceStatus.DECODING
-                self.active[req_id] = seq
-                self._total_tokens += seq.total_len
-                restored.append(seq)
-
-            # Single-pass heap rebuild: filter out all restored request IDs
-            # in one O(n) pass, then heapify once O(n).  This is correct
-            # because the lock prevents concurrent heap modifications.
-            if remove_ids:
-                self._pending_heap = [
-                    item for item in self._pending_heap
-                    if item[2].request_id not in remove_ids
-                ]
-                heapq.heapify(self._pending_heap)
-
-            self._preempted.clear()
+            total_ref = [self._total_tokens]
+            restored = self._preemption_mgr.restore_preempted(
+                active=self.active,
+                total_tokens_ref=total_ref,
+                pending_heap=self._pending_heap,
+                paged_attention_mgr=self._paged_attention_mgr,
+                kv_cache_state=kv_cache_state,
+            )
+            # Sync mutable ref back to instance state
+            self._total_tokens = total_ref[0]
             return restored
 
     def set_max_preempted(self, max_preempted: int) -> None:
         """Set the maximum number of concurrently preempted sequences."""
-        self._max_preempted = max(0, max_preempted)
+        self._preemption_mgr.set_max_preempted(max_preempted)
 
     def get_preempted_count(self) -> int:
-        return len(self._preempted)
+        return self._preemption_mgr.get_preempted_count()
 
     def stats(self) -> dict:
         stats = {
             "active_requests": self.active_count,
             "pending_requests": self.pending_count,
-            "preempted_requests": len(self._preempted),
+            "preempted_requests": self._preemption_mgr.get_preempted_count(),
             "max_batch_size": self.max_batch_size,
             "max_tokens_per_batch": self.max_tokens_per_batch,
             "paged_attention": self._paged_attention_mgr is not None,

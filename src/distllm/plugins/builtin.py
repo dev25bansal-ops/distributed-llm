@@ -5,6 +5,7 @@ Each plugin subclasses ``PluginBase`` and registers its hooks:
 * ``RateLimitPlugin`` — configurable per-tenant and per-model rate limiting
 * ``AuditLogPlugin`` — structured JSON audit logging to file or stderr
 * ``MetricsPlugin`` — plugin health and hook-invocation counters
+* ``AuthPlugin`` — JWT validation, RBAC, and per-role rate limiting
 """
 
 from __future__ import annotations
@@ -263,3 +264,8 @@ class MetricsPlugin(PluginBase):
 
     def uptime_seconds(self) -> float:
         return time.time() - self._start_time
+
+
+# ── AuthPlugin (re-exported from auth_plugin.py) ─────────────────────────
+
+from distllm.plugins.auth_plugin import AuthPlugin  # noqa: E402

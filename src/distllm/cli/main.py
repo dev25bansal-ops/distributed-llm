@@ -1592,7 +1592,7 @@ def system_observe(
 
 # ── Tune command group ──────────────────────────────────────────────────
 
-tune_app = typer.Typer(help="Adaptive Precision Optimizer: quantization tuning")
+tune_app = typer.Typer(help="Auto-tuning: quantization, batch sizing, cache sizing")
 app.add_typer(tune_app, name="tune")
 
 
@@ -1608,121 +1608,62 @@ def tune_quantize(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON instead of human-readable text"),
 ):
     """Run Adaptive Precision Optimizer to select optimal quantization per device."""
-    from pathlib import Path
-
-    try:
-        from distllm.dist.partition.quant_report import ReportGenerator
-        from distllm.dist.partition.quantization_tuner import (
-            NodeInfo,
-            QuantizationAutoTuner,
-            QuantMethod,
-        )
-
-        # Build node info from GPU profiling
-        if benchmark:
-            from distllm.dist.partition.quant_bench import QuantBenchmarker
-            console.print("[bold]Running live hardware benchmarks...[/bold]")
-            benchmarker = QuantBenchmarker()
-            suites = benchmarker.benchmark_all_gpus()
-            for suite in suites:
-                console.print(suite.summary())
-        else:
-            console.print("[dim]Using static quantization profiles (use --benchmark for live data)[/dim]")
-
-        # Profile GPUs for node info
-        from distllm.dist.partition.profiles import GPUProfiler
-        profiler = GPUProfiler()
-        gpu_profiles = profiler.profile_all_gpus()
-
-        # Build node list
-        node_infos: list[NodeInfo] = []
-        for i, gp in enumerate(gpu_profiles):
-            # Distribute layers evenly
-            node_infos.append(NodeInfo.from_gpu_profile(
-                gp, node_id=f"node-{i}",
-            ))
-
-        if not node_infos:
-            console.print("[red]No GPUs found. Cannot generate quantization plan.[/red]")
-            raise typer.Exit(1)
-
-        # Estimate model size (would need model metadata in production)
-        # For now, use a heuristic based on model name
-        model_size_bytes = _estimate_model_size(model)
-        num_layers = _estimate_num_layers(model)
-
-        console.print(f"\n[bold]Model:[/bold] {model}")
-        console.print(f"[bold]Size:[/bold] {model_size_bytes / (1024**3):.1f} GB (fp16)")
-        console.print(f"[bold]Layers:[/bold] {num_layers}")
-        console.print(f"[bold]Nodes:[/bold] {len(node_infos)}")
-        console.print()
-
-        # Run APO
-        tuner = QuantizationAutoTuner(
-            max_quality_loss=max_quality_loss,
-            prefer_speed=prefer_speed,
-            require_calibration=require_calibration,
-        )
-        plan = tuner.recommend(node_infos, model_size_bytes, num_layers)
-
-        # Generate report
-        reporter = ReportGenerator()
-        report = reporter.generate(plan, node_infos, model_size_bytes, num_layers)
-
-        if json_output or output:
-            report_data = report.to_json()
-            if output:
-                Path(output).write_text(report_data, encoding="utf-8")
-                console.print(f"[green]Report saved to {output}[/green]")
-            if json_output:
-                console.print(report_data)
-        else:
-            console.print(report.to_text())
-
-    except ImportError as e:
-        console.print(f"[red]Missing dependency: {e}[/red]")
-        console.print("[dim]Install with: pip install distllm[self-hosted][/dim]")
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+    from distllm.cli.tune import run_tune_quantize
+    run_tune_quantize(
+        model=model,
+        nodes=nodes,
+        max_quality_loss=max_quality_loss,
+        prefer_speed=prefer_speed,
+        require_calibration=require_calibration,
+        output=output,
+        benchmark=benchmark,
+        json_output=json_output,
+        console=console,
+    )
 
 
-def _estimate_model_size(model_name: str) -> int:
-    """Rough model size estimate from model name."""
-    name_lower = model_name.lower()
-    if "70b" in name_lower:
-        return 140 * 1024**3  # 140GB fp16
-    if "34b" in name_lower or "33b" in name_lower:
-        return 68 * 1024**3
-    if "13b" in name_lower:
-        return 26 * 1024**3
-    if "7b" in name_lower or "8b" in name_lower:
-        return 14 * 1024**3
-    if "3b" in name_lower:
-        return 6 * 1024**3
-    if "1b" in name_lower:
-        return 2 * 1024**3
-    # Default: assume 7B
-    return 14 * 1024**3
+@tune_app.command("batch")
+def tune_batch(
+    model: str = typer.Option(..., "--model", "-m", help="Model name or path"),
+    gpu_count: int = typer.Option(1, "--gpus", "-g", help="Number of GPUs"),
+    target_latency_ms: float = typer.Option(500, "--latency", "-l", help="Target latency in ms"),
+    host: str = typer.Option("localhost", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+    max_batch: int = typer.Option(64, "--max-batch", help="Max batch size to probe"),
+    max_tokens: int = typer.Option(8192, "--max-tokens", help="Max tokens budget per batch"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output file path (JSON)"),
+):
+    """Profile different batch sizes and recommend optimal batch configuration."""
+    from distllm.cli.tune import run_tune_batch
+    run_tune_batch(
+        model=model,
+        gpu_count=gpu_count,
+        target_latency_ms=target_latency_ms,
+        host=host,
+        port=port,
+        max_batch=max_batch,
+        max_tokens=max_tokens,
+        output=output,
+        console=console,
+    )
 
 
-def _estimate_num_layers(model_name: str) -> int:
-    """Rough layer count estimate from model name."""
-    name_lower = model_name.lower()
-    if "70b" in name_lower:
-        return 80
-    if "34b" in name_lower or "33b" in name_lower:
-        return 48
-    if "13b" in name_lower:
-        return 40
-    if "7b" in name_lower or "8b" in name_lower:
-        return 32
-    if "3b" in name_lower:
-        return 28
-    if "1b" in name_lower:
-        return 22
-    return 32
+@tune_app.command("cache")
+def tune_cache(
+    model: str = typer.Option(..., "--model", "-m", help="Model name or path"),
+    gpu_memory_gb: float = typer.Option(24.0, "--gpu-memory", "-g", help="GPU memory in GB"),
+    concurrency: int = typer.Option(10, "--concurrency", "-c", help="Expected concurrent requests"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output file path (JSON)"),
+):
+    """Calculate optimal KV cache sizing for expected concurrency."""
+    from distllm.cli.tune import run_tune_cache
+    run_tune_cache(
+        model=model,
+        gpu_memory_gb=gpu_memory_gb,
+        concurrency=concurrency,
+        output=output,
+        console=console,
+    )
 
 
 if __name__ == "__main__":

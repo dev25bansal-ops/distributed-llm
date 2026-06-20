@@ -112,6 +112,26 @@ class BackendAdapter(ABC):
               - ``10`` = best-in-class for this device
         """
 
+    # ── Optional health / load methods ──────────────────────────────────
+
+    def health_check(self) -> bool:
+        """Return ``True`` if the backend is healthy and ready to serve.
+
+        Override in subclasses to perform actual health probes (e.g. ping
+        the inference server, verify GPU memory).  The default
+        implementation always returns ``True``.
+        """
+        return True
+
+    def current_load(self) -> float:
+        """Return the current load factor in ``[0.0, 1.0]``.
+
+        ``0.0`` means idle, ``1.0`` means fully saturated.  Used by
+        health-aware selection to prefer less-loaded backends.  The
+        default implementation always returns ``0.0``.
+        """
+        return 0.0
+
     # ── Optional metadata classmethods ─────────────────────────────────
 
     @classmethod

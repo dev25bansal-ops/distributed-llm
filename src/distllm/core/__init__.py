@@ -35,7 +35,9 @@ _register("distllm.core.routing_extensions", "LRUModelCache", "RoutingMetrics", 
 _register("distllm.core.token_generator", "TokenGenerator")
 _register("distllm.core.usage_meter", "QuotaLimit", "TenantUsage", "UsageMeter", "UsageRecord", "UsageRecordStatus", "create_usage_meter")
 _register("distllm.core.webhook_manager", "WebhookDelivery", "WebhookEvent", "WebhookManager", "WebhookTarget")
+_register("distllm.core.event_bus", "EventBus", "MarketplaceEvent", "MarketplaceEventType")
 _register("distllm.core.memory_defragmenter", "DefragConfig", "DefragPolicy", "DefragResult", "FragmentInfo", "MemoryDefragmenter", "TieredCompactionLevel")
+_register("distllm.core.persistence", "SQLiteBackend", "StorageBackend")
 
 
 def __getattr__(name: str):

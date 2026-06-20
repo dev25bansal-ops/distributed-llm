@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Auth plugin with JWT authentication and RBAC role-based access control (6 roles: admin, model-admin, auditor, inference-only, read-only, viewer)
+- Event bus for marketplace plugin communication (6 event types: job.matched, job.started, job.completed, job.failed, job.cancelled, listing.status_changed)
+- Health watchdog plugin for continuous node health monitoring with auto circuit-breaking
+- Caching plugin with semantic deduplication for repeated prompts (SHA-256 + embedding similarity, LRU + Redis backends)
+- `distllm doctor` CLI command for system diagnostics (Python, CUDA, GPU, network, ports, model download)
+- `distllm tune` CLI subcommand with `quantize`, `batch`, and `cache` operations
+- `generate_stream()` SDK method for token-by-token streaming responses (4 strategy classes: Local, Speculative, DistributedSpeculative, Distributed)
+- Config cross-validation using Pydantic `@model_validator` for catching invalid combinations at load time
+- Backend registry with health-aware selection (routes to healthy backends only, thread-safe singleton)
+- CircuitBreakerMiddleware with graduated backpressure (3 tiers: 500-800, 800-1000, 1000+ pending requests)
+- BatchScheduler decomposition into KVCacheManager, PreemptionManager, and BudgetComputer subsystems
+- Shared IP extraction utility (`ip_utils.py`) for consistent client IP resolution across middleware
+- Autoscaler wired to real Prometheus metrics instead of synthetic signals
+- E2E encryption cluster_key validation to reject empty or short keys (minimum 16 characters)
+- Coordinator subsystem health tracking (per-component status: ok, missing_deps, failed)
+- SQLite persistence layer for PromptExchange and Marketplace
+- Kubernetes NetworkPolicy restricting pod-to-pod traffic
+- Kubernetes PodDisruptionBudget for coordinator (minAvailable: 1)
+- Grafana password now required via environment variable (fails fast if unset)
+
+### Security
+- API key no longer logged in plaintext (masked in all log output)
+- Kubernetes security hardening (non-root, read-only filesystem, dropped capabilities)
+
 ### Planned
 - Web dashboard for monitoring and management (in progress)
 - Auto-discovery of nodes on LAN

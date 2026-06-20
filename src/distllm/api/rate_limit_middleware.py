@@ -16,12 +16,11 @@ Usage::
 
 from __future__ import annotations
 
-import os
-
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from distllm.api.ip_utils import get_client_ip
 from distllm.api.rate_limiter import RateLimiter
 
 # Endpoints that are never rate-limited (health probes, metrics scrape).
@@ -52,14 +51,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Identify the client
-        client_ip = request.client.host if request.client else "unknown"
-
-        # Only trust proxy headers when explicitly enabled
-        trust_proxy = os.environ.get("DISTLLM_TRUST_PROXY_HEADERS", "").lower() in ("1", "true")
-        if trust_proxy:
-            forwarded = request.headers.get("X-Forwarded-For", "")
-            if forwarded:
-                client_ip = forwarded.split(",")[0].strip()
+        client_ip = get_client_ip(request)
 
         endpoint = path
 

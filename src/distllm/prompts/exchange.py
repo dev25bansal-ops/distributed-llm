@@ -24,9 +24,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from distllm.core.persistence import StorageBackend
 
 
 class PromptLicense(str, Enum):
@@ -119,15 +122,171 @@ class PromptExchange:
 
     Enables users to publish, discover, acquire, and review prompts.
     Supports free, attribution, premium, and subscription licensing.
+
+    Args:
+        backend: Optional :class:`StorageBackend` for durable storage.
+            When provided all mutations are persisted and the exchange
+            is pre-loaded from the backend on construction.  When
+            ``None`` the exchange operates entirely in-memory.
     """
 
-    def __init__(self):
+    def __init__(self, backend: StorageBackend | None = None):
+        self._backend = backend
         self._prompts: dict[str, PublishedPrompt] = {}
         self._wallets: dict[str, UserWallet] = {}
         self._reviews: dict[str, list[PromptReview]] = {}  # prompt_id -> reviews
         self._user_purchases: dict[str, set[str]] = {}  # user_id -> set of prompt_ids
         self._user_library: dict[str, list[str]] = {}  # user_id -> list of prompt_ids
         self._featured: list[str] = []
+
+        if self._backend is not None:
+            self._backend.initialize()
+            self._load_from_backend()
+
+    # ── Backend hydration ────────────────────────────────────────────
+
+    def _load_from_backend(self) -> None:
+        """Load persisted state into the in-memory caches."""
+        assert self._backend is not None
+        # Prompts
+        for d in self._backend.load_all_prompts():
+            pm = d.get("metrics", {})
+            metrics = PromptMetrics(
+                total_uses=pm.get("total_uses", 0),
+                avg_throughput_tok_s=pm.get("avg_throughput_tok_s", 0.0),
+                avg_latency_ms=pm.get("avg_latency_ms", 0.0),
+                avg_quality_score=pm.get("avg_quality_score", 0.0),
+                avg_cost_usd=pm.get("avg_cost_usd", 0.0),
+                total_tokens_generated=pm.get("total_tokens_generated", 0),
+                unique_users=pm.get("unique_users", 0),
+                avg_rating=pm.get("avg_rating", 0.0),
+                rating_count=pm.get("rating_count", 0),
+            )
+            prompt = PublishedPrompt(
+                prompt_id=d["prompt_id"],
+                author_id=d["author_id"],
+                name=d["name"],
+                description=d["description"],
+                category=d["category"],
+                system_prompt=d["system_prompt"],
+                tags=d.get("tags", []),
+                license=PromptLicense(d.get("license", "free")),
+                price_tokens=d.get("price_tokens", 0),
+                status=PromptStatus(d.get("status", "published")),
+                version=d.get("version", 1),
+                parent_id=d.get("parent_id", ""),
+                created_at=d["created_at"],
+                updated_at=d["updated_at"],
+                metrics=metrics,
+                examples=d.get("examples", []),
+                metadata=d.get("metadata", {}),
+            )
+            self._prompts[prompt.prompt_id] = prompt
+
+        # Reviews
+        for pid in list(self._prompts):
+            rows = self._backend.load_reviews(pid)
+            if rows:
+                self._reviews[pid] = [
+                    PromptReview(
+                        review_id=r["review_id"],
+                        prompt_id=r["prompt_id"],
+                        user_id=r["user_id"],
+                        rating=r["rating"],
+                        comment=r.get("comment", ""),
+                        created_at=r["created_at"],
+                        helpful_count=r.get("helpful_count", 0),
+                    )
+                    for r in rows
+                ]
+
+    def _persist_prompt(self, prompt: PublishedPrompt) -> None:
+        """Persist a single prompt to the backend (no-op if no backend)."""
+        if self._backend is None:
+            return
+        self._backend.save_prompt({
+            "prompt_id": prompt.prompt_id,
+            "author_id": prompt.author_id,
+            "name": prompt.name,
+            "description": prompt.description,
+            "category": prompt.category,
+            "system_prompt": prompt.system_prompt,
+            "tags": prompt.tags,
+            "license": prompt.license.value,
+            "price_tokens": prompt.price_tokens,
+            "status": prompt.status.value,
+            "version": prompt.version,
+            "parent_id": prompt.parent_id,
+            "created_at": prompt.created_at,
+            "updated_at": prompt.updated_at,
+            "examples": prompt.examples,
+            "metadata": prompt.metadata,
+            "metrics": {
+                "total_uses": prompt.metrics.total_uses,
+                "avg_throughput_tok_s": prompt.metrics.avg_throughput_tok_s,
+                "avg_latency_ms": prompt.metrics.avg_latency_ms,
+                "avg_quality_score": prompt.metrics.avg_quality_score,
+                "avg_cost_usd": prompt.metrics.avg_cost_usd,
+                "total_tokens_generated": prompt.metrics.total_tokens_generated,
+                "unique_users": prompt.metrics.unique_users,
+                "avg_rating": prompt.metrics.avg_rating,
+                "rating_count": prompt.metrics.rating_count,
+            },
+        })
+
+    def _persist_wallet(self, wallet: UserWallet) -> None:
+        """Persist a wallet to the backend (no-op if no backend)."""
+        if self._backend is None:
+            return
+        self._backend.save_wallet({
+            "user_id": wallet.user_id,
+            "balance_tokens": wallet.balance_tokens,
+            "total_earned": wallet.total_earned,
+            "total_spent": wallet.total_spent,
+            "total_purchased": wallet.total_purchased,
+            "created_at": wallet.created_at,
+        })
+
+    def _persist_purchase(self, user_id: str, prompt_id: str) -> None:
+        """Persist a purchase to the backend (no-op if no backend)."""
+        if self._backend is None:
+            return
+        self._backend.save_purchase(user_id, prompt_id)
+
+    def _persist_review(self, review: PromptReview) -> None:
+        """Persist a review to the backend (no-op if no backend)."""
+        if self._backend is None:
+            return
+        self._backend.save_review({
+            "review_id": review.review_id,
+            "prompt_id": review.prompt_id,
+            "user_id": review.user_id,
+            "rating": review.rating,
+            "comment": review.comment,
+            "created_at": review.created_at,
+            "helpful_count": review.helpful_count,
+        })
+
+    def _persist_transaction(
+        self,
+        kind: str,
+        user_id: str,
+        prompt_id: str = "",
+        amount_tokens: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a transaction in the backend (no-op if no backend)."""
+        if self._backend is None:
+            return
+        self._backend.save_transaction({
+            "transaction_id": uuid.uuid4().hex[:16],
+            "kind": kind,
+            "user_id": user_id,
+            "prompt_id": prompt_id,
+            "amount_tokens": amount_tokens,
+            "created_at": time.time(),
+            "metadata": metadata or {},
+        })
 
     # ── Publishing ───────────────────────────────────────────────────
 
@@ -178,6 +337,7 @@ class PromptExchange:
         )
 
         self._prompts[prompt_id] = prompt
+        self._persist_prompt(prompt)
         logger.info(f"Prompt published: {prompt_id} by {author_id} ({license.value})")
         return prompt
 
@@ -205,6 +365,7 @@ class PromptExchange:
         if price_tokens is not None:
             prompt.price_tokens = price_tokens
         prompt.updated_at = time.time()
+        self._persist_prompt(prompt)
         return prompt
 
     # ── Discovery ────────────────────────────────────────────────────
@@ -292,6 +453,7 @@ class PromptExchange:
         if prompt.is_free:
             self._record_purchase(user_id, prompt_id)
             prompt.metrics.total_uses += 1
+            self._persist_prompt(prompt)
             return prompt
 
         wallet = self._get_or_create_wallet(user_id)
@@ -308,6 +470,9 @@ class PromptExchange:
 
         self._record_purchase(user_id, prompt_id)
         prompt.metrics.total_uses += 1
+        self._persist_wallet(wallet)
+        self._persist_wallet(author_wallet)
+        self._persist_prompt(prompt)
         logger.info(f"Prompt acquired: {user_id} purchased {prompt_id} for {prompt.price_tokens} tokens")
         return prompt
 
@@ -319,6 +484,7 @@ class PromptExchange:
             self._user_library[user_id] = []
         if prompt_id not in self._user_library[user_id]:
             self._user_library[user_id].append(prompt_id)
+        self._persist_purchase(user_id, prompt_id)
 
     def has_access(self, user_id: str, prompt_id: str) -> bool:
         """Check if a user has access to a prompt."""
@@ -329,11 +495,17 @@ class PromptExchange:
             return True
         if prompt.author_id == user_id:
             return True
+        # Lazy-load purchases from backend if not in memory
+        if user_id not in self._user_purchases and self._backend is not None:
+            self._user_purchases[user_id] = self._backend.load_user_purchases(user_id)
         purchases = self._user_purchases.get(user_id, set())
         return prompt_id in purchases
 
     def get_user_library(self, user_id: str) -> list[PublishedPrompt]:
         """Get all prompts a user has access to."""
+        # Lazy-load library from backend if not in memory
+        if user_id not in self._user_library and self._backend is not None:
+            self._user_library[user_id] = self._backend.load_user_library(user_id)
         prompt_ids = self._user_library.get(user_id, [])
         return [self._prompts[pid] for pid in prompt_ids if pid in self._prompts]
 
@@ -369,6 +541,8 @@ class PromptExchange:
         prompt.metrics.rating_count = len(reviews)
         prompt.metrics.avg_rating = sum(r.rating for r in reviews) / len(reviews)
 
+        self._persist_review(review)
+        self._persist_prompt(prompt)
         return review
 
     def get_reviews(self, prompt_id: str, limit: int = 20) -> list[PromptReview]:
@@ -380,6 +554,19 @@ class PromptExchange:
 
     def _get_or_create_wallet(self, user_id: str) -> UserWallet:
         if user_id not in self._wallets:
+            # Try loading from backend before creating a fresh wallet
+            if self._backend is not None:
+                wd = self._backend.load_wallet(user_id)
+                if wd:
+                    self._wallets[user_id] = UserWallet(
+                        user_id=wd["user_id"],
+                        balance_tokens=wd.get("balance_tokens", 0),
+                        total_earned=wd.get("total_earned", 0),
+                        total_spent=wd.get("total_spent", 0),
+                        total_purchased=wd.get("total_purchased", 0),
+                        created_at=wd["created_at"],
+                    )
+                    return self._wallets[user_id]
             self._wallets[user_id] = UserWallet(user_id=user_id)
         return self._wallets[user_id]
 
@@ -389,6 +576,7 @@ class PromptExchange:
     def top_up(self, user_id: str, amount_tokens: int) -> UserWallet:
         wallet = self._get_or_create_wallet(user_id)
         wallet.balance_tokens += amount_tokens
+        self._persist_wallet(wallet)
         return wallet
 
     # ── Analytics ────────────────────────────────────────────────────
@@ -421,7 +609,7 @@ class PromptExchange:
             if quality_score > 0:
                 m.avg_quality_score = (m.avg_quality_score * n + quality_score) / (n + 1)
         m.total_tokens_generated += tokens_generated
-
+        self._persist_prompt(prompt)
     def get_leaderboard(
         self,
         category: str = "",

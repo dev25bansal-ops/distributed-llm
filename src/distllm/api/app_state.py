@@ -22,6 +22,7 @@ class AppState:
         self.startup_time: float = time.time()
         self.metrics_exporter: "DistLLMPrometheusExporter | None" = None
         self.ws_broadcast_task = None
+        self.verify_plugins: bool = False
 
     @property
     def uptime_seconds(self) -> float:

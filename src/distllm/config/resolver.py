@@ -112,6 +112,7 @@ class ConfigResolver:
     COMMON_ARGS: list[dict] = [
         {"name": "--debug", "action": "store_true", "help": "Enable debug mode"},
         {"name": "--validate-config", "action": "store_true", "help": "Validate config and exit"},
+        {"name": "--verify-plugins", "action": "store_true", "help": "Require SHA-256 hash verification for all plugins (fail-closed)"},
     ]
 
     ARG_NAME_KEY = "name"

@@ -8,6 +8,8 @@ resources:
   - ../../inference/coordinator-deployment.yaml
   - ../../inference/worker-statefulset.yaml
   - ../../inference/pvc.yaml
+  - ../../inference/network-policy.yaml
+  - ../../inference/coordinator-pdb.yaml
 
 commonLabels:
   app.kubernetes.io/name: distributed-llm

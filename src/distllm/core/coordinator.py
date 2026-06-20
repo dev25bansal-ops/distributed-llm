@@ -124,10 +124,15 @@ class Coordinator:
         self._pipeline.set_straggler_detector(self._straggler_detector)
 
         if self.config.wide_area_config:
+            from distllm.dist.wide_area import WideAreaPipeline
             wa = self.config.wide_area_config
+            self._pipeline = WideAreaPipeline(
+                resource_mgr=self._resource_mgr,
+                wan_config=wa,
+                latency_tracker=self._latency_tracker,
+            )
             self._pipeline.pipeline_timeout = wa.wan_timeout_seconds
-            if hasattr(self._pipeline, 'wan'):
-                self._pipeline.wan = wa
+            self._pipeline.set_straggler_detector(self._straggler_detector)
             logger.info(f"WAN mode: timeout={wa.wan_timeout_seconds}s, "
                          f"token_accumulation={wa.accumulation_window}")
 
@@ -227,6 +232,9 @@ class Coordinator:
         self._carbon_engine: Any = None
         self._cost_tracker: Any = None
         self._arbitrage_engine: Any = None
+
+        # Startup subsystem health tracking: name -> {"status": "ok"|"missing_deps"|"failed", "error": str|None}
+        self._subsystem_health: dict[str, dict[str, Any]] = {}
 
         # Memory defragmentation
         self._defragmenter: MemoryDefragmenter | None = None
@@ -904,12 +912,29 @@ class Coordinator:
 
     def health_check(self) -> dict:
         nodes_status = self._health_mgr.get_node_status()
+
+        # Determine overall status: degrade if any subsystem has a runtime failure
+        has_failures = any(
+            info["status"] == "failed"
+            for info in self._subsystem_health.values()
+        )
+        if not self.nodes:
+            status = "no_nodes"
+        elif has_failures:
+            status = "degraded"
+        else:
+            status = "ok"
+
         return {
-            "status": "ok" if self.nodes else "no_nodes",
+            "status": status,
             "num_nodes": len(self.nodes),
             "total_layers": self._pipeline.total_layers,
             "nodes": nodes_status,
             "reputation": self._reputation.get_scores(),
+            "subsystems": {
+                name: info["status"]
+                for name, info in sorted(self._subsystem_health.items())
+            },
         }
 
     # ── Metrics (delegated to MetricsCollector) ──
@@ -1098,10 +1123,18 @@ class Coordinator:
                 properties={"model": self.model_name} if announce_model else {},
             )
             self._discovery.start()
-        except Exception as e:
+            self._subsystem_health["discovery"] = {"status": "ok", "error": None}
+        except ImportError as e:
+            self._subsystem_health["discovery"] = {"status": "missing_deps", "error": str(e)}
             logger.warning(
-                f"Discovery service failed to start "
+                f"Discovery service not available "
                 f"(cluster auto-discovery disabled): {e}"
+            )
+        except Exception as e:
+            self._subsystem_health["discovery"] = {"status": "failed", "error": str(e)}
+            logger.error(
+                f"Discovery service failed to start (runtime error): {e}",
+                exc_info=True,
             )
 
         if (hasattr(self.config, 'federation_config')
@@ -1117,16 +1150,23 @@ class Coordinator:
                     coordinator_ref=self,
                 )
                 self._federation.start()
+                self._subsystem_health["federation"] = {"status": "ok", "error": None}
                 logger.info(f"Federation started: cluster={self.config.federation_config.cluster_id}")
+            except ImportError as e:
+                self._subsystem_health["federation"] = {"status": "missing_deps", "error": str(e)}
+                logger.warning(f"Federation not available (missing dependencies): {e}")
             except Exception as e:
-                logger.warning(f"Federation failed to start: {e}")
+                self._subsystem_health["federation"] = {"status": "failed", "error": str(e)}
+                logger.error(f"Federation failed to start (runtime error): {e}", exc_info=True)
 
         # --- Advanced Feature: Smart Model Router (cost-optimized cascading) ---
         try:
             from distllm.core.smart_model_router import SmartModelRouter
             self._smart_router = SmartModelRouter()
+            self._subsystem_health["smart_router"] = {"status": "ok", "error": None}
             logger.info("Smart model router initialized (model cascading)")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["smart_router"] = {"status": "missing_deps", "error": str(e)}
             self._smart_router = None
             logger.debug("Smart model router not available")
 
@@ -1138,8 +1178,10 @@ class Coordinator:
                 similarity_threshold=env_threshold,
                 max_entries=10000,
             )
+            self._subsystem_health["semantic_cache"] = {"status": "ok", "error": None}
             logger.info(f"Semantic cache initialized (threshold={env_threshold})")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["semantic_cache"] = {"status": "missing_deps", "error": str(e)}
             self._semantic_cache = None
             logger.debug("Semantic cache not available")
 
@@ -1147,8 +1189,10 @@ class Coordinator:
         try:
             from distllm.core.advanced_scheduling.disaggregated import DisaggregatedBatchScheduler
             self._disaggregated_scheduler = DisaggregatedBatchScheduler()
+            self._subsystem_health["disaggregated_scheduler"] = {"status": "ok", "error": None}
             logger.info("Disaggregated prefill/decode scheduler initialized")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["disaggregated_scheduler"] = {"status": "missing_deps", "error": str(e)}
             self._disaggregated_scheduler = None
             logger.debug("Disaggregated prefill/decode scheduler not available")
 
@@ -1159,8 +1203,10 @@ class Coordinator:
                 threshold=float(os.environ.get("DISTLLM_CARBON_THRESHOLD", "400.0")),
                 check_interval_s=300.0,
             )
+            self._subsystem_health["carbon_engine"] = {"status": "ok", "error": None}
             logger.info("Carbon-aware migration engine initialized")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["carbon_engine"] = {"status": "missing_deps", "error": str(e)}
             self._carbon_engine = None
             logger.debug("Carbon-aware engine not available")
 
@@ -1171,8 +1217,10 @@ class Coordinator:
                 min_savings_pct=float(os.environ.get("DISTLLM_ARBITRAGE_MIN_SAVINGS", "15.0")),
                 check_interval_s=float(os.environ.get("DISTLLM_ARBITRAGE_INTERVAL", "60.0")),
             )
+            self._subsystem_health["arbitrage_engine"] = {"status": "ok", "error": None}
             logger.info("Cross-provider arbitrage engine initialized")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["arbitrage_engine"] = {"status": "missing_deps", "error": str(e)}
             self._arbitrage_engine = None
             logger.debug("Arbitrage engine not available")
 
@@ -1180,8 +1228,10 @@ class Coordinator:
         try:
             from distllm.core.cost_tracker import CostTracker
             self._cost_tracker = CostTracker()
+            self._subsystem_health["cost_tracker"] = {"status": "ok", "error": None}
             logger.info("Cost tracker initialized (per-request cost estimation)")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["cost_tracker"] = {"status": "missing_deps", "error": str(e)}
             self._cost_tracker = None
             logger.debug("Cost tracker not available")
 
@@ -1202,10 +1252,38 @@ class Coordinator:
                     pending_requests=s.get("pending_requests", 0),
                     current_nodes=len(getattr(self, 'nodes', {})),
                 ))
+            self._subsystem_health["autoscaler"] = {"status": "ok", "error": None}
             logger.info("Autoscaler initialized with real batch scheduler metrics")
-        except ImportError:
+        except ImportError as e:
+            self._subsystem_health["autoscaler"] = {"status": "missing_deps", "error": str(e)}
             self._autoscaler = None
             logger.debug("Autoscaler not available")
+
+        # Startup self-check: log which subsystems are active vs degraded/missing
+        failed_subsystems = [
+            name for name, info in self._subsystem_health.items()
+            if info["status"] == "failed"
+        ]
+        missing_subsystems = [
+            name for name, info in self._subsystem_health.items()
+            if info["status"] == "missing_deps"
+        ]
+        active_subsystems = [
+            name for name, info in self._subsystem_health.items()
+            if info["status"] == "ok"
+        ]
+        logger.info(
+            f"Startup subsystem check: "
+            f"{len(active_subsystems)} active, "
+            f"{len(missing_subsystems)} missing deps, "
+            f"{len(failed_subsystems)} failed"
+        )
+        if active_subsystems:
+            logger.info(f"  Active: {', '.join(sorted(active_subsystems))}")
+        if missing_subsystems:
+            logger.info(f"  Missing deps (optional): {', '.join(sorted(missing_subsystems))}")
+        if failed_subsystems:
+            logger.warning(f"  FAILED (degraded): {', '.join(sorted(failed_subsystems))}")
 
         logger.info(f"Coordinator started on port {self.port} "
                      f"(health check every {health_check_interval_s}s)")

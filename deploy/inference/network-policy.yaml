@@ -1,0 +1,109 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: distllm-coordinator-netpol
+  labels:
+    app.kubernetes.io/name: distributed-llm
+    app.kubernetes.io/component: coordinator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: distributed-llm
+      app.kubernetes.io/component: coordinator
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow gRPC from workers
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distributed-llm
+              app.kubernetes.io/component: worker
+      ports:
+        - port: 50050
+          protocol: TCP
+    # Allow API access from ingress / monitoring
+    - from: []
+      ports:
+        - port: 8000
+          protocol: TCP
+    # Allow Prometheus scraping
+    - from: []
+      ports:
+        - port: 9091
+          protocol: TCP
+  egress:
+    # Allow DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow gRPC to workers
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distributed-llm
+              app.kubernetes.io/component: worker
+      ports:
+        - port: 50051
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: distllm-worker-netpol
+  labels:
+    app.kubernetes.io/name: distributed-llm
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: distributed-llm
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow gRPC from coordinator only
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distributed-llm
+              app.kubernetes.io/component: coordinator
+      ports:
+        - port: 50051
+          protocol: TCP
+    # Allow Prometheus scraping
+    - from: []
+      ports:
+        - port: 9091
+          protocol: TCP
+  egress:
+    # Allow DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow gRPC to coordinator
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distributed-llm
+              app.kubernetes.io/component: coordinator
+      ports:
+        - port: 50050
+          protocol: TCP
+    # Allow worker-to-worker communication for tensor parallelism
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distributed-llm
+              app.kubernetes.io/component: worker
+      ports:
+        - port: 50051
+          protocol: TCP

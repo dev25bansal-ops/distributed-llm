@@ -26,7 +26,10 @@ Usage:
 
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
 import sys
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -77,10 +80,13 @@ class BackendRegistry:
     """
 
     _instance: BackendRegistry | None = None
+    _lock: threading.Lock = threading.Lock()
 
     def __new__(cls) -> BackendRegistry:
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     # ── Registration ───────────────────────────────────────────────────
@@ -128,13 +134,15 @@ class BackendRegistry:
             description=adapter_class.description(),
             version=adapter_class.version(),
         )
-        _registry[backend_name] = plugin
+        with cls._lock:
+            _registry[backend_name] = plugin
         logger.debug(f"Registered backend '{backend_name}': {adapter_class.__name__}")
 
     @classmethod
     def unregister(cls, name: str) -> None:
         """Remove a backend from the registry."""
-        _registry.pop(name, None)
+        with cls._lock:
+            _registry.pop(name, None)
 
     # ── Query ──────────────────────────────────────────────────────────
 
@@ -202,11 +210,23 @@ class BackendRegistry:
         if not available:
             return None
 
-        available.sort(
-            key=lambda p: p.adapter_class.priority_for(device_type),
-            reverse=True,
+        # Health-aware filtering: skip backends that report unhealthy.
+        healthy = [
+            p for p in available
+            if _check_health(p.adapter_class)
+        ]
+        if not healthy:
+            logger.warning("All available backends are unhealthy; ignoring health status")
+            healthy = available
+
+        # Sort by priority (descending), then by load (ascending) as tiebreaker.
+        healthy.sort(
+            key=lambda p: (
+                -p.adapter_class.priority_for(device_type),
+                _get_load(p.adapter_class),
+            ),
         )
-        best = available[0]
+        best = healthy[0]
         priority = best.adapter_class.priority_for(device_type)
         if priority <= 0:
             return None
@@ -233,6 +253,36 @@ class BackendRegistry:
             if p.adapter_class is adapter:
                 return p
         return None
+
+    # ── Entry-point discovery ───────────────────────────────────────────
+
+    @classmethod
+    def autodiscover(cls) -> int:
+        """Scan ``distllm_backend.*`` entry points and register backends.
+
+        Any installed package that declares an entry point under the
+        ``distllm_backend`` group is imported and registered.  This is
+        the preferred way for third-party backends to plug in — no
+        manual ``register()`` call required.
+
+        Returns:
+            The number of newly registered backends.
+        """
+        count = 0
+        eps = importlib.metadata.entry_points()
+        # Python 3.12+ returns a SelectableGroups; older returns a dict.
+        # Filter for the distllm_backend group.
+        group_eps = eps.select(group="distllm_backend") if hasattr(eps, "select") else eps.get("distllm_backend", [])
+        for ep in group_eps:
+            try:
+                adapter_cls = ep.load()
+                cls.register(adapter_cls, name=ep.name, force=True)
+                count += 1
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"Failed to load backend entry point '{ep.name}'"
+                )
+        return count
 
 
 # ── Convenience functions ──────────────────────────────────────────────
@@ -302,6 +352,34 @@ def _detect_device() -> str:
 
 
 def _module_available(name: str) -> bool:
-    return name in sys.modules or any(
-        pkg[0] for pkg in (__import__("pkgutil").iter_modules(),) if name in [p[1] for p in pkg]
-    )
+    """Check whether a Python module can be imported without actually importing it."""
+    if name in sys.modules:
+        return True
+    return importlib.util.find_spec(name) is not None
+
+
+def _check_health(adapter_class: type) -> bool:
+    """Probe backend health without a full ``__init__``.
+
+    Creates a bare instance via ``object.__new__`` (skipping
+    ``__init__``) and calls the default ``health_check()`` method.
+    Backends that override ``health_check()`` and rely on instance
+    state should guard against uninitialised attributes.
+
+    Returns ``True`` on any error so a broken probe does not block
+    backend selection.
+    """
+    try:
+        probe = object.__new__(adapter_class)
+        return probe.health_check()
+    except Exception:
+        return True
+
+
+def _get_load(adapter_class: type) -> float:
+    """Return the current load of an adapter, falling back to ``0.0``."""
+    try:
+        probe = object.__new__(adapter_class)
+        return probe.current_load()
+    except Exception:
+        return 0.0

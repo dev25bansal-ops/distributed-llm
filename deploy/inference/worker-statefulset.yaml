@@ -33,6 +33,7 @@ spec:
           image: ghcr.io/distributed-llm/worker:0.4.0
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
             runAsNonRoot: true

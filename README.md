@@ -78,6 +78,13 @@ pip install -e ".[dev]"
 
 - **Pipeline parallelism** — split any HuggingFace model across N devices
 - **Auto-discovery** — mDNS/zeroconf device finding on LAN
+- **6 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch
+- **Auth plugin** — JWT authentication + RBAC role-based access control
+- **Health watchdog** — Continuous node health monitoring with auto circuit-breaking
+- **Semantic caching** — Deduplicate repeated prompts with embedding similarity
+- **Token streaming** — `generate_stream()` for real-time token-by-token responses
+- **Config validation** — Cross-field validation catches invalid combinations at load time
+- **Circuit breaker** — Graduated backpressure for load shedding
 - **Auto-partitioning** — hardware-aware DP solver for optimal layer assignment
 - **Node recovery** — checkpoint-based recovery when nodes disconnect
 - **Straggler detection** — statistical outlier detection for slow nodes
@@ -88,6 +95,11 @@ pip install -e ".[dev]"
 - **OpenAI-compatible API** — use any OpenAI client to send requests
 - **Full observability** — Prometheus metrics, OTel tracing, structured logging
 - **Interactive chat** — `distllm chat` for CLI-based interaction
+- **Auth plugin** — JWT authentication with RBAC role-based access control
+- **Health watchdog** — continuous node health monitoring with automatic failover
+- **Semantic cache** — caching plugin with deduplication for repeated prompts
+- **Token streaming** — `generate_stream()` SDK method for token-by-token responses
+- **Health endpoints** — `/healthz` (liveness) and `/readyz` (readiness) for Kubernetes probes
 
 ## CLI Commands
 
@@ -106,6 +118,18 @@ distllm-node --node-id laptop --model meta-llama/Llama-3.2-7B \
 
 # Start the REST API server
 distllm-api --model meta-llama/Llama-3.2-1B --local
+
+# System diagnostics (check Python, CUDA, GPU, network, ports)
+distllm doctor
+
+# Quantize a model for smaller footprint
+distllm tune quantize --model meta-llama/Llama-3.2-7B --bits 4
+
+# Batch inference over a dataset
+distllm tune batch --input prompts.jsonl --output results.jsonl
+
+# Warm the semantic cache from prior prompts
+distllm tune cache --preload cache_seed.jsonl
 ```
 
 ## Documentation

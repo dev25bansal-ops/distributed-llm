@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from distllm.api.errors import error_response_from_request
+from distllm.api import server as _server_state
 
 
 router = APIRouter(tags=["system"])
@@ -135,6 +136,81 @@ async def liveness_check():
     Returns 200 if the process is alive and not deadlocked.
     """
     return {"status": "alive", "uptime_seconds": time.time() - g._startup_time}
+
+
+@router.get(
+    "/healthz",
+    summary="Plugin-based liveness probe",
+    description="Liveness probe powered by HealthPlugin. Returns 200 when the process is responsive. "
+                "Kubernetes restarts the pod only when this endpoint fails. Falls back to a basic "
+                "alive response if the HealthPlugin is not enabled.",
+    response_description="Liveness status",
+)
+async def healthz():
+    """Plugin-based liveness probe (/healthz).
+
+    Delegates to HealthPlugin.liveness() when available.
+    Always returns 200 — Kubernetes restarts the pod only on failure.
+    """
+    plugin = _get_health_plugin()
+    if plugin is not None:
+        return plugin.liveness()
+    # Fallback: basic alive check when plugin is not loaded
+    return {"status": "alive", "uptime_seconds": time.time() - g._startup_time}
+
+
+@router.get(
+    "/readyz",
+    summary="Plugin-based readiness probe",
+    description="Readiness probe powered by HealthPlugin. Returns 200 only when the service can "
+                "accept traffic: model loaded, error rate below threshold, GPU and system memory "
+                "within limits, and circuit breaker not open. Returns 503 with reasons otherwise.",
+    response_description="Readiness status with diagnostic details",
+    responses={
+        503: {"description": "Service not ready — see response body for reasons"},
+    },
+)
+async def readyz():
+    """Plugin-based readiness probe (/readyz).
+
+    Delegates to HealthPlugin.readiness() which checks:
+    - Coordinator is loaded
+    - Error rate is below threshold
+    - GPU memory is within limits
+    - System memory is within limits
+    - Circuit breaker is not open
+    """
+    plugin = _get_health_plugin()
+    if plugin is not None:
+        body, status_code = plugin.readiness()
+        if status_code != 200:
+            return JSONResponse(status_code=status_code, content=body)
+        return body
+    # Fallback: basic readiness when plugin is not loaded
+    coord = g.coordinator
+    if coord is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reasons": ["no_coordinator"]},
+        )
+    return {"status": "ready"}
+
+
+def _get_health_plugin():
+    """Resolve HealthPlugin from the plugin system, if loaded."""
+    try:
+        ps = getattr(_server_state, "state", None)
+        if ps is None:
+            return None
+        plugin_sys = getattr(ps, "plugin_system", None)
+        if plugin_sys is None:
+            return None
+        inst = plugin_sys.get_plugin("health")
+        if inst and inst.instance is not None:
+            return inst.instance
+    except (AttributeError, Exception):
+        pass
+    return None
 
 
 @router.post(

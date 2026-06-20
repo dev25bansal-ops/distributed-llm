@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import hmac
 import os
 import threading
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -21,7 +22,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from distllm.core.coordinator import Coordinator
 from distllm.core.plugin_system import PluginSystem
-from distllm.plugins.builtin import RateLimitPlugin, AuditLogPlugin, MetricsPlugin
+from distllm.plugins.builtin import RateLimitPlugin, AuditLogPlugin, MetricsPlugin, AuthPlugin
+from distllm.plugins.health_plugin import HealthPlugin
 from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware, RequestRateLimitMiddleware
 from distllm.config.resolver import ConfigResolver
 from distllm.dashboard.ws_handler import (
@@ -156,7 +158,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _init_observability()
 
     # Initialize plugin system and register built-in plugins
-    state.plugin_system = PluginSystem()
+    plugin_config = {"verify_plugins": getattr(state, "verify_plugins", False)}
+    state.plugin_system = PluginSystem(config=plugin_config)
     _init_plugins(state.plugin_system)
 
     # Register SIGHUP handler for configuration hot-reload (Unix only)
@@ -177,7 +180,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         if hasattr(coord, '_batch_scheduler') and coord._batch_scheduler is not None:
                             scheduler = coord._batch_scheduler
                             if hasattr(new_settings, 'batching'):
-                                with scheduler._lock if hasattr(scheduler, '_lock') else None:
+                                with scheduler._lock if hasattr(scheduler, '_lock') else nullcontext():
                                     scheduler.max_batch_size = new_settings.batching.max_batch_size
                                     scheduler.max_tokens_per_batch = new_settings.batching.max_tokens_per_batch
                     else:
@@ -197,13 +200,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "Set DISTLLM_TLS_ENABLED=true for production deployments."
         )
 
-    # Display API key for users
+    # Log API key presence (never log the raw key)
     from distllm.core.api_key_store import get_api_key_store
     store = get_api_key_store()
     display_key = store.get_display_key()
     if display_key:
-        logger.info(f"API Key: {display_key}")
-        logger.info(f"Use: curl -H 'Authorization: Bearer {display_key}' http://localhost:8000/health")
+        fingerprint = hashlib.sha256(display_key.encode()).hexdigest()[:12]
+        logger.info("API key configured (fingerprint: %s...)", fingerprint)
+        logger.info("Use 'distllm config keys' to view or rotate keys.")
     else:
         logger.info("API keys loaded from config file. Use 'distllm config keys' to manage.")
 
@@ -543,13 +547,34 @@ app.add_middleware(RequestSizeLimitMiddleware, max_size=100_000_000)
 
 # Backpressure middleware
 class BackpressureMiddleware(BaseHTTPMiddleware):
-    """Reject requests when system is under heavy load."""
+    """Reject requests when system is under heavy load.
 
-    MAX_PENDING_REQUESTS = 1000  # Max pending requests before rejecting
+    Graduated backpressure tiers:
+      - 500-800 pending:  Retry-After: 1s, process normally
+      - 800-1000 pending: Retry-After: 5s, shed low-priority requests
+      - 1000+ pending:    503 with Retry-After: 30s
+    """
+
+    # Paths exempt from backpressure
+    EXEMPT_PATHS = frozenset({
+        "/health", "/ready", "/live", "/metrics",
+        "/docs", "/openapi.json", "/redoc",
+    })
+
+    # Low-priority paths shed first under moderate load
+    LOW_PRIORITY_PATHS = frozenset({
+        "/v1/embeddings",
+        "/v1/batch",
+        "/api/defrag",
+    })
+
+    _TIER_LOW = 500       # start adding Retry-After headers
+    _TIER_MED = 800       # start shedding low-priority
+    _TIER_HIGH = 1000     # hard reject all non-exempt
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Skip backpressure for health/metrics endpoints
-        if request.url.path in ("/health", "/ready", "/live", "/metrics", "/docs", "/openapi.json", "/redoc"):
+        if request.url.path in self.EXEMPT_PATHS:
             return await call_next(request)
 
         # Check if scheduler is overloaded
@@ -557,14 +582,41 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
             try:
                 stats = state.coordinator.scheduler.stats()
                 pending = stats.get("pending_requests", 0)
-                if isinstance(pending, (int, float)) and pending >= self.MAX_PENDING_REQUESTS:
-                    return _error_response(
-                        status_code=503,
-                        error="Service Unavailable",
-                        message=f"System overloaded: {pending} pending requests",
-                        type="backpressure_error",
-                        request=request,
-                    )
+                if isinstance(pending, (int, float)):
+                    if pending >= self._TIER_HIGH:
+                        # Hard shed: reject with 503
+                        resp = _error_response(
+                            status_code=503,
+                            error="Service Unavailable",
+                            message=f"System overloaded: {int(pending)} pending requests",
+                            type="backpressure_error",
+                            request=request,
+                        )
+                        resp.headers["Retry-After"] = "30"
+                        return resp
+
+                    if pending >= self._TIER_MED:
+                        # Shed low-priority requests
+                        path = request.url.path.rstrip("/")
+                        is_low_priority = any(
+                            path.startswith(lp) for lp in self.LOW_PRIORITY_PATHS
+                        )
+                        if is_low_priority:
+                            resp = _error_response(
+                                status_code=503,
+                                error="Service Unavailable",
+                                message=f"Low-priority request shed: {int(pending)} pending requests",
+                                type="backpressure_error",
+                                request=request,
+                            )
+                            resp.headers["Retry-After"] = "5"
+                            return resp
+
+                    if pending >= self._TIER_LOW:
+                        # Advisory: add Retry-After header but process normally
+                        response = await call_next(request)
+                        response.headers["Retry-After"] = "1"
+                        return response
             except (AttributeError, TypeError, KeyError):
                 pass  # Scheduler stats unavailable or malformed, skip check
 
@@ -583,12 +635,18 @@ class BackpressureMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(BackpressureMiddleware)
 
+# CircuitBreakerMiddleware — protects downstream from cascade failures.
+# Registered after BackpressureMiddleware so it runs between
+# BackpressureMiddleware and the route handlers.
+from distllm.api.circuit_breaker_middleware import CircuitBreakerMiddleware
+app.add_middleware(CircuitBreakerMiddleware)
+
 
 # ── Plugin system ───────────────────────────────────────────────────────────
 
 def _init_plugins(ps: PluginSystem) -> None:
     """Register + load + init + start built-in plugins."""
-    for cls in (RateLimitPlugin, AuditLogPlugin, MetricsPlugin):
+    for cls in (RateLimitPlugin, AuditLogPlugin, MetricsPlugin, HealthPlugin, AuthPlugin):
         ps.register(cls)
     ps.load_all()
     ps.init_all()
@@ -605,8 +663,8 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
     ``on_error`` based on the outcome.
     """
 
-    SKIP_PATHS = {"/health", "/ready", "/live", "/metrics", "/docs", "/openapi.json",
-                  "/redoc", "/ws", "/dashboard"}
+    SKIP_PATHS = {"/health", "/ready", "/live", "/healthz", "/readyz", "/metrics",
+                  "/docs", "/openapi.json", "/redoc", "/ws", "/dashboard"}
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         plugin_sys: PluginSystem | None = getattr(state, "plugin_system", None)
@@ -631,15 +689,16 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
         plugin_ctx = plugin_sys.dispatch_on_request(req_ctx)
         reject = plugin_ctx.get("_reject")
         if reject:
+            status = reject.get("status", 429)
+            error_body: dict[str, Any] = {
+                "message": reject.get("reason", "Request rejected"),
+                "type": "auth_error" if status in (401, 403) else "rate_limit",
+            }
+            if "retry_after" in reject:
+                error_body["retry_after"] = reject["retry_after"]
             return JSONResponse(
-                status_code=429,
-                content={
-                    "error": {
-                        "message": reject.get("reason", "rate_limit_exceeded"),
-                        "type": "rate_limit",
-                        "retry_after": reject.get("retry_after", 60),
-                    },
-                },
+                status_code=status,
+                content={"error": error_body},
             )
 
         # Process the request
@@ -1337,6 +1396,7 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="Path to config.yaml file")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode with tensor shape logging")
     parser.add_argument("--validate-config", action="store_true", help="Validate configuration at startup and exit")
+    parser.add_argument("--verify-plugins", action="store_true", help="Require SHA-256 hash verification for all plugins (fail-closed)")
     parser.add_argument("--quantization", type=str, default="none",
         choices=["none", "bitsandbytes_4bit", "bitsandbytes_8bit", "gptq"],
         help="Quantization method for model loading")
@@ -1349,6 +1409,9 @@ def main() -> None:
         DistLLMSettings.validate_startup()
         print("✅ Config validation passed")
         return
+
+    # Store verify-plugins flag in shared state for lifespan to read
+    state.verify_plugins = getattr(args, "verify_plugins", False)
 
     settings = _load_settings(args)
 

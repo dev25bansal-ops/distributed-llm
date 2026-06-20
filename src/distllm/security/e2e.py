@@ -204,16 +204,16 @@ class E2EEncryption:
 
     def __post_init__(self) -> None:
         if not self.cluster_key:
-            logger.warning(
-                "E2EEncryption initialized with empty cluster_key — "
-                "HMAC signatures will provide no authentication. "
-                "Set a strong cluster_key for production use."
+            raise E2EError(
+                "cluster_key is required and cannot be empty. "
+                "HMAC signatures require a secret key for authentication. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
             )
-        elif len(self.cluster_key) < 16:
-            logger.warning(
-                f"E2EEncryption cluster_key is only {len(self.cluster_key)} characters — "
-                "recommend at least 16 characters for security. "
-                "Use: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        if len(self.cluster_key) < 16:
+            raise E2EError(
+                f"cluster_key must be at least 16 characters, got {len(self.cluster_key)}. "
+                "A short key is vulnerable to brute-force attacks. "
+                "Generate a strong key with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
             )
         if HAS_NACL:
             self._generate_keypair()

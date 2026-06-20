@@ -34,6 +34,7 @@ spec:
           image: ghcr.io/distributed-llm/coordinator:0.4.0
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
             runAsNonRoot: true

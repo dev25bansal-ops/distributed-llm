@@ -8,7 +8,7 @@ delimiter "__" (e.g., DISTLLM__MODEL__NAME).
 import os
 from typing import Any, TYPE_CHECKING
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Domain module imports
@@ -211,6 +211,114 @@ class DistLLMSettings(BaseSettings):
     llamacpp: LlamacppSettings = Field(default_factory=LlamacppSettings)
     wide_area: WideAreaSettings = Field(default_factory=WideAreaSettings)
     defragmentation: DefragmentationSettings = Field(default_factory=DefragmentationSettings)
+
+    # ------------------------------------------------------------------
+    # Cross-field validation
+    # ------------------------------------------------------------------
+
+    @model_validator(mode="after")
+    def _validate_cross_field(self) -> "DistLLMSettings":
+        """Validate inter-field constraints that span multiple sections.
+
+        Raises ValueError with a descriptive message listing all violations
+        so the user can fix them in a single pass.
+        """
+        errors: list[str] = []
+
+        # 1. Chunked prefill requires a positive prefill token budget.
+        if self.chunked_prefill.enabled and self.batching.max_tokens_per_batch < 1:
+            errors.append(
+                "chunked_prefill is enabled but batching.max_tokens_per_batch "
+                f"is {self.batching.max_tokens_per_batch}; must be > 0"
+            )
+
+        # 2. Speculative decoding with draft_model method needs a model path.
+        #    An empty draft_model is the default (speculative disabled).
+        spec = self.speculative
+        if spec.method == "draft_model" and not spec.draft_model.strip():
+            # Only flag if other settings suggest speculative was intended
+            # (non-default num_assistant_tokens or min_acceptance_rate).
+            if spec.num_assistant_tokens != 5 or spec.min_acceptance_rate != 0.3:
+                errors.append(
+                    "speculative method is 'draft_model' and non-default "
+                    "speculative settings were provided, but "
+                    "speculative.draft_model is empty; set it to a model ID"
+                )
+        if spec.method == "eagle" and not spec.eagle_checkpoint.strip():
+            errors.append(
+                "speculative method is 'eagle' but "
+                "speculative.eagle_checkpoint is empty"
+            )
+
+        # 3. TLS must point to existing certificate and key files.
+        if self.tls.enabled:
+            if not self.tls.cert_file:
+                errors.append(
+                    "tls is enabled but tls.cert_file is not set"
+                )
+            elif not os.path.isfile(self.tls.cert_file):
+                errors.append(
+                    f"tls.cert_file does not exist: {self.tls.cert_file}"
+                )
+            if not self.tls.key_file:
+                errors.append(
+                    "tls is enabled but tls.key_file is not set"
+                )
+            elif not os.path.isfile(self.tls.key_file):
+                errors.append(
+                    f"tls.key_file does not exist: {self.tls.key_file}"
+                )
+
+        # 4. Multi-GPU tensor parallelism requires network configuration.
+        if self.tensor_parallel.enabled and self.tensor_parallel.num_gpus > 1:
+            net = self.network
+            if net.grpc_timeout < 1 or net.max_retries < 1:
+                errors.append(
+                    "tensor_parallel is enabled with num_gpus > 1 but network "
+                    f"settings are invalid (grpc_timeout={net.grpc_timeout}, "
+                    f"max_retries={net.max_retries}); both must be >= 1"
+                )
+
+        if errors:
+            raise ValueError(
+                "Cross-field validation failed:\n  - " + "\n  - ".join(errors)
+            )
+        return self
+
+    # ------------------------------------------------------------------
+    # Diff utility
+    # ------------------------------------------------------------------
+
+    def diff(self, other: "DistLLMSettings") -> dict[str, tuple[Any, Any]]:
+        """Return fields that differ between *self* and *other*.
+
+        Returns a dict mapping dotted field paths to ``(self_value, other_value)``
+        tuples.  Nested models are compared recursively so only the leaf values
+        that actually changed appear in the result.
+        """
+        a = self.model_dump()
+        b = other.model_dump()
+        return self._diff_dicts(a, b, prefix="")
+
+    @classmethod
+    def _diff_dicts(
+        cls,
+        a: dict[str, Any],
+        b: dict[str, Any],
+        prefix: str,
+    ) -> dict[str, tuple[Any, Any]]:
+        """Recursively compare two dicts, returning dotted-path differences."""
+        changes: dict[str, tuple[Any, Any]] = {}
+        all_keys = set(a) | set(b)
+        for key in sorted(all_keys):
+            path = f"{prefix}.{key}" if prefix else key
+            val_a = a.get(key)
+            val_b = b.get(key)
+            if isinstance(val_a, dict) and isinstance(val_b, dict):
+                changes.update(cls._diff_dicts(val_a, val_b, prefix=path))
+            elif val_a != val_b:
+                changes[path] = (val_a, val_b)
+        return changes
 
     @classmethod
     def from_yaml(

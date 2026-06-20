@@ -5,13 +5,19 @@ tracks health state, and triggers failover callbacks on state transitions.
 """
 
 import asyncio
+import time
 from typing import Callable
 
 from loguru import logger
 
-from distllm.health.state import HealthRecord, HealthStateStore, NodeState
-from distllm.health.prober import probe_node
 from distllm.health.failover import FailoverEngine
+from distllm.health.prober import probe_node
+from distllm.health.state import HealthRecord, HealthStateStore, NodeState
+
+# Exponential backoff constants for permanently dead nodes.
+_BACKOFF_FAILURE_THRESHOLD = 10  # consecutive failures before backoff kicks in
+_BACKOFF_BASE_SECONDS = 5.0  # base interval multiplied by 2^(failures - threshold)
+_BACKOFF_MAX_SECONDS = 300.0  # cap at 5 minutes
 
 
 class HealthCheckService:
@@ -42,6 +48,7 @@ class HealthCheckService:
         self._get_client: Callable[[str], object] | None = None
         self._task: asyncio.Task | None = None
         self._on_node_death: Callable[[str], None] | None = None
+        self._next_probe_time: dict[str, float] = {}
 
     def on_node_death(self, callback: Callable[[str], None]) -> None:
         """Register callback when a node is declared dead (UNHEALTHY -> OFFLINE).
@@ -70,6 +77,7 @@ class HealthCheckService:
     def unregister_node(self, node_id: str) -> None:
         """Remove a node from monitoring."""
         self._store.remove(node_id)
+        self._next_probe_time.pop(node_id, None)
 
     def get_node(self, node_id: str) -> HealthRecord | None:
         return self._store.get(node_id)
@@ -103,10 +111,17 @@ class HealthCheckService:
 
     async def _probe_loop(self) -> None:
         while self._running:
+            now = time.monotonic()
+            tasks = []
             for node_id in list(self._store.get_all().keys()):
-                if not self._running:
-                    break
-                await self._probe_once(node_id)
+                next_time = self._next_probe_time.get(node_id, 0.0)
+                if now >= next_time:
+                    tasks.append(self._probe_once(node_id))
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.error(f"Unhandled error in health probe: {result}")
             await asyncio.sleep(self._probe_interval)
 
     async def _probe_once(self, node_id: str) -> None:
@@ -124,7 +139,7 @@ class HealthCheckService:
         success, latency_ms, data = await probe_node(client, timeout=self._probe_timeout)
 
         # Update record with probe data
-        record.last_probe_time = __import__("time").time()
+        record.last_probe_time = time.time()
         if success:
             record.gpu_utilization = data.get("gpu_utilization", 0.0)
             record.memory_used = data.get("memory_used", 0)
@@ -142,3 +157,14 @@ class HealthCheckService:
             if new_state == NodeState.OFFLINE and self._on_node_death:
                 logger.warning(f"Node {node_id} is OFFLINE, triggering recovery")
                 self._on_node_death(node_id)
+
+        # Schedule next probe with exponential backoff for dead nodes
+        if record.consecutive_failures >= _BACKOFF_FAILURE_THRESHOLD:
+            exp = record.consecutive_failures - _BACKOFF_FAILURE_THRESHOLD
+            backoff = min(
+                _BACKOFF_BASE_SECONDS * (2 ** exp),
+                _BACKOFF_MAX_SECONDS,
+            )
+            self._next_probe_time[node_id] = time.monotonic() + backoff
+        else:
+            self._next_probe_time[node_id] = time.monotonic() + self._probe_interval

@@ -12,6 +12,7 @@ from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from distllm.api.errors import error_response
+from distllm.api.ip_utils import get_client_ip
 from distllm.core.api_key_store import get_api_key_store, role_satisfies
 
 
@@ -214,16 +215,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
-        if os.environ.get("DISTLLM_TRUST_PROXY_HEADERS") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
-            client_ip = request.headers.get("X-Real-IP") or ""
-            if not client_ip:
-                forwarded = request.headers.get("X-Forwarded-For", "")
-                # C-05: Per RFC 7239, the leftmost IP is the original client.
-                parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-                client_ip = parts[0] if parts else ""
-        else:
-            client_ip = ""
-        client_ip = client_ip or (request.client.host if request.client else "unknown")
+        client_ip = get_client_ip(request)
 
         # Check rate limit before validating
         if _rate_limiter.is_rate_limited(client_ip):
@@ -325,7 +317,7 @@ class RequestRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         limit = self._rate_limit_value
         if limit > 0:
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = get_client_ip(request)
             if _request_rate_limiter.is_rate_limited(client_ip):
                 retry_after = _request_rate_limiter.retry_after(client_ip)
                 return error_response(
