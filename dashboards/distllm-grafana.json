@@ -1,0 +1,117 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "title": "DistLLM Cluster Overview",
+  "uid": "distllm-cluster",
+  "version": 1,
+  "timezone": "browser",
+  "panels": [
+    {
+      "title": "Request Throughput",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "rate(distllm_requests_total[1m])", "legendFormat": "requests/s"},
+        {"expr": "rate(distllm_tokens_generated_total[1m])", "legendFormat": "tokens/s"}
+      ],
+      "description": "Request and token throughput over time"
+    },
+    {
+      "title": "Latency (P50/P95/P99)",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "distllm_latency_p50_ms", "legendFormat": "P50"},
+        {"expr": "distllm_latency_p95_ms", "legendFormat": "P95"},
+        {"expr": "distllm_latency_p99_ms", "legendFormat": "P99"}
+      ],
+      "description": "Pipeline latency percentiles"
+    },
+    {
+      "title": "GPU Utilization",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "targets": [{"expr": "distllm_gpu_utilization"}],
+      "description": "Current GPU utilization across all nodes"
+    },
+    {
+      "title": "GPU Memory",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "targets": [{"expr": "distllm_gpu_memory_free_bytes / distllm_gpu_memory_total_bytes * 100"}],
+      "description": "GPU memory usage percentage"
+    },
+    {
+      "title": "Queue Depth",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "targets": [{"expr": "distllm_queue_depth"}],
+      "description": "Pending request queue depth"
+    },
+    {
+      "title": "Error Rate",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "rate(distllm_errors_total[5m])", "legendFormat": "errors/s"},
+        {"expr": "rate(distllm_errors_total[5m]) / rate(distllm_requests_total[5m]) * 100", "legendFormat": "error %"}
+      ],
+      "description": "Request error rate and percentage"
+    },
+    {
+      "title": "Active Connections",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [{"expr": "distllm_active_connections"}],
+      "description": "Active gRPC connections to worker nodes"
+    },
+    {
+      "title": "Pipeline Stage Latency Breakdown",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "distllm_stage_latency_ms{stage=\"prefill\"}", "legendFormat": "prefill"},
+        {"expr": "distllm_stage_latency_ms{stage=\"decode\"}", "legendFormat": "decode"},
+        {"expr": "distllm_stage_latency_ms{stage=\"transfer\"}", "legendFormat": "kv_transfer"}
+      ],
+      "description": "Latency per pipeline stage"
+    },
+    {
+      "title": "Tenant Token Usage",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
+      "targets": [{"expr": "distllm_tenant_token_usage_total", "legendFormat": "{{tenant}}"}],
+      "description": "Token consumption per tenant"
+    },
+    {
+      "title": "KV Cache Hit Rate",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "targets": [
+        {"expr": "rate(distllm_cache_hits_total[5m]) / (rate(distllm_cache_hits_total[5m]) + rate(distllm_cache_misses_total[5m])) * 100", "legendFormat": "hit %"}
+      ],
+      "description": "Prefix cache hit rate"
+    },
+    {
+      "title": "Node Count",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 12, "x": 12, "y": 40},
+      "targets": [{"expr": "distllm_node_count"}],
+      "description": "Active worker nodes"
+    }
+  ],
+  "annotations": {
+    "list": [
+      {"datasource": "Prometheus", "expr": "distllm_scaling_events_total", "name": "Scale Events"}
+    ]
+  },
+  "editable": true,
+  "tags": ["distllm", "inference", "llm"],
+  "schemaVersion": 36,
+  "links": [],
+  "templating": {
+    "list": [
+      {"type": "constant", "name": "datasource", "query": "prometheus", "current": {"text": "Prometheus", "value": "prometheus"}}
+    ]
+  }
+}

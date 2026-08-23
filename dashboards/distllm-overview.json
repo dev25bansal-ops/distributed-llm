@@ -1,0 +1,369 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "DistLLM API overview built exclusively on metric families exposed at GET /metrics by DistLLMPrometheusExporter. See docs/observability-metrics.md. Note: the exporter has no route/path label (cardinality control), so traffic is grouped by method and status. Labeled families show No data until first observed - that is expected.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate by method & status",
+      "description": "sum by (method, status) of rate(distllm_requests_total). status=error is recorded only when a handler raised an unhandled exception; normal HTTP error responses count as success.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "status=error" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red", "type": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (method, status) (rate(distllm_requests_total[$__rate_interval]))",
+          "legendFormat": "{{method}} {{status}}",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Request latency p95 / p50",
+      "description": "histogram_quantile over distllm_request_latency_seconds_bucket (buckets 0.1 s to 120 s). Buckets exist only after traffic has been observed.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(distllm_request_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(distllm_request_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Error ratio (unhandled exceptions / requests)",
+      "description": "distllm_errors_total counts exceptions caught by ObservabilityMiddleware (type=http_500). For HTTP-status-based failure rates use distllm_requests_total{status=\"error\"}.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(distllm_errors_total[$__rate_interval])) / clamp_min(sum(rate(distllm_requests_total[$__rate_interval])), 0.001)",
+          "legendFormat": "exception ratio",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Average request duration",
+      "description": "rate(_sum)/rate(_count) over distllm_request_latency_seconds.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(distllm_request_latency_seconds_sum[$__rate_interval])) / sum(rate(distllm_request_latency_seconds_count[$__rate_interval]))",
+          "legendFormat": "avg duration",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Active nodes",
+      "description": "distllm_active_nodes",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "expr": "distllm_active_nodes", "range": false, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Scheduler queue depth",
+      "description": "distllm_coordinator_queue_depth - pending requests in the batch scheduler queue.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 100 }, { "color": "red", "value": 500 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "distllm_coordinator_queue_depth", "range": false, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Active requests",
+      "description": "distllm_coordinator_active_requests",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "distllm_coordinator_active_requests", "range": false, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Dead nodes",
+      "description": "distllm_dead_nodes - awaiting replacement.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "expr": "max(distllm_dead_nodes)", "range": false, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Draining nodes",
+      "description": "distllm_draining_nodes",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "expr": "max(distllm_draining_nodes)", "range": false, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Circuit breakers open",
+      "description": "sum(distllm_circuit_breaker_state) across target nodes (0=closed, 1=open).",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "expr": "sum(distllm_circuit_breaker_state)", "range": false, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Token throughput",
+      "description": "rate(distllm_tokens_generated_total). Populated once generation traffic flows.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (rate(distllm_tokens_generated_total[$__rate_interval]))",
+          "legendFormat": "{{model}}",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Cost rate ($/hour)",
+      "description": "rate(distllm_request_cost_total) scaled to $/hour. Only populated when routes set _request_cost (cost tracking).",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(distllm_request_cost_total[$__rate_interval])) * 3600",
+          "legendFormat": "$/hour",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "GPU-hours burn rate (/hour)",
+      "description": "rate(distllm_request_gpu_hours_total) scaled to GPU-hours/hour. Exposed name carries the _total suffix added by prometheus_client.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(distllm_request_gpu_hours_total[$__rate_interval])) * 3600",
+          "legendFormat": "GPU-h/hour",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["distllm", "observability"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "DistLLM API Overview",
+  "uid": "distllm-overview",
+  "version": 1,
+  "weekStart": ""
+}
