@@ -307,7 +307,7 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.22"
           cache-dependency-path: integrations/terraform/provider/go.sum
