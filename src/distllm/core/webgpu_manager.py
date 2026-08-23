@@ -86,6 +86,7 @@ class WebGPUManager:
         self._nodes: dict[str, WebGPUNode] = {}
         self._sessions: dict[str, BrowserGPU] = {}
         self._lock = threading.Lock()
+        self._id_counter = 0
         self._stats = {
             "total_registrations": 0,
             "total_requests": 0,
@@ -102,8 +103,11 @@ class WebGPUManager:
         Returns:
             Session ID for the registered browser.
         """
+        with self._lock:
+            self._id_counter += 1
+            counter = self._id_counter
         session_id = hashlib.sha256(
-            f"{gpu_info.get('gpu_model', '')}:{time.time()}".encode()
+            f"{gpu_info.get('gpu_model', '')}:{time.time()}:{counter}".encode()
         ).hexdigest()[:16]
 
         browser_gpu = BrowserGPU(

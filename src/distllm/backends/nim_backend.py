@@ -27,7 +27,6 @@ import os
 import time
 from typing import Any, AsyncIterator, Iterator
 
-import numpy as np
 import torch
 from loguru import logger
 
@@ -371,57 +370,23 @@ class NimNodeAdapter(BackendAdapter):
     def _forward_via_api(
         self, input_ids: torch.Tensor
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass via NIM's completions API.
+        """Forward pass starting from token IDs via the NIM API.
 
-        Encodes token IDs as a prompt and extracts logits from the API
-        response. This is a fallback for when no local model is
-        available.
+        Refuses loudly: NIM's HTTP API exposes only ``logprobs``/
+        ``top_logprobs`` for the *generated* token, which is insufficient
+        to reconstruct a real next-token logit distribution. Returning a
+        synthetic tensor (e.g. hash-scattered logprobs or a one-hot)
+        would silently corrupt downstream sampling/argmax, so this path
+        fails instead — same policy as the WebGPU/TGI adapters.
         """
-        if self._tokenizer is not None:
-            prompt = self._tokenizer.decode(
-                input_ids[0].tolist(), skip_special_tokens=True
-            )
-        else:
-            prompt = f"<input>{input_ids[0].tolist()}</input>"
-
-        payload = {
-            "model": self.model_name,
-            "prompt": prompt,
-            "max_tokens": 1,
-            "temperature": 0.0,
-            "logprobs": 1,
-        }
-
-        try:
-            response = self._request("POST", "/completions", json=payload)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            raise RuntimeError(
-                f"NIM forward failed for {self.model_name}: {e}"
-            ) from e
-
-        # Extract logprobs if available, otherwise return placeholder
-        choices = data.get("choices", [])
-        if choices:
-            logprobs = choices[0].get("logprobs")
-            if logprobs and "top_logprobs" in logprobs:
-                top = logprobs["top_logprobs"][0]
-                vocab_size = len(top) * 4  # rough estimate if unknown
-                logit_tensor = torch.zeros(
-                    1, 1, max(vocab_size, 1), device=self._device
-                )
-                for token_str, prob in top.items():
-                    idx = hash(token_str) % logit_tensor.shape[-1]
-                    logit_tensor[0, 0, idx] = np.log(max(prob, 1e-10))
-                return logit_tensor, []
-            token_id = choices[0].get("token_id", 0)
-            logit_tensor = torch.zeros(1, 1, 32000, device=self._device)
-            logit_tensor[0, 0, token_id] = 1.0
-            return logit_tensor, []
-
-        raise RuntimeError(
-            f"NIM forward returned empty choices for {self.model_name}"
+        raise NotImplementedError(
+            f"NimNodeAdapter.forward(input_ids=...) is not supported "
+            f"without a local model ({self.model_name!r}). NIM's HTTP API "
+            f"exposes only top_logprobs for the generated token, which "
+            f"cannot reproduce a real logits tensor; fabricating one "
+            f"would silently corrupt inference. Use generate() for text "
+            f"generation via the NIM endpoint, or pass local_model= to "
+            f"the constructor for protocol-level forward."
         )
 
     def _forward_hidden_states(

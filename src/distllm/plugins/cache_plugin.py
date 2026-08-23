@@ -72,16 +72,45 @@ def _build_cache_key(
     model: str,
     temperature: float,
     top_p: float,
+    scope: str = "",
 ) -> str:
     """Build a deterministic cache key from prompt + generation parameters.
 
-    The key is a SHA-256 hex digest of the concatenation of the (optionally
-    normalized) prompt, model name, temperature, and top_p.  This ensures that
-    the same logical request always maps to the same cache entry, while
-    requests that differ in any parameter are kept separate.
+    The ``scope`` (tenant/key isolation) is part of the key, so a cached
+    response for one tenant or key can never be served to another.  Requests
+    with no identity share the (empty) scope and behave exactly as before.
+
+    The key is a SHA-256 hex digest of a JSON encoding of the request tuple.
+    JSON encoding keeps the mapping injective — a scope or prompt containing a
+    delimiter character (e.g. ``|``) cannot collide with a different request.
     """
-    raw = f"{prompt}|model={model}|temp={temperature}|top_p={top_p}"
+    raw = json.dumps(
+        [scope, prompt, model, temperature, top_p],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _request_scope(request: dict[str, Any]) -> str:
+    """Return the tenant/user isolation scope for a request.
+
+    The scope is built from the AUTHENTICATED identity that the request
+    dispatcher actually supplies — ``api_key_id`` (per-key) and the server-set
+    ``tenant`` (SSO) — so a cached response for one tenant or key can never be
+    served to another.  The historical ``tenant_id``/``user_id`` names are
+    still honoured for direct callers.  The ``key:``/``tenant:`` prefixes keep
+    namespaces distinct even when ids collide across dimensions.
+    """
+    api_key_id = request.get("api_key_id") or request.get("user_id") or ""
+    tenant = request.get("tenant") or request.get("tenant_id") or ""
+    if api_key_id and tenant:
+        return f"{tenant}:{api_key_id}"
+    if api_key_id:
+        return f"key:{api_key_id}"
+    if tenant:
+        return f"tenant:{tenant}"
+    return ""
 
 
 # ── In-memory LRU backend ───────────────────────────────────────────────────
@@ -347,7 +376,13 @@ class CachePlugin(PluginBase):
         temperature = float(context.get("temperature", 1.0))
         top_p = float(context.get("top_p", 1.0))
 
-        cache_key = _build_cache_key(lookup_prompt, model, temperature, top_p)
+        cache_key = _build_cache_key(
+            lookup_prompt,
+            model,
+            temperature,
+            top_p,
+            scope=_request_scope(context),
+        )
 
         # --- Exact-match lookup (primary path) ---
         cached = self._backend_get(cache_key)
@@ -361,6 +396,7 @@ class CachePlugin(PluginBase):
             semantic_result = self._semantic_cache.lookup(
                 lookup_prompt,
                 embedding=self._prompt_to_embedding(lookup_prompt),
+                scope=_request_scope(context),
             )
             if semantic_result is not None:
                 self._record_hit(is_semantic=True)
@@ -395,7 +431,13 @@ class CachePlugin(PluginBase):
         temperature = float(request.get("temperature", 1.0))
         top_p = float(request.get("top_p", 1.0))
 
-        cache_key = _build_cache_key(store_prompt, model, temperature, top_p)
+        cache_key = _build_cache_key(
+            store_prompt,
+            model,
+            temperature,
+            top_p,
+            scope=_request_scope(request),
+        )
 
         # Store in primary backend (LRU or Redis).
         self._backend_put(cache_key, response_text, self._ttl)
@@ -407,6 +449,7 @@ class CachePlugin(PluginBase):
                 response=response_text,
                 embedding=self._prompt_to_embedding(store_prompt),
                 ttl=self._ttl,
+                scope=_request_scope(request),
             )
 
         logger.debug(f"CachePlugin: stored key={cache_key[:12]}...")

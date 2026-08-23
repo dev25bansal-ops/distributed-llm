@@ -234,6 +234,63 @@ class ConnectionPool:
         except OSError:
             return False
 
+    def _is_half_open(self, sock: socket.socket, timeout: float | None = None) -> bool:
+        """Detect a half-open connection: the peer closed but we haven't.
+
+        A closed peer makes the local socket *readable* within the timeout
+        (EOF -> ``recv`` returns ``b""``) or raises on a reset.  An idle live
+        socket stays non-readable, so `select()` returns no readable fd.
+        """
+        timeout = timeout if timeout is not None else self._validate_timeout
+        try:
+            readable, _, _ = select.select([sock], [], [], timeout)
+            if not readable:
+                return False
+            data = sock.recv(1, socket.MSG_PEEK)
+            return not data
+        except (ConnectionResetError, BrokenPipeError, OSError, ValueError):
+            return True
+
+    def detect_half_open(self, host: str, port: int) -> bool:
+        """Check the pooled connections for ``(host, port)`` for half-open
+        sockets and remove any that are. Returns True if at least one was
+        found (and removed).
+        """
+        key = (host, port)
+        found = False
+        with self._lock:
+            conns = self._pool.get(key, [])
+            alive: list[PooledConnection] = []
+            for conn in conns:
+                if self._is_half_open(conn.socket):
+                    self._close_pooled(conn)
+                    self._stats.evictions += 1
+                    found = True
+                else:
+                    alive.append(conn)
+            if alive:
+                self._pool[key] = alive
+            else:
+                self._pool.pop(key, None)
+        return found
+
+    def probe_socket_alive(self, sock: socket.socket, timeout: float = 0.5) -> bool:
+        """Probe a raw socket for liveness, returning False for a closed peer.
+
+        A closed peer becomes readable (EOF) within the timeout; an idle live
+        socket does not.  No bytes are consumed (MSG_PEEK), so the caller can
+        keep reading normally afterwards.
+        """
+        try:
+            sock.settimeout(timeout)
+            readable, _, _ = select.select([sock], [], [], timeout)
+            if not readable:
+                return True  # not readable within timeout -> connection is live
+            data = sock.recv(1, socket.MSG_PEEK)
+            return data != b""
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            return False
+
     def _configure_socket(self, sock: socket.socket) -> None:
         """Apply SO_KEEPALIVE and TCP_NODELAY to a new socket."""
         if self._enable_keepalive:

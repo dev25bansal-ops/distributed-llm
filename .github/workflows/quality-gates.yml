@@ -1,0 +1,73 @@
+# Quality Gates — blocking ratchets (§6.6.1 + §6.6.2)
+#
+# Runs on every PR and fails the build when:
+#   * Bandit finds a NEW HIGH/MEDIUM SAST finding (no-new-violation ratchet).
+#   * Per-module coverage drops below the ratcheted floor
+#     (global 30% ratcheting +5%/sprint; critical modules held higher
+#     via scripts/ci/coverage-ratchet.json).
+
+name: Quality Gates
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bandit-ratchet:
+    name: Bandit no-new-violation ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install bandit
+      # Fails on any NEW HIGH/MEDIUM finding vs bandit-baseline.json.
+      - name: Run bandit ratchet (blocking)
+        run: python scripts/ci/bandit_ratchet.py
+      - name: Upload raw bandit report (always)
+        if: always()
+        run: bandit -r src/ -lll -f json -o bandit-report.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+  coverage-ratchet:
+    name: Coverage ratchet (per-module floors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev,testing]"
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ \
+            -m "not e2e and not slow and not chaos and not benchmark" \
+            --cov=distllm --cov-report=xml --cov-report=term-missing \
+            -q
+      - name: Enforce coverage ratchet (single blocking gate)
+        # The ratchet is the ONLY coverage gate. It FAILS only when total
+        # coverage regresses below the recorded baseline (see
+        # .coverage-baseline.json) — no hard 80% pytest-cov floor. Emits coverage-delta.md.
+        run: python scripts/ci/coverage_ratchet.py --coverage-xml coverage.xml --emit-delta
+      - name: Upload coverage delta
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-delta
+          path: coverage-delta.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-ratchet-report
+          path: coverage.xml

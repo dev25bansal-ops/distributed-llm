@@ -32,7 +32,7 @@ class LayerFingerprint:
     layer_name: str
     shape: tuple[int, ...]
     dtype: str
-    param_hash: str  # SHA-256 of first 1024 bytes + shape
+    param_hash: str  # SHA-256 of full tensor bytes + shape
     param_count: int
     memory_bytes: int
 
@@ -99,24 +99,37 @@ class SharedLayerPool:
 
             for layer_name, tensor in state_dict.items():
                 fp = self._fingerprint_layer(layer_name, tensor)
-                model_fingerprints[layer_name] = fp.param_hash
+                shared = self._shared_layers.get(fp.param_hash)
 
-                if fp.param_hash in self._shared_layers:
-                    # Layer matches an existing shared layer
-                    shared = self._shared_layers[fp.param_hash]
+                if (
+                    shared is not None
+                    and shared.tensor is not None
+                    and torch.equal(shared.tensor, tensor)
+                ):
+                    # Exact match with an existing shared layer -- share tensor
+                    # storage. torch.equal guards against hash collisions: never
+                    # share when the actual weights differ (CWE-345 wrong-weights).
                     shared.ref_count += 1
                     if model_name not in shared.model_names:
                         shared.model_names.append(model_name)
+                    model_fingerprints[layer_name] = fp.param_hash
                     shared_count += 1
                     saved_bytes += fp.memory_bytes
                 else:
-                    # New unique layer
-                    self._shared_layers[fp.param_hash] = SharedLayer(
+                    # New unique layer. If this hash key is already taken by a
+                    # *different* tensor (hash collision), mint a distinct key so
+                    # the existing shared layer is never clobbered and each model
+                    # keeps its own weights.
+                    key = fp.param_hash
+                    if shared is not None:
+                        key = f"{fp.param_hash}:{len(self._shared_layers)}"
+                    self._shared_layers[key] = SharedLayer(
                         fingerprint=fp,
                         tensor=tensor,
                         ref_count=1,
                         model_names=[model_name],
                     )
+                    model_fingerprints[layer_name] = key
 
             self._model_layers[model_name] = model_fingerprints
             self._total_shared_bytes += saved_bytes

@@ -218,7 +218,13 @@ class QuantAwarePartitionSolver:
         comm_ms = base_cost.communication_time_ms
         total_ms = compute_ms + comm_ms
 
-        memory_bytes = int(base_cost.memory_bytes * profile.memory_reduction)
+        # Weight quantization only shrinks the weights portion of the
+        # footprint; KV cache and activations are not quantized by a weight
+        # method. Applying ``memory_reduction`` to the whole footprint would
+        # undercount memory and approve OOM partitions.
+        weights_mem = self._cost_model.weights_memory_bytes(start, end)
+        non_weight = max(0, base_cost.memory_bytes - weights_mem)
+        memory_bytes = int(weights_mem * profile.memory_reduction) + non_weight
         memory_available = base_cost.memory_available_bytes
         fits = memory_bytes <= memory_available * 0.9
 

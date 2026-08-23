@@ -51,12 +51,7 @@ def mock_coordinator_with_nodes():
         ResourceManager=ResourceManager,
         CacheManager=MagicMock,
         TokenGenerator=MagicMock,
-        ModelManager=MagicMock,
-        HealthChecker=MagicMock,
-        NodeRegistrar=MagicMock,
-        MetricsManager=MagicMock,
         RequestTracker=MagicMock,
-        Container=MagicMock,
     ):
         with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
             coord = Coordinator(
@@ -80,10 +75,13 @@ def mock_coordinator_with_nodes():
     )
 
     # Mock node clients (avoid actual gRPC)
-    for node_id in coord.nodes:
-        reg = coord.nodes[node_id]
+    # nodes property returns summaries; inject into the internal objects.
+    from unittest.mock import AsyncMock
+
+    for node_id in list(coord.nodes):
+        reg = coord._pipeline.get_node(node_id)
         reg.client = MagicMock()
-        reg.async_client = MagicMock()
+        reg.async_client = AsyncMock()  # awaited by the micro-batch path
 
     # Mock tokenizer
     coord.tokenizer = MagicMock()

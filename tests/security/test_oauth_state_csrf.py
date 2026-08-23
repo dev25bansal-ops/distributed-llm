@@ -44,8 +44,8 @@ class TestOAuthState:
             authority="https://auth.example.com",
             callback_url="https://app.example.com/callback",
         )
-        url = handler.get_login_state()
-        # get_login_url stores state — let's get one
+        # get_login_url populates the state store
+        handler.get_login_url()
         state = list(handler._state_store.keys())[0]
         # Mock handle_callback to trigger state validation
         with patch.object(handler, 'handle_callback') as mock:

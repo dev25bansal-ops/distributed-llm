@@ -4,6 +4,8 @@ Provides trace provider setup, W3C trace context propagation across
 distributed nodes, and request-to-trace correlation helpers.
 """
 
+from typing import Any
+
 from opentelemetry import trace, context
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter

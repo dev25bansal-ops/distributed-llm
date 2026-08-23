@@ -96,7 +96,10 @@ class DistLLMProvider:
     """
 
     def __init__(self):
-        self._api_base = os.environ.get("DISTLLM_API_BASE", "http://localhost:8000/v1")
+        # The DistLLM OpenAI-compatible API is served under /v1/... paths, so
+        # the base URL must be the bare origin (no trailing /v1) — otherwise
+        # combined with the /v1/... request paths it becomes /v1/v1/... (F-003).
+        self._api_base = os.environ.get("DISTLLM_API_BASE", "http://localhost:8000").rstrip("/")
         self._api_key = os.environ.get("DISTLLM_API_KEY", "distllm")
         self._model = os.environ.get("DISTLLM_MODEL_NAME", "distributed-llm")
 
@@ -139,7 +142,7 @@ class DistLLMProvider:
             })
 
         request_body = {
-            "model": self._model,
+            "model": model or self._model,
             "messages": messages,
             "temperature": model_parameters.get("temperature", 0.7),
             "top_p": model_parameters.get("top_p", 0.9),

@@ -146,6 +146,13 @@ class RequestFingerprinter:
             self._cache.move_to_end(fingerprint)
             while len(self._cache) > self._cache_size:
                 self._cache.popitem(last=False)
+            # Publish the in-flight result so a waiting duplicate request
+            # receives the actual response (F-044). Written BEFORE signalling
+            # so waiters read a non-None value; clear_in_flight pops it after.
+            # Only publish a non-empty response — the empty placeholder written
+            # before generation must not be mistaken for a completed result.
+            if response:
+                self._in_flight_results[fingerprint] = response
 
         self._signal_waiting(fingerprint)
 

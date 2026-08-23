@@ -25,17 +25,18 @@ You have ownership of `src/distllm/api/` — FastAPI server, all 17 route files,
 | `middleware.py` | AuthMiddleware (API key + rate limiting) |
 | `auth_deps.py` | `require_role()` dependency factory |
 | `sso_auth.py` | OAuth2/OIDC/SAML with CSRF state + nonce |
+| `sso_middleware.py` | SSO middleware + `/v1/auth/{token,refresh,revoke}` (mounted in `server.py` via `setup_sso`) |
 | `streaming.py` | SSE streaming with tool call support |
 | `rate_limiter.py` | Token bucket rate limiter |
 | `quota_middleware.py` | Per-tenant quota enforcement |
 | `errors.py` | Error response formatting |
-| `server_middleware.py` | (DELETED — dead code removed) |
-| `rate_limit_middleware.py` | (DELETED — dead code removed) |
+| `rate_limit_middleware.py` | Back-compat re-export of `RequestRateLimitMiddleware` (from `middleware.py`) |
 
 ## Current State
 - All CRITICAL/HIGH security fixes applied
 - JWT auth wired end-to-end via `_auth_header`
 - OAuth2 state + OIDC nonce CSRF protection
+- SSO middleware mounted (`setup_sso`) — `/v1/auth/{token,refresh,revoke}`
 - Role-based access on ALL routes
 - Cluster key rotation with grace period
 - HA state snapshot endpoint

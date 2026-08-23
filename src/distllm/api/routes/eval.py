@@ -18,10 +18,11 @@ from loguru import logger
 
 from ..api_state import g
 from ..auth_deps import require_role
+from ..services.eval_service import EvalService
 from distllm.core.evaluation_harness import EvalRunner, EvalReport
 
 
-router = APIRouter(prefix="/api/v1/eval", tags=["evaluation"])
+router = APIRouter(prefix="/v1/eval", tags=["evaluation"])
 
 
 # ---------------------------------------------------------------------------
@@ -74,22 +75,46 @@ class EvalResultsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory runner cache
+# SSRF protection
 # ---------------------------------------------------------------------------
 
-_runner: EvalRunner | None = None
-_runner_lock = threading.Lock()
+
+def _is_safe_coordinator_url(url: str) -> bool:
+    """True when *url* does not target loopback/private/link-local networks."""
+    import ipaddress as _ip
+    from urllib.parse import urlparse as _urlparse
+
+    try:
+        parsed = _urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host in ("localhost",) or host.endswith(".localhost"):
+        return False
+    try:
+        ip = _ip.ip_address(host)
+    except ValueError:
+        return True  # hostname (not a literal IP): DNS-level check skipped
+    return not (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast
+    )
 
 
-def _get_runner() -> EvalRunner:
-    """Get or create the shared EvalRunner instance."""
-    global _runner
-    if _runner is None:
-        with _runner_lock:
-            if _runner is None:
-                coordinator = g.coordinator
-                _runner = EvalRunner(coordinator=coordinator)
-    return _runner
+# ---------------------------------------------------------------------------
+# Service access
+# ---------------------------------------------------------------------------
+
+
+def _get_service() -> EvalService:
+    """Build an EvalService for this request.
+
+    Constructed per call (cheap — the runner is lazy) so test suites can
+    swap the module-level ``EvalService`` symbol for a stub subclass.
+    """
+    return EvalService(coordinator=g.coordinator)
 
 
 # ---------------------------------------------------------------------------
@@ -118,48 +143,34 @@ async def eval_run(request: EvalRunRequest) -> EvalRunResponse:
                 error=f"Unknown benchmark '{b}'. Valid: {sorted(valid_benchmarks)}",
             )
 
-    runner = _get_runner()
-    reports: dict[str, Any] = {}
+    # SSRF guard: coordinator URLs are fetched server-side, so loopback /
+    # private-network targets must be rejected before any request is made.
+    for label, url in (
+        ("coordinator_url", request.coordinator_url),
+        ("coordinator_url_b", request.coordinator_url_b),
+    ):
+        if url and not _is_safe_coordinator_url(url):
+            return EvalRunResponse(
+                success=False,
+                error=(
+                    f"Invalid {label} '{url}': host is loopback/private or "
+                    "unresolvable — SSRF protection"
+                ),
+            )
 
+    service = _get_service()
     try:
-        for benchmark in request.benchmarks:
-            logger.info("API eval run: benchmark={}, model={}", benchmark, request.model_id)
-
-            if benchmark == "mt_bench":
-                report = runner.run_mt_bench(
-                    model_id=request.model_id,
-                    max_tokens=request.max_tokens,
-                    temperature=request.temperature,
-                    coordinator_url=request.coordinator_url,
-                    num_categories=min(request.num_samples, 8),
-                )
-            elif benchmark == "arena":
-                if not request.model_b:
-                    return EvalRunResponse(
-                        success=False,
-                        error="arena benchmark requires model_b parameter",
-                    )
-                report = runner.run_arena(
-                    model_a=request.model_id,
-                    model_b=request.model_b,
-                    max_tokens=request.max_tokens,
-                    temperature=request.temperature,
-                    coordinator_url_a=request.coordinator_url,
-                    coordinator_url_b=request.coordinator_url_b,
-                    num_samples=request.num_samples,
-                )
-            else:
-                report = runner.run_heim(
-                    benchmark=benchmark,
-                    model_id=request.model_id,
-                    max_tokens=request.max_tokens,
-                    temperature=request.temperature,
-                    coordinator_url=request.coordinator_url,
-                    num_samples=request.num_samples,
-                )
-
-            reports[benchmark] = _report_to_dict(report)
-
+        results = service.run_benchmarks(
+            model_id=request.model_id,
+            benchmarks=request.benchmarks,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            num_samples=request.num_samples,
+            coordinator_url=request.coordinator_url,
+            model_b=request.model_b or "",
+            coordinator_url_b=request.coordinator_url_b,
+        )
+        reports = {b: r for b, r in (results or {}).items()}
         return EvalRunResponse(success=True, reports=reports)
 
     except Exception as exc:
@@ -179,8 +190,8 @@ async def eval_results(
     offset: int = Query(0, ge=0, description="Result offset"),
 ) -> EvalResultsResponse:
     """List evaluation reports."""
-    runner = _get_runner()
-    reports = runner.list_reports(
+    service = _get_service()
+    reports = service.list_reports(
         model_id=model_id,
         dataset=dataset,
         limit=limit,
@@ -196,11 +207,11 @@ async def eval_results(
 )
 async def eval_result_detail(report_id: str) -> dict[str, Any]:
     """Get detailed evaluation report by ID."""
-    runner = _get_runner()
-    report = runner.get_report(report_id)
+    service = _get_service()
+    report = service.get_report(report_id)
     if report is None:
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
-    results = runner.get_report_results(report_id)
+    results = service.get_report_results(report_id)
     return {
         "success": True,
         "report": dict(report),
@@ -216,8 +227,8 @@ async def eval_result_detail(report_id: str) -> dict[str, Any]:
 )
 async def eval_result_delete(report_id: str) -> dict[str, Any]:
     """Delete an evaluation report."""
-    runner = _get_runner()
-    deleted = runner.delete_report(report_id)
+    service = _get_service()
+    deleted = service.delete_report(report_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
     return {"success": True, "deleted": report_id}

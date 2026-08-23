@@ -47,7 +47,7 @@ class RedundantExecutor:
         self, node_id: str,
     ) -> list[tuple[str, Any]]:
         """Find redundant nodes covering the same layer range as *node_id*."""
-        target = self._pipeline.nodes.get(node_id)
+        target = self._pipeline._nodes.get(node_id)
         if target is None:
             return [(node_id, None)]
 
@@ -55,10 +55,10 @@ class RedundantExecutor:
         if not self.enabled:
             return results
 
-        for nid, node in self._pipeline.nodes.items():
+        for nid, node in self._pipeline._nodes.items():
             if nid == node_id:
                 continue
-            if not getattr(node, 'healthy', False):
+            if not getattr(node, 'is_healthy', False):
                 continue
             if node.start_layer == target.start_layer and node.end_layer == target.end_layer:
                 results.append((nid, node))
@@ -88,53 +88,48 @@ class RedundantExecutor:
     def _run_standard(self, input_ids, node_kv_caches, request_id, draft_tokens):
         """Non-redundant path — delegates to standard pipeline."""
         return self._pipeline.run_pipeline(
-            input_ids, node_kv_caches, request_id, draft_tokens,
+            input_ids, node_kv_caches, request_id,
         )
 
     def _run_redundant(self, input_ids, node_kv_caches, request_id, draft_tokens):
-        """Redundant path — send each stage to multiple peers, use first response."""
-        # H-05: These functions don't exist in pipeline module.
-        # Using local implementations as stubs.
-        def _forward_request_to_proto(*args, **kwargs):
-            raise NotImplementedError("_forward_request_to_proto not yet implemented")
-        def _process_forward_response_pb(*args, **kwargs):
-            raise NotImplementedError("_process_forward_response_pb not yet implemented")
+        """Redundant path — send each stage to multiple peers, use first response.
 
-        seq_len = input_ids.shape[1]
-        batch_size = input_ids.shape[0]
-        current_hidden = None
+        Mirrors ``PipelineOrchestrator.run_pipeline`` but fans out each stage to
+        the redundant peers covering the same layer range and uses the first
+        successful response.
+        """
+        from distllm.dist.node_client import forward_request
 
-        with self._pipeline._topology_lock:
-            node_order = list(self._pipeline.node_order)
-            nodes = dict(self._pipeline.nodes)
+        with self._pipeline._lock:
+            node_order = list(self._pipeline._node_order)
+            nodes = dict(self._pipeline._nodes)
 
-        total = len(node_order)
+        if not node_order:
+            raise RuntimeError("No healthy nodes in pipeline")
+
+        current_hidden = input_ids
 
         for i, primary_id in enumerate(node_order):
-            is_first = (i == 0)
-            is_last = (i == total - 1)
             candidates = self._find_redundant_nodes(primary_id)
 
             results = []
-
             for rid, rnode in candidates:
-                if rnode is None:
+                if rnode is None or not getattr(rnode, "is_healthy", True):
                     continue
+                t0 = time.monotonic()
                 try:
-                    past_kv = node_kv_caches.get(rid)
-                    request = self._pipeline._prepare_forward_request(
-                        rid, rnode, is_first, is_last,
-                        seq_len, batch_size, current_hidden, past_kv,
-                        request_id, draft_tokens, input_ids,
+                    out = forward_request(
+                        host=rnode.host,
+                        port=rnode.port,
+                        hidden_states=current_hidden,
+                        kv_cache=node_kv_caches.get(rid),
+                        request_id=request_id,
+                        use_tls=getattr(self._pipeline, "_use_tls", False),
+                        ca_cert=getattr(self._pipeline, "_ca_cert", None),
                     )
-                    cluster_key = getattr(rnode.client, 'cluster_key', None)
-                    req_pb = _forward_request_to_proto(request, cluster_key=cluster_key)
-
-                    t0 = time.monotonic()
-                    resp_pb = rnode.client.stub.ForwardPass(req_pb)
-                    elapsed = (time.monotonic() - t0) * 1000
-
-                    results.append((elapsed, rid, resp_pb, rnode))
+                    if out is None:
+                        continue
+                    results.append(((time.monotonic() - t0) * 1000, rid, out))
                 except Exception as e:
                     logger.debug(f"Redundant node {rid} failed: {e}")
                     continue
@@ -149,37 +144,32 @@ class RedundantExecutor:
                 )
 
             results.sort(key=lambda x: x[0])
-            _, best_id, best_resp, best_node = results[0]
-
-            current_hidden = _process_forward_response_pb(
-                best_resp, best_id, best_node, node_kv_caches,
-                self._pipeline.resource_mgr,
-            )
+            _, best_id, current_hidden = results[0]
 
             slow_count = len(results) - 1
             if slow_count > 0:
                 logger.debug(f"Stage {i}: {slow_count} redundant response(s) discarded "
-                              f"(best: {results[0][0]:.1f}ms)")
+                             f"(best: {results[0][0]:.1f}ms)")
 
         return current_hidden
 
     def get_node_groups(self) -> list[list[str]]:
         """Return node groups where each group covers a layer range."""
         if not self.enabled:
-            return [self._pipeline.node_order]
+            return [list(self._pipeline._node_order)]
 
         groups = []
         seen = set()
-        for nid in self._pipeline.node_order:
+        for nid in self._pipeline._node_order:
             if nid in seen:
                 continue
             group = [nid]
             seen.add(nid)
-            target = self._pipeline.nodes[nid]
-            for other_id in self._pipeline.node_order:
+            target = self._pipeline._nodes[nid]
+            for other_id in self._pipeline._node_order:
                 if other_id in seen:
                     continue
-                other = self._pipeline.nodes[other_id]
+                other = self._pipeline._nodes[other_id]
                 if (other.start_layer == target.start_layer
                         and other.end_layer == target.end_layer):
                     group.append(other_id)
@@ -291,7 +281,7 @@ class StateReplicationEngine:
 
             # Restore KV cache to the promoted node's cache
             if state["kv_cache"] is not None:
-                self._pipeline.nodes[standby_id].kv_cache = state["kv_cache"]
+                self._pipeline._nodes[standby_id].kv_cache = state["kv_cache"]
 
         self._last_replication.pop(standby_id, None)
         return standby_id

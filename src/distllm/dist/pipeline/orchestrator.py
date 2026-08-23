@@ -24,6 +24,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,10 @@ from typing import Any
 
 import torch
 from loguru import logger
+
+from distllm.dist.config import WideAreaConfig
+from distllm.dist.latency import LatencyTracker
+from distllm.dist.straggler import StragglerDetector
 
 
 @dataclass
@@ -45,6 +50,10 @@ class PipelineNode:
     is_healthy: bool = True
     last_heartbeat: float = field(default_factory=time.time)
     latency_ms: float = 0.0
+    # Injected transport doubles (tests) or cached node clients.
+    client: Any = None
+    async_client: Any = None
+    kv_cache: Any = None  # replicated KV state (set on standby promotion)
 
 
 class PipelineOrchestrator:
@@ -67,18 +76,31 @@ class PipelineOrchestrator:
         redundancy: int = 1,
         default_micro_batch_size: int = 4,
         max_inflight_micro_batches: int = 8,
+        use_tls: bool = False,
+        ca_cert: str | None = None,
+        total_layers: int = 0,
     ):
         self._resource_mgr = resource_mgr
         self._timeout = pipeline_timeout
         self._redundancy = redundancy
         self._default_micro_batch_size = default_micro_batch_size
         self._max_inflight = max_inflight_micro_batches
+        # Encrypt pipeline-parallel gRPC (activations/KV carry prompt content).
+        # Enable via DISTLLM_PIPELINE_TLS=1 and point DISTLLM_TLS_CA_CERT(_FILE)
+        # at the cluster CA.
+        self._use_tls = use_tls or os.environ.get("DISTLLM_PIPELINE_TLS", "0") == "1"
+        self._ca_cert = (
+            ca_cert
+            or os.environ.get("DISTLLM_TLS_CA_CERT_FILE")
+            or os.environ.get("DISTLLM_TLS_CA_CERT")
+        )
         self._nodes: dict[str, PipelineNode] = {}
         self._node_order: list[str] = []
+        self._tensor_transport: Any = None
         self._lock = threading.Lock()
         self._latency_tracker: Any = None
         self._straggler_detector: Any = None
-        self._total_layers: int = 0
+        self._total_layers: int = total_layers
         self._wan: Any = None
         self._stats = {
             "pipeline_runs": 0,
@@ -92,21 +114,32 @@ class PipelineOrchestrator:
 
     @property
     def nodes(self) -> dict[str, Any]:
-        """Registered nodes."""
+        """Live mapping of node_id -> PipelineNode.
+
+        Returns the internal mapping (not a copy): callers register,
+        inject clients, and flip health flags in place.  Structural
+        changes go through register_node/unregister_node.
+        """
         with self._lock:
-            return {nid: {
-                "host": n.host,
-                "port": n.port,
-                "start_layer": n.start_layer,
-                "end_layer": n.end_layer,
-                "healthy": n.is_healthy,
-            } for nid, n in self._nodes.items()}
+            return self._nodes
+
+    @nodes.setter
+    def nodes(self, value: dict[str, Any]) -> None:
+        """Replace the registered node set (full node mapping)."""
+        with self._lock:
+            self._nodes = dict(value)
 
     @property
     def node_order(self) -> list[str]:
         """Ordered list of node IDs (by layer assignment)."""
         with self._lock:
             return list(self._node_order)
+
+    @node_order.setter
+    def node_order(self, value: list[str]) -> None:
+        """Replace the node ordering (used on node removal/health recovery)."""
+        with self._lock:
+            self._node_order = list(value)
 
     def register_node(
         self,
@@ -140,6 +173,24 @@ class PipelineOrchestrator:
         with self._lock:
             self._nodes.pop(node_id, None)
             self._node_order = [n for n in self._node_order if n != node_id]
+
+    def create_node_kv_caches(self) -> dict[str, Any]:
+        """Allocate one KV-cache slot per registered node.
+
+        Slots start as ``None`` (= no cache); callers populate them with
+        per-node cache objects as sequences are processed.
+        """
+        with self._lock:
+            return {nid: None for nid in self._nodes}
+
+    def set_tensor_transport(self, transport: Any) -> None:
+        """Register a pluggable tensor transport (NCCL/RAIL/mock).
+
+        When set, per-hop tensor sends may go through
+        ``transport.send_tensor(node_id, tensor, tag)`` instead of the
+        default gRPC client path.
+        """
+        self._tensor_transport = transport
 
     def get_node(self, node_id: str) -> PipelineNode | None:
         """Get a registered node by ID."""
@@ -200,17 +251,31 @@ class PipelineOrchestrator:
         for node in ordered_nodes:
             node_start = time.time()
             try:
-                # Route the tensor through the node's Forward RPC
-                from distllm.dist.node_client import forward_request
                 kv_cache = node_kv_caches.get(node.node_id)
 
-                current_tensor = forward_request(
-                    host=node.host,
-                    port=node.port,
-                    hidden_states=current_tensor,
-                    kv_cache=kv_cache,
-                    request_id=request_id,
-                )
+                # Prefer an injected per-node client (tests / pooled
+                # connections) over dialing a fresh gRPC channel.
+                if getattr(node, "client", None) is not None and hasattr(
+                    node.client, "forward"
+                ):
+                    current_tensor = node.client.forward(
+                        hidden_states=current_tensor,
+                        kv_cache=kv_cache,
+                        request_id=request_id,
+                    )
+                else:
+                    # Route the tensor through the node's Forward RPC
+                    from distllm.dist.node_client import forward_request
+
+                    current_tensor = forward_request(
+                        host=node.host,
+                        port=node.port,
+                        hidden_states=current_tensor,
+                        kv_cache=kv_cache,
+                        request_id=request_id,
+                        use_tls=self._use_tls,
+                        ca_cert=self._ca_cert,
+                    )
                 if current_tensor is None:
                     raise RuntimeError(f"Node {node.node_id} returned None")
 
@@ -234,6 +299,25 @@ class PipelineOrchestrator:
         return current_tensor
 
     # ── Micro-batched pipeline ─────────────────────────────────────────
+
+    def run_pipeline_overlap(
+        self,
+        input_ids: torch.Tensor,
+        node_kv_caches: dict[str, list | None],
+        request_id: str,
+        micro_batch_size: int | None = None,
+    ) -> torch.Tensor:
+        """Synchronous entry point for the micro-batched (overlapped) pipeline.
+
+        Overlaps stage compute with transport; not callable from within a
+        running event loop (use ``await run_pipeline_microbatched`` there).
+        """
+        return asyncio.run(
+            self.run_pipeline_microbatched(
+                input_ids, node_kv_caches, request_id,
+                micro_batch_size=micro_batch_size,
+            )
+        )
 
     async def run_pipeline_microbatched(
         self,
@@ -351,11 +435,42 @@ class PipelineOrchestrator:
             node = ordered_nodes[stage_idx]
             kv_cache = node_kv_caches.get(node.node_id)
             try:
+                # Prefer an injected per-node client (tests / pooled
+                # connections).  Sync clients are invoked directly; async
+                # clients return the response proto.
+                injected_sync = getattr(node, "client", None)
+                if injected_sync is not None and hasattr(injected_sync, "forward"):
+                    return injected_sync.forward(
+                        hidden_states=input_tensor,
+                        kv_cache=kv_cache,
+                        request_id=request_id,
+                    )
+                import asyncio as _asyncio
+
+                injected_async = getattr(node, "async_client", None)
+                _fp = getattr(injected_async, "forward_pass", None)
+                if injected_async is not None and _asyncio.iscoroutinefunction(_fp):
+                    from distllm.dist.pipeline.serialization import (
+                        from_proto_tensor as _from_proto,
+                    )
+
+                    resp = await injected_async.forward_pass(
+                        hidden_states=input_tensor, kv_cache=kv_cache,
+                    )
+                    if not resp.success:
+                        raise RuntimeError(
+                            f"Node {node.node_id} forward failed: "
+                            f"{resp.error_message}"
+                        )
+                    return _from_proto(resp.output)
+
                 result = await forward_request_async(
                     host=node.host,
                     port=node.port,
                     hidden_states=input_tensor,
                     kv_cache=kv_cache,
+                    use_tls=self._use_tls,
+                    ca_cert=self._ca_cert,
                 )
                 if self._resource_mgr:
                     self._resource_mgr.record_success(node.node_id)
@@ -431,13 +546,25 @@ class PipelineOrchestrator:
             node = ordered_nodes[stage_idx]
             kv_cache = node_kv_caches.get(node.node_id)
             try:
-                result = await forward_request_async(
-                    host=node.host,
-                    port=node.port,
-                    hidden_states=input_tensor,
-                    kv_cache=kv_cache,
-                    request_id=f"{request_id}-s{stage_idx}b{batch_idx}",
-                )
+                # Prefer an injected per-node client (tests / pooled
+                # connections) over dialing a fresh gRPC channel.
+                injected_sync = getattr(node, "client", None)
+                if injected_sync is not None and hasattr(injected_sync, "forward"):
+                    result = injected_sync.forward(
+                        hidden_states=input_tensor,
+                        kv_cache=kv_cache,
+                        request_id=f"{request_id}-s{stage_idx}b{batch_idx}",
+                    )
+                else:
+                    result = await forward_request_async(
+                        host=node.host,
+                        port=node.port,
+                        hidden_states=input_tensor,
+                        kv_cache=kv_cache,
+                        request_id=f"{request_id}-s{stage_idx}b{batch_idx}",
+                        use_tls=self._use_tls,
+                        ca_cert=self._ca_cert,
+                    )
                 if result is None:
                     raise RuntimeError(f"Node {node.node_id} returned None")
 
@@ -477,13 +604,17 @@ class PipelineOrchestrator:
             """
             steps: list[tuple[int, int]] = []
 
-            # Warmup: fill pipeline — stage i processes batch 0
-            for s in range(min(num_stages, num_batches)):
+            # Warmup: fill pipeline — EVERY stage must process batch 0
+            # (capping stages by num_batches silently dropped the final
+            # stage whenever a request produced fewer micro-batches than
+            # there are stages — e.g. every single-sequence request —
+            # so the output-producing stage never ran).
+            for s in range(num_stages):
                 steps.append((s, 0))
 
             # Steady state: interleave new batches behind their predecessors
             for b in range(1, num_batches):
-                for s in range(min(num_stages, num_batches)):
+                for s in range(num_stages):
                     steps.append((s, b))
 
             return steps
@@ -550,11 +681,11 @@ class PipelineOrchestrator:
 
     # ── Setter methods expected by Coordinator ────────────────────────
 
-    def set_latency_tracker(self, tracker: Any) -> None:
+    def set_latency_tracker(self, tracker: LatencyTracker) -> None:
         """Set the latency tracker for pipeline monitoring."""
         self._latency_tracker = tracker
 
-    def set_straggler_detector(self, detector: Any) -> None:
+    def set_straggler_detector(self, detector: StragglerDetector) -> None:
         """Set the straggler detector for pipeline monitoring."""
         self._straggler_detector = detector
 
@@ -581,11 +712,11 @@ class PipelineOrchestrator:
         self._timeout = value
 
     @property
-    def wan(self) -> Any:
+    def wan(self) -> WideAreaConfig | None:
         return self._wan
 
     @wan.setter
-    def wan(self, value: Any) -> None:
+    def wan(self, value: WideAreaConfig) -> None:
         self._wan = value
 
     def shutdown(self) -> None:

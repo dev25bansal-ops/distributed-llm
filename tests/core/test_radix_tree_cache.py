@@ -57,8 +57,10 @@ class TestRadixNodeInsertionStructure:
         root = RadixNode()
         root.insert([1, 2, 3], "a")
         node3 = root.children[1].children[2].children[3]
-        assert node3.size == 2
+        # node3's subtree holds exactly its own entry
+        assert node3.size == 1
         root.insert([1, 2, 4], "b")
+        # node2's subtree now holds both entries
         assert root.children[1].children[2].size == 2
 
     def test_insert_large_sequence(self):

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DistLLM Verification Report</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-card: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --border-color: #30363d;
+            --accent-green: #2ea043;
+            --accent-red: #da3633;
+            --accent-blue: #388bfd;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary); color: var(--text-primary); padding: 16px;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color);
+        }
+        header h1 { font-size: 1.4rem; color: var(--accent-blue); }
+        .header-right { display: flex; gap: 12px; align-items: center; }
+        #status-badge { padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+        #status-badge.ok { background: #0d5320; color: #7ee787; }
+        #status-badge.error { background: #7f1d1d; color: #fca5a5; }
+        #status-badge.loading { background: #713f12; color: #fde68a; }
+        .btn {
+            padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border-color);
+            background: var(--bg-card); color: var(--text-primary); cursor: pointer; font-size: 0.8rem;
+        }
+        .btn:hover { background: #30363d; }
+        .part-card {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 8px; padding: 14px; margin-bottom: 14px;
+        }
+        .part-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+        .part-header h3 { font-size: 0.95rem; color: var(--accent-blue); }
+        .part-header .partition { font-size: 0.75rem; color: var(--text-secondary); }
+        .agg-row { display: flex; gap: 20px; margin-bottom: 10px; font-size: 0.8rem; }
+        .agg-row .metric .label { color: var(--text-secondary); text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.04em; }
+        .agg-row .metric .val { font-weight: 700; font-size: 1.1rem; }
+        .val.green { color: var(--accent-green); }
+        .val.blue { color: var(--accent-blue); }
+        table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+        th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--border-color); }
+        th:first-child, td:first-child { text-align: left; }
+        th { color: var(--text-secondary); text-transform: uppercase; font-size: 0.6rem; letter-spacing: 0.04em; }
+        .match-yes { color: var(--accent-green); }
+        .match-no { color: var(--accent-red); }
+        .empty-state { padding: 40px; text-align: center; color: var(--text-secondary); font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Verification Report</h1>
+        <div class="header-right">
+            <button class="btn" id="refresh-btn">Refresh</button>
+            <span id="status-badge" class="ok">OK</span>
+        </div>
+    </header>
+    <div id="report-body">
+        <div class="empty-state">Loading verification history&hellip;</div>
+    </div>
+</div>
+<script src="app.js"></script>
+<script>
+(function() {
+    'use strict';
+    function el(id) { return document.getElementById(id); }
+    function setStatus(text, cls) { var sb = el('status-badge'); sb.textContent = text; sb.className = cls || 'ok'; }
+    function esc(s) { return String(s).replace(/[&<>"']/g, function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];}); }
+    function fmt(n, d) { return typeof n === 'number' ? n.toFixed(d != null ? d : 3) : '--'; }
+    function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(1) + '%' : '--'; }
+
+    function render(list) {
+        var body = el('report-body');
+        if (!list || !list.length) {
+            body.innerHTML = '<div class="empty-state">No verification history recorded yet.</div>';
+            return;
+        }
+        body.innerHTML = '';
+        list.forEach(function(item) {
+            var card = document.createElement('div');
+            card.className = 'part-card';
+            var agg = item.aggregate || {};
+            var rows = (item.entries || []).slice(-15).reverse().map(function(e) {
+                var mc = (e.token_match ? 'match-yes' : 'match-no');
+                var t = new Date((e.timestamp || 0) * 1000).toLocaleTimeString();
+                return '<tr><td>' + esc(t) + '</td>' +
+                    '<td>' + (e.logit_cosine == null ? '--' : fmt(e.logit_cosine)) + '</td>' +
+                    '<td class="' + mc + '">' + (e.token_match ? '\u2713' : '\u2717') + '</td>' +
+                    '<td>' + (e.acceptance ? '\u2713' : '\u2717') + '</td></tr>';
+            }).join('');
+            card.innerHTML =
+                '<div class="part-header"><h3>' + esc(item.model) + '</h3>' +
+                '<span class="partition">partition ' + esc(item.partition) + '</span></div>' +
+                '<div class="agg-row">' +
+                '<div class="metric"><div class="label">Mean Logit Cosine</div><div class="val blue">' +
+                    (agg.mean_logit_cosine == null ? '--' : fmt(agg.mean_logit_cosine)) + '</div></div>' +
+                '<div class="metric"><div class="label">Token Match Rate</div><div class="val green">' +
+                    pct(agg.token_match_rate) + '</div></div>' +
+                '<div class="metric"><div class="label">Acceptance Rate</div><div class="val green">' +
+                    pct(agg.acceptance_rate) + '</div></div>' +
+                '<div class="metric"><div class="label">Samples</div><div class="val">' +
+                    (agg.count || 0) + '</div></div></div>' +
+                '<table><thead><tr><th>Time</th><th>Logit Cosine</th><th>Token Match</th><th>Accepted</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody></table>';
+            body.appendChild(card);
+        });
+    }
+
+    function fetchHistory() {
+        setStatus('Loading...', 'loading');
+        // Prefer SSE snapshot endpoint if available; fall back to metrics summary.
+        fetch('/api/metrics/summary')
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function(data) {
+                var vh = data.verification_history ||
+                    (data.metrics_summary && data.metrics_summary.verification_history) || [];
+                render(vh);
+                setStatus('OK', 'ok');
+            })
+            .catch(function(err) {
+                setStatus('Error', 'error');
+                el('report-body').innerHTML = '<div class="empty-state">Failed to load: ' + esc(err.message) + '</div>';
+            });
+    }
+
+    // Subscribe to live WS metrics if the shared dashboard socket is exposed.
+    function subscribeWS() {
+        if (typeof window.DistLLMDashboard === 'undefined' || !window.DistLLMDashboard.onMetric) {
+            return false;
+        }
+        window.DistLLMDashboard.onMetric(function(snapshot) {
+            var vh = snapshot.verification_history ||
+                (snapshot.metrics_summary && snapshot.metrics_summary.verification_history);
+            if (vh) { render(vh); setStatus('OK', 'ok'); }
+        });
+        return true;
+    }
+
+    el('refresh-btn').addEventListener('click', fetchHistory);
+    if (!subscribeWS()) {
+        fetchHistory();
+        setInterval(fetchHistory, 5000);
+    }
+})();
+</script>
+</body>
+</html>

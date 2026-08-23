@@ -1,6 +1,9 @@
 from typing import Any, Optional
 
-from _common.base_tool_provider import BaseToolProvider
+try:
+    from distllm.integrations._common.base_tool_provider import BaseToolProvider
+except ImportError:
+    from _common.base_tool_provider import BaseToolProvider
 
 
 class DistLLMToolProvider(BaseToolProvider):

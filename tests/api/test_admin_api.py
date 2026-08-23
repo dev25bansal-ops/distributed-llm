@@ -23,14 +23,20 @@ from distllm.core.api_key_store import reset_api_key_store
 
 
 @pytest.fixture(autouse=True)
-def _reset_store():
-    """Reset the singleton key store before each test (re-reads from env)."""
-    os.environ["API_KEYS"] = (
+def _reset_store(monkeypatch):
+    """Reset the singleton key store before each test (re-reads from env).
+
+    Uses monkeypatch so API_KEYS is restored after the module finishes —
+    a leaked API_KEYS shadows the per-test API_KEY in later test files
+    (API_KEYS takes precedence in api_key_store._load) and 401s them.
+    """
+    monkeypatch.setenv(
+        "API_KEYS",
         '{"keys": ['
         '{"key": "' + _TEST_ADMIN_KEY + '", "role": "admin", "label": "test-admin"},'
         '{"key": "test-read-key", "role": "read-only", "label": "test-read"},'
         '{"key": "test-inf-key", "role": "inference-only", "label": "test-inf"}'
-        "]}"
+        "]}",
     )
     reset_api_key_store()
     yield
@@ -361,8 +367,22 @@ class TestServerRegistration:
 
     def test_admin_router_in_server(self):
         from distllm.api.server import app
-        routes = [r.path for r in app.routes]
-        admin_paths = [p for p in routes if p.startswith("/admin/v1")]
+
+        def _collect(routes, acc):
+            for r in routes:
+                p = getattr(r, "path", None)
+                if isinstance(p, str):
+                    acc.append(p)
+                inner = getattr(r, "original_router", None)
+                if inner is not None:
+                    _collect(
+                        [x for x in getattr(inner, "routes", [])],
+                        acc,
+                    )
+
+        collected: list[str] = []
+        _collect(app.routes, collected)
+        admin_paths = [p for p in collected if p.startswith("/admin/v1")]
         assert len(admin_paths) >= 7
         assert "/admin/v1/nodes" in admin_paths
         assert "/admin/v1/config" in admin_paths

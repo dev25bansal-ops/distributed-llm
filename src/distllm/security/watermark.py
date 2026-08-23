@@ -329,7 +329,7 @@ class WeightWatermark:
         if raw is None or not isinstance(raw, bytes):
             # Try loading as a full module
             try:
-                module = torch.load(model_path, map_location=device, weights_only=False)
+                module = torch.load(model_path, map_location=device, weights_only=True)
                 if hasattr(module, "_distllm_watermark"):
                     raw = module._distllm_watermark  # type: ignore[union-attr]
             except Exception:
@@ -741,7 +741,7 @@ def run_cli(args: list[str] | None = None) -> None:
             print("ERROR: --message is required with --embed", file=sys.stderr)
             sys.exit(1)
         print(f"Loading model from {parsed.embed}...")
-        model = torch.load(parsed.embed, map_location=parsed.device, weights_only=False)
+        model = torch.load(parsed.embed, map_location=parsed.device, weights_only=True)
         if not isinstance(model, torch.nn.Module):
             print("ERROR: --embed requires a full model (state dicts are not enough)", file=sys.stderr)
             sys.exit(1)
@@ -753,7 +753,7 @@ def run_cli(args: list[str] | None = None) -> None:
 
     elif parsed.extract:
         print(f"Loading model from {parsed.extract}...")
-        model = torch.load(parsed.extract, map_location=parsed.device, weights_only=False)
+        model = torch.load(parsed.extract, map_location=parsed.device, weights_only=True)
         if isinstance(model, torch.nn.Module):
             wm = ModelWatermark(WatermarkConfig(secret_key=key))
             try:

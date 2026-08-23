@@ -1,0 +1,152 @@
+# Reusable Kubernetes deployment workflow for DistLLM
+#
+# Deploys DistLLM to Kubernetes using Helm or Kustomize with
+# optional canary deployment and automatic promotion.
+#
+# Usage:
+#   jobs:
+#     deploy:
+#       uses: distributed-llm/distributed-llm/.github/workflows/reusable-deploy.yml@main
+#       with:
+#         environment: production
+#       secrets:
+#         kube-config: ${{ secrets.KUBE_CONFIG }}
+
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Deployment environment (dev, staging, production)"
+        type: string
+        required: true
+      k8s-namespace:
+        description: "Kubernetes namespace"
+        type: string
+        default: "distllm"
+      helm-chart-path:
+        description: "Path to Helm chart directory"
+        type: string
+        default: "deploy/helm"
+      helm-values-file:
+        description: "Helm values file for the environment"
+        type: string
+        default: ""
+      kustomize-overlay:
+        description: "Kustomize overlay directory"
+        type: string
+        default: ""
+      image-tag:
+        description: "Docker image tag to deploy"
+        type: string
+        default: "latest"
+      image-repository:
+        description: "Docker image repository"
+        type: string
+        default: "distllm"
+      canary-percent:
+        description: "Canary traffic percentage (0-100)"
+        type: number
+        default: 10
+      deploy-timeout:
+        description: "Deployment timeout in minutes"
+        type: number
+        default: 10
+      use-helm:
+        description: "Use Helm instead of Kustomize"
+        type: boolean
+        default: true
+      auto-promote:
+        description: "Auto-promote canary to full rollout"
+        type: boolean
+        default: false
+      health-check-endpoint:
+        description: "Health check endpoint path"
+        type: string
+        default: "/health"
+      health-check-port:
+        description: "Health check port"
+        type: number
+        default: 8000
+    secrets:
+      kube-config:
+        description: "Kubernetes kubeconfig contents (base64 or YAML)"
+        required: true
+      registry-password:
+        description: "Docker registry password for image pull"
+        required: false
+
+jobs:
+  # ── Deploy ──────────────────────────────────────────────────────
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "latest"
+      - name: Set up Helm
+        if: ${{ inputs.use-helm }}
+        uses: azure/setup-helm@v3
+        with:
+          version: "latest"
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.kube-config }}" > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: Deploy with Helm
+        if: ${{ inputs.use-helm && inputs.helm-values-file == '' }}
+        run: |
+          helm upgrade --install distllm ${{ inputs.helm-chart-path }} \
+            --namespace ${{ inputs.k8s-namespace }} \
+            --create-namespace \
+            --set image.repository=${{ inputs.image-repository }} \
+            --set image.tag=${{ inputs.image-tag }} \
+            --set canary.weight=${{ inputs.canary-percent }} \
+            --wait --timeout ${{ inputs.deploy-timeout }}m
+      - name: Deploy with Helm (custom values)
+        if: ${{ inputs.use-helm && inputs.helm-values-file != '' }}
+        run: |
+          helm upgrade --install distllm ${{ inputs.helm-chart-path }} \
+            --namespace ${{ inputs.k8s-namespace }} \
+            --create-namespace \
+            --values ${{ inputs.helm-values-file }} \
+            --set image.repository=${{ inputs.image-repository }} \
+            --set image.tag=${{ inputs.image-tag }} \
+            --set canary.weight=${{ inputs.canary-percent }} \
+            --wait --timeout ${{ inputs.deploy-timeout }}m
+      - name: Deploy with Kustomize
+        if: ${{ !inputs.use-helm && inputs.kustomize-overlay != '' }}
+        run: |
+          kubectl kustomize ${{ inputs.kustomize-overlay }} | \
+            kubectl apply -f - \
+            --namespace ${{ inputs.k8s-namespace }} \
+            --wait=true \
+            --timeout=${{ inputs.deploy-timeout }}m
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/distllm-coordinator \
+            --namespace ${{ inputs.k8s-namespace }} \
+            --timeout=${{ inputs.deploy-timeout }}m
+      - name: Health check
+        run: |
+          kubectl run health-check-${{ github.sha }} --rm -it --restart=Never \
+            --image=curlimages/curl:latest \
+            --namespace ${{ inputs.k8s-namespace }} \
+            --timeout=30s \
+            -- curl -sf \
+              http://distllm-coordinator:${{ inputs.health-check-port }}${{ inputs.health-check-endpoint }}
+      - name: Promote canary to full
+        if: ${{ inputs.auto-promote && inputs.canary-percent > 0 && inputs.canary-percent < 100 }}
+        run: |
+          helm upgrade distllm ${{ inputs.helm-chart-path }} \
+            --namespace ${{ inputs.k8s-namespace }} \
+            --reuse-values \
+            --set canary.enabled=false \
+            --wait --timeout=${{ inputs.deploy-timeout }}m
+          echo "✅ Canary promoted to full rollout"

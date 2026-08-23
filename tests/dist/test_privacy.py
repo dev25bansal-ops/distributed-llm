@@ -182,7 +182,10 @@ class TestActivationObfuscator:
     HIDDEN_LARGE = 4096
 
     def _make_input(self, hidden_size: int) -> torch.Tensor:
-        return torch.randn(2, 4, hidden_size)
+        # Local generator: global torch RNG state from other test modules
+        # must not influence this suite's pass/fail.
+        gen = torch.Generator().manual_seed(7)
+        return torch.randn(2, 4, hidden_size, generator=gen)
 
     # -- Construction -------------------------------------------------------
 

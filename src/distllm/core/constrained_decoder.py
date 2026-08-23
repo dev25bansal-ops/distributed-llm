@@ -644,12 +644,15 @@ class SchemaConstrainedDecoder:
             return ConstrainedConstraint(fsm, token_index)
 
         if fmt_type == "grammar":
-            grammar = response_format.get("grammar", "")
-            if not grammar or tokenizer is None:
-                return None
-            token_index = cls._get_or_build_token_index(tokenizer)
-            fsm = JSONSchemaFSM()
-            return ConstrainedConstraint(fsm, token_index)
+            # SECURITY/CORRECTNESS: real GBNF grammar compilation is NOT
+            # implemented.  Previously this branch silently substituted a
+            # generic JSON state machine, so a user's grammar was ignored and
+            # the output was NOT grammar-constrained while the API claimed it
+            # was.  Fail loudly instead of serving wrong behavior.
+            raise NotImplementedError(
+                "response_format 'grammar' (GBNF) is not supported yet — "
+                "use 'json_object' / 'json_schema' / 'regex' instead"
+            )
 
         if fmt_type == "regex":
             pattern = response_format.get("pattern", "")

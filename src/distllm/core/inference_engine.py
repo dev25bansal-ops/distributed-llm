@@ -451,7 +451,7 @@ class _PromptLookupStrategy:
                     return match_end, min(available, self._max_draft)
         return None
 
-    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
+    def _generate_tokens(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
         engine = self._engine
         input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
         device = next(engine.local_partitioner.full_model.parameters()).device
@@ -495,7 +495,11 @@ class _PromptLookupStrategy:
                     correction = target_logits[:, generated.shape[1] - 1, :]
                     next_token = engine._token_gen.sample(
                         correction, temperature=temperature, top_p=top_p, top_k=top_k,
-                    )
+                    )[0]
+                    if next_token.dim() == 0:
+                        next_token = next_token.unsqueeze(0)
+                    if next_token.dim() == 1:
+                        next_token = next_token.unsqueeze(-1)
                     generated = torch.cat([generated, next_token], dim=1)
             else:
                 # 3. No draft match — standard single-token step
@@ -503,7 +507,11 @@ class _PromptLookupStrategy:
                 logits = outputs.logits[:, -1, :]
                 next_token = engine._token_gen.sample(
                     logits, temperature=temperature, top_p=top_p, top_k=top_k,
-                )
+                )[0]
+                if next_token.dim() == 0:
+                    next_token = next_token.unsqueeze(0)
+                if next_token.dim() == 1:
+                    next_token = next_token.unsqueeze(-1)
                 generated = torch.cat([generated, next_token], dim=1)
 
             yield engine.tokenizer.decode(
@@ -512,8 +520,24 @@ class _PromptLookupStrategy:
             if generated[0, -1].item() == engine.tokenizer.eos_token_id:
                 break
 
+    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
+        """Return the joined generation string (non-streaming contract).
+
+        The per-token loop lives in ``_generate_tokens`` (a generator); this
+        method collects it into a single string so the strategy honors the
+        ``GenerationStrategy.generate -> str`` protocol (F-007 surfaced this
+        mismatch — generate previously leaked a generator object).
+        """
+        return "".join(
+            self._generate_tokens(
+                prompt, max_new_tokens, temperature, top_p, top_k, **kwargs
+            )
+        )
+
     def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        yield from self.generate(prompt, max_new_tokens, temperature, top_p, top_k, **kwargs)
+        yield from self._generate_tokens(
+            prompt, max_new_tokens, temperature, top_p, top_k, **kwargs
+        )
 
 
 class InferenceEngine:

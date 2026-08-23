@@ -2,8 +2,15 @@
 
 __version__ = "0.1.0"
 
-from _common.cost_tracker import CostTracker
-from _common.model_router import DistLLMModelRouter
+try:
+    from distllm.integrations._common.cost_tracker import CostTracker
+except ImportError:
+    from _common.cost_tracker import CostTracker
+
+try:
+    from distllm.integrations._common.model_router import DistLLMModelRouter
+except ImportError:
+    from _common.model_router import DistLLMModelRouter
 from distllm_langchain.chat_models import DistLLMChat
 from distllm_langchain.llms import DistLLM
 from distllm_langchain.embeddings import DistLLMEmbeddings

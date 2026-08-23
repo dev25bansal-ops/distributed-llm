@@ -144,7 +144,7 @@ class CrossModelPrefixSharing:
             # 1. Direct match
             key = f"{model_id}:{prefix_hash}"
             entry = self._cache.get(key)
-            if entry and not self._is_expired(entry):
+            if entry and entry.token_ids == token_ids and not self._is_expired(entry):
                 entry.access_count += 1
                 entry.last_accessed = time.time()
                 return entry
@@ -154,7 +154,7 @@ class CrossModelPrefixSharing:
             if model and model.base_model:
                 base_key = f"{model.base_model}:{prefix_hash}"
                 entry = self._cache.get(base_key)
-                if entry and not self._is_expired(entry):
+                if entry and entry.token_ids == token_ids and not self._is_expired(entry):
                     # Verify compatibility
                     if entry.shared_layers > 0 and model.shared_layers > 0:
                         shared = min(entry.shared_layers, model.shared_layers)
@@ -169,6 +169,13 @@ class CrossModelPrefixSharing:
             if model and model.base_model:
                 for key, entry in self._cache.items():
                     if self._is_expired(entry):
+                        continue
+                    # KV is only reusable when the cached token prefix is
+                    # IDENTICAL to the query. A sibling entry for a different
+                    # prompt must never be returned — it would replay foreign
+                    # tokens into this generation (wrong/injected tokens) and
+                    # leak cached content across prompts/tenants.
+                    if entry.token_ids != token_ids:
                         continue
                     sibling = self._models.get(entry.source_model)
                     if sibling and sibling.base_model == model.base_model:

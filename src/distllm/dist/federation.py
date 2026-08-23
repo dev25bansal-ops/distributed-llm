@@ -279,6 +279,7 @@ class FederationCoordinator:
         self._cache_digests: dict[str, dict[str, Any]] = {}
         self._cache_digest_timestamps: dict[str, float] = {}
         self._local_cache_digest: dict[str, Any] | None = None
+        self._svid_pem: str | None = None
 
         # Gossip state
         self._gossip_thread: threading.Thread | None = None
@@ -407,6 +408,20 @@ class FederationCoordinator:
             cluster_key = getattr(self._coordinator.config, 'cluster_key', None)
             if cluster_key:
                 headers["X-Cluster-Key"] = cluster_key
+
+        # Zero-trust (A4): attach THIS node's SPIFFE SVID so receivers can
+        # attribute the heartbeat to a specific workload.  The SVID is
+        # issued once (dev CA scaffold) and cached for the process.
+        if self._svid_pem is None:
+            try:
+                from distllm.security.spiffe import PeerIdentity, issue_svid
+
+                svid = issue_svid(PeerIdentity(peer_id=self.config.cluster_id))
+                self._svid_pem = svid.cert_pem
+            except Exception as exc:  # scaffold unavailable — stay silent
+                logger.debug(f"SVID issuance unavailable: {exc}")
+        if self._svid_pem:
+            headers["X-SVID-PEM"] = self._svid_pem
 
         for peer_id, peer in list(self._peers.items()):
             if peer_id == self.config.cluster_id:

@@ -45,7 +45,7 @@ class IdleDetector:
     @property
     def is_idle(self) -> bool:
         """True when utilization has been below threshold long enough."""
-        now = time.monotonic()
+        now = time.perf_counter()
         try:
             util = self._utilization_fn()
         except Exception:
@@ -66,7 +66,7 @@ class IdleDetector:
         """Seconds since utilization first dropped below threshold (0 if busy)."""
         if self._idle_since is None:
             return 0.0
-        return time.monotonic() - self._idle_since
+        return time.perf_counter() - self._idle_since
 
     def reset(self) -> None:
         """Force reset idle state (called after a compression job starts)."""

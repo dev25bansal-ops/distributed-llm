@@ -132,7 +132,7 @@ class EnhancedModelHub:
         self._cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "distributed-llm" / "models"
         self._versions: dict[str, list[ModelVersion]] = {}  # model_name -> versions
         self._lock = threading.Lock()
-        self._load_version_history()
+        self._history_loaded = False
 
     def auto_quantize(self, model_name: str, gpu_memory_gb: float = 0) -> QuantizationPlan:
         """Auto-select the best quantization for a model given available VRAM.
@@ -223,9 +223,16 @@ class EnhancedModelHub:
 
         return matrix
 
+    def _ensure_history_loaded(self) -> None:
+        """Load persisted version history once, on first access."""
+        if not self._history_loaded:
+            self._load_version_history()
+            self._history_loaded = True
+
     def get_version_history(self, model_name: str) -> list[dict]:
         """Return version history for a model."""
         with self._lock:
+            self._ensure_history_loaded()
             versions = self._versions.get(model_name, [])
             return [
                 {
@@ -249,6 +256,7 @@ class EnhancedModelHub:
     ) -> None:
         """Record a new model version."""
         with self._lock:
+            self._ensure_history_loaded()
             if model_name not in self._versions:
                 self._versions[model_name] = []
 
@@ -289,8 +297,12 @@ class EnhancedModelHub:
             if max_params_b > 0 and compat.params_billions > max_params_b:
                 continue
 
-            fits = compat.min_gpu_memory_gb < gpu_memory_gb * 0.9
             quant = self.auto_quantize(key, gpu_memory_gb)
+            # Only suggest models that fit with the recommended
+            # quantization — a suggestion that cannot be loaded is noise.
+            if not quant.fits_in_vram:
+                continue
+            fits = True
 
             score = 0.5  # Base score
             if fits:

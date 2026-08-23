@@ -82,6 +82,11 @@ class FederatedFineTuner:
         self._lock = threading.Lock()
         self._peers: set[str] = set()
         self._received_grads: dict[str, list[torch.Tensor]] = {}
+        # Federated round each peer's stored gradients belong to (audit F-018).
+        # Entries absent from this map (e.g. injected directly by callers or
+        # sent by legacy peers without a ``round`` field) are treated as
+        # belonging to the current round.
+        self._received_rounds: dict[str, int] = {}
 
         # Algorithm selection
         self._algorithm = algorithm.lower()
@@ -123,13 +128,19 @@ class FederatedFineTuner:
         Noise scale: sigma = max_grad_norm * noise_multiplier
         where noise_multiplier = sqrt(2 * ln(1.25/delta)) / epsilon
         """
-        if self._dp_noise_multiplier > 0:
-            sigma = self._dp_max_grad_norm * self._dp_noise_multiplier
-        else:
-            import math
-            sigma = self._dp_max_grad_norm * math.sqrt(
-                2 * math.log(1.25 / self._dp_delta)
-            ) / self._dp_epsilon
+        if self._dp_noise_multiplier <= 0:
+            # Explicit 0 means "deterministic, no noise" (matches the
+            # dp_max_grad_norm-only clipping contract).  Callers wanting
+            # auto-derived noise pass a negative multiplier.
+            if self._dp_noise_multiplier < 0:
+                import math
+                sigma = self._dp_max_grad_norm * math.sqrt(
+                    2 * math.log(1.25 / self._dp_delta)
+                ) / self._dp_epsilon
+                return [g + torch.randn_like(g) * sigma for g in grads]
+            self._stats["dp_noise_added"] = False
+            return grads
+        sigma = self._dp_max_grad_norm * self._dp_noise_multiplier
 
         self._stats["dp_noise_added"] = True
         return [g + torch.randn_like(g) * sigma for g in grads]
@@ -154,6 +165,19 @@ class FederatedFineTuner:
         self._round += 1
         round_start = time.time()
 
+        # Prune gradient contributions left over from earlier rounds so a
+        # peer that went silent (or a late/out-of-order gossip message
+        # consumed in an earlier round) cannot have its stale submission
+        # averaged into this round's update (audit F-018).
+        stale_peers = [
+            pid
+            for pid, stored_round in self._received_rounds.items()
+            if stored_round != self._round
+        ]
+        for pid in stale_peers:
+            del self._received_grads[pid]
+            del self._received_rounds[pid]
+
         # Step 1: Local training
         local_grads = local_train_fn(self._local_steps)
         self._stats["total_local_steps"] += self._local_steps
@@ -177,8 +201,21 @@ class FederatedFineTuner:
             try:
                 peer_data = self._receive(timeout=30.0)
                 if peer_data and "gradients" in peer_data:
-                    peer_grads = peer_data["gradients"]
-                    self._received_grads[peer_data.get("peer_id", "unknown")] = peer_grads
+                    msg_round = peer_data.get("round")
+                    # Round-version guard (audit F-018): only accept
+                    # gradients produced for the round in progress.
+                    # Messages without a ``round`` field (legacy senders)
+                    # are treated as current-round.
+                    if msg_round is None or msg_round == self._round:
+                        peer_id = peer_data.get("peer_id", "unknown")
+                        self._received_grads[peer_id] = peer_data["gradients"]
+                        self._received_rounds[peer_id] = self._round
+                    else:
+                        logger.warning(
+                            f"Dropping stale gradients from "
+                            f"{peer_data.get('peer_id', 'unknown')}: message "
+                            f"round {msg_round} != current round {self._round}"
+                        )
             except Exception:
                 pass
 
@@ -209,7 +246,18 @@ class FederatedFineTuner:
         """
         all_grads = [local_grads]
         for peer_id, peer_grads in self._received_grads.items():
-            if len(peer_grads) == len(local_grads):
+            # Defense in depth: never average a contribution tagged with a
+            # round other than the one in progress (audit F-018).  Untagged
+            # entries (no recorded round) are treated as current-round.
+            stored_round = self._received_rounds.get(peer_id)
+            if stored_round is not None and stored_round != self._round:
+                continue
+            # Guard against structural mismatches before averaging so
+            # PyTorch broadcasting cannot silently corrupt the sum.
+            if len(peer_grads) == len(local_grads) and all(
+                pg.shape == local_grads[i].shape
+                for i, pg in enumerate(peer_grads)
+            ):
                 all_grads.append(peer_grads)
 
         num_sources = len(all_grads)
@@ -218,7 +266,8 @@ class FederatedFineTuner:
 
         # FedProx: add proximal term to gradients
         if self._algorithm == "fedprox" and self._global_model_params is not None:
-            local_grads = self._apply_fedprox_term(local_grads)
+            local_params = self._snapshot_local_params()
+            local_grads = self._apply_fedprox_term(local_grads, local_params)
             all_grads[0] = local_grads
 
         # Weighted average (FedAvg or FedProx)
@@ -229,15 +278,45 @@ class FederatedFineTuner:
 
         return averaged
 
-    def _apply_fedprox_term(self, grads: list[torch.Tensor]) -> list[torch.Tensor]:
+    def _snapshot_local_params(self) -> list[torch.Tensor] | None:
+        """Return the current local model parameters (w_local) for FedProx.
+
+        Uses the ``lora_adapter`` callback (the same source of local weights
+        used for local training).  Returns None when no callback is wired or
+        it fails, so callers can skip the proximal term instead of corrupting
+        the gradient with a weight-mixed update.
+        """
+        if self._lora_adapter is None:
+            return None
+        try:
+            params = list(self._lora_adapter())
+        except Exception as e:
+            logger.warning(f"Failed to snapshot local params for FedProx: {e}")
+            return None
+        return [p.detach().clone() for p in params]
+
+    def _apply_fedprox_term(
+        self,
+        grads: list[torch.Tensor],
+        local_params: list[torch.Tensor] | None = None,
+    ) -> list[torch.Tensor]:
         """Apply FedProx proximal term to gradients.
 
-        FedProx adds a regularization term: mu * (w - w_global)
-        This penalizes local model for drifting too far from the global model,
-        which helps with heterogeneous data distributions.
+        FedProx adds a regularization term to each gradient::
+
+            grad_i <- grad_i + mu * (w_local_i - w_global_i)
+
+        This penalizes the local model for drifting too far from the global
+        model, which helps with heterogeneous data distributions
+        (Li et al. 2020).
 
         Args:
             grads: Local gradients.
+            local_params: Current local weights (w_local).  When not provided
+                or shorter than ``grads``, falls back to ``lora_adapter``.
+                If w_local cannot be determined for a parameter, its gradient
+                is passed through unchanged rather than mixed with a weight
+                tensor.
 
         Returns:
             Gradients with proximal term added.
@@ -245,13 +324,22 @@ class FederatedFineTuner:
         if self._global_model_params is None or self._fedprox_mu <= 0:
             return grads
 
+        if local_params is None:
+            local_params = self._snapshot_local_params()
+
         proximal_grads = []
         for i, grad in enumerate(grads):
-            if i < len(self._global_model_params):
+            if (
+                i < len(self._global_model_params)
+                and local_params is not None
+                and i < len(local_params)
+            ):
                 global_param = self._global_model_params[i]
                 # Proximal term: mu * (w_local - w_global)
-                # This is added to the gradient to penalize divergence
-                proximal = self._fedprox_mu * (grad - global_param.detach())
+                # This is added to the gradient to penalize divergence.
+                proximal = self._fedprox_mu * (
+                    local_params[i].detach() - global_param.detach()
+                )
                 proximal_grads.append(grad + proximal)
                 self._stats["fedprox_proximal_terms"] += 1
             else:

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DistLLM Real-Time Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>DistLLM Real-Time Dashboard</h1>
+    <div class="header-right">
+      <div class="connection-indicator">
+        <span class="connection-dot disconnected" id="connection-dot"></span>
+        <span id="ws-label">Initializing...</span>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+        <span id="theme-icon">☀</span>
+        <span id="theme-label">Light</span>
+      </button>
+      <span id="clock" style="font-size:0.8rem;color:var(--text-muted);"></span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- System Overview -->
+    <div class="card">
+      <h2>System Overview</h2>
+      <div id="skeleton-overview">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+      <div id="content-overview" style="display:none;">
+        <div class="stat-row"><span class="stat-label">Model</span><span class="stat-value" id="model-name">--</span></div>
+        <div class="stat-row"><span class="stat-label">Nodes</span><span class="stat-value" id="node-count">0</span></div>
+        <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value" id="uptime">--</span></div>
+        <div class="stat-row"><span class="stat-label">WS Connections</span><span class="stat-value" id="ws-connections">0</span></div>
+        <div class="stat-row"><span class="stat-label">Pipeline Mode</span><span class="stat-value" id="pipeline-mode">--</span></div>
+      </div>
+    </div>
+
+    <!-- Latency -->
+    <div class="card">
+      <h2>Request Latency</h2>
+      <div id="skeleton-latency">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+      <div id="content-latency" style="display:none;">
+        <div class="stat-row"><span class="stat-label">P50</span><span class="stat-value" id="lat-p50">--</span></div>
+        <div class="stat-row"><span class="stat-label">P95</span><span class="stat-value" id="lat-p95">--</span></div>
+        <div class="stat-row"><span class="stat-label">P99</span><span class="stat-value" id="lat-p99">--</span></div>
+        <div class="stat-row"><span class="stat-label">Avg</span><span class="stat-value" id="lat-avg">--</span></div>
+        <div class="stat-row"><span class="stat-label">Avg TTFT</span><span class="stat-value" id="ttft-avg">--</span></div>
+        <div class="stat-row"><span class="stat-label">Tokens/s</span><span class="stat-value" id="tokens-per-sec">--</span></div>
+      </div>
+    </div>
+
+    <!-- Latency Distribution -->
+    <div class="card">
+      <h2>Latency Distribution</h2>
+      <div id="skeleton-histogram">
+        <div class="skeleton skeleton-bar"></div>
+      </div>
+      <div id="content-histogram" style="display:none;">
+        <div class="histogram" id="latency-histogram"></div>
+        <div class="histogram-labels" id="histogram-labels" style="display:flex;justify-content:space-between;font-size:0.6rem;color:var(--text-muted);"></div>
+      </div>
+    </div>
+
+    <!-- KV Cache -->
+    <div class="card">
+      <h2>KV Cache</h2>
+      <div id="skeleton-kv">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-gauge"></div>
+      </div>
+      <div id="content-kv" style="display:none;">
+        <div class="stat-row"><span class="stat-label">Hit Rate</span><span class="stat-value" id="kv-hit-rate">--</span></div>
+        <div class="stat-row"><span class="stat-label">Hits</span><span class="stat-value" id="kv-hits">0</span></div>
+        <div class="stat-row"><span class="stat-label">Misses</span><span class="stat-value" id="kv-misses">0</span></div>
+        <div class="gauge">
+          <span class="gauge-label">Hit Rate</span>
+          <div class="gauge-bar"><div class="gauge-fill green" id="kv-gauge" style="width:0%"></div></div>
+          <span class="gauge-value" id="kv-gauge-val">0%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Speculative Decoding -->
+    <div class="card">
+      <h2>Speculative Decoding</h2>
+      <div id="skeleton-spec">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-gauge"></div>
+      </div>
+      <div id="content-spec" style="display:none;">
+        <div class="stat-row"><span class="stat-label">Acceptance Rate</span><span class="stat-value" id="spec-rate">--</span></div>
+        <div class="stat-row"><span class="stat-label">Draft Tokens</span><span class="stat-value" id="spec-drafts">0</span></div>
+        <div class="stat-row"><span class="stat-label">Accepted</span><span class="stat-value" id="spec-accepted">0</span></div>
+        <div class="gauge">
+          <span class="gauge-label">Acceptance</span>
+          <div class="gauge-bar"><div class="gauge-fill green" id="spec-gauge" style="width:0%"></div></div>
+          <span class="gauge-value" id="spec-gauge-val">0%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cost & Usage -->
+    <div class="card">
+      <h2>Cost & Usage</h2>
+      <div id="skeleton-cost">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+      <div id="content-cost" style="display:none;">
+        <div class="stat-row"><span class="stat-label">Total Cost</span><span class="stat-value" id="cost-total">$0.00</span></div>
+        <div class="stat-row"><span class="stat-label">Avg Cost/Request</span><span class="stat-value" id="cost-avg">$0.00</span></div>
+        <div class="stat-row"><span class="stat-label">Active Requests</span><span class="stat-value" id="sched-active">0</span></div>
+        <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-value" id="sched-pending">0</span></div>
+        <div class="stat-row"><span class="stat-label">Completed</span><span class="stat-value" id="sched-completed">0</span></div>
+      </div>
+    </div>
+
+    <!-- Streaming Cost & Savings -->
+    <div class="card">
+      <h2>Streaming Cost & Savings</h2>
+      <div id="skeleton-stream">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-gauge"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+      <div id="content-stream" style="display:none;">
+        <div class="stat-row"><span class="stat-label">Active Streams</span><span class="stat-value" id="stream-active">0</span></div>
+        <div class="stat-row"><span class="stat-label">Cost/Second</span><span class="stat-value" id="stream-cost-per-sec">$0.00</span></div>
+        <div class="stat-row"><span class="stat-label">Cloud Cost</span><span class="stat-value" id="stream-cloud-cost">$0.00</span></div>
+        <div class="stat-row"><span class="stat-label">Savings</span><span class="stat-value good" id="stream-savings">$0.00</span></div>
+        <div class="gauge">
+          <span class="gauge-label">Savings</span>
+          <div class="gauge-bar"><div class="gauge-fill green" id="savings-gauge" style="width:0%"></div></div>
+          <span class="gauge-value" id="savings-gauge-val">0%</span>
+        </div>
+        <div class="stat-row"><span class="stat-label">Tokens Tracked</span><span class="stat-value" id="stream-tokens-tracked">0</span></div>
+      </div>
+    </div>
+
+    <!-- Throughput -->
+    <div class="card">
+      <h2>Throughput</h2>
+      <div id="skeleton-throughput">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-text long"></div>
+      </div>
+      <div id="content-throughput" style="display:none;">
+        <div class="stat-row"><span class="stat-label">Requests/Minute</span><span class="stat-value" id="throughput-rpm">0</span></div>
+        <div class="stat-row"><span class="stat-label">Requests/Model</span><span class="stat-value" id="requests-by-model" style="font-size:0.7rem;">--</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <!-- Node Health & GPU -->
+    <div class="card">
+      <h2>Pipeline Topology & GPU Utilization</h2>
+      <div id="skeleton-nodes">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-node"></div>
+        <div class="skeleton skeleton-node"></div>
+      </div>
+      <div id="content-nodes" style="display:none;">
+        <div class="topology" id="topology-container"></div>
+        <div id="node-list"></div>
+      </div>
+    </div>
+
+    <!-- Request Waterfall -->
+    <div class="card">
+      <h2>Request Waterfall</h2>
+      <div id="skeleton-waterfall">
+        <div class="skeleton skeleton-text short"></div>
+        <div class="skeleton skeleton-bar" style="height:120px;"></div>
+      </div>
+      <div id="content-waterfall" style="display:none;">
+        <p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">Queue → Prefill → Decode per request</p>
+        <div class="waterfall" id="waterfall-container">
+          <p class="placeholder">Waiting for data...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tenants -->
+  <div class="card" style="margin-bottom:12px;">
+    <h2>Active Tenants</h2>
+    <div id="skeleton-tenants">
+      <div class="skeleton skeleton-text long"></div>
+      <div class="skeleton skeleton-text"></div>
+    </div>
+    <div id="content-tenants" style="display:none;">
+      <div id="tenant-list"><p class="placeholder">No tenant data</p></div>
+    </div>
+  </div>
+
+  <!-- Raw Data -->
+  <div class="card raw-data" style="margin-top:12px;">
+    <h2>Live Metrics (JSON)</h2>
+    <pre id="raw-metrics">Waiting for WebSocket connection...</pre>
+  </div>
+</div>
+
+<script src="/dashboard/static/app.js"></script>
+</body>
+</html>

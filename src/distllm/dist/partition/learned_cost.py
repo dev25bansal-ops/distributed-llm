@@ -27,6 +27,69 @@ from distllm.dist.partition.cost_model import NodeCost, PartitionCostModel
 from distllm.dist.partition.profiles import GPUProfile, LayerWeights
 from distllm.dist.partition.topology import TopologyGraph
 
+# ---------------------------------------------------------------------------
+# Shared parametric layer layout (F-051 fix).
+#
+# Training (_observation_to_features) and serving (FeatureExtractor.extract)
+# must build their feature vectors from the SAME formulas, otherwise the
+# model trains on one distribution and serves on another.  These constants
+# and helpers mirror the parametric layer generator in
+# profiles.GPUProfiler.estimate_layer_weights / _single_layer_weight_bytes /
+# _single_layer_flops so both paths agree for any model whose LayerWeights
+# were produced by that generator (the only generator in this codebase).
+# ---------------------------------------------------------------------------
+
+_DTYPE_BYTES = 2
+_NUM_HEADS = 32
+_HEAD_DIM = 128
+_KV_CACHE_BYTES_PER_TOKEN = 2 * _NUM_HEADS * _HEAD_DIM * _DTYPE_BYTES
+
+
+def _single_layer_weight_bytes(hidden_size: int, intermediate_size: int) -> int:
+    """Weight bytes per transformer layer (attention + MLP + norms)."""
+    qkv = 3 * hidden_size * hidden_size
+    o_proj = hidden_size * hidden_size
+    gate_up_down = 3 * hidden_size * intermediate_size
+    norms = 4 * hidden_size
+    return (qkv + o_proj + gate_up_down + norms) * _DTYPE_BYTES
+
+
+def _single_layer_flops(hidden_size: int, intermediate_size: int) -> int:
+    """Per-token FLOPS per transformer layer (default head config)."""
+    qkv = 3 * 2 * hidden_size * hidden_size
+    attn = 2 * 2 * _NUM_HEADS * _HEAD_DIM
+    o_proj = 2 * hidden_size * hidden_size
+    mlp = 3 * 2 * hidden_size * intermediate_size
+    return qkv + attn + o_proj + mlp
+
+
+def _estimate_hidden_intermediate(weight_memory_bytes: int) -> tuple[int, int]:
+    """Recover (hidden_size, intermediate_size) estimates from one transformer
+    layer's weight bytes.
+
+    Used identically on the training and serving feature paths so both emit
+    the same hidden/intermediate features for the same model.  Solves the
+    parametric layout ``w/d = 4h^2 + 3*h*i + 4h`` self-consistently under
+    the standard ``i ~= 11/3 * h``-scale assumption ``i = c*h``::
+
+        w/d = (4 + 3c) * h^2 + 4h   ->   h = (-4 + sqrt(16 + 4*(4+3c)*w/d)) / (2*(4+3c))
+
+    which always yields a non-negative intermediate (unlike solving for ``i``
+    as a residual after a ``sqrt(w/7)`` hidden estimate, which goes negative
+    for real LLM layouts).
+    """
+    w = weight_memory_bytes / _DTYPE_BYTES
+    if w <= 0:
+        return 0, 0
+    # c = i/h ratio typical of modern LLM MLP blocks (e.g. 11008/4096 ≈ 2.69).
+    c = 11008 / 4096
+    a = 4 + 3 * c
+    hidden = int((-4 + math.sqrt(16 + 4 * a * w)) / (2 * a))
+    if hidden <= 0:
+        return 0, 0
+    intermediate = max(int(c * hidden), 0)
+    return hidden, intermediate
+
 
 @dataclass
 class RuntimeObservation:
@@ -90,8 +153,16 @@ class FeatureExtractor:
         intermediate_size = 0
         for l in layers:
             if l.layer_type == "transformer" and l.weight_memory_bytes > 0:
-                h_sq = l.weight_memory_bytes / (7 * 2)
-                hidden_size = max(int(math.sqrt(h_sq)) if h_sq > 0 else 0, hidden_size)
+                if l.hidden_size > 0 or l.intermediate_size > 0:
+                    # Ground-truth dims annotated by the layer generator.
+                    hidden_size = l.hidden_size
+                    intermediate_size = l.intermediate_size
+                else:
+                    # Fallback: recover dims from weight bytes with the same
+                    # estimator the training path uses (F-051 alignment).
+                    hidden_size, intermediate_size = _estimate_hidden_intermediate(
+                        l.weight_memory_bytes,
+                    )
                 break
 
         tflops = gpu.compute_tflops if gpu else 0.0
@@ -460,22 +531,46 @@ class LearnedCostModel:
         return self._model.is_trained()
 
     def _observation_to_features(self, obs: RuntimeObservation) -> list[float]:
+        """Build the training feature vector for a runtime observation.
+
+        F-051: this MUST stay field-for-field identical to
+        FeatureExtractor.extract (the serving path) — same indices, same
+        formulas.  The memory/flops features are reconstructed from the
+        observation's (num_layers, hidden_size, intermediate_size) using the
+        same parametric layer layout that FeatureExtractor recovers from
+        LayerWeights via _estimate_hidden_intermediate / _single_layer_*.
+        """
+        h = obs.hidden_size
+        i = obs.intermediate_size
+        L = obs.num_layers
+        B = obs.batch_size
+        S = obs.seq_len
+
+        # Same per-layer layout as profiles.GPUProfiler.estimate_layer_weights.
+        weight_mem = _single_layer_weight_bytes(h, i) * L
+        total_flops = _single_layer_flops(h, i) * L * B * S
+        kv_mem = _KV_CACHE_BYTES_PER_TOKEN * L * B * S
+        # Serve path: max(activation_memory_bytes) or fallback seq_len*2 when
+        # every layer reports 0 (degenerate h=0 case).  Mirror exactly.
+        act_per_token = 2 * h if h > 0 else 2 * S
+        act_mem = act_per_token * B * S
+
         return [
-            float(obs.num_layers),
-            float(obs.batch_size),
-            float(obs.seq_len),
-            float(obs.hidden_size * obs.hidden_size * obs.num_layers * obs.batch_size * obs.seq_len * 2),
-            float(obs.hidden_size * obs.hidden_size * obs.num_layers * 7 * 2),
-            float(obs.hidden_size * obs.num_layers * obs.batch_size * obs.seq_len * 2),
-            float(obs.hidden_size * obs.batch_size * obs.seq_len * 2),
+            float(L),
+            float(B),
+            float(S),
+            float(total_flops),
+            float(weight_mem),
+            float(kv_mem),
+            float(act_mem),
             obs.gpu_tflops,
             obs.gpu_mem_bw_gbps,
             float(obs.gpu_mem_bytes),
             obs.comm_bandwidth_gbps,
             1.0 if obs.is_nvlink else 0.0,
             1.0 if obs.is_infiniband else 0.0,
-            float(obs.hidden_size),
-            float(obs.intermediate_size),
+            float(h),
+            float(i),
         ]
 
     def _extract_features(

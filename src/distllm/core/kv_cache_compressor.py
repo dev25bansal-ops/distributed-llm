@@ -226,7 +226,10 @@ class BlockCompressor:
         # the packed count may undershoot the naive ``*tensor.shape[:-1], -1``
         # reshape by up to ``(H * S) // 2`` elements, so we compute the
         # exact trailing dimension.
-        packed_last_dim = packed.numel() // (tensor.shape[0] * tensor.shape[1] * tensor.shape[2])
+        leading = 1
+        for dim in tensor.shape[:-1]:
+            leading *= dim
+        packed_last_dim = max(1, packed.numel() // max(leading, 1))
         return packed.reshape(*tensor.shape[:-1], packed_last_dim), absmax
 
     @staticmethod

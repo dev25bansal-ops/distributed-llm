@@ -1,0 +1,176 @@
+{
+  "DistLLM Chat Completion (Python)": {
+    "prefix": "distllm-chat-py",
+    "scope": "python",
+    "body": [
+      "from distllm import DistLLM",
+      "",
+      "client = DistLLM(base_url=\"${1:http://localhost:8000}\")",
+      "resp = client.chat.completions.create(",
+      "    model=\"${2:default}\",",
+      "    messages=[{\"role\": \"user\", \"content\": \"${3:Hello, DistLLM!}\"}],",
+      "    max_tokens=${4:256},",
+      "    temperature=${5:0.7},",
+      ")",
+      "print(resp.choices[0].message.content)"
+    ],
+    "description": "DistLLM OpenAI-compatible chat completion in Python"
+  },
+  "DistLLM Streaming Chat (Python)": {
+    "prefix": "distllm-stream-py",
+    "scope": "python",
+    "body": [
+      "from distllm import DistLLM",
+      "",
+      "client = DistLLM(base_url=\"${1:http://localhost:8000}\")",
+      "stream = client.chat.completions.create(",
+      "    model=\"${2:default}\",",
+      "    messages=[{\"role\": \"user\", \"content\": \"${3:Tell me a story}\"}],",
+      "    max_tokens=${4:256},",
+      "    stream=True,",
+      ")",
+      "for chunk in stream:",
+      "    delta = chunk.choices[0].delta.content or \"\"",
+      "    print(delta, end=\"\", flush=True)"
+    ],
+    "description": "DistLLM streaming chat completion in Python"
+  },
+  "DistLLM Embeddings (Python)": {
+    "prefix": "distllm-embed-py",
+    "scope": "python",
+    "body": [
+      "from distllm import DistLLM",
+      "",
+      "client = DistLLM(base_url=\"${1:http://localhost:8000}\")",
+      "resp = client.embeddings.create(",
+      "    model=\"${2:text-embedding}\",",
+      "    input=${3:[\"DistLLM makes inference easy\", \"distributed across GPUs\"]},",
+      ")",
+      "for i, e in enumerate(resp.data):",
+      "    print(i, len(e.embedding))"
+    ],
+    "description": "DistLLM embeddings in Python"
+  },
+  "DistLLM RAG Bootstrap (Python)": {
+    "prefix": "distllm-rag-py",
+    "scope": "python",
+    "body": [
+      "from distllm import DistLLM",
+      "",
+      "# Bootstrap a Retrieval-Augmented Generation pipeline",
+      "client = DistLLM(base_url=\"${1:http://localhost:8000}\")",
+      "",
+      "docs = ${2:[\"Document one text...\", \"Document two text...\"]}",
+      "embeddings = client.embeddings.create(model=\"${3:text-embedding}\", input=docs)",
+      "",
+      "# Naive in-memory index (replace with a vector DB in production)",
+      "index = list(zip(docs, [e.embedding for e in embeddings.data]))",
+      "",
+      "query = \"${4:What does the doc say?}\"",
+      "q_emb = client.embeddings.create(model=\"${3:text-embedding}\", input=[query]).data[0].embedding",
+      "",
+      "# Cosine similarity retrieval",
+      "import numpy as np",
+      "",
+      "",
+      "def cosine(a, b):",
+      "    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))",
+      "",
+      "",
+      "ranked = sorted(index, key=lambda d: cosine(q_emb, d[1]), reverse=True)",
+      "context = \"\\n\".join(d[0] for d in ranked[:${5:3}])",
+      "",
+      "prompt = f\"Context:\\n{context}\\n\\nQuestion: {query}\"",
+      "answer = client.chat.completions.create(",
+      "    model=\"${6:default}\",",
+      "    messages=[{\"role\": \"user\", \"content\": prompt}],",
+      ")",
+      "print(answer.choices[0].message.content)"
+    ],
+    "description": "DistLLM RAG bootstrap in Python"
+  },
+  "DistLLM Chat Completion (JS)": {
+    "prefix": "distllm-chat-js",
+    "scope": "javascript,typescript",
+    "body": [
+      "import { DistLLM } from \"distllm\";",
+      "",
+      "const client = new DistLLM({ baseUrl: \"${1:http://localhost:8000}\" });",
+      "const resp = await client.chat.completions.create({",
+      "  model: \"${2:default}\",",
+      "  messages: [{ role: \"user\", content: \"${3:Hello, DistLLM!}\" }],",
+      "  max_tokens: ${4:256},",
+      "  temperature: ${5:0.7},",
+      "});",
+      "console.log(resp.choices[0].message.content);"
+    ],
+    "description": "DistLLM OpenAI-compatible chat completion in JavaScript/TypeScript"
+  },
+  "DistLLM Streaming Chat (JS)": {
+    "prefix": "distllm-stream-js",
+    "scope": "javascript,typescript",
+    "body": [
+      "import { DistLLM } from \"distllm\";",
+      "",
+      "const client = new DistLLM({ baseUrl: \"${1:http://localhost:8000}\" });",
+      "const stream = await client.chat.completions.create({",
+      "  model: \"${2:default}\",",
+      "  messages: [{ role: \"user\", content: \"${3:Tell me a story}\" }],",
+      "  max_tokens: ${4:256},",
+      "  stream: true,",
+      "});",
+      "for await (const chunk of stream) {",
+      "  const delta = chunk.choices[0]?.delta?.content ?? \"\";",
+      "  process.stdout.write(delta);",
+      "}"
+    ],
+    "description": "DistLLM streaming chat completion in JavaScript/TypeScript"
+  },
+  "DistLLM Embeddings (JS)": {
+    "prefix": "distllm-embed-js",
+    "scope": "javascript,typescript",
+    "body": [
+      "import { DistLLM } from \"distllm\";",
+      "",
+      "const client = new DistLLM({ baseUrl: \"${1:http://localhost:8000}\" });",
+      "const resp = await client.embeddings.create({",
+      "  model: \"${2:text-embedding}\",",
+      "  input: ${3:[\"DistLLM makes inference easy\", \"distributed across GPUs\"]},",
+      "});",
+      "resp.data.forEach((e, i) => console.log(i, e.embedding.length));"
+    ],
+    "description": "DistLLM embeddings in JavaScript/TypeScript"
+  },
+  "DistLLM RAG Bootstrap (JS)": {
+    "prefix": "distllm-rag-js",
+    "scope": "javascript,typescript",
+    "body": [
+      "import { DistLLM } from \"distllm\";",
+      "",
+      "// Bootstrap a Retrieval-Augmented Generation pipeline",
+      "const client = new DistLLM({ baseUrl: \"${1:http://localhost:8000}\" });",
+      "",
+      "const docs = ${2:[\"Document one text...\", \"Document two text...\"]};",
+      "const embeddings = await client.embeddings.create({ model: \"${3:text-embedding}\", input: docs });",
+      "",
+      "// Naive in-memory index (replace with a vector DB in production)",
+      "const index = docs.map((text, i) => ({ text, vector: embeddings.data[i].embedding }));",
+      "",
+      "const query = \"${4:What does the doc say?}\";",
+      "const qEmb = (await client.embeddings.create({ model: \"${3:text-embedding}\", input: [query] })).data[0].embedding;",
+      "",
+      "// Cosine similarity retrieval",
+      "const cosine = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0) / (Math.hypot(...a) * Math.hypot(...b));",
+      "const ranked = [...index].sort((a, b) => cosine(qEmb, b.vector) - cosine(qEmb, a.vector));",
+      "const context = ranked.slice(0, ${5:3}).map((d) => d.text).join(\"\\n\");",
+      "",
+      "const prompt = `Context:\\n${context}\\n\\nQuestion: ${query}`;",
+      "const answer = await client.chat.completions.create({",
+      "  model: \"${6:default}\",",
+      "  messages: [{ role: \"user\", content: prompt }],",
+      "});",
+      "console.log(answer.choices[0].message.content);"
+    ],
+    "description": "DistLLM RAG bootstrap in JavaScript/TypeScript"
+  }
+}

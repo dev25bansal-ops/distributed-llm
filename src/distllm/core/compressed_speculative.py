@@ -109,17 +109,48 @@ class LightweightVerifier(nn.Module):
         return logits
 
     @torch.no_grad()
-    def verify(self, hidden_states: torch.Tensor, compressed_logits: torch.Tensor) -> list[bool]:
+    def acceptance_probability(
+        self,
+        hidden_states: torch.Tensor,
+        compressed_logits: torch.Tensor,
+    ) -> torch.Tensor:
+        """Raw acceptance probability per token position.
+
+        Returns sigmoid(logit) in ``[0, 1]`` -- the higher, the more confident
+        the verifier is that the compressed output matches the full-precision
+        output.  Used by the decoder's ``re_run_threshold`` safety floor.
+        """
+        logits = self.forward(hidden_states, compressed_logits)
+        return torch.sigmoid(logits.squeeze(-1))
+
+    @torch.no_grad()
+    def verify(
+        self,
+        hidden_states: torch.Tensor,
+        compressed_logits: torch.Tensor,
+        re_run_threshold: float = 0.0,
+    ) -> list[bool]:
         """Verify a batch of tokens.
+
+        Args:
+            hidden_states: (batch, seq_len, hidden_size) from compressed model.
+            compressed_logits: (batch, seq_len, vocab_size) from compressed model.
+            re_run_threshold: Deterministic safety floor.  Positions whose
+                acceptance probability is below this threshold are always
+                rejected (re-run with the uncompressed cache) regardless of
+                the rejection-sampling draw.  ``0.0`` restores pure rejection
+                sampling.
 
         Returns a list of booleans: True = accept (compressed output is OK),
         False = reject (re-run with uncompressed cache needed).
         """
-        logits = self.forward(hidden_states, compressed_logits)
-        probs = torch.sigmoid(logits.squeeze(-1))
+        probs = self.acceptance_probability(hidden_states, compressed_logits)
         # Rejection sampling: accept with probability = probs
         rand = torch.rand_like(probs)
-        return (rand < probs).tolist()
+        accepted = rand < probs
+        # Never accept anything below the deterministic safety floor.
+        below_floor = probs < re_run_threshold
+        return (accepted & ~below_floor).tolist()
 
 
 # ── Compression Verifier Trainer ──────────────────────────────────────────
@@ -211,6 +242,15 @@ class CompressedSpeculativeDecoder:
             verifier=verifier,
         )
         output = decoder.generate(input_ids, max_new_tokens=256)
+
+    Uncompressed re-run contract
+    -----------------------------
+    ``target_forward`` must accept a ``compressed`` keyword argument.  The
+    normal (draft) forward is called without it (compressed cache).  When the
+    verifier rejects a draft, the decoder calls
+    ``target_forward(generated, compressed=False, **kwargs)`` and expects a
+    full-precision result computed from an uncompressed cache -- this is the
+    correctness-recovery path, distinct from the compressed draft.
     """
 
     def __init__(
@@ -230,6 +270,26 @@ class CompressedSpeculativeDecoder:
         self._max_re_runs = max_re_runs
         self._stats = {"compressed_calls": 0, "re_runs": 0, "acceptances": 0}
 
+    def _cache_is_compressed(self) -> bool:
+        """Whether the KV cache is currently serving compressed tensors.
+
+        Duck-typed so any cache exposing ``is_compressed()``, ``_compressed``
+        or ``_quantized`` is understood.  Unknown caches (or ``None``) are
+        assumed compressed so a rejected draft still triggers the recovery
+        path.
+        """
+        cache = self._kv_cache
+        if cache is None:
+            return True
+        is_compressed = getattr(cache, "is_compressed", None)
+        if callable(is_compressed):
+            return bool(is_compressed())
+        for attr in ("_compressed", "_quantized"):
+            value = getattr(cache, attr, None)
+            if value is not None:
+                return bool(value)
+        return True
+
     @torch.no_grad()
     def generate(
         self,
@@ -243,7 +303,10 @@ class CompressedSpeculativeDecoder:
         1. Forward pass with compressed KV cache (fast, lower quality)
         2. Run verifier on the output
         3. If verifier accepts → emit token
-        4. If verifier rejects → re-run with uncompressed cache (slow, correct)
+        4. If verifier rejects → re-run with compression disabled
+           (``target_forward(generated, compressed=False, **kwargs)``) so the
+           token is recomputed from an uncompressed cache (slow, correct).
+           Re-runs are re-verified and capped by ``max_re_runs``.
         """
         generated = input_ids.clone()
         self._stats["compressed_calls"] = 0
@@ -251,34 +314,71 @@ class CompressedSpeculativeDecoder:
         self._stats["acceptances"] = 0
 
         for step in range(max_new_tokens):
-            # Step 1: Compressed forward pass
+            # Step 1: Compressed (draft) forward pass
             compressed_logits, hidden = self._target(generated, **kwargs)
             self._stats["compressed_calls"] += 1
 
             token_id = compressed_logits[:, -1, :].argmax(dim=-1).item()
 
-            # Step 2: Verify
-            accepted = False
+            # Step 2: Verify the draft
+            draft_accepted = True
             if self._verifier is not None:
                 last_hidden = hidden[:, -1:, :] if isinstance(hidden, torch.Tensor) else hidden
                 decisions = self._verifier.verify(
-                    last_hidden, compressed_logits[:, -1:, :],
+                    last_hidden,
+                    compressed_logits[:, -1:, :],
+                    re_run_threshold=self._re_run_threshold,
                 )
-                accepted = decisions[0] if decisions else False
+                draft_accepted = decisions[0] if decisions else False
+            accepted = draft_accepted
 
             if accepted:
                 self._stats["acceptances"] += 1
             elif self._verifier is not None:
-                # Step 4: Re-run with uncompressed cache
-                self._stats["re_runs"] += 1
-                uncompressed_logits, _ = self._target(generated, **kwargs)
-                token_id = uncompressed_logits[:, -1, :].argmax(dim=-1).item()
+                if self._cache_is_compressed():
+                    # Step 4: Re-run with compression disabled.  The target
+                    # forward computes the token from an uncompressed cache
+                    # and each result is re-verified; a persistently hostile
+                    # verifier is bounded by ``_max_re_runs`` and the last
+                    # uncompressed result is then kept (best effort recovery).
+                    re_runs = 0
+                    while re_runs < self._max_re_runs:
+                        re_runs += 1
+                        self._stats["re_runs"] += 1
+                        uncompressed_logits, uncompressed_hidden = self._target(
+                            generated, compressed=False, **kwargs,
+                        )
+                        token_id = uncompressed_logits[:, -1, :].argmax(dim=-1).item()
+                        last_hidden = (
+                            uncompressed_hidden[:, -1:, :]
+                            if isinstance(uncompressed_hidden, torch.Tensor)
+                            else uncompressed_hidden
+                        )
+                        decisions = self._verifier.verify(
+                            last_hidden,
+                            uncompressed_logits[:, -1:, :],
+                            re_run_threshold=self._re_run_threshold,
+                        )
+                        accepted = decisions[0] if decisions else False
+                        if accepted:
+                            break
+                    if not accepted:
+                        # Cap reached: keep the last uncompressed result
+                        # rather than the rejected compressed draft.
+                        accepted = True
+                else:
+                    # Cache is already full precision: the draft is
+                    # authoritative, so a verifier rejection is a false
+                    # positive and the draft stands.
+                    draft_accepted = True
+                    accepted = True
+                    self._stats["acceptances"] += 1
 
             if self._trainer is not None and self._verifier is not None:
                 self._trainer.record(
                     hidden[:, -1:, :].cpu(),
                     compressed_logits[:, -1:, :].cpu(),
-                    accepted,
+                    draft_accepted,
                 )
 
             next_token = torch.tensor([[token_id]], device=input_ids.device)

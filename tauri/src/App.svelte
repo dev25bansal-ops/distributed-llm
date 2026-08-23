@@ -17,7 +17,8 @@
   import ActivityLogs from "./lib/ActivityLogs.svelte";
   import { Toast, toastStore } from "./lib/ui";
   import { applyTheme } from "./lib/stores/settings-store";
-  import { joinCluster, updateTrayStatus, addRecentCluster } from "./lib/api";
+  import { settingsStore } from "./lib/stores";
+  import { joinCluster, updateTrayStatus, addRecentCluster, checkForUpdates, installUpdate, initNotifications, notify } from "./lib/api";
   import { clusterStore } from "./lib/stores";
   import { listen } from "@tauri-apps/api/event";
   import { onDestroy, onMount } from "svelte";
@@ -118,6 +119,98 @@
     }
   }
 
+  // ── Periodic update check ──────────────────────────────────────
+  let updateIntervalId: number | undefined;
+  const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 24; // once per day
+
+  async function performUpdateCheck() {
+    try {
+      const update = await checkForUpdates();
+      if (update?.available) {
+        const settings = settingsStore.getSnapshot();
+        if (settings.notifications.updateAvailable) {
+          // In-app toast
+          toastStore.info(
+            `Update v${update.version} available — go to Settings to install`,
+          );
+          // Native notification
+          if (settings.notifications.native) {
+            notify(
+              "Update Available",
+              `Distributed LLM v${update.version} is ready to install`,
+            );
+          }
+        }
+      }
+    } catch {
+      // Silent fail on startup check
+    }
+  }
+
+  // ── Native OS notification helpers ────────────────────────────
+  async function sendNativeNotification(title: string, body: string) {
+    const settings = settingsStore.getSnapshot();
+    if (settings.notifications.native) {
+      notify(title, body);
+    }
+  }
+
+  // ── Server-sent events for cluster notifications ──────────────
+  let previousNodeCount = 0;
+
+  function checkClusterChanges() {
+    const state = clusterStore.getSnapshot();
+    const cluster = state.cluster;
+    if (!cluster?.running) {
+      previousNodeCount = 0;
+      return;
+    }
+
+    const nodeCount = cluster.nodes?.length ?? 0;
+    const settings = settingsStore.getSnapshot();
+
+    if (settings.notifications.clusterEvents && previousNodeCount > 0) {
+      if (nodeCount > previousNodeCount) {
+        const joined = nodeCount - previousNodeCount;
+        const msg = `${joined} node${joined > 1 ? "s have" : " has"} joined the cluster`;
+        toastStore.success(msg);
+        sendNativeNotification("Cluster Node Joined", msg);
+      } else if (nodeCount < previousNodeCount) {
+        const left = previousNodeCount - nodeCount;
+        const msg = `${left} node${left > 1 ? "s have" : " has"} left the cluster`;
+        toastStore.warning(msg);
+        sendNativeNotification("Cluster Node Left", msg);
+      }
+    }
+
+    previousNodeCount = nodeCount;
+  }
+
+  // Watch cluster store for changes
+  let unsubClusterChanges = clusterStore.subscribe(() => {
+    checkClusterChanges();
+  });
+
+  // ── Error event handling ──────────────────────────────────────
+  const unlistenProcessCrashed = listen<string>("process-crashed", async (e) => {
+    const processName = e.payload;
+    toastStore.error(`${processName} process crashed unexpectedly`);
+    const settings = settingsStore.getSnapshot();
+    if (settings.notifications.errors) {
+      if (settings.notifications.native) {
+        notify("Process Crashed", `The ${processName} process exited unexpectedly`);
+      }
+    }
+  });
+
+  const unlistenClusterStopped = listen("cluster-stopped", async () => {
+    previousNodeCount = 0;
+    const settings = settingsStore.getSnapshot();
+    if (settings.notifications.clusterEvents && settings.notifications.native) {
+      notify("Cluster Stopped", "The cluster has been shut down");
+    }
+  });
+
   onMount(() => {
     // Apply saved theme on load
     applyTheme();
@@ -126,13 +219,37 @@
     // Listen for system theme changes (for "auto" mode)
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     mq.addEventListener("change", () => applyTheme());
+
+    // Initialize native notifications on startup
+    initNotifications().then((granted) => {
+      if (!granted) {
+        console.warn("Native notification permission not granted");
+      }
+    });
+
+    // Periodic update check (once per day, first check delayed 30s after startup)
+    setTimeout(() => {
+      performUpdateCheck();
+    }, 30000);
+
+    // Clear any existing interval and start a new one
+    if (updateIntervalId !== undefined) {
+      clearInterval(updateIntervalId);
+    }
+    updateIntervalId = window.setInterval(performUpdateCheck, UPDATE_CHECK_INTERVAL_MS);
   });
 
   onDestroy(() => {
     unlisten.then((fn) => fn());
     unlistenDeepLink.then((fn) => fn());
+    unlistenProcessCrashed.then((fn) => fn());
+    unlistenClusterStopped.then((fn) => fn());
     unsubCluster();
+    unsubClusterChanges();
     window.removeEventListener("keydown", handleKeydown);
+    if (updateIntervalId !== undefined) {
+      clearInterval(updateIntervalId);
+    }
   });
 
   function navigate(page: Page) {

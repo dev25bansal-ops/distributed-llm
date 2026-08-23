@@ -100,7 +100,8 @@ def load_trace(path: str) -> list[TraceEntry]:
         data = json.load(f)
 
     entries = []
-    for item in data.get("requests", data if isinstance(data, list) else []):
+    entries_raw = data.get("requests", []) if isinstance(data, dict) else data
+    for item in entries_raw:
         entries.append(TraceEntry.from_dict(item))
 
     return sorted(entries, key=lambda e: e.arrival_time)

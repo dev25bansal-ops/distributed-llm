@@ -179,10 +179,15 @@ class TelemetryCollector:
         }
 
     def _add_event(self, event: TelemetryEvent) -> None:
+        # Defer flush until AFTER releasing _lock — flush() re-acquires the
+        # same non-reentrant lock, so calling it here deadlocks (F-023).
+        should_flush = False
         with self._lock:
             self._events.append(event)
             if len(self._events) >= self.BATCH_SIZE:
-                self.flush()
+                should_flush = True
+        if should_flush:
+            self.flush()
 
     def _get_instance_id(self) -> str:
         """Generate a stable anonymous instance ID."""

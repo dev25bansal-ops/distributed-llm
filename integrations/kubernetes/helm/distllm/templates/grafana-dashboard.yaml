@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "distllm.fullname" . }}-grafana-dashboard
+  labels:
+    grafana_dashboard: "1"
+data:
+  distllm-dashboard.json: |
+    { "dashboard": { "title": "DistLLM Cluster", "panels": [] } }

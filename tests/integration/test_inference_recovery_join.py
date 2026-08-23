@@ -124,8 +124,9 @@ def two_node_coordinator(mock_tokenizer, monkeypatch):
         start_layer=6, end_layer=11, total_layers=12,
     )
 
-    for node_id in coord.nodes:
-        reg = coord.nodes[node_id]
+    # nodes property returns summaries; inject into the internal objects.
+    for node_id in list(coord.nodes):
+        reg = coord._pipeline.get_node(node_id)
         reg.client = MagicMock()
         reg.async_client = MagicMock()
         reg.healthy = True
@@ -199,7 +200,7 @@ class TestTwoNodeInference:
                 node_id=f"n{i}", host="localhost", port=55053 + i,
                 start_layer=start, end_layer=end, total_layers=12,
             )
-            reg = coord.nodes[f"n{i}"]
+            reg = coord._pipeline.get_node(f"n{i}")
             reg.client = MagicMock()
             reg.async_client = MagicMock()
             reg.healthy = True
@@ -334,7 +335,7 @@ class TestNodeJoinLeave:
         reg.async_client = MagicMock()
         reg.healthy = True
         coord.nodes["n2"] = reg
-        coord.node_order.append("n2")
+        coord.node_order = coord.node_order + ["n2"]
         assert len(coord.nodes) == 3
         assert "n2" in coord.nodes
 
@@ -361,7 +362,7 @@ class TestNodeJoinLeave:
         reg.async_client = MagicMock()
         reg.healthy = True
         coord.nodes["n3"] = reg
-        coord.node_order.append("n3")
+        coord.node_order = coord.node_order + ["n3"]
 
         n_layers_after = sum(
             reg.end_layer - reg.start_layer + 1
@@ -462,11 +463,13 @@ class TestNodeJoinLeave:
         reg.async_client = MagicMock()
         reg.healthy = True
         two_node_coordinator.nodes["new-mid"] = reg
-        two_node_coordinator.node_order.append("new-mid")
+        two_node_coordinator.node_order = two_node_coordinator.node_order + ["new-mid"]
         assert len(two_node_coordinator.node_order) == n_orig + 1
 
     def test_orphan_node_order_after_leave(self, two_node_coordinator):
         two_node_coordinator.nodes.pop("n1", None)
-        if "n1" in two_node_coordinator.node_order:
-            two_node_coordinator.node_order.remove("n1")
+        # Getter returns a copy — reassign via the setter.
+        two_node_coordinator.node_order = [
+            n for n in two_node_coordinator.node_order if n != "n1"
+        ]
         assert "n1" not in two_node_coordinator.node_order

@@ -275,6 +275,20 @@ class ClusterStateStore:
             }, default=str),
             ttl=self._ttl * 2,
         )
+        # Maintain the cluster-wide node registry so peers can discover
+        # every registered node via get_cluster_state().
+        raw_nodes = self._backend.get(self._nodes_key())
+        try:
+            node_keys = json.loads(raw_nodes) if raw_nodes else []
+        except (json.JSONDecodeError, TypeError):
+            node_keys = []
+        if nid not in node_keys:
+            node_keys.append(nid)
+            self._backend.set(
+                self._nodes_key(),
+                json.dumps(node_keys),
+                ttl=self._ttl * 4,
+            )
         logger.info(f"Registered node {nid} in cluster {self._cluster_name}")
 
     def heartbeat(self) -> None:

@@ -1,0 +1,81 @@
+# Benchmark PR Delta Report (§6.6.4)
+#
+# Triggered when the CI benchmark job finishes. Downloads the current
+# benchmark results + the committed baseline, computes the % delta per
+# metric, posts a readable report as a PR comment, and FAILS the run if
+# any metric regresses beyond the allowed threshold (default 10%).
+#
+# This makes performance regressions visible inline on the PR instead of
+# burying them in a job log.
+
+name: Benchmark PR Delta
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  post-delta:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download benchmark results from the CI run
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results
+          run-id: ${{ github.event.workflow_run.id }}
+          path: bench-current/
+        continue-on-error: true
+
+      - name: Compute deltas and post PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          THRESHOLD_PCT: "10"
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          cur_path = "bench-current/benchmarks/results.json"
+          base_path = "benchmarks/baseline.json"
+          threshold = float(os.environ.get("THRESHOLD_PCT", "10"))
+          pr = os.environ.get("PR_NUMBER", "")
+          if not pr:
+              print("No PR associated with this run; skipping comment.")
+              sys.exit(0)
+          if not (os.path.exists(cur_path) and os.path.exists(base_path)):
+              print("Missing current or baseline benchmark data; skipping.")
+              sys.exit(0)
+          cur = json.load(open(cur_path)).get("metrics", {})
+          base = json.load(open(base_path)).get("metrics", {})
+          lines = ["### Benchmark delta vs baseline (threshold %.0f%%)" % threshold, ""]
+          worst = 0.0
+          for name in sorted(set(cur) | set(base)):
+              cv = (cur.get(name) or {}).get("mean")
+              bv = (base.get(name) or {}).get("mean")
+              if cv is None or bv in (None, 0):
+                  lines.append(f"- **{name}**: current={cv}, baseline={bv} (n/a)")
+                  continue
+              delta = (cv - bv) / abs(bv) * 100.0
+              worst = max(worst, -delta if delta < 0 else 0)
+              mark = "🔴" if delta < -threshold else ("🟢" if delta >= 0 else "🟡")
+              lines.append(f"- {mark} **{name}**: {cv:.2f} vs {bv:.2f} ({delta:+.1f}%)")
+          lines.append("")
+          if worst > threshold:
+              lines.append(f"❌ Regression beyond {threshold:.0f}% on at least one metric.")
+          else:
+              lines.append(f"✅ Within {threshold:.0f}% threshold.")
+          body = "\n".join(lines)
+          subprocess.run([
+              "gh", "pr", "comment", pr, "--body", body
+          ], check=False)
+          print(body)
+          if worst > threshold:
+              sys.exit(1)
+          PY

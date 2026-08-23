@@ -23,16 +23,26 @@ _stub_settings.DistLLMSettings.from_yaml = staticmethod(
 _stub_settings.DistLLMSettings.validate_startup = staticmethod(
     lambda config_path=None, cli_overrides=None: None
 )
-sys.modules["distllm.config.settings"] = _stub_settings
 
-_src = Path(__file__).resolve().parents[2] / "src"
-_spec = importlib.util.spec_from_file_location(
-    "distllm.config.resolver",
-    _src / "distllm" / "config" / "resolver.py",
-)
-_resolver = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_resolver)
-ConfigResolver = _resolver.ConfigResolver
+# Install the stub ONLY while resolver.py is being loaded, then restore the
+# real module: tests/config/ collects before tests/core/, and a permanently
+# stubbed distllm.config.settings broke collection of every later module
+# importing ModelSettings/ChatRouterSettings/etc.
+_original_settings = sys.modules.get("distllm.config.settings")
+sys.modules["distllm.config.settings"] = _stub_settings
+try:
+    _src = Path(__file__).resolve().parents[2] / "src"
+    _spec = importlib.util.spec_from_file_location(
+        "distllm.config.resolver",
+        _src / "distllm" / "config" / "resolver.py",
+    )
+    _resolver = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_resolver)
+finally:
+    if _original_settings is not None:
+        sys.modules["distllm.config.settings"] = _original_settings
+    else:
+        del sys.modules["distllm.config.settings"]
 
 ConfigResolver = _resolver.ConfigResolver
 

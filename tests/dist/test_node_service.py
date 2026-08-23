@@ -322,9 +322,9 @@ class TestNodeServicer:
 
     def test_check_auth_no_cluster_key_set(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node)  # keyless -> fail closed
         req = node_pb2.ForwardPassRequest()
-        assert servicer._check_auth(req) is True
+        assert servicer._check_auth(req) is False
 
     def test_check_auth_with_correct_key(self) -> None:
         node = _make_worker()
@@ -364,10 +364,11 @@ class TestNodeServicer:
 
     def test_forward_pass_input_ids_too_large(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         # Exceed MAX_BATCH_SIZE * 131072 tokens
         req = node_pb2.ForwardPassRequest(
             input_ids=list(range(1024 * 131072 + 1)),
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
@@ -375,8 +376,8 @@ class TestNodeServicer:
     def test_forward_pass_no_model_loaded(self) -> None:
         """WorkerNode with no model returns an error gracefully."""
         node = _make_worker()
-        servicer = NodeServicer(node)
-        req = node_pb2.ForwardPassRequest()
+        servicer = NodeServicer(node, cluster_key="secret")
+        req = node_pb2.ForwardPassRequest(cluster_key="secret")
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
         assert resp.error_message
@@ -384,11 +385,12 @@ class TestNodeServicer:
     def test_forward_pass_success_with_hidden_states(self) -> None:
         node = _make_worker()
         node.forward_fn = _fake_forward  # type: ignore[method-assign]
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         t = torch.randn(1, 10)
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(t),
             request_id="fp-1",
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success, f"expected success, got: {resp.error_message}"
@@ -403,15 +405,15 @@ class TestNodeServicer:
     def test_forward_pass_success_with_input_ids(self) -> None:
         node = _make_worker()
         node.forward_fn = _fake_forward  # type: ignore[method-assign]
-        servicer = NodeServicer(node)
-        req = node_pb2.ForwardPassRequest(input_ids=[1, 2, 3])
+        servicer = NodeServicer(node, cluster_key="secret")
+        req = node_pb2.ForwardPassRequest(input_ids=[1, 2, 3], cluster_key="secret")
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success, f"expected success, got: {resp.error_message}"
 
     def test_forward_pass_success_with_kv_cache(self) -> None:
         node = _make_worker()
         node.forward_fn = _fake_forward  # type: ignore[method-assign]
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         kv_pb = node_pb2.KVCacheProto()
         layer = kv_pb.layers.add()
         layer.key_states.CopyFrom(
@@ -423,6 +425,7 @@ class TestNodeServicer:
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(torch.randn(1, 10)),
             kv_cache=kv_pb,
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success, f"expected success, got: {resp.error_message}"
@@ -431,10 +434,11 @@ class TestNodeServicer:
 
     def test_forward_pass_hidden_dim_too_large(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         t = torch.randn(1, NodeServicer.MAX_HIDDEN_DIM + 1)
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(t),
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
@@ -442,10 +446,11 @@ class TestNodeServicer:
 
     def test_forward_pass_batch_too_large(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         t = torch.randn(NodeServicer.MAX_BATCH_SIZE + 1, 768)
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(t),
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
@@ -453,7 +458,7 @@ class TestNodeServicer:
 
     def test_forward_pass_kv_cache_too_many_layers(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         kv_pb = node_pb2.KVCacheProto()
         for _ in range(NodeServicer.MAX_KV_LAYERS + 1):
             layer = kv_pb.layers.add()
@@ -466,6 +471,7 @@ class TestNodeServicer:
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(torch.randn(1, 768)),
             kv_cache=kv_pb,
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
@@ -473,7 +479,7 @@ class TestNodeServicer:
 
     def test_forward_pass_kv_cache_seq_len_too_large(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         kv_pb = node_pb2.KVCacheProto()
         layer = kv_pb.layers.add()
         # Create a TensorProto with shape that has seq_len > MAX_KV_SEQ_LEN
@@ -489,6 +495,7 @@ class TestNodeServicer:
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(torch.randn(1, 768)),
             kv_cache=kv_pb,
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
@@ -496,11 +503,12 @@ class TestNodeServicer:
 
     def test_forward_pass_too_many_dims(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         # 5D tensor should fail dim() > 4 check
         t = torch.randn(1, 2, 3, 4, 5)
         req = node_pb2.ForwardPassRequest(
             hidden_states=tensor_to_proto(t),
+            cluster_key="secret",
         )
         resp = servicer.ForwardPass(req, _FakeContext())
         assert resp.success is False
@@ -522,8 +530,8 @@ class TestNodeServicer:
             end_layer=5,
             total_layers=12,
         )
-        servicer = NodeServicer(node)
-        req = node_pb2.HealthCheckRequest(node_id="health-node")
+        servicer = NodeServicer(node, cluster_key="secret")
+        req = node_pb2.HealthCheckRequest(node_id="health-node", cluster_key="secret")
         resp = servicer.HealthCheck(req, _FakeContext())
         assert resp.healthy is True
         assert resp.node_id == "health-node"
@@ -536,8 +544,8 @@ class TestNodeServicer:
     def test_health_check_gpu_fallback(self) -> None:
         """GPU fields should always be populated regardless of hardware."""
         node = _make_worker()
-        servicer = NodeServicer(node)
-        req = node_pb2.HealthCheckRequest(node_id="test-node")
+        servicer = NodeServicer(node, cluster_key="secret")
+        req = node_pb2.HealthCheckRequest(node_id="test-node", cluster_key="secret")
         resp = servicer.HealthCheck(req, _FakeContext())
         assert resp.healthy is True
         assert isinstance(resp.gpu_name, str) and len(resp.gpu_name) > 0
@@ -553,8 +561,8 @@ class TestNodeServicer:
 
     def test_profile_basic(self) -> None:
         node = _make_worker(node_id="profile-node")
-        servicer = NodeServicer(node)
-        req = node_pb2.ProfileRequest(node_id="profile-node")
+        servicer = NodeServicer(node, cluster_key="secret")
+        req = node_pb2.ProfileRequest(node_id="profile-node", cluster_key="secret")
         resp = servicer.Profile(req, _FakeContext())
         assert resp.node_id == "profile-node"
         # gpu_name is environment-dependent; just check it's populated
@@ -571,8 +579,8 @@ class TestNodeServicer:
 
     def test_advertise_models_no_partitioner(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
-        req = node_pb2.AdvertiseModelsRequest(node_id="test-node")
+        servicer = NodeServicer(node, cluster_key="secret")
+        req = node_pb2.AdvertiseModelsRequest(node_id="test-node", cluster_key="secret")
         resp = servicer.AdvertiseModels(req, _FakeContext())
         # Without partitioner, the servicer returns empty models
         assert len(resp.models) == 0
@@ -594,11 +602,12 @@ class TestNodeServicer:
 
     def test_transfer_weights_no_partitioner(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         req = node_pb2.TransferWeightsRequest(
             model_name="test-model",
             start_layer=0,
             end_layer=2,
+            cluster_key="secret",
         )
         resp = servicer.TransferWeights(req, _FakeContext())
         assert resp.success is False
@@ -606,11 +615,12 @@ class TestNodeServicer:
 
     def test_transfer_weights_invalid_layer_range(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         req = node_pb2.TransferWeightsRequest(
             model_name="test-model",
             start_layer=-1,
             end_layer=2,
+            cluster_key="secret",
         )
         resp = servicer.TransferWeights(req, _FakeContext())
         assert resp.success is False
@@ -619,11 +629,12 @@ class TestNodeServicer:
 
     def test_transfer_weights_swapped_layer_range(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         req = node_pb2.TransferWeightsRequest(
             model_name="test-model",
             start_layer=5,
             end_layer=2,
+            cluster_key="secret",
         )
         resp = servicer.TransferWeights(req, _FakeContext())
         assert resp.success is False
@@ -631,11 +642,12 @@ class TestNodeServicer:
 
     def test_transfer_weights_layer_range_exceeds_max(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         req = node_pb2.TransferWeightsRequest(
             model_name="test-model",
             start_layer=0,
             end_layer=NodeServicer.MAX_LAYER_RANGE + 1,
+            cluster_key="secret",
         )
         resp = servicer.TransferWeights(req, _FakeContext())
         assert resp.success is False
@@ -659,11 +671,12 @@ class TestNodeServicer:
 
     def test_transfer_weights_stream_invalid_range(self) -> None:
         node = _make_worker()
-        servicer = NodeServicer(node)
+        servicer = NodeServicer(node, cluster_key="secret")
         req = node_pb2.TransferWeightsRequest(
             model_name="test-model",
             start_layer=-1,
             end_layer=2,
+            cluster_key="secret",
         )
         responses = list(servicer.TransferWeightsStream(req, _FakeContext()))
         assert len(responses) == 1

@@ -27,12 +27,19 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
 import threading
+
+# Legacy alias: the replay-buffer sampler historically referenced the
+# module-level ``_random`` name.
+_random = random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
+
+import torch
 
 if TYPE_CHECKING:
     from distllm.core.model_router import ModelRouter, RouteMatch, RoutingContext

@@ -203,9 +203,9 @@ class TestCrossMachineAuth:
         class Req: cluster_key = ""
         assert not node._check_auth(Req())
 
-    def test_none_cluster_key_allows_all(self):
+    def test_none_cluster_key_fails_closed(self):
         from distllm.dist.node_service import NodeServicer
         worker = MagicMock()
         node = NodeServicer(worker_node=worker, cluster_key=None)
         class Req: cluster_key = "anything"
-        assert node._check_auth(Req())
+        assert not node._check_auth(Req())

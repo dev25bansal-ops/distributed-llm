@@ -294,8 +294,16 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
         if not self._enabled or request.url.path in self.SKIP_PATHS:
             return await call_next(request)
 
-        # Extract prompt from request body
-        prompt = await self._extract_prompt(request)
+        # Read raw body once and cache it for downstream reuse, avoiding
+        # duplicate JSON parsing of large bodies.
+        try:
+            body_bytes = await request.body()
+        except Exception:
+            return await call_next(request)
+        request.state.body = body_bytes
+
+        # Extract prompt from the cached raw body
+        prompt = self._extract_prompt(body_bytes)
         if not prompt:
             return await call_next(request)
 
@@ -342,10 +350,12 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
         if action == InjectionAction.SANITIZE:
             sanitized = self._sanitizer.sanitize(prompt)
             if sanitized != prompt:
-                # Modify the request body in-place.  This works with
-                # FastAPI's body caching: subsequent reads get the
-                # sanitized version.
-                request._body = sanitized.encode()
+                sanitized_bytes = sanitized.encode()
+                # Update both the internal Starlette cache and our
+                # explicit state cache so downstream handlers see the
+                # sanitized version regardless of which one they read.
+                request.state.body = sanitized_bytes
+                request._body = sanitized_bytes
                 if hasattr(request, "_json"):
                     del request._json
             return await call_next(request)
@@ -353,10 +363,15 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
         # FLAG — allow but log
         return await call_next(request)
 
-    async def _extract_prompt(self, request: Request) -> str:
-        """Extract prompt text from the request body."""
+    def _extract_prompt(self, raw_body: bytes) -> str:
+        """Extract prompt text from raw request body bytes.
+
+        Uses ``json.loads`` directly on the cached bytes instead of
+        calling ``request.json()``, which would parse the full body
+        into a Python dict a second time for large payloads.
+        """
         try:
-            body = await request.json()
+            body: dict[str, Any] = json.loads(raw_body)
         except Exception:
             return ""
         # Try common prompt fields

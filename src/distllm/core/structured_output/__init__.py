@@ -28,7 +28,6 @@ class JSONSchemaConstraint:
 
     _token_index_cache: dict = {}
     _token_ord_cache: dict = {}
-    _building_keys: set = set()
     _build_lock: threading.Lock = threading.Lock()
     _valid_ord_sets: dict[str, tuple[int, ...]] = {}
 
@@ -62,34 +61,32 @@ class JSONSchemaConstraint:
         return cls(schema=None)
 
     def _build_token_index(self, tokenizer) -> dict[int, str]:
-        """Precompute the first character of every token ID."""
+        """Precompute the first character of every token ID.
+
+        Built synchronously on first use and cached so ``get_logits_mask`` is
+        never computed from an empty index.  Previously this spawned a daemon
+        thread and returned ``{}`` immediately, which made the first
+        constrained generation block every token (only EOS survives) and
+        terminate with empty/invalid JSON.
+        """
         tok_key = getattr(tokenizer, 'name_or_path', None) or str(id(tokenizer))
-        if tok_key in self._token_index_cache:
-            return self._token_index_cache[tok_key]
+
+        cached = self._token_index_cache.get(tok_key)
+        if cached is not None:
+            return cached
 
         with self._build_lock:
-            if tok_key in self._building_keys:
-                return {}
-            self._building_keys.add(tok_key)
-
-        def _build() -> None:
-            try:
-                vocab_size = getattr(tokenizer, 'vocab_size', 32000)
-                index: dict[int, str] = {}
-                for token_id in range(vocab_size):
-                    decoded = tokenizer.decode([token_id])
-                    index[token_id] = decoded[0] if decoded else ''
-                self._token_index_cache[tok_key] = index
-                logger.debug(f"Token index built: {vocab_size} tokens for {tok_key}")
-            except Exception as e:
-                logger.warning(f"Failed to build token index for {tok_key}: {e}")
-            finally:
-                with self._build_lock:
-                    self._building_keys.discard(tok_key)
-
-        thread = threading.Thread(target=_build, daemon=True, name=f"token-index-{tok_key[:20]}")
-        thread.start()
-        return {}
+            cached = self._token_index_cache.get(tok_key)
+            if cached is not None:
+                return cached
+            vocab_size = getattr(tokenizer, 'vocab_size', 32000)
+            index: dict[int, str] = {}
+            for token_id in range(vocab_size):
+                decoded = tokenizer.decode([token_id])
+                index[token_id] = decoded[0] if decoded else ''
+            self._token_index_cache[tok_key] = index
+            logger.debug(f"Token index built: {vocab_size} tokens for {tok_key}")
+            return index
 
     def _get_valid_ord_tensor(self, state: str, in_string: bool) -> torch.Tensor:
         """Return a precomputed tensor of valid character ordinals for the given state.
@@ -137,6 +134,13 @@ class JSONSchemaConstraint:
         if self._token_first_chars is None:
             self._token_first_chars = self._build_token_index(tokenizer)
 
+        if not self._token_first_chars:
+            # No token→first-char map available (e.g. empty/odd tokenizer):
+            # return a no-op mask (all tokens allowed) rather than one that
+            # blocks everything and forces immediate EOS.
+            target = device or "cpu"
+            return torch.ones(vocab_size, dtype=torch.bool, device=target)
+
         n = min(vocab_size, len(self._token_first_chars))
         ord_cache_key = (id(tokenizer), n)
         first_ords = self._token_ord_cache.get(ord_cache_key)
@@ -146,6 +150,12 @@ class JSONSchemaConstraint:
                 [ord(c) if c else 0 for c in first_chars], dtype=torch.long
             )
             self._token_ord_cache[ord_cache_key] = first_ords
+
+        if not bool(first_ords.any()):
+            # No usable first characters (empty/odd tokenizer): return a
+            # no-op mask (all tokens allowed) rather than blocking everything.
+            target = device or "cpu"
+            return torch.ones(vocab_size, dtype=torch.bool, device=target)
 
         valid_ord_tensor = self._get_valid_ord_tensor(self._state, self._in_string)
 
@@ -158,7 +168,17 @@ class JSONSchemaConstraint:
         mask = torch.zeros(vocab_size, dtype=torch.bool, device=target)
         mask[:n] = is_valid
 
-        if eos_token_id is not None:
+        # Escape hatch: if the FSM is in a dead state (no valid token can
+        # advance it) or the tokenizer is degenerate (nothing decodes),
+        # fall back to an unconstrained mask so the request can still
+        # terminate instead of generating forever.
+        if not bool(mask.any()):
+            mask = torch.ones(vocab_size, dtype=torch.bool, device=target)
+        # Allow EOS when the generated JSON is complete so normal
+        # termination is possible; block it mid-document so generation
+        # cannot end with truncated/invalid JSON (F-098).  An all-allowed
+        # escape mask also keeps EOS enabled.
+        elif eos_token_id is not None and self.is_complete():
             mask[eos_token_id] = True
 
         self._mask_cache[cache_key] = mask
@@ -178,8 +198,8 @@ class JSONSchemaConstraint:
             return set(string.printable) - {'\n', '\r', '\x0b', '\x0c'}
 
         transitions: dict[str, set[str]] = {
-            "object_start": {'"', '}'},
-            "after_open_brace": {'"', '}'},
+            "object_start": {'"', '{', '['},
+            "after_open_brace": {'"', '}', '{', '['},
             "after_key": {':'},
             "after_colon": {'"', '{', '[', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'},
             "after_value": {',', '}'},
@@ -187,6 +207,10 @@ class JSONSchemaConstraint:
             "array_start": {']', '"', '{', '[', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'},
             "after_array_value": {',', ']'},
             "after_array_comma": {'"', '{', '[', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'},
+            # A number may continue with digits / exponent / sign, and may also
+            # be terminated by , } ] or whitespace (F-045: previously the FSM
+            # had no in_number entry, so multi-digit numbers were truncated).
+            "in_number": set('0123456789.eE+-') | {',', '}', ']', ' ', '\t', '\n', '\r'},
             "done": set(),
         }
         return transitions.get(self._state, {'"', '}'})
@@ -223,7 +247,7 @@ class JSONSchemaConstraint:
         if char == ':':
             return "after_colon"
         if char == ',':
-            if state in ("after_value", "after_array_value"):
+            if state in ("after_value", "after_array_value", "in_number"):
                 return "after_comma"
             if state in ("after_array_value",):
                 return "after_array_comma"

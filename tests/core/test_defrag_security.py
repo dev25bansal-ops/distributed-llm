@@ -126,8 +126,14 @@ def test_no_dangling_seq_references():
 
 
 def test_edge_empty_pool():
-    """Defragmenting an empty pool must not crash."""
-    mgr = _make_manager(num_blocks=0)
+    """Zero-size pools are rejected; a zero-ALLOCATION pool is a safe no-op."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        _make_manager(num_blocks=0)
+
+    # A pool that exists but has nothing allocated: defrag must be a no-op.
+    mgr = _make_manager(num_blocks=4)
     defrag = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
     result = defrag.defragment(mgr)
     assert result.blocks_moved == 0
@@ -200,9 +206,10 @@ def test_all_tiered_levels():
     """Every TieredCompactionLevel must produce a valid result on CPU."""
     from distllm.core.memory_defragmenter import TieredCompactionLevel
 
-    defrag = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
-
     for tier in TieredCompactionLevel:
+        # Fresh instance per tier: the M-10 move-cooldown map is shared per
+        # defragger, so reusing one would no-op every tier after the first.
+        defrag = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
         mgr = _make_manager(num_blocks=32, allocated_ids=list(range(0, 32, 2)))
         result = defrag._defragment_impl(mgr, tier=tier)
         assert isinstance(result.blocks_moved, int)
@@ -210,17 +217,23 @@ def test_all_tiered_levels():
 
 
 def test_async_path():
-    """Async defrag must produce the same result as sync."""
+    """Async defrag must produce the same result as sync.
 
-    defrag = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
+    Separate defragger instances: the M-10 move-cooldown map is per-instance,
+    so reusing one instance makes whichever run happens second a no-op.
+    """
+
     mgr_sync = _make_manager(num_blocks=32, allocated_ids=list(range(0, 32, 2)))
 
     import asyncio
 
-    mgr_async = _make_manager(num_blocks=32, allocated_ids=list(range(0, 32, 2)))
-    result_async = asyncio.run(defrag.defragment_async(mgr_async))
+    defrag_async = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
+    defrag_sync = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
 
-    result_sync = defrag.defragment(mgr_sync)
+    mgr_async = _make_manager(num_blocks=32, allocated_ids=list(range(0, 32, 2)))
+    result_async = asyncio.run(defrag_async.defragment_async(mgr_async))
+
+    result_sync = defrag_sync.defragment(mgr_sync)
 
     assert result_async.blocks_moved == result_sync.blocks_moved
     assert result_async.bytes_compacted == result_sync.bytes_compacted

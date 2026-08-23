@@ -101,10 +101,16 @@ class RequestPipeline:
         if target_logits.dim() == 3:
             verification_steps = target_logits.shape[1]
         elif target_logits.dim() == 2:
-            verification_steps = target_logits.shape[0]
+            # A bare (rows, V) stack's final row IS the next-token
+            # distribution `next_token` was drawn from — only the
+            # remaining rows are verification positions.
+            verification_steps = max(0, target_logits.shape[0] - 1)
         else:
             verification_steps = 1
-        if accepted_count >= draft_len and verification_steps > accepted_count and next_token >= 0:
+        # The target verified `verification_steps` positions; whenever it
+        # verified beyond the accepted prefix, its corrected next token is
+        # valid to emit (both full and partial acceptance).
+        if verification_steps > accepted_count and next_token >= 0:
             tokens.append(next_token)
         elif not tokens and next_token >= 0:
             tokens.append(next_token)
@@ -396,6 +402,7 @@ class RequestPipeline:
             if not allowed:
                 c._request_tracker.set_result(request_id, "[Rate limited]")
                 c.record_metric("rate_limited", 1)
+                c._param_update_channel.unregister(request_id)
                 raise NodeError("Rate limit exceeded")
 
         input_ids = c.tokenizer.encode(prompt, return_tensors="pt")
@@ -422,7 +429,7 @@ class RequestPipeline:
             temperature=temperature, top_p=top_p, top_k=top_k, constraint=constraint,
             prefix_match_len=prefix_match_len, priority=priority, adapter_id=adapter_id,
             include_logprobs=include_logprobs, top_logprobs=top_logprobs,
-            logit_bias=logit_bias, presence_penalty=presence_penalty,
+            logit_bias=logit_bias or {}, presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty, max_latency_ms=max_latency_ms,
         )
         if chunk_state:
@@ -527,7 +534,17 @@ class RequestPipeline:
                 break
 
         if c.scheduler is not None:
+            # Capture the request IDs BEFORE completion (complete_batch_requests
+            # may clear the scheduler's queues).
+            done_rids = [seq.request_id for seq in list(c.scheduler.active)]
+            done_rids += [s.request_id for _, _, s in c.scheduler._pending_heap]
             c._request_tracker.complete_batch_requests(c.scheduler.active, [s for _, _, s in c.scheduler._pending_heap], c.tokenizer)
+            # Clean up the mid-stream parameter-update channel for every request
+            # that just completed.  generate_async registers entries but has no
+            # finally (it returns after scheduling), so without this the channel
+            # leaked one GenerationParams dict per async request forever.
+            for rid in done_rids:
+                c._param_update_channel.unregister(rid)
             with c._batch_kv_caches_lock:
                 for rid in list(c._batch_kv_caches.keys()):
                     if rid not in c.scheduler.active:

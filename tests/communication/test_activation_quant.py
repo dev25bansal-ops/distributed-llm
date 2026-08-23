@@ -1,16 +1,28 @@
-"""Tests for activation quantization in serializers.py (INT8, INT4, FP8 paths)."""
+"""Tests for activation quantization in serializers.py (INT8, INT4, FP8 paths).
+
+DEPENDENCY NOTE: This entire file is skipped because the modules it imports
+have been removed from the codebase:
+  - distllm.communication.serializers  (removed)
+
+To re-enable: the functions set_activation_quant, quantize_activation, and
+dequantize_activation need to be re-implemented or moved to a new location
+(e.g., distllm.dist.node_service or distllm.dist.quantization).
+"""
 
 import pytest
 import torch
 
-try:
-    from distllm.communication.serializers import (
-        set_activation_quant,
-        quantize_activation,
-        dequantize_activation,
-    )
-except ImportError:
-    pytest.skip("distllm.communication.serializers module removed", allow_module_level=True)
+pytest.importorskip(
+    "distllm.communication.serializers",
+    reason="distllm.communication.serializers module removed — re-implement "
+           "activation quantization functions before re-enabling this file",
+)
+
+from distllm.communication.serializers import (  # noqa: E402
+    set_activation_quant,
+    quantize_activation,
+    dequantize_activation,
+)
 
 
 class TestActivationQuantization:

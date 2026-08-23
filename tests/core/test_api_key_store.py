@@ -100,18 +100,15 @@ class TestApiKeysEnvVar:
         assert store.authenticate("key-b")[1] == "read-only"
         assert store.authenticate("key-c") is None
 
-    def test_invalid_role_falls_back_to_admin(self):
+    def test_invalid_role_raises_value_error(self):
         os.environ["API_KEYS"] = json.dumps({
             "keys": [
                 {"key": "sk-bad", "role": "superadmin", "label": "bad"},
             ]
         })
         reset_api_key_store()
-        store = get_api_key_store()
-        assert store.get_key_count() == 1
-        result = store.authenticate("sk-bad")
-        assert result is not None
-        assert result[1] == "admin"  # falls back
+        with pytest.raises(ValueError, match="Invalid API key role"):
+            get_api_key_store()
 
     def test_has_role(self):
         os.environ["API_KEYS"] = json.dumps({

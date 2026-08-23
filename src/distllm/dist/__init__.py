@@ -50,6 +50,13 @@ _register("distllm.dist.attention", "PagedAttentionManager", "BlockPool")
 _register("distllm.dist.preemption", "PreemptionPolicy", "GPUMemoryMonitor")
 _register("distllm.dist.quality", "QualitySLA", "SLAPolicy")
 _register("distllm.dist.nat", "StunClient", "TurnRelayServer", "TurnRelayClient")
+_register("distllm.dist.ice_transport",
+          "ICEAgent", "TURNClient", "TURNServer", "UDPHolePuncher",
+          "NATTraversalController", "Candidate", "CandidatePair",
+          "DataTransport", "ice_connect", "turn_connect", "nat_traverse")
+
+# WandB integration (optional — requires distllm-wandb package)
+_register("distllm.integrations.wandb", "WandBIntegration")
 _register("distllm.dist.wide_area", "WideAreaPipeline")
 _register("distllm.dist.fsdp", "FSDPShard", "FSDPConfig")
 _register("distllm.dist.parallel", "HybridParallelPlanner", "HybridParallelExecutor", "ParallelStrategy")

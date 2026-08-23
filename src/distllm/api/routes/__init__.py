@@ -18,6 +18,7 @@ from .router_admin import router as router_admin_router
 from .defrag import router as defrag_router
 from .batch import router as batch_router
 from .eval import router as eval_router
+from .metrics_history import router as metrics_history_router
 __all__ = [
     "chat_router",
     "chat_v2_router",
@@ -37,4 +38,5 @@ __all__ = [
     "defrag_router",
     "batch_router",
     "eval_router",
+    "metrics_history_router",
 ]

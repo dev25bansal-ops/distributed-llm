@@ -85,17 +85,31 @@ class StreamingCostState:
         cloud_input = self.input_tokens * self.cloud_input_cost_per_token
         cloud_output = self.output_tokens * self.cloud_output_cost_per_token
         self.cumulative_cloud_cost = cloud_input + cloud_output
-        self.cumulative_savings = self.cumulative_cloud_cost - self.cumulative_cost
+        # Clamp tiny negative savings from float error when no cloud rate is
+        # configured (cloud cost is 0); real negative savings still require
+        # an actual cloud rate to be set.
+        savings = self.cumulative_cloud_cost - self.cumulative_cost
+        has_cloud_rates = (
+            self.cloud_input_cost_per_token > 0 or self.cloud_output_cost_per_token > 0
+        )
+        if not has_cloud_rates:
+            savings = max(savings, 0.0)
+        self.cumulative_savings = savings
 
     def _update_throughput(self) -> None:
         """Update tokens/second metrics."""
         if self.output_tokens > 1 and self.first_token_time > 0:
             elapsed = self.last_token_time - self.first_token_time
+            if elapsed <= 0:
+                # Tokens arrived faster than clock resolution; fall back to
+                # the start-time window so throughput stays meaningful.
+                elapsed = (
+                    self.last_token_time - self.start_time
+                    if self.start_time > 0 else 0.0
+                )
             if elapsed > 0:
                 self.tokens_per_second = (self.output_tokens - 1) / elapsed
-                self.avg_tokens_per_second = self.output_tokens / (
-                    self.last_token_time - self.start_time
-                ) if self.start_time > 0 else 0
+                self.avg_tokens_per_second = self.output_tokens / elapsed
 
     def to_token_event(self) -> dict[str, Any]:
         """Generate a cost event for inclusion in SSE stream.

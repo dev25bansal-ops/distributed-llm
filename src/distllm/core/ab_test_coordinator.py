@@ -21,7 +21,7 @@ import math
 import random
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -108,7 +108,7 @@ class ABTestCoordinator:
                 stats[version] = {
                     "samples": len(results),
                     "avg_latency_ms": round(sum(latencies) / len(latencies), 1),
-                    "p95_latency_ms": round(sorted(latencies)[int(len(latencies) * 0.95)], 1),
+                    "p95_latency_ms": round(sorted(latencies)[math.ceil(len(latencies) * 0.95) - 1], 1),
                     "avg_output_length": round(sum(output_lengths) / len(output_lengths), 1),
                     "avg_feedback": round(sum(feedback) / len(feedback), 2) if feedback else None,
                 }

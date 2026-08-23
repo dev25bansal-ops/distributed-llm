@@ -11,13 +11,13 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any
 
 from loguru import logger
 
 
-class MemoryPriority(Enum):
+class MemoryPriority(IntEnum):
     """Priority level for GPU memory allocations."""
     CRITICAL = 0   # Must succeed (e.g. active model weights)
     HIGH = 1       # Should succeed (e.g. KV cache)
@@ -228,8 +228,8 @@ class GPUResourceManager:
             device_allocs = [a for a in self._allocations.values() if a.device == device]
             tracked_mb = sum(a.size_mb for a in device_allocs)
             return GPUMemorySnapshot(
-                device=device, total_mb=total, used_mb=total - device_alloc,
-                free_mb=device_alloc, reserved_mb=device_reserved,
+                device=device, total_mb=total, used_mb=device_alloc,
+                free_mb=total - device_alloc, reserved_mb=device_reserved,
                 allocated_mb=tracked_mb, utilization_pct=util_pct,
                 temperature_c=temp_c, allocations=device_allocs,
             )

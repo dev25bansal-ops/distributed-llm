@@ -4,10 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-try:
-    import kopf  # noqa: F401
-except ImportError:
-    pytest.skip("kopf not installed -- skipping operator tests", allow_module_level=True)
+pytest.importorskip("distllm.operator", reason="distllm.operator package not installed")
 
 from distllm.operator.crds.distributed_llm_cluster import (
     DistributedLLMClusterSpec, ModelSpec, CoordinatorSpec, ResourceSpec, NodePoolSpec,

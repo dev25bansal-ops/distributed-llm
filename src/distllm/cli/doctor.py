@@ -19,6 +19,8 @@ Usage::
     distllm doctor --network           # Network-only checks
     distllm doctor --model llama-70b   # Model compatibility check
     distllm doctor --verbose           # Detailed output
+    distllm doctor --json              # Machine-parseable JSON output
+    distllm doctor --terse             # Condensed one-line-per-check output
 """
 
 from __future__ import annotations
@@ -33,6 +35,13 @@ import time
 from typing import Any
 
 from loguru import logger
+from rich import box
+from rich.console import Console, Group
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.style import Style
+from rich.table import Table
+from rich.text import Text
 
 
 # ── GPU Diagnostics ──────────────────────────────────────────────────────
@@ -386,68 +395,291 @@ def _check_python_env() -> list[dict[str, Any]]:
     return results
 
 
-# ── Output ───────────────────────────────────────────────────────────────
+# ── Doctor Class ──────────────────────────────────────────────────────────
 
-def _print_results(category: str, results: list[dict[str, Any]], verbose: bool = False) -> int:
-    """Print results and return error count."""
-    errors = 0
-    print(f"\n{'='*60}")
-    print(f"  {category}")
-    print(f"{'='*60}")
-    for r in results:
-        icon = {"ok": "✅", "warn": "⚠️", "error": "❌", "info": "ℹ️", "skip": "⏭️"}.get(r["status"], "  ")
-        msg = f"  {icon} {r['check']}: {r.get('value', '')}"
-        print(msg)
-        if r["status"] == "error":
-            errors += 1
-        if r["status"] == "warn" and verbose:
-            print(f"      ↳ Recommendation: Check {r['check']} configuration")
-    return errors
+class Doctor:
+    """Rich-powered system diagnostics for distributed-llm.
+
+    Wraps the existing ``_check_*`` functions with Rich-formatted output
+    and supports three render modes: rich (default), JSON, and terse.
+    """
+
+    STATUS_STYLES: dict[str, Style] = {
+        "ok": Style(color="green", bold=True),
+        "pass": Style(color="green", bold=True),
+        "warn": Style(color="yellow", bold=True),
+        "error": Style(color="red", bold=True),
+        "fail": Style(color="red", bold=True),
+        "info": Style(color="cyan", bold=False),
+        "skip": Style(color="white", dim=True),
+    }
+
+    STATUS_LABELS: dict[str, str] = {
+        "ok": "PASS",
+        "pass": "PASS",
+        "warn": "WARN",
+        "error": "FAIL",
+        "fail": "FAIL",
+        "info": "INFO",
+        "skip": "SKIP",
+    }
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.console = Console()
+        self._all_categories: list[tuple[str, list[dict[str, Any]]]] = []
+        self._total_errors = 0
+
+    # ── Runner ─────────────────────────────────────────────────────────
+
+    def _get_checks(self) -> list[tuple[str, Any, Any]]:
+        """Return list of (category_name, check_function, arg) tuples."""
+        if self.args.gpu:
+            return [
+                ("CUDA / GPU", _check_cuda, None),
+                ("GPU Benchmarks", _check_gpu_benchmarks, None),
+            ]
+        if self.args.network:
+            return [
+                ("Network Latency", _check_network_latency, self.args.nodes),
+                ("Ports", _check_ports, None),
+            ]
+        if self.args.model:
+            return [
+                ("Model Compatibility", _check_model_compatibility, self.args.model),
+                ("CUDA / GPU", _check_cuda, None),
+            ]
+
+        # Full diagnostic
+        checks: list[tuple[str, Any, Any]] = [
+            ("Python Environment", _check_python_env, None),
+            ("CUDA / GPU", _check_cuda, None),
+            ("GPU Benchmarks", _check_gpu_benchmarks, None),
+            ("Ports", _check_ports, None),
+            ("Network Latency", _check_network_latency, self.args.nodes),
+            ("Configuration", _check_config, None),
+            ("Disk Space", _check_disk, None),
+        ]
+        if self.args.model:
+            checks.append(("Model Compatibility", _check_model_compatibility, self.args.model))
+        return checks
+
+    def run(self) -> int:
+        """Run all checks and render output. Returns the total error count."""
+        checks = self._get_checks()
+        self._all_categories = []
+        self._total_errors = 0
+
+        # Phase 1 — execute every check behind a progress spinner
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=self.console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Scanning system...", total=len(checks))
+
+            for category, check_func, check_arg in checks:
+                progress.update(task, description=f"[cyan]Checking {category}...")
+                results: list[dict[str, Any]] = (
+                    check_func(check_arg) if check_arg is not None else check_func()
+                )
+                self._all_categories.append((category, results))
+                progress.advance(task)
+
+        # Count errors
+        for _, results in self._all_categories:
+            self._total_errors += sum(1 for r in results if r["status"] == "error")
+
+        # Phase 2 — render
+        if self.args.json:
+            self._render_json()
+        elif self.args.terse:
+            self._render_terse()
+        else:
+            self._render_rich()
+
+        return self._total_errors
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _color_status(self, status: str) -> Style:
+        return self.STATUS_STYLES.get(status, Style(color="white"))
+
+    def _label_status(self, status: str) -> str:
+        return self.STATUS_LABELS.get(status, status.upper())
+
+    def _build_result_line(self, r: dict[str, Any]) -> Text:
+        """Create a single coloured result line from a check dict."""
+        label = self._label_status(r["status"])
+        style = self._color_status(r["status"])
+        value = r.get("value", "")
+
+        line = Text()
+        line.append(f"  [{label}] ", style=style)
+        line.append(r["check"], style="bold white")
+        if value:
+            line.append(f": {value}", style="white")
+        return line
+
+    # ── Renderers ──────────────────────────────────────────────────────
+
+    def _render_rich(self) -> None:
+        """Render all results using Rich Panels, Tables, and colour-coded status."""
+        console = self.console
+
+        # -- Header --
+        console.print()
+        console.print(Panel(
+            "[bold cyan]DistLLM Doctor[/bold cyan] — System Diagnostics",
+            style="cyan",
+            box=box.ROUNDED,
+        ))
+
+        # -- Category panels --
+        for category, results in self._all_categories:
+            self._render_category(category, results)
+
+        # -- Summary footer --
+        console.print()
+        if self._total_errors == 0:
+            console.print(Panel(
+                "[bold green]All checks passed![/bold green]",
+                style="green",
+                box=box.ROUNDED,
+            ))
+        else:
+            console.print(Panel(
+                f"[bold red]{self._total_errors} error(s) found. "
+                "Fix issues above before deploying.[/bold red]",
+                style="red",
+                box=box.ROUNDED,
+            ))
+        console.print()
+
+    def _render_category(self, category: str, results: list[dict[str, Any]]) -> None:
+        """Render a single category as a bordered Panel with optional GPU Table."""
+        console = self.console
+        renderables: list[Any] = []
+
+        # Detect GPU identity rows (GPU 0, GPU 1, … — but NOT capability/memory)
+        gpu_id_prefixes = tuple(f"GPU {i} " for i in range(100))
+        gpu_table_entries = [
+            r for r in results
+            if r["check"].startswith("GPU ")
+            and not r["check"].startswith(gpu_id_prefixes)
+            and "compute capability" not in r["check"]
+            and "memory" not in r["check"]
+            and "benchmark" not in r["check"].lower()
+        ]
+        # The actual GPU identity rows are the short "GPU 0", "GPU 1" lines.
+        gpu_identity = [
+            r for r in results
+            if r["check"].startswith("GPU ")
+            and len(r["check"].split()) == 2
+            and r["check"].split()[1].isdigit()
+        ]
+
+        gpu_check_names: set[str] = set()
+
+        if gpu_identity:
+            gpu_check_names.update(r["check"] for r in gpu_identity)
+            table = Table(box=box.SIMPLE_HEAVY, show_header=False, padding=(0, 2))
+            table.add_column("Device", style="cyan")
+            table.add_column("Specification", style="white")
+            table.add_column("Status")
+
+            for entry in gpu_identity:
+                label = self._label_status(entry["status"])
+                style = self._color_status(entry["status"])
+                table.add_row(
+                    entry["check"],
+                    entry.get("value", ""),
+                    Text(label, style=style),
+                )
+            renderables.append(table)
+
+        # Remaining checks
+        for r in results:
+            if r["check"] in gpu_check_names:
+                continue
+            line = self._build_result_line(r)
+            renderables.append(line)
+
+            if r["status"] == "warn" and self.args.verbose:
+                renderables.append(Text(
+                    f"      Recommendation: Check {r['check']} configuration",
+                    style="dim italic",
+                ))
+
+        cat_errors = sum(1 for r in results if r["status"] == "error")
+        title = f"[bold]{category}[/bold]"
+        if cat_errors:
+            title += f" [red]({cat_errors} error{'s' if cat_errors > 1 else ''})[/red]"
+
+        border_style = "red" if cat_errors else "cyan"
+        panel = Panel(
+            Group(*renderables) if renderables else Text("[dim]No results[/dim]", style="dim"),
+            title=title,
+            border_style=border_style,
+            box=box.ROUNDED,
+        )
+        console.print()
+        console.print(panel)
+
+    def _render_json(self) -> None:
+        """Render all results as machine-parseable JSON."""
+        data: dict[str, Any] = {
+            "tool": "distllm doctor",
+            "categories": {},
+            "summary": {
+                "total_errors": self._total_errors,
+                "all_passed": self._total_errors == 0,
+            },
+        }
+        for category, results in self._all_categories:
+            data["categories"][category] = {
+                "checks": results,
+                "error_count": sum(1 for r in results if r["status"] == "error"),
+            }
+        self.console.print_json(data=data)
+
+    def _render_terse(self) -> None:
+        """Render results as condensed one-line-per-check output."""
+        console = self.console
+        for _, results in self._all_categories:
+            for r in results:
+                console.print(self._build_result_line(r))
+
+        if self._total_errors == 0:
+            console.print(Text(
+                f"Result: ALL PASSED — {len(self._all_categories)} categories checked",
+                style="green bold",
+            ))
+        else:
+            console.print(Text(
+                f"Result: {self._total_errors} error(s) found",
+                style="red bold",
+            ))
 
 
-def main() -> None:
+# ── CLI Entry Point ───────────────────────────────────────────────────────
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="DistLLM diagnostic tool")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     parser.add_argument("--gpu", action="store_true", help="GPU checks only")
     parser.add_argument("--network", action="store_true", help="Network checks only")
     parser.add_argument("--model", type=str, default=None, help="Check model compatibility")
     parser.add_argument("--nodes", type=str, nargs="+", help="Node hosts for network latency check")
-    args = parser.parse_args()
+    parser.add_argument("--json", action="store_true", help="Output machine-parseable JSON")
+    parser.add_argument("--terse", action="store_true", help="Condensed one-line-per-check output")
+    args = parser.parse_args(argv)
 
-    print("DistLLM Doctor — System Diagnostics")
-    print("=" * 60)
-
-    total_errors = 0
-
-    if args.gpu:
-        total_errors += _print_results("CUDA / GPU", _check_cuda(), args.verbose)
-        total_errors += _print_results("GPU Benchmarks", _check_gpu_benchmarks(), args.verbose)
-    elif args.network:
-        total_errors += _print_results("Network Latency", _check_network_latency(args.nodes), args.verbose)
-        total_errors += _print_results("Ports", _check_ports(), args.verbose)
-    elif args.model:
-        total_errors += _print_results("Model Compatibility", _check_model_compatibility(args.model), args.verbose)
-        total_errors += _print_results("CUDA / GPU", _check_cuda(), args.verbose)
-    else:
-        # Full diagnostic
-        total_errors += _print_results("Python Environment", _check_python_env(), args.verbose)
-        total_errors += _print_results("CUDA / GPU", _check_cuda(), args.verbose)
-        total_errors += _print_results("GPU Benchmarks", _check_gpu_benchmarks(), args.verbose)
-        total_errors += _print_results("Ports", _check_ports(), args.verbose)
-        total_errors += _print_results("Network Latency", _check_network_latency(args.nodes), args.verbose)
-        total_errors += _print_results("Configuration", _check_config(), args.verbose)
-        total_errors += _print_results("Disk Space", _check_disk(), args.verbose)
-
-        if args.model:
-            total_errors += _print_results("Model Compatibility", _check_model_compatibility(args.model), args.verbose)
-
-    print(f"\n{'='*60}")
-    if total_errors == 0:
-        print("  ✅ All checks passed!")
-    else:
-        print(f"  ❌ {total_errors} error(s) found. Fix issues above before deploying.")
-    print(f"{'='*60}")
-    print()
+    doctor = Doctor(args)
+    total_errors = doctor.run()
 
     sys.exit(1 if total_errors > 0 else 0)
 

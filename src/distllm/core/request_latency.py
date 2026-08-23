@@ -18,6 +18,7 @@ class RequestLatencyInfo:
     last_token_at: float | None = None
     tokens_generated: int = 0
     sla_target_ms: float = 5000.0
+    completed_at: float | None = None
 
     @property
     def ttft_ms(self) -> float | None:
@@ -27,7 +28,11 @@ class RequestLatencyInfo:
 
     @property
     def elapsed_ms(self) -> float:
-        return (time.time() - self.enqueued_at) * 1000
+        # For COMPLETED requests, freeze elapsed at completion — the live clock
+        # would otherwise make finished-fast requests look overdue as wall time
+        # advances, corrupting SLA/compliance percentiles (F-022).
+        end = self.completed_at or time.time()
+        return (end - self.enqueued_at) * 1000
 
     @property
     def tpot_ms(self) -> float | None:
@@ -74,6 +79,7 @@ class RequestLatencyTracker:
             if info:
                 if info.last_token_at is None:
                     info.last_token_at = time.time()
+                info.completed_at = time.time()
                 self._completed.append(info)
 
     def get_latency_boost(self, request_id: str, base_priority: int) -> int:

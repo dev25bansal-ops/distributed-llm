@@ -19,12 +19,28 @@ class EnergyProfile:
 class EnergyAwareScheduler:
     """Scheduling policy that reduces batch size under thermal pressure."""
 
-    def __init__(self, thermal_threshold_c: float = 80.0):
+    def __init__(
+        self,
+        thermal_threshold_c: float = 80.0,
+        max_power_watts: float = 0.0,
+        energy_cost_per_kwh: float = 0.10,
+    ):
         self._thermal_threshold = thermal_threshold_c
+        self._max_power_watts = max_power_watts
+        self._energy_cost_per_kwh = energy_cost_per_kwh
         self._profiles: dict[str, EnergyProfile] = {}
 
     def update_profile(self, node_id: str, profile: EnergyProfile) -> None:
         self._profiles[node_id] = profile
+
+    def stats(self) -> dict[str, Any]:
+        """Return energy-scheduling statistics (batch_scheduler contract)."""
+        return {
+            "max_power_watts": self._max_power_watts,
+            "energy_cost_per_kwh": self._energy_cost_per_kwh,
+            "thermal_threshold_c": self._thermal_threshold,
+            "node_profiles": len(self._profiles),
+        }
 
     def compute_budget(self, base_budget: Any) -> Any:
         # Find hottest node

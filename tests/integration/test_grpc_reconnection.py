@@ -19,21 +19,19 @@ import pytest
 from distllm.dist.node_client import (
     AsyncNodeClient,
     NodeClient,
-    _channel_pool,
-    _channel_pool_lock,
+    channel_pool,
     create_async_node_client,
     create_node_client,
+    reset_channel_pool,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clear_channel_pool():
     """Reset the global channel pool before and after each test."""
-    with _channel_pool_lock:
-        _channel_pool.clear()
+    reset_channel_pool()
     yield
-    with _channel_pool_lock:
-        _channel_pool.clear()
+    reset_channel_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +187,7 @@ class TestDNSResolutionChanges:
                 # Assert: same underlying channel object
                 assert client1.channel is client2.channel
                 # Pool refcount should be 2
-                with _channel_pool_lock:
-                    assert _channel_pool["localhost:50051"][1] == 2
+                assert channel_pool.ref_count("localhost:50051") == 2
 
                 client1.close()
                 client2.close()
@@ -239,8 +236,7 @@ class TestConnectionPoolBehaviorUnderFailures:
                 clients = [create_node_client("localhost", 50051) for _ in range(3)]
 
                 # Assert
-                with _channel_pool_lock:
-                    _, count = _channel_pool["localhost:50051"]
+                count = channel_pool.ref_count("localhost:50051")
                 assert count == 3
 
                 for c in clients:
@@ -261,13 +257,11 @@ class TestConnectionPoolBehaviorUnderFailures:
 
                 # Act: close first — refcount drops to 1
                 c1.close()
-                with _channel_pool_lock:
-                    assert _channel_pool["localhost:50051"][1] == 1
+                assert channel_pool.ref_count("localhost:50051") == 1
 
                 # Close second — entry removed from pool
                 c2.close()
-                with _channel_pool_lock:
-                    assert "localhost:50051" not in _channel_pool
+                assert "localhost:50051" not in channel_pool
 
     def test_pool_entry_removed_on_last_close(self):
         """The channel is closed and the pool entry is deleted when
@@ -286,7 +280,7 @@ class TestConnectionPoolBehaviorUnderFailures:
                 client.close()
 
                 # Assert
-                assert "localhost:50051" not in _channel_pool
+                assert "localhost:50051" not in channel_pool
                 # The pool channel's close was called
                 mock_channel.close.assert_called()
 
@@ -304,8 +298,7 @@ class TestConnectionPoolBehaviorUnderFailures:
                 client = create_node_client("localhost", 50051)
 
                 # Manually clear the pool to simulate external cleanup
-                with _channel_pool_lock:
-                    _channel_pool.clear()
+                channel_pool.clear()
 
                 # Act / Assert: should not raise
                 client.close()
@@ -337,8 +330,7 @@ class TestConnectionPoolBehaviorUnderFailures:
 
         # Assert: all 5 clients got a channel, refcount is 5
         assert len(results) == 5
-        with _channel_pool_lock:
-            _, count = _channel_pool["localhost:50051"]
+        count = channel_pool.ref_count("localhost:50051")
         assert count == 5
 
         # Cleanup
@@ -370,8 +362,7 @@ class TestConnectionPoolBehaviorUnderFailures:
             t.join(timeout=5.0)
 
         # Assert: pool should be empty after all closes
-        with _channel_pool_lock:
-            assert "localhost:50051" not in _channel_pool
+        assert "localhost:50051" not in channel_pool
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +416,7 @@ class TestTimeoutHandling:
                     create_node_client("timeout-host", 50051, timeout_s=0.01)
 
                 # Assert
-                assert "timeout-host:50051" not in _channel_pool
+                assert "timeout-host:50051" not in channel_pool
 
     def test_tls_timeout_propagates(self):
         """TLS connections also propagate timeouts correctly."""
@@ -615,8 +606,11 @@ class TestRequestLayerWeightsIntegration:
         """Streaming transfer collects chunks into a single bytes buffer."""
         # Arrange
         mock_stub = MagicMock()
-        chunk1 = MagicMock(success=True, state_dict_bytes=b"chunk1-", error_message="")
-        chunk2 = MagicMock(success=True, state_dict_bytes=b"chunk2", error_message="")
+        # F-049 integrity fields: ordered, total declared, final flagged.
+        chunk1 = MagicMock(success=True, state_dict_bytes=b"chunk1-", error_message="",
+                           chunk_index=0, total_chunks=2, is_final_chunk=False)
+        chunk2 = MagicMock(success=True, state_dict_bytes=b"chunk2", error_message="",
+                           chunk_index=1, total_chunks=2, is_final_chunk=True)
         mock_stub.TransferWeightsStream.return_value = iter([chunk1, chunk2])
 
         with patch("distllm.dist.node_client.create_node_client") as mock_create:

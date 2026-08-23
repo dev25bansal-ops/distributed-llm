@@ -95,6 +95,26 @@ async def health_check(request: Request):
 
 
 @router.get(
+    "/v1/health/readiness",
+    summary="Kubernetes readiness probe (versioned alias of /ready)",
+    include_in_schema=False,
+)
+async def readiness_check_v1(request: Request):
+    """Versioned alias of :func:`readiness_check`."""
+    return await readiness_check(request)
+
+
+@router.get(
+    "/v1/health/liveness",
+    summary="Kubernetes liveness probe (versioned alias of /live)",
+    include_in_schema=False,
+)
+async def liveness_check_v1():
+    """Versioned alias of :func:`liveness_check`."""
+    return await liveness_check()
+
+
+@router.get(
     "/ready",
     summary="Kubernetes readiness probe",
     description="Kubernetes readiness probe. Returns 200 only when the service can accept traffic (model loaded, not shutting down, healthy nodes available). Designed for container orchestration health checks.",
@@ -136,7 +156,7 @@ async def liveness_check():
 
     Returns 200 if the process is alive and not deadlocked.
     """
-    return {"status": "alive", "uptime_seconds": time.time() - g._startup_time}
+    return {"status": "alive", "uptime_seconds": time.time() - g.startup_time}
 
 
 @router.get(
@@ -157,7 +177,7 @@ async def healthz():
     if plugin is not None:
         return plugin.liveness()
     # Fallback: basic alive check when plugin is not loaded
-    return {"status": "alive", "uptime_seconds": time.time() - g._startup_time}
+    return {"status": "alive", "uptime_seconds": time.time() - g.startup_time}
 
 
 @router.get(
@@ -252,9 +272,18 @@ async def warmup_model(model_id: str, request: Request):
 )
 async def metrics():
     """Prometheus-compatible metrics endpoint."""
+    from prometheus_client import generate_latest
+
     coord = g.coordinator
     mon = g.monitor
     lines = []
+
+    # Include the API request-layer RED metrics recorded by
+    # ObservabilityMiddleware into the shared exporter registry, so /metrics
+    # reflects request rate/errors/duration in addition to coordinator gauges.
+    api_exporter = getattr(g, "metrics_exporter", None)
+    api_registry = getattr(api_exporter, "registry", None)
+    api_metrics = generate_latest(api_registry).decode() if api_registry is not None else ""
 
     if coord is None:
         # Return service status even when not initialized
@@ -262,13 +291,14 @@ async def metrics():
         lines.append("distllm_service_up 0")
         lines.append("# TYPE distllm_coordinator_loaded gauge")
         lines.append("distllm_coordinator_loaded 0")
-        return "\n".join(lines)
+        return api_metrics + "\n" + "\n".join(lines) if api_metrics else "\n".join(lines)
 
     # Use Prometheus exporter if available
     if coord.metrics_exporter:
         coord.metrics_exporter.populate_gauges(coordinator=coord)
         data = coord.metrics_exporter.generate_metrics()
-        return Response(content=data, media_type="text/plain; version=0.0.4; charset=utf-8")
+        combined = api_metrics + "\n" + data if api_metrics else data
+        return Response(content=combined, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     # Fallback: dict-based text format
     m = coord.get_metrics()
@@ -321,7 +351,8 @@ async def metrics():
     lines.append("# TYPE distllm_ready gauge")
     lines.append(f"distllm_ready {1 if not getattr(coord, '_shutting_down', False) else 0}")
 
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    return api_metrics + "\n" + body if api_metrics else body
 
 
 @router.post(

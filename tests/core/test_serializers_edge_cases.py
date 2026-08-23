@@ -1,5 +1,16 @@
 """Proto serialization edge case tests (legacy — serializers module removed).
 
+DEPENDENCY NOTE: This entire file is skipped because the modules it imports
+have been removed from the codebase:
+  - distllm.communication.serializers  (removed)
+  - distllm.communication.node_pb2     (removed)
+
+Functionality moved to:
+  - tensor_to_proto / kv_cache_to_proto  → distllm.dist.node_service
+
+To re-enable: refactor tests to import from distllm.dist.node_service
+and update proto types (node_pb2.TensorProto instead of node_pb2.Tensor).
+
 Run: pytest tests/core/test_serializers_edge_cases.py -v
 """
 
@@ -8,16 +19,20 @@ import struct
 import pytest
 import torch
 
-try:
-    from distllm.communication.node_pb2 import Tensor
-    from distllm.communication.serializers import (
-        kv_cache_to_proto,
-        proto_to_kv_cache,
-        proto_to_tensor,
-        tensor_to_proto,
-    )
-except ImportError:
-    pytest.skip("distllm.communication.serializers module removed", allow_module_level=True)
+pytest.importorskip(
+    "distllm.communication.serializers",
+    reason="distllm.communication.serializers module removed — functionality "
+           "moved to distllm.dist.node_service; re-enable once tests are "
+           "refactored to use the new location",
+)
+
+from distllm.communication.node_pb2 import Tensor  # noqa: E402
+from distllm.communication.serializers import (  # noqa: E402
+    kv_cache_to_proto,
+    proto_to_kv_cache,
+    proto_to_tensor,
+    tensor_to_proto,
+)
 
 from distllm.core.kv_cache import KVCache
 

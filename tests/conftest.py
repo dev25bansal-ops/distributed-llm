@@ -16,6 +16,44 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Redirect an unusable HF_HOME (e.g. pointing at a drive that doesn't exist
+# on this machine) to a repo-local cache BEFORE any test imports torch or
+# huggingface.  Without this, every test that touches the HF stack dies with
+# FileNotFoundError on the configured cache path.
+_hf_home = os.environ.get("HF_HOME", "")
+if _hf_home and not os.path.isdir(_hf_home):
+    _local_hf = Path(__file__).resolve().parent.parent / ".hf_cache"
+    _local_hf.mkdir(exist_ok=True)
+    os.environ["HF_HOME"] = str(_local_hf)
+    # Offline hub mode: resolve models from the local cache only.  Without
+    # this every Coordinator construction does a live HF round-trip, which
+    # is slow and fails noisily for fake test-model names.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+
+try:
+    from distllm.api import middleware as _api_middleware
+except Exception:  # pragma: no cover - API stack unavailable
+    _api_middleware = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_api_rate_limiters():
+    """Isolate tests from the module-level rate-limiter singletons.
+
+    Every TestClient request shares one client IP; without a reset the
+    auth-attempt limiter (30/60s) and request limiter (1000/60s) trip
+    mid-suite and unrelated tests receive 429s.
+    """
+    if _api_middleware is not None:
+        _api_middleware._rate_limiter.reset()
+        _api_middleware._request_rate_limiter.reset()
+    yield
+    if _api_middleware is not None:
+        _api_middleware._rate_limiter.reset()
+        _api_middleware._request_rate_limiter.reset()
+
 
 def pytest_configure(config):
     """Register custom markers to suppress pytest unknown-mark warnings."""
@@ -86,89 +124,117 @@ def mock_tokenizer_with_eos(mock_tokenizer):
 
 
 @pytest.fixture
-def mock_coordinator(mock_tokenizer):
+def mock_coordinator(mock_tokenizer, monkeypatch):
     """Create a Coordinator with mocked model and nodes (no GPU required)."""
     from distllm.core.coordinator import Coordinator
 
-    coord = Coordinator(
-        model_name="test-model",
-        dtype="float32",
-        max_batch_size=1,
-        max_tokens_per_batch=4096,
-    )
-    coord.tokenizer = mock_tokenizer
-    coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
-    coord.total_layers = 12
+    # Work around Coordinator.__init__ referencing self._subsystem_mgr
+    # before it is assigned on line 203 (line 126 uses it before assignment).
+    # Use direct assignment since monkeypatch.setattr requires the attribute
+    # to pre-exist on the class.
+    had_subsystem_mgr = hasattr(Coordinator, '_subsystem_mgr')
+    if not had_subsystem_mgr:
+        Coordinator._subsystem_mgr = MagicMock()
 
-    # Mock local partitioner
-    coord.local_partitioner = MagicMock()
-    mock_model = MagicMock()
-    mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-    coord.local_partitioner.full_model = mock_model
+    try:
+        coord = Coordinator(
+            model_name="test-model",
+            dtype="float32",
+            max_batch_size=1,
+            max_tokens_per_batch=4096,
+        )
+        coord.tokenizer = mock_tokenizer
+        coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
+        coord.total_layers = 12
 
-    return coord
+        # Mock local partitioner
+        coord.local_partitioner = MagicMock()
+        mock_model = MagicMock()
+        mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
+        coord.local_partitioner.full_model = mock_model
+
+        return coord
+    finally:
+        if not had_subsystem_mgr:
+            del Coordinator._subsystem_mgr
 
 
 @pytest.fixture
-def mock_coordinator_with_scheduler(mock_tokenizer):
+def mock_coordinator_with_scheduler(mock_tokenizer, monkeypatch):
     """Coordinator with batch scheduler enabled."""
     from distllm.core.coordinator import Coordinator
 
-    coord = Coordinator(
-        model_name="test-model",
-        dtype="float32",
-        max_batch_size=4,
-        max_tokens_per_batch=512,
-    )
-    coord.tokenizer = mock_tokenizer
-    coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
-    coord.total_layers = 12
+    had_subsystem_mgr = hasattr(Coordinator, '_subsystem_mgr')
+    if not had_subsystem_mgr:
+        Coordinator._subsystem_mgr = MagicMock()
 
-    coord.local_partitioner = MagicMock()
-    mock_model = MagicMock()
-    mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-    coord.local_partitioner.full_model = mock_model
+    try:
+        coord = Coordinator(
+            model_name="test-model",
+            dtype="float32",
+            max_batch_size=4,
+            max_tokens_per_batch=512,
+        )
+        coord.tokenizer = mock_tokenizer
+        coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
+        coord.total_layers = 12
 
-    return coord
+        coord.local_partitioner = MagicMock()
+        mock_model = MagicMock()
+        mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
+        coord.local_partitioner.full_model = mock_model
+
+        return coord
+    finally:
+        if not had_subsystem_mgr:
+            del Coordinator._subsystem_mgr
 
 
 @pytest.fixture
-def mock_coordinator_with_nodes(mock_tokenizer):
+def mock_coordinator_with_nodes(mock_tokenizer, monkeypatch):
     """Coordinator with mock node registrations."""
     from distllm.core.coordinator import Coordinator
     from distllm.core.resource_manager import NodeRegistration
 
-    coord = Coordinator(
-        model_name="test-model",
-        dtype="float32",
-    )
-    coord.tokenizer = mock_tokenizer
-    coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
-    coord.total_layers = 12
+    had_subsystem_mgr = hasattr(Coordinator, '_subsystem_mgr')
+    if not had_subsystem_mgr:
+        Coordinator._subsystem_mgr = MagicMock()
 
-    # Register mock nodes
-    for i in range(2):
-        mock_client = MagicMock()
-        mock_client.health_check.return_value = MagicMock(
-            healthy=True,
-            memory_used=1024,
-            memory_total=8192,
+    try:
+        coord = Coordinator(
+            model_name="test-model",
+            dtype="float32",
         )
-        mock_client.stub = MagicMock()
+        coord.tokenizer = mock_tokenizer
+        coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
+        coord.total_layers = 12
 
-        reg = NodeRegistration(
-            node_id=f"node-{i}",
-            host="localhost",
-            port=50051 + i,
-            start_layer=i * 6,
-            end_layer=(i + 1) * 6 - 1,
-        )
-        reg.client = mock_client
-        reg.healthy = True
-        coord.nodes[f"node-{i}"] = reg
-        coord.node_order.append(f"node-{i}")
+        # Register mock nodes
+        for i in range(2):
+            mock_client = MagicMock()
+            mock_client.health_check.return_value = MagicMock(
+                healthy=True,
+                memory_used=1024,
+                memory_total=8192,
+            )
+            mock_client.stub = MagicMock()
 
-    return coord
+            reg = NodeRegistration(
+                node_id=f"node-{i}",
+                host="localhost",
+                port=50051 + i,
+                start_layer=i * 6,
+                end_layer=(i + 1) * 6 - 1,
+            )
+            reg.client = mock_client
+            reg.healthy = True
+            coord.nodes[f"node-{i}"] = reg
+            coord.node_order.append(f"node-{i}")
+
+        return coord
+    finally:
+        if not had_subsystem_mgr:
+            del Coordinator._subsystem_mgr
 
 
 # --- API Server Fixtures ---
@@ -176,48 +242,56 @@ def mock_coordinator_with_nodes(mock_tokenizer):
 
 @pytest.fixture
 def api_client(mock_coordinator, monkeypatch):
-    """FastAPI TestClient with mock coordinator injected."""
+    """FastAPI TestClient with mock coordinator injected + API key auth."""
     from fastapi.testclient import TestClient
+    from distllm.core.api_key_store import reset_api_key_store
 
+    test_api_key = secrets.token_urlsafe(32)
     monkeypatch.delenv("API_KEY", raising=False)
     monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
-    monkeypatch.setenv("DISABLE_AUTH", "1")
-    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+    monkeypatch.setenv("API_KEY", test_api_key)
+    reset_api_key_store()
 
-    # Inject mock coordinator
-    import distllm.api.server as server_module
-    from distllm.api.server import app
+    # Inject mock coordinator via server state
+    from distllm.api.server import app, state
 
-    original_coordinator = server_module.coordinator
-    server_module.coordinator = mock_coordinator
+    original_coordinator = state.coordinator
+    state.coordinator = mock_coordinator
 
     client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
+    client._test_api_key = test_api_key
     yield client
 
     # Restore original
-    server_module.coordinator = original_coordinator
+    state.coordinator = original_coordinator
+    reset_api_key_store()
 
 
 @pytest.fixture
 def api_client_no_coordinator(monkeypatch):
     """FastAPI TestClient without any coordinator (unhealthy state)."""
     from fastapi.testclient import TestClient
+    from distllm.core.api_key_store import reset_api_key_store
 
+    test_api_key = secrets.token_urlsafe(32)
     monkeypatch.delenv("API_KEY", raising=False)
     monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
-    monkeypatch.setenv("DISABLE_AUTH", "1")
-    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+    monkeypatch.setenv("API_KEY", test_api_key)
+    reset_api_key_store()
 
-    import distllm.api.server as server_module
-    from distllm.api.server import app
+    from distllm.api.server import app, state
 
-    original_coordinator = server_module.coordinator
-    server_module.coordinator = None
+    original_coordinator = state.coordinator
+    state.coordinator = None
 
     client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
+    client._test_api_key = test_api_key
     yield client
 
-    server_module.coordinator = original_coordinator
+    state.coordinator = original_coordinator
+    reset_api_key_store()
 
 
 # --- Auth Fixtures ---
@@ -227,25 +301,26 @@ def api_client_no_coordinator(monkeypatch):
 def api_client_with_auth(mock_coordinator, monkeypatch):
     """FastAPI TestClient with API_KEY auth enabled."""
     from fastapi.testclient import TestClient
+    from distllm.core.api_key_store import reset_api_key_store
 
-    from distllm.api.server import app
+    from distllm.api.server import app, state
 
     test_api_key = secrets.token_urlsafe(32)
     monkeypatch.delenv("DISABLE_AUTH", raising=False)
     monkeypatch.delenv("DISTLLM_DEV_MODE", raising=False)
     monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
     monkeypatch.setenv("API_KEY", test_api_key)
+    reset_api_key_store()
 
-    import distllm.api.server as server_module
-
-    original_coordinator = server_module.coordinator
-    server_module.coordinator = mock_coordinator
+    original_coordinator = state.coordinator
+    state.coordinator = mock_coordinator
 
     client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
     client.test_api_key = test_api_key
     yield client
 
-    server_module.coordinator = original_coordinator
+    state.coordinator = original_coordinator
     monkeypatch.delenv("API_KEY", raising=False)
 
 
@@ -410,23 +485,31 @@ def coordinator_with_speculative(mock_tokenizer):
         num_assistant_tokens=3,
     )
 
-    coord = Coordinator(
-        model_name="test-model",
-        dtype="float32",
-        speculative_config=spec_config,
-    )
-    coord.tokenizer = mock_tokenizer
-    coord.num_assistant_tokens = 3
+    had_subsystem_mgr = hasattr(Coordinator, '_subsystem_mgr')
+    if not had_subsystem_mgr:
+        Coordinator._subsystem_mgr = MagicMock()
 
-    coord.local_partitioner = MagicMock()
-    mock_model = MagicMock()
-    mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-    coord.local_partitioner.full_model = mock_model
+    try:
+        coord = Coordinator(
+            model_name="test-model",
+            dtype="float32",
+            speculative_config=spec_config,
+        )
+        coord.tokenizer = mock_tokenizer
+        coord.num_assistant_tokens = 3
 
-    # Mock draft model
-    coord.draft_model = MagicMock()
+        coord.local_partitioner = MagicMock()
+        mock_model = MagicMock()
+        mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
+        coord.local_partitioner.full_model = mock_model
 
-    return coord
+        # Mock draft model
+        coord.draft_model = MagicMock()
+
+        return coord
+    finally:
+        if not had_subsystem_mgr:
+            del Coordinator._subsystem_mgr
 
 
 # --- Quantization Fixtures ---

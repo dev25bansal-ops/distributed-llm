@@ -30,10 +30,25 @@ logger = logging.getLogger("distllm_ollama")
 _DEFAULT_DISTLLM_URL = "http://localhost:8000"
 
 
-def create_app(distllm_base: str = _DEFAULT_DISTLLM_URL) -> FastAPI:
-    """Create a FastAPI app that translates Ollama API → DistLLM API."""
+def create_app(
+    distllm_base: str = _DEFAULT_DISTLLM_URL,
+    api_key: str | None = None,
+) -> FastAPI:
+    """Create a FastAPI app that translates Ollama API → DistLLM API.
+
+    Args:
+        distllm_base: Base URL of the live DistLLM server.
+        api_key: Bearer key for the DistLLM server.  Read from
+            ``DISTLLM_API_KEY`` when omitted.  Without it every upstream
+            call is rejected 401 (auth is always required server-side),
+            which previously surfaced as silent EMPTY responses.
+    """
+    import os as _os
+
     app = FastAPI(title="DistLLM Ollama Proxy", version="0.1.0")
-    client = httpx.AsyncClient(base_url=distllm_base, timeout=120.0)
+    key = api_key or _os.environ.get("DISTLLM_API_KEY", "")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    client = httpx.AsyncClient(base_url=distllm_base, timeout=120.0, headers=headers)
 
     # ------------------------------------------------------------------
     # GET /api/tags — list models
@@ -42,6 +57,8 @@ def create_app(distllm_base: str = _DEFAULT_DISTLLM_URL) -> FastAPI:
     @app.get("/api/tags")
     async def list_models():
         resp = await client.get("/v1/models")
+        resp.raise_for_status()
+        resp.raise_for_status()
         data = resp.json().get("data", [])
         return {
             "models": [
@@ -89,6 +106,8 @@ def create_app(distllm_base: str = _DEFAULT_DISTLLM_URL) -> FastAPI:
             )
 
         resp = await client.post("/v1/completions", json=payload)
+        resp.raise_for_status()
+        resp.raise_for_status()
         data = resp.json()
         text = data.get("choices", [{}])[0].get("text", "")
         return {
@@ -130,6 +149,8 @@ def create_app(distllm_base: str = _DEFAULT_DISTLLM_URL) -> FastAPI:
             )
 
         resp = await client.post("/v1/chat/completions", json=payload)
+        resp.raise_for_status()
+        resp.raise_for_status()
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         return {
@@ -157,6 +178,7 @@ def create_app(distllm_base: str = _DEFAULT_DISTLLM_URL) -> FastAPI:
             "/v1/embeddings",
             json={"model": model, "input": [prompt]},
         )
+        resp.raise_for_status()
         data = resp.json()
         embedding = data.get("data", [{}])[0].get("embedding", [])
         return {"embedding": embedding}
@@ -169,8 +191,7 @@ def create_app(distllm_base: str = _DEFAULT_DISTLLM_URL) -> FastAPI:
     async def version():
         try:
             resp = await client.get("/health")
-            data = resp.json()
-            return {"version": data.get("version", "0.0.0")}
+            return {"version": resp.json().get("version", "0.0.0")}
         except Exception:
             return {"version": "unknown"}
 

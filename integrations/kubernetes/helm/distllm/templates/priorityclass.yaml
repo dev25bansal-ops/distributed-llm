@@ -1,0 +1,7 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClassName | default "distllm-high" }}
+value: 1000
+globalDefault: false
+description: "High priority for DistLLM inference pods."

@@ -56,23 +56,25 @@ class TestDraftModel:
         d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
                      draft_forward=lambda x: _always_logit(42),
                      num_candidates=3, temperature=0)
-        tokens = d._draft_forward(torch.tensor([[1, 2, 3]]), num_tokens=3)
-        assert len(tokens[0]) == 3
+        tokens, logprobs = d._draft_forward(torch.tensor([[1, 2, 3]]), num_tokens=3)
+        assert tokens.shape == (1, 3)
         assert tokens[0, 0].item() == 42
+        assert len(logprobs) == 3
 
     def test_draft_empty_when_no_tokens(self):
         d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
                      draft_forward=lambda x: _always_logit(42),
                      num_candidates=3, temperature=0)
-        tokens = d._draft_forward(torch.tensor([[1, 2, 3]]), num_tokens=0)
+        tokens, logprobs = d._draft_forward(torch.tensor([[1, 2, 3]]), num_tokens=0)
         assert tokens.shape[1] == 0
+        assert logprobs == []
 
     def test_draft_increases_input_length(self):
         d = self.SD(target_forward=lambda x: torch.randn(1, 1, 100),
                      draft_forward=lambda x: _always_logit(7),
                      num_candidates=4, temperature=0)
         prefix = torch.tensor([[5]])
-        tokens = d._draft_forward(prefix, num_tokens=2)
+        tokens, logprobs = d._draft_forward(prefix, num_tokens=2)
         assert tokens.shape[1] == 2
         assert tokens[0, 0].item() == 7
 

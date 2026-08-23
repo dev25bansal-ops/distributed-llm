@@ -104,14 +104,17 @@ class TestGracefulDegradation:
     def test_apply_to_params_caps_tokens(self):
         plan = DegradationPlan(level=DegradationLevel.LIGHT, max_tokens=1024)
         params = {"max_new_tokens": 4096}
-        plan.apply_to_params(params)
-        assert params["max_new_tokens"] == 1024
+        # apply_to_params is non-mutating: it returns the adjusted copy.
+        result = plan.apply_to_params(params)
+        assert result["max_new_tokens"] == 1024
+        assert params["max_new_tokens"] == 4096  # original untouched
 
     def test_apply_to_params_truncates_prompt(self):
         plan = DegradationPlan(level=DegradationLevel.SEVERE, truncate_prompt=100)
         params = {"prompt": "x" * 500}
-        plan.apply_to_params(params)
-        assert len(params["prompt"]) == 100
+        result = plan.apply_to_params(params)
+        assert len(result["prompt"]) == 100
+        assert len(params["prompt"]) == 500  # original untouched
 
     def test_partial_response_format(self):
         gd = GracefulDegradation(partial_response="try again later")

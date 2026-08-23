@@ -320,6 +320,36 @@ class TestToOpenAIParams:
 class TestCreateStandaloneApp:
     """create_standalone_app factory function."""
 
+    @staticmethod
+    def _route_paths(app):
+        """Collect route paths, descending into FastAPI _IncludedRouter nesting."""
+        acc: list[str] = []
+
+        def _collect(routes):
+            for r in routes:
+                p = getattr(r, "path", None)
+                if isinstance(p, str):
+                    acc.append(p)
+                inner = getattr(r, "original_router", None)
+                if inner is not None:
+                    _collect(getattr(inner, "routes", []))
+
+        _collect(app.routes)
+        return acc
+
+    @staticmethod
+    def _route_for(app, path):
+        for r in app.routes:
+            p = getattr(r, "path", None)
+            if p == path:
+                return r
+            inner = getattr(r, "original_router", None)
+            if inner is not None:
+                for sub in getattr(inner, "routes", []):
+                    if getattr(sub, "path", None) == path:
+                        return sub
+        return None
+
     def test_returns_fastapi_app(self):
         """Returns a FastAPI app with correct title."""
         app = create_standalone_app()
@@ -328,7 +358,7 @@ class TestCreateStandaloneApp:
     def test_all_routes_registered(self):
         """All expected endpoint paths are registered."""
         app = create_standalone_app()
-        paths = {r.path for r in app.routes}
+        paths = set(self._route_paths(app))
         assert "/generate" in paths
         assert "/generate_stream" in paths
         assert "/health" in paths
@@ -337,43 +367,31 @@ class TestCreateStandaloneApp:
     def test_generate_route_uses_post(self):
         """/generate is a POST endpoint."""
         app = create_standalone_app()
-        methods = set()
-        for r in app.routes:
-            if r.path == "/generate":
-                methods = r.methods
-                break
-        assert "POST" in methods
-        assert "GET" not in methods
+        r = self._route_for(app, "/generate")
+        assert r is not None
+        assert "POST" in r.methods
+        assert "GET" not in r.methods
 
     def test_generate_stream_route_uses_post(self):
         """/generate_stream is a POST endpoint."""
         app = create_standalone_app()
-        methods = set()
-        for r in app.routes:
-            if r.path == "/generate_stream":
-                methods = r.methods
-                break
-        assert "POST" in methods
+        r = self._route_for(app, "/generate_stream")
+        assert r is not None
+        assert "POST" in r.methods
 
     def test_health_route_uses_get(self):
         """/health is a GET endpoint."""
         app = create_standalone_app()
-        methods = set()
-        for r in app.routes:
-            if r.path == "/health":
-                methods = r.methods
-                break
-        assert "GET" in methods
+        r = self._route_for(app, "/health")
+        assert r is not None
+        assert "GET" in r.methods
 
     def test_info_route_uses_get(self):
         """/info is a GET endpoint."""
         app = create_standalone_app()
-        methods = set()
-        for r in app.routes:
-            if r.path == "/info":
-                methods = r.methods
-                break
-        assert "GET" in methods
+        r = self._route_for(app, "/info")
+        assert r is not None
+        assert "GET" in r.methods
 
 
 # ── tgi_router ───────────────────────────────────────────────────────────

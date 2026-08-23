@@ -2,6 +2,9 @@
 
 Integrates DNS-based geo-routing, cross-cluster KV cache replication,
 and capacity-aware spillover to support multi-cluster federated inference.
+
+Also provides BandwidthAwareRouter and PathHealthMonitor for per-peer
+bandwidth-aware, latency-weighted, congestion-aware path selection.
 """
 
 from __future__ import annotations
@@ -9,7 +12,9 @@ from __future__ import annotations
 import ipaddress
 import socket
 import threading
-from typing import Any
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import itertools
 
@@ -17,6 +22,11 @@ from distllm.dist.topology import FederationManager, CrossClusterLatencyMonitor
 from distllm.dist.geo import GeoRouter, LoadReporter
 from distllm.dist.cross_cluster import CrossClusterForwarder
 from distllm.dist.p2p.load_balancer import FederationLoadBalancer
+
+
+# ---------------------------------------------------------------------------
+# Existing FederationRouter infrastructure
+# ---------------------------------------------------------------------------
 
 
 class DNSGeoResolver:
@@ -147,7 +157,7 @@ class FederationRouter:
                 if peek not in node_list:
                     self._node_rr_counters[cluster_id] = itertools.cycle(nodes)
                 else:
-                    # Put peek back by re-chaining — itertools.cycle has no
+                    # Put peek back by re-chaining -- itertools.cycle has no
                     # "un-advance", so rebuild the cycle starting from peek.
                     self._node_rr_counters[cluster_id] = itertools.cycle(
                         [peek] + [n for n in node_list if n != peek]
@@ -269,6 +279,329 @@ class FederationRouter:
         base["geo_regions"] = dict(self.dns_resolver._region_map) if hasattr(self.dns_resolver, '_region_map') else {}
         base["kv_replication_queue"] = self.kv_replication.size()
         return base
+
+
+# ---------------------------------------------------------------------------
+# Per-peer path-aware routing
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PathStats:
+    """Immutable snapshot of a peer's path statistics at a point in time.
+
+    Attributes:
+        bandwidth_bps: Measured bandwidth in bits per second.
+        rtt_ms: Smoothed round-trip time in milliseconds (via EWMA).
+        in_flight_bytes: Estimated bytes currently in flight (unacknowledged).
+        success_rate: Exponentially weighted moving average of success (0-1).
+        last_seen: Unix timestamp of the last update for this peer.
+    """
+
+    bandwidth_bps: float = 0.0
+    rtt_ms: float = 0.0
+    in_flight_bytes: int = 0
+    success_rate: float = 1.0
+    last_seen: float = 0.0
+
+
+class BandwidthAwareRouter:
+    """Bandwidth-aware, latency-weighted, congestion-aware path selection router.
+
+    Tracks per-peer metrics -- bandwidth, EWMA-smoothed RTT, in-flight bytes,
+    and success rate -- and selects optimal paths for data transfers. Supports
+    multi-path splitting for large payloads by distributing across peers
+    weighted by their measured bandwidth.
+
+    Thread-safe for concurrent metric updates and path selection queries.
+    """
+
+    def __init__(self, ewma_alpha: float = 0.125) -> None:
+        """Initialize the router.
+
+        Args:
+            ewma_alpha: Smoothing factor for EWMA latency and success rate.
+                Default 0.125 (TCP-standard).  Closer to 1 = more responsive,
+                closer to 0 = smoother.
+        """
+        self._ewma_alpha = ewma_alpha
+        self._peers: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    # -- Metric updates -----------------------------------------------------
+
+    def update_bandwidth(self, peer_id: str, bps: float) -> None:
+        """Record or update a peer's measured bandwidth.
+
+        Args:
+            peer_id: Unique identifier for the peer.
+            bps: Measured bandwidth in bits per second.
+        """
+        with self._lock:
+            row = self._peers.setdefault(peer_id, {})
+            row['bandwidth_bps'] = bps
+            row['last_seen'] = time.time()
+
+    def update_latency(self, peer_id: str, rtt_ms: float) -> None:
+        """Update a peer's round-trip time using EWMA smoothing.
+
+        Args:
+            peer_id: Unique identifier for the peer.
+            rtt_ms: Observed round-trip time in milliseconds.
+        """
+        with self._lock:
+            row = self._peers.setdefault(peer_id, {})
+            current = row.get('rtt_ms')
+            alpha = self._ewma_alpha
+            # If no prior value, initialise with the first measurement.
+            row['rtt_ms'] = alpha * rtt_ms + (1 - alpha) * (current if current is not None else rtt_ms)
+            row['last_seen'] = time.time()
+
+    def update_congestion(self, peer_id: str, delta_bytes: int) -> None:
+        """Adjust a peer's in-flight byte count.
+
+        Call with positive delta when sending data and negative delta when
+        an acknowledgement is received.  The counter is floored at zero.
+
+        Args:
+            peer_id: Unique identifier for the peer.
+            delta_bytes: Signed change to the in-flight counter.
+        """
+        with self._lock:
+            row = self._peers.setdefault(peer_id, {})
+            current = row.get('in_flight_bytes', 0)
+            row['in_flight_bytes'] = max(0, current + delta_bytes)
+
+    def update_success(self, peer_id: str, success: bool) -> None:
+        """Update a peer's success/failure rate via EWMA.
+
+        Args:
+            peer_id: Unique identifier for the peer.
+            success: True if the last operation succeeded, False otherwise.
+        """
+        with self._lock:
+            row = self._peers.setdefault(peer_id, {})
+            current = row.get('success_rate', 1.0)
+            alpha = self._ewma_alpha
+            row['success_rate'] = alpha * (1.0 if success else 0.0) + (1 - alpha) * current
+            row['last_seen'] = time.time()
+
+    # -- Path selection -----------------------------------------------------
+
+    def select_path(self, peers: list[str], size_bytes: int) -> str | None:
+        """Select the best single peer for a transfer of *size_bytes*.
+
+        Scores each candidate peer based on a composite of:
+            - bandwidth (higher is better)
+            - latency (lower is better, damped by 100 ms reference)
+            - congestion  (fewer in-flight bytes relative to bandwidth is better)
+            - success rate (higher is better)
+
+        Args:
+            peers: List of candidate peer IDs.
+            size_bytes: Size of the data to transfer in bytes.
+
+        Returns:
+            The best peer ID, or None if *peers* is empty.
+        """
+        if not peers:
+            return None
+        if len(peers) == 1:
+            return peers[0]
+
+        with self._lock:
+            scored = [(pid, self._score_peer(pid, size_bytes)) for pid in peers]
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[0][0] if scored else None
+
+    def select_multi_path(self, peers: list[str], size_bytes: int) -> list[tuple[str, float]]:
+        """Split a large transfer across multiple peers.
+
+        Returns a list of (peer_id, fraction) pairs where fractions sum to 1.0.
+        The fractions are proportional to each peer's measured bandwidth, so
+        higher-bandwidth peers receive a larger share.
+
+        Args:
+            peers: List of candidate peer IDs.
+            size_bytes: Total transfer size in bytes (used to sanity-check
+                congestion, though the primary weighting is bandwidth-based).
+
+        Returns:
+            List of (peer_id, fraction) pairs sorted by fraction descending.
+            If *peers* is empty, returns an empty list.
+        """
+        if not peers:
+            return []
+        if len(peers) == 1:
+            return [(peers[0], 1.0)]
+
+        with self._lock:
+            weighted: list[tuple[str, float]] = []
+            total_weight = 0.0
+            for pid in peers:
+                row = self._peers.get(pid, {})
+                bw = row.get('bandwidth_bps', 1.0)
+                if bw <= 0.0:
+                    bw = 1.0
+                weighted.append((pid, bw))
+                total_weight += bw
+
+        result = [(pid, w / total_weight) for pid, w in weighted]
+        result.sort(key=lambda x: x[1], reverse=True)
+        return result
+
+    def _score_peer(self, peer_id: str, size_bytes: int) -> float:
+        """Compute a composite score for a single peer.
+
+        Higher is better.  The formula:
+            score = bandwidth * success_rate
+                  / (1 + rtt / 100)
+                  / (1 + (in_flight + size_bytes) / bandwidth)
+        """
+        row = self._peers.get(peer_id, {})
+        bw = row.get('bandwidth_bps', 1.0)
+        if bw <= 0.0:
+            bw = 1.0
+
+        rtt = row.get('rtt_ms', 0.0)
+        in_flight = row.get('in_flight_bytes', 0)
+        sr = row.get('success_rate', 1.0)
+
+        # Latency penalty: if rtt is 100ms, the term is ~2x divisor.
+        latency_penalty = 1.0 + rtt / 100.0
+        # Congestion penalty: how long the new data would take to drain.
+        congestion_penalty = 1.0 + (in_flight + size_bytes) / bw if bw > 0 else 1.0
+
+        return (bw * sr) / (latency_penalty * congestion_penalty)
+
+    # -- Introspection ------------------------------------------------------
+
+    def peer_stats(self, peer_id: str) -> PathStats | None:
+        """Return an immutable snapshot of a peer's current stats.
+
+        Args:
+            peer_id: Unique identifier for the peer.
+
+        Returns:
+            A PathStats namedtuple, or None if the peer is not tracked.
+        """
+        with self._lock:
+            row = self._peers.get(peer_id)
+            if row is None:
+                return None
+            return PathStats(
+                bandwidth_bps=row.get('bandwidth_bps', 0.0),
+                rtt_ms=row.get('rtt_ms', 0.0),
+                in_flight_bytes=row.get('in_flight_bytes', 0),
+                success_rate=row.get('success_rate', 1.0),
+                last_seen=row.get('last_seen', 0.0),
+            )
+
+    def list_peers(self) -> list[str]:
+        """Return a copy of the list of tracked peer IDs."""
+        with self._lock:
+            return list(self._peers.keys())
+
+    def remove_peer(self, peer_id: str) -> None:
+        """Remove a peer from tracking entirely.
+
+        Args:
+            peer_id: Unique identifier for the peer to remove.
+        """
+        with self._lock:
+            self._peers.pop(peer_id, None)
+
+
+class PathHealthMonitor:
+    """Periodic health monitor for peer paths.
+
+    Runs health checks on a timer, using a caller-supplied ping callback to
+    determine liveness.  Peers that fail *max_consecutive_failures* checks in
+    a row are evicted from the router.  Router weights are implicitly
+    recalculated on the next ``select_path`` call because the removed peer's
+    data is gone.
+
+    Thread-safe.  Start and stop are idempotent.
+    """
+
+    def __init__(
+        self,
+        router: BandwidthAwareRouter,
+        ping_callback: Callable[[str], bool],
+        max_consecutive_failures: int = 3,
+        check_interval: float = 5.0,
+    ) -> None:
+        """Initialize the health monitor.
+
+        Args:
+            router: The BandwidthAwareRouter instance to monitor.
+            ping_callback: A callable that takes a peer ID and returns True
+                if the peer is reachable, False otherwise.  This could be a
+                gRPC ping, an HTTP HEAD, or a simple socket connect.
+            max_consecutive_failures: Number of consecutive failed health
+                checks before a peer is evicted.  Default 3.
+            check_interval: Seconds between health-check rounds.  Default 5.0.
+        """
+        self._router = router
+        self._ping = ping_callback
+        self._max_fails = max_consecutive_failures
+        self._check_interval = check_interval
+        self._failures: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._running = False
+
+    def start(self) -> None:
+        """Start periodic health checks.  Idempotent if already running."""
+        if self._running:
+            return
+        self._running = True
+        self._schedule_check()
+
+    def stop(self) -> None:
+        """Stop periodic health checks.  Idempotent if already stopped."""
+        self._running = False
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _schedule_check(self) -> None:
+        if not self._running:
+            return
+        self._timer = threading.Timer(self._check_interval, self._run_health_check)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _run_health_check(self) -> None:
+        """Execute one round of health checks against all tracked peers."""
+        if not self._running:
+            return
+
+        peers = self._router.list_peers()
+        for peer_id in peers:
+            alive = self._ping(peer_id)
+            if alive:
+                with self._lock:
+                    self._failures.pop(peer_id, None)
+                self._router.update_success(peer_id, True)
+            else:
+                with self._lock:
+                    fails = self._failures.get(peer_id, 0) + 1
+                    self._failures[peer_id] = fails
+                self._router.update_success(peer_id, False)
+                if fails >= self._max_fails:
+                    self._router.remove_peer(peer_id)
+                    with self._lock:
+                        self._failures.pop(peer_id, None)
+
+        self._schedule_check()
+
+    @property
+    def failure_counts(self) -> dict[str, int]:
+        """Return a copy of the current per-peer consecutive failure counts."""
+        with self._lock:
+            return dict(self._failures)
 
 
 from loguru import logger

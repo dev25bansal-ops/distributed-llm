@@ -1,21 +1,50 @@
-"""WebGPU backend for browser-based inference.
+"""WebGPU backend bridge for browser-based inference in the cluster.
 
-Enables running model inference directly in the browser via WebGPU,
-allowing collaborative inference where browser tabs join the cluster
-as lightweight worker nodes.
+This adapter enables browser tabs to participate in the distributed-llm
+cluster as lightweight inference workers by leveraging the WebGPU API
+available in modern browsers (Chrome, Edge, Firefox Nightly).
 
 Architecture::
 
-    Browser tab (WebGPU)
-    ├── loads quantized model chunks via WebGPU API
-    ├── runs forward passes on shader cores
-    └── communicates via WebRTC data channel to coordinator
+    Python backend (this file)           Browser tab (WebGPU)
+    ┌──────────────────────────────┐     ┌─────────────────────┐
+    │ WebGPUNodeAdapter            │◄───►│ WebGPU shader cores │
+    │  - model chunk distribution  │WRC  │  - forward pass     │
+    │  - result aggregation        │     │  - sampling         │
+    │  - cluster scheduler integr. │     │  - KV-cache         │
+    └──────────────┬───────────────┘     └─────────────────────┘
+                   │ WebRTC data channel
+                   ▼
+           Coordinator / Scheduler
 
-This backend runs on the **Python side** as a bridge — it coordinates
-with browser-based WebGPU workers by managing model chunk distribution,
-receiving results via WebRTC, and integrating with the cluster scheduler.
+The adapter itself runs on the **Python coordinator side** and does **not**
+perform GPU compute locally. It shards model weights, streams them to
+browser workers over WebRTC, and merges partial results returned by each
+worker. The actual matrix multiplications run in the browser's WebGPU
+shaders.
 
-Requires: ``pip install distllm[webgpu]`` (installers: aiortc, numpy)
+Requirements:
+    - Server side: ``pip install distllm[webgpu]`` (aiortc, numpy).
+    - Browser side: A Chromium-based browser with WebGPU support
+      (Chrome 113+, Edge 113+), or Firefox Nightly with ``dom.webgpu.enabled``.
+    - WebRTC signaling infrastructure for worker discovery (default
+      ``DISTLLM_WEBRTC_SIGNALING_URL`` env var, or pass ``web_rtc_signaling_url``).
+
+Limitations:
+    - **Placeholder implementation.** ``_forward_via_workers()`` returns
+      zero logits; real WebRTC dispatch is not yet wired.  ``generate()``
+      returns a stub string.
+    - **No actual GPU compute** runs on the Python side — this is purely a
+      coordination bridge.
+    - Browser workers must re-connect and reload chunks on page refresh.
+    - Model sharding assumes uniform layer partitioning; dynamic workload
+      balancing across heterogeneous browser GPUs is not yet implemented.
+    - WebRTC data channels have higher latency than local IPC; not suitable
+      for latency-sensitive production inference without further
+      optimization.
+    - ``chunk_size_mb`` controls per-chunk granularity but the chunking
+      logic itself is not yet implemented (full model is treated as one
+      chunk).
 """
 
 from __future__ import annotations
@@ -165,13 +194,14 @@ class WebGPUNodeAdapter(BackendAdapter):
         to browser workers running WebGPU shaders, receives logits
         back, and merges them.
         """
-        # Placeholder: return zero logits with correct shape
-        # In production, this is replaced with actual WebRTC dispatch.
-        ids = input_ids.flatten().tolist()
-        seq_len = len(ids)
-        vocab_size = 32000
-        logits = torch.zeros(1, seq_len, vocab_size)
-        return logits, []
+        # SECURITY/CORRECTNESS: the WebRTC dispatch is a placeholder.  Returning
+        # zero logits would silently corrupt inference (uniform argmax), so we
+        # fail loudly instead of serving garbage through the registry.
+        raise NotImplementedError(
+            "WebGPU worker dispatch is a placeholder — refusing to return "
+            "zero logits for real inference. Remove the WebGPU backend from "
+            "the candidate list until real WebRTC dispatch is implemented."
+        )
 
     def generate(
         self,
@@ -206,8 +236,16 @@ class WebGPUNodeAdapter(BackendAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        """WebGPU backend is always available (bridges to browsers)."""
-        return True
+        """WebGPU requires the aiortc WebRTC stack to operate.
+
+        Returns True only when it is installed; without it the backend cannot
+        participate and must not be selected by the registry.
+        """
+        try:
+            import aiortc  # noqa: F401
+            return True
+        except ImportError:
+            return False
 
     @classmethod
     def priority_for(cls, device_type: str) -> int:

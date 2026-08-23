@@ -1,0 +1,284 @@
+Now I have all the data I need. Here is the comprehensive security audit.
+
+---
+
+# SECURITY AUDIT: src/distllm/dist/
+
+Audited: 11 files covering gRPC, P2P, federation, block transfer, reputation, privacy, and zero-copy transport.
+
+---
+
+## CRITICAL SEVERITY
+
+### 1. `zero_copy.py:66` — Unrestricted pickle.loads on external input
+
+- **File:** `D:/distributed-llm/src/distllm/dist/zero_copy.py`
+- **Lines:** 55-56, 65-66
+- **Severity:** CRITICAL
+- **Category:** Insecure Deserialization (CWE-502)
+- **CVSS:** 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+- **Description:** `import_tensor` calls `pickle.loads(ipc_handle)` on line 66 on bytes passed in as a parameter. The current caller in `recv()` (line 214) hardcodes `b""` as the handle, which safely raises and is caught. But the method signature accepts arbitrary attacker-controlled bytes. If any future code path passes attacker-controlled data to `import_tensor`, this is instant remote code execution. The corresponding `export_tensor` (lines 55-56) also uses pickle.dumps, making the round-trip an end-to-end pickle chain.
+- **Remediation:** Replace pickle with a safe serialization format (JSON + base64, msgpack, or protobuf). Never use pickle for cross-trust-boundary data. Add type checking and input validation. Implement a safelist of allowed reduction functions.
+
+### 2. `block_transfer_service.py:208` — Insecure gRPC channel with no authentication
+
+- **File:** `D:/distributed-llm/src/distllm/dist/block_transfer_service.py`
+- **Lines:** 208
+- **Severity:** CRITICAL
+- **Category:** Missing Authentication (CWE-306), Cleartext Transmission (CWE-319)
+- **CVSS:** 9.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+- **Description:** `fetch_blocks` creates `grpc.insecure_channel(self._address)` — an unencrypted, unauthenticated gRPC channel. KV cache blocks containing model activations are transmitted in plaintext. Anyone who can reach the port can call `FetchBlocks`. Additionally, the `BlockTransferStub` class referenced on line 211 is never defined anywhere in the file — the try/except `ImportError` on grpc masks this as a no-op.
+- **Remediation:** Add TLS and mutual authentication. Implement a proper gRPC stub class. Validate block_id and layer_idx before accessing the pool. Never send KV cache data over an unauthenticated channel.
+
+### 3. `cross_cluster.py:82` — No authentication on cross-cluster forwarding
+
+- **File:** `D:/distributed-llm/src/distllm/dist/cross_cluster.py`
+- **Lines:** 82 (and all call sites: 91, 194, 226)
+- **Severity:** CRITICAL
+- **Category:** Missing Authentication (CWE-306)
+- **CVSS:** 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+- **Description:** `forward_request` sends HTTP POST requests to arbitrary URLs with only a spoofable `X-Forwarded-From: federated` header. There is no token, no HMAC, no signature verifying the caller is a legitimate federated cluster. Any network actor that can reach the coordinator can forward arbitrary requests and receive responses.
+- **Remediation:** Require a shared secret (HMAC or bearer token) on every cross-cluster RPC. Validate the token at the receiving endpoint. Reject calls without valid authentication.
+
+---
+
+## HIGH SEVERITY
+
+### 4. `cross_cluster.py:82,91,194,226` — SSRF via allow_private_hosts=True
+
+- **File:** `D:/distributed-llm/src/distllm/dist/cross_cluster.py`
+- **Lines:** 82, 91, 194, 226
+- **Severity:** HIGH
+- **Category:** Server-Side Request Forgery (CWE-918)
+- **CVSS:** 8.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+- **Description:** All four call sites pass `allow_private_hosts=True` to `safe_urlopen`, which disables the DNS-rebinding-protected private-IP check in `security/utils.py`. An attacker who controls the `remote_coord_url` or poisons the peer list can make the server perform arbitrary HTTP requests to internal network services (Redis, Elasticsearch, cloud metadata endpoints like `169.254.169.254`, etc.).
+- **Remediation:** Remove `allow_private_hosts=True` from all cross-cluster calls. If private-host access is genuinely needed for cross-datacenter federation, maintain an explicit allowlist of peer IPs/ranges rather than blanket-permitting all private addresses. Validate all peer URLs against the allowlist at the caller site, not deep in the transport helper.
+
+### 5. `node_service.py:468` — No client certificate verification in TLS mode
+
+- **File:** `D:/distributed-llm/src/distllm/dist/node_service.py`
+- **Lines:** 462-468
+- **Severity:** HIGH
+- **Category:** Improper Certificate Validation (CWE-295)
+- **CVSS:** 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+- **Description:** `grpc.ssl_server_credentials([(key, cert)])` passes only the server cert/key with no `root_certificates` for client CA validation and no `require_client_auth=True`. The optional `ca_cert` parameter accepted by `start()` (line 432) is never passed to `ssl_server_credentials`. Any client with network access can connect to the TLS port without presenting a client certificate.
+- **Remediation:** Add `require_client_auth=True` and pass `root_certificates=ca_cert` to `grpc.ssl_server_credentials`. Validate client certificates against the configured CA.
+
+### 6. `node_service.py:470` / `node_client.py:113` — Insecure plaintext gRPC fallback
+
+- **File:** `D:/distributed-llm/src/distllm/dist/node_service.py` line 470 and `D:/distributed-llm/src/distllm/dist/node_client.py` line 113
+- **Lines:** 470, 113
+- **Severity:** HIGH
+- **Category:** Cleartext Transmission of Sensitive Information (CWE-319)
+- **CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+- **Description:** Both server (`add_insecure_port`) and client (`insecure_channel`) fall back to unencrypted gRPC when TLS is not configured. All RPC traffic including `cluster_key`, model weights, KV cache states, and intermediate activations is transmitted in cleartext over the network. Any node on the network can eavesdrop on all inference data and steal model weights.
+- **Remediation:** Remove the insecure fallback. Require TLS in production. Fail closed (raise an error) if TLS is not configured, rather than silently downgrading to cleartext.
+
+### 7. `gossip.py:97-122` — Unauthenticated gossip when no global HMAC key is set
+
+- **File:** `D:/distributed-llm/src/distllm/dist/p2p/gossip.py`
+- **Lines:** 97-122
+- **Severity:** HIGH
+- **Category:** Missing Authentication for Critical Function (CWE-306)
+- **CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N)
+- **Description:** When `DISTLLM_GOSSIP_HMAC_KEY` is not set, each node generates its own node-local key (line 113). This key is never shared with peers. Consequently, gossip advertisements between different nodes carry a signature that no other node can verify. The env variable `DISTLLM_ALLOW_INSECURE_GOSSIP_KEY=1` (line 99) trivially bypasses the security enforcement, even in production. Any network actor can inject fake cache advertisements.
+- **Remediation:** Require `DISTLLM_GOSSIP_HMAC_KEY` to be set to a shared value in production. Remove the `DISTLLM_ALLOW_INSECURE_GOSSIP_KEY` escape hatch or guard it behind a mandatory runtime check separate from env variables.
+
+### 8. `gossip.py:514` — Page advertisements bypass HMAC verification
+
+- **File:** `D:/distributed-llm/src/distllm/dist/p2p/gossip.py`
+- **Lines:** 514-535
+- **Severity:** HIGH
+- **Category:** Missing Cryptographic Verification (CWE-347)
+- **CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N)
+- **Description:** `process_page_advertisement` (line 514) accepts and processes peer block hash advertisements **without calling `verify_message`**. While regular cache entry advertisements go through HMAC verification at line 295, the page-table / block-hash variant does not. An attacker who can reach the gossip port can inject arbitrary block ownership claims, causing nodes to request blocks from attacker-controlled peers.
+- **Remediation:** Add `self.verify_message(peer_ad)` at the start of `process_page_advertisement`, identical to line 295 in `process_advertisement`.
+
+### 9. `node_client.py:108-110` — No hostname verification in gRPC TLS credentials
+
+- **File:** `D:/distributed-llm/src/distllm/dist/node_client.py`
+- **Lines:** 108-110
+- **Severity:** HIGH
+- **Category:** Improper Certificate Validation (CWE-295)
+- **CVSS:** 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+- **Description:** `grpc.ssl_channel_credentials(f.read())` loads the CA certificate but does not verify the server's hostname against the certificate's SAN/CN. gRPC Python's SSL channel credentials only verify the certificate chain, not the identity of the server. A MITM with a valid certificate from the same CA (for any other hostname) can intercept traffic.
+- **Remediation:** Use `grpc.secure_channel` with `grpc.ssl_target_name_override` set correctly, or use the target name matching behavior of `grpc.secure_channel`. Configure `GRPC_SSL_CIPHER_SUITES` for additional hardening.
+
+### 10. `federation.py:280-285` — Cluster key exposed in HTTP header on every heartbeat
+
+- **File:** `D:/distributed-llm/src/distllm/dist/federation.py`
+- **Lines:** 280-285
+- **Severity:** HIGH
+- **Category:** Exposure of Sensitive Information (CWE-200)
+- **CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+- **Description:** The shared `cluster_key` is placed in the `X-Cluster-Key` HTTP header and transmitted on every federation heartbeat call. If federation uses HTTP (the default, as `PeerInfo.url` on discovery.py:33 hardcodes `http://`), this key is transmitted in cleartext on every request. Even with HTTPS, it is sent on every heartbeat, increasing exposure surface.
+- **Remediation:** Remove `cluster_key` from heartbeat headers. Use a dedicated, short-lived federation token instead. Require HTTPS for all federation traffic. Implement key rotation.
+
+### 11. `discovery.py:113-132` — Peer list fetched over plain HTTP
+
+- **File:** `D:/distributed-llm/src/distllm/dist/p2p/discovery.py`
+- **Lines:** 113-132
+- **Severity:** HIGH
+- **Category:** Cleartext Transmission of Sensitive Information (CWE-319), Trust of Network Address (CWE-290)
+- **CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N)
+- **Description:** `_fetch_peer_list` connects to seed URLs over plain HTTP. The response is parsed and all returned peers are immediately registered. An attacker who can MITM the connection (or control the seed node) can inject arbitrary peer entries with any host/port, enabling SSRF, credential harvesting, and traffic redirection.
+- **Remediation:** Require HTTPS for all seed node connections. Validate peer list responses with an HMAC signature or JWT. Apply integrity checks (checksum/signature) before registering any peer.
+
+### 12. `federation.py:183-185` — No custom TLS verification for federation HTTP clients
+
+- **File:** `D:/distributed-llm/src/distllm/dist/federation.py`
+- **Lines:** 183-185
+- **Severity:** HIGH
+- **Category:** Improper Certificate Validation (CWE-295)
+- **CVSS:** 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+- **Description:** `httpx.Client(timeout=5.0)` and `httpx.AsyncClient(timeout=30.0)` are created without any `verify` parameter. While httpx defaults to `verify=True` (using certifi), there is no way to configure a custom CA or enforce certificate pinning for federation peers. If an attacker compromises a CA in the system trust store, or if a peer uses a self-signed certificate, the connection is silently accepted or fails with a non-actionable error.
+- **Remediation:** Add a `verify` parameter to httpx clients that accepts a custom CA bundle path or certificate hash for peer verification. Implement certificate pinning via `verify=ssl.create_default_context(cafile=...)`.
+
+---
+
+## MEDIUM SEVERITY
+
+### 13. `gossip.py:293-353` — No bounds on peer-advertised cache state
+
+- **File:** `D:/distributed-llm/src/distllm/dist/p2p/gossip.py`
+- **Lines:** 293-353 (especially 318-341)
+- **Severity:** MEDIUM
+- **Category:** Uncontrolled Resource Consumption (CWE-400)
+- **CVSS:** 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L)
+- **Description:** After HMAC verification passes (if configured), `process_advertisement` blindly appends all peer data into `cache_index`, `entry_metadata`, `tombstones`, and `vector_clock` with no per-peer caps on entry count, total size, or rate. A malicious or compromised peer with a valid HMAC key can flood the node with millions of entries, causing memory exhaustion and denial of service.
+- **Remediation:** Enforce per-peer caps on the number of entries accepted (e.g., max 10,000 entries per peer). Limit the total `cache_index` size. Implement rate limiting on gossip processing per peer.
+
+### 14. `reputation.py:150-159` — Credit inflation via caller-specified credit_rate
+
+- **File:** `D:/distributed-llm/src/distllm/dist/reputation.py`
+- **Lines:** 150-159
+- **Severity:** MEDIUM
+- **Category:** Incorrect Resource Accounting (CWE-841)
+- **CVSS:** 6.5 (AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N)
+- **Description:** `record_contribution` accepts a caller-specified `credit_rate` parameter (default 1.0). A malicious node can call this with an arbitrarily high `credit_rate` (e.g., 1e9) to inflate its credits and consume far more compute than it contributed. There is no verification of actual tokens computed, no cross-node agreement on rates, and no upper bound enforcement.
+- **Remediation:** Remove caller-specified `credit_rate`. Determine rates from node capability (GPU type, bandwidth) or agreed-upon configuration. Validate contributions through a consensus mechanism or signed receipts.
+
+### 15. `privacy.py:114-125` — Privacy seed file world-readable
+
+- **File:** `D:/distributed-llm/src/distllm/dist/privacy.py`
+- **Lines:** 114-125
+- **Severity:** MEDIUM
+- **Category:** Exposure of Sensitive Information (CWE-200)
+- **CVSS:** 5.5 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N)
+- **Description:** The privacy projection seed is written to a file with default system permissions (no `os.chmod` or restrictive umask). Any local user or process who can read the file can reconstruct the projection matrix and potentially reverse the activation obfuscation, defeating the privacy protection for all requests.
+- **Remediation:** Set restrictive file permissions immediately after writing: `os.chmod(key_path, 0o600)`. Document that the seed file must be stored securely and not shared between nodes.
+
+### 16. `node_service.py:109-120` — Cluster key sent in cleartext within protobuf messages
+
+- **File:** `D:/distributed-llm/src/distllm/dist/node_service.py`
+- **Lines:** 109-120 (and all callers in node_client.py pass cluster_key in requests)
+- **Severity:** MEDIUM
+- **Category:** Cleartext Transmission of Sensitive Information (CWE-319)
+- **CVSS:** 5.9 (AV:N/AC:M/PR:N/UI:N/S:U/C:H/I:N/A:N)
+- **Description:** The `cluster_key` is embedded in protobuf message fields (`request.cluster_key`) sent over gRPC. Without TLS, this key is visible in cleartext to any network observer. Even with TLS, the key is sent on every RPC, increasing exposure. The timing-safe comparison (`hmac.compare_digest`) is present but degrades to no protection when the key is visible on the wire.
+- **Remediation:** Move cluster_key authentication to the gRPC metadata layer (as the `ClusterKeyInterceptor` at line 497 does) so it is handled at the transport level. Remove cluster_key from protobuf message definitions. Require TLS when cluster_key is in use.
+
+### 17. `discovery.py:33` — Hardcoded http:// in PeerInfo URL property
+
+- **File:** `D:/distributed-llm/src/distllm/dist/p2p/discovery.py`
+- **Lines:** 33
+- **Severity:** MEDIUM
+- **Category:** Cleartext Transmission of Sensitive Information (CWE-319)
+- **CVSS:** 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+- **Description:** `PeerInfo.url` always returns `http://` regardless of TLS configuration. If any code uses this property instead of checking `_scheme()` in federation.py (which does conditionally use `https`), the traffic is unconditionally unencrypted.
+- **Remediation:** Remove the `url` property or make it conditional on a TLS parameter. Update callers to use the proper scheme-aware URL construction.
+
+### 18. `block_transfer_service.py:106-117` — No input validation on block/layer indices
+
+- **File:** `D:/distributed-llm/src/distllm/dist/block_transfer_service.py`
+- **Lines:** 103-117
+- **Severity:** MEDIUM
+- **Category:** Improper Input Validation (CWE-20)
+- **CVSS:** 5.9 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H)
+- **Description:** `handle_request` iterates over `block_ids` and `layer_indices` directly from the incoming request without validating that they are within valid ranges for the pool. Out-of-bounds indices can cause crashes or undefined behavior when passed to `pool.get_kv_slice()`.
+- **Remediation:** Validate every block_id and layer_idx against `pool.num_blocks` and `pool.num_layers` before accessing. Return descriptive errors for invalid indices.
+
+### 19. `federation.py:451-458` — API key fallback from admin to federation
+
+- **File:** `D:/distributed-llm/src/distllm/dist/federation.py`
+- **Lines:** 451-458
+- **Severity:** MEDIUM
+- **Category:** Use of Insufficiently Random Credentials (CWE-330)
+- **CVSS:** 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+- **Description:** When `DISTLLM_FEDERATION_API_KEY` is not set, the code falls back to `API_KEY` (the admin API key) with only a warning. An admin API key provides full access to the cluster, and using it for federation forwarding violates the principle of least privilege. If the federation peer is compromised, the admin key is exposed.
+- **Remediation:** Require `DISTLLM_FEDERATION_API_KEY` to be set separately. Remove the `API_KEY` fallback. Warn and fail if the federation-specific key is not configured.
+
+### 20. `zero_copy.py:97` — subprocess.run without full path
+
+- **File:** `D:/distributed-llm/src/distllm/dist/zero_copy.py`
+- **Lines:** 97
+- **Severity:** MEDIUM
+- **Category:** Untrusted Search Path (CWE-426)
+- **CVSS:** 5.3 (AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L)
+- **Description:** `subprocess.run([ibstat])` uses `ibstat` resolved via PATH from `shutil.which`. If an attacker can place a malicious `ibstat` earlier in PATH, arbitrary code execution during RDMA availability detection. The same pattern appears in `edge_cloud.py` line 187/241 for `sysctl`, though `sysctl` is standard on macOS.
+- **Remediation:** Use absolute paths (e.g., `/usr/sbin/ibstat`, `/usr/sbin/sysctl`) or validate the resolved binary path against a known-good directory before execution.
+
+---
+
+## LOW SEVERITY
+
+### 21. `privacy.py:175-178` — Approximate inverse leaks information through reconstruction error
+
+- **File:** `D:/distributed-llm/src/distllm/dist/privacy.py`
+- **Lines:** 134-137, 158-161, 175-178
+- **Severity:** LOW
+- **Category:** Privacy Violation (CWE-359)
+- **CVSS:** 3.7 (AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N)
+- **Description:** For hidden_size > 2048, `restore()` uses `projection.t() / hidden_size` (transpose + scalar divide) as an approximate inverse of the random projection. This is not a true inverse of a random orthogonal matrix, resulting in signal degradation and potential information leakage patterns that a determined adversary could exploit to recover approximate activations.
+- **Remediation:** Use `torch.linalg.pinv` (pseudo-inverse) instead of transpose division for matrices > 2048, or generate the projection as an orthogonal matrix (QR decomposition of random matrix) for which transpose is the true inverse.
+
+### 22. `reputation.py:129` — Hardcoded reputation failure threshold
+
+- **File:** `D:/distributed-llm/src/distllm/dist/reputation.py`
+- **Lines:** 129
+- **Severity:** LOW
+- **Category:** Insufficient Resource Control
+- **CVSS:** 3.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N)
+- **Description:** A node with `failed_requests >= 5` and `failed_requests > successful_requests` gets a fixed score of 0.1. This threshold (5) is hardcoded and cannot be tuned per deployment or scaled with total request volume. A node with 5/6 failures (83%) gets the same score as one with 50/60 failures (83%), reducing the system's ability to differentiate.
+- **Remediation:** Make the threshold configurable. Use a continuous penalty function (e.g., `0.1 * 0.5^(failed-5)`) instead of a hard cutoff.
+
+### 23. `federation.py:170` — Metrics counters can overflow
+
+- **File:** `D:/distributed-llm/src/distllm/dist/federation.py`
+- **Lines:** 163-172, 838-841
+- **Severity:** LOW
+- **Category:** Integer Overflow or Wraparound (CWE-190)
+- **CVSS:** 2.5 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:L)
+- **Description:** All metrics counters (`total_forwards`, `forward_successes`, etc.) are plain Python ints without a reset mechanism. Under prolonged operation, these will grow unbounded, consuming memory at a small but steady rate.
+- **Remediation:** Wrap counters at a reasonable maximum (e.g., `sys.maxsize` is effectively unbounded in Python, but add a periodic reset or use a circular buffer for metrics).
+
+### 24. `gossip.py:225` — Deterministic hash-based load balancing for Ray workers
+
+- **File:** `D:/distributed-llm/src/distllm/dist/cross_cluster.py` (not gossip, corrected)
+- **Lines:** 50 (cross_cluster.py)
+- **Severity:** LOW
+- **Category:** Predictable Resource Distribution
+- **CVSS:** 2.5 (AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:N)
+- **Description:** `hash(json.dumps(request, sort_keys=True)) % len(workers)` deterministically maps requests to workers. This allows an adversary who can observe request patterns to predict which worker handles which request, potentially enabling targeted interference.
+- **Remediation:** Use random selection or a true load-balancing algorithm instead of deterministic hashing. Add jitter to the distribution.
+
+---
+
+## Summary by File
+
+| File | Critical | High | Medium | Low |
+|---|---|---|---|---|
+| zero_copy.py | 1 | 0 | 1 | 0 |
+| edge_cloud.py | 0 | 0 | 1 | 0 |
+| node_service.py | 0 | 2 | 1 | 0 |
+| node_client.py | 0 | 2 | 0 | 0 |
+| privacy.py | 0 | 0 | 1 | 1 |
+| reputation.py | 0 | 0 | 1 | 1 |
+| cross_cluster.py | 1 | 2 | 0 | 1 |
+| federation.py | 0 | 2 | 1 | 1 |
+| p2p/gossip.py | 0 | 2 | 1 | 0 |
+| p2p/discovery.py | 0 | 1 | 1 | 0 |
+| block_transfer_service.py | 1 | 0 | 1 | 0 |
+| **Total** | **3** | **11** | **9** | **4** |
+
+**Bottom line:** The most dangerous findings are the pickle deserialization vector in `zero_copy.py:66`, the completely unauthenticated block transfer in `block_transfer_service.py:208`, and the unauthenticated cross-cluster forwarding in `cross_cluster.py:82`. These three critical issues allow arbitrary code execution and data exfiltration. The high-severity findings center on SSRF (lack of private-IP restrictions), missing TLS verification, and unauthenticated P2P gossip channels.

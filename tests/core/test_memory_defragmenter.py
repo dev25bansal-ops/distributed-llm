@@ -7,8 +7,10 @@ policy behavior, tiered compaction, and predictive defragmentation.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,11 +65,21 @@ def _make_block(
 
 
 def _make_mgr(blocks: list) -> MagicMock:
-    """Create a mock PagedAttentionManager."""
+    """Create a mock PagedAttentionManager.
+
+    Implements the Defragmentable write protocol: without a real
+    ``set_free_blocks``, the impl's protocol-first write is swallowed by
+    the MagicMock and ``_free_blocks`` silently never updates.
+    """
     mgr = MagicMock()
     mgr._blocks = blocks
     mgr._seq_blocks = {}
     mgr._free_blocks = [b.block_id for b in blocks if not b.is_allocated]
+
+    def _set_free_blocks(free_ids):
+        mgr._free_blocks = list(free_ids)
+
+    mgr.set_free_blocks = _set_free_blocks
     return mgr
 
 
@@ -77,6 +89,84 @@ def _frag_blocks(alloc_pattern: str) -> list:
     for i, ch in enumerate(alloc_pattern):
         blocks.append(_make_block(i, allocated=(ch == "A")))
     return blocks
+
+
+def _make_mgr_locked(blocks: list) -> MagicMock:
+    """Create a mock PagedAttentionManager carrying a real RLock.
+
+    The manager's ``_lock`` is a real ``threading.RLock`` so tests can
+    observe (and race against) the lock the defragmenter must acquire.
+    """
+    mgr = _make_mgr(blocks)
+    mgr._lock = threading.RLock()
+    return mgr
+
+
+def _assert_page_table_intact(blocks: list, mgr: MagicMock) -> None:
+    """Verify KV page table invariants after defragmentation."""
+    for b in blocks:
+        if b.is_allocated:
+            assert b.key_cache is not None, (
+                f"allocated block {b.block_id} lost key_cache"
+            )
+            assert b.value_cache is not None, (
+                f"allocated block {b.block_id} lost value_cache"
+            )
+        else:
+            assert b.key_cache is None, f"free block {b.block_id} still has key_cache"
+            assert b.value_cache is None, (
+                f"free block {b.block_id} still has value_cache"
+            )
+    # Every sequence must reference only allocated blocks.
+    free_ids = {b.block_id for b in blocks if not b.is_allocated}
+    for seq_id, seq in mgr._seq_blocks.items():
+        for bid in seq.block_ids:
+            assert bid not in free_ids, (
+                f"seq {seq_id} references free block {bid}"
+            )
+    # The manager's free list must match the actual free blocks.
+    assert sorted(mgr._free_blocks) == sorted(free_ids)
+
+
+async def _wait_entered_async(entered: threading.Event, timeout: float = 10.0) -> bool:
+    """Cooperatively await a threading.Event set by an executor worker.
+
+    A plain ``entered.wait(...)`` blocks the event-loop thread, which
+    prevents ``defragment_async`` from taking its first step (so the
+    worker can never start) — deadlock by construction.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if entered.is_set():
+            return True
+        await asyncio.sleep(0.01)
+    return entered.is_set()
+
+
+class _BlockingDefrag(MemoryDefragmenter):
+    """Subclass that pauses inside ``_defragment_impl`` to observe lock state.
+
+    When invoked through the async path, the executor worker enters
+    ``_defragment_impl`` with the threading locks held (post-B12 fix);
+    before the fix the worker holds no threading locks at all.
+    """
+
+    def __init__(
+        self,
+        config: DefragConfig | None = None,
+        metrics_collector: Any = None,
+        entered: threading.Event | None = None,
+        release: threading.Event | None = None,
+    ):
+        super().__init__(config=config, metrics_collector=metrics_collector)
+        self.entered = entered or threading.Event()
+        self.release = release or threading.Event()
+
+    def _defragment_impl(self, mgr: Any, tier=None):
+        self.entered.set()
+        assert self.release.wait(10.0), "release event never set"
+        return DefragResult(blocks_moved=1)
 
 
 # ── Fragmentation Ratio ──
@@ -308,8 +398,9 @@ class TestDefragment:
         mgr = _make_mgr(blocks)
         d = MemoryDefragmenter()
         d.defragment(mgr)
-        # After compaction, free blocks should be at the end
-        assert mgr._free_blocks == [1]
+        # After compaction the free list holds BLOCK IDs (not list indices):
+        # AFA -> blocks 0,1 allocated, block 2 free.
+        assert mgr._free_blocks == [2]
 
     def test_defragment_stats(self):
         blocks = _frag_blocks("AFAFA")
@@ -564,3 +655,94 @@ class TestAsyncDefrag:
         )
         assert isinstance(result, DefragResult)
         assert result.tier_used == TieredCompactionLevel.L2_WARM
+
+    # ── Regression tests for B12 ──
+    # B12: defragment_async()/_with_tier_async() ran _defragment_impl in a
+    # pool executor WITHOUT acquiring mgr._lock/self._lock (the sync path
+    # acquires both) → concurrent compaction could corrupt the KV page table.
+    # These tests FAIL before the fix and PASS after it.
+
+    async def test_async_defrag_holds_both_locks(self):
+        entered = threading.Event()
+        release = threading.Event()
+        d = _BlockingDefrag(entered=entered, release=release)
+        mgr = _make_mgr_locked(_frag_blocks("AFAFA"))
+
+        task = asyncio.create_task(d.defragment_async(mgr))
+        try:
+            assert await _wait_entered_async(entered), (
+                "executor worker never entered _defragment_impl"
+            )
+            # Both threading locks must be held by the executor worker thread.
+            acquired = d._lock.acquire(blocking=False)
+            if acquired:
+                d._lock.release()
+            assert not acquired, "defrag _lock not held during async pass (B12)"
+            acquired = mgr._lock.acquire(blocking=False)
+            if acquired:
+                mgr._lock.release()
+            assert not acquired, "manager _lock not held during async pass (B12)"
+        finally:
+            release.set()
+            result = await task
+        assert isinstance(result, DefragResult)
+        assert result.blocks_moved == 1
+
+    async def test_async_tier_defrag_holds_both_locks(self):
+        entered = threading.Event()
+        release = threading.Event()
+        d = _BlockingDefrag(entered=entered, release=release)
+        mgr = _make_mgr_locked(_frag_blocks("AFAFA"))
+
+        task = asyncio.create_task(
+            d.defragment_with_tier_async(mgr, TieredCompactionLevel.L1_HOT)
+        )
+        try:
+            assert await _wait_entered_async(entered), (
+                "executor worker never entered _defragment_impl"
+            )
+            acquired = d._lock.acquire(blocking=False)
+            if acquired:
+                d._lock.release()
+            assert not acquired, "defrag _lock not held during async tier pass (B12)"
+            acquired = mgr._lock.acquire(blocking=False)
+            if acquired:
+                mgr._lock.release()
+            assert not acquired, "manager _lock not held during async tier pass (B12)"
+        finally:
+            release.set()
+            result = await task
+        assert isinstance(result, DefragResult)
+
+    async def test_concurrent_async_and_sync_defrag_preserves_page_table(self):
+        blocks = _frag_blocks("AFAFA" * 10)
+        mgr = _make_mgr_locked(blocks)
+        d = MemoryDefragmenter()
+        errors = []
+        stop = threading.Event()
+
+        def sync_loop():
+            try:
+                while not stop.is_set():
+                    d.defragment(mgr)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=sync_loop) for _ in range(3)]
+        for t in threads:
+            t.start()
+        try:
+            for _ in range(15):
+                await d.defragment_async(mgr)
+                await d.defragment_with_tier_async(
+                    mgr, TieredCompactionLevel.L1_HOT,
+                )
+        finally:
+            stop.set()
+            for t in threads:
+                t.join(timeout=10)
+
+        assert not errors, f"concurrent defrag raised: {errors}"
+        assert not any(t.is_alive() for t in threads), "sync defrag threads deadlocked"
+        _assert_page_table_intact(blocks, mgr)
+        assert d.stats["defrag_count"] >= 1

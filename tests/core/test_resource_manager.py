@@ -234,6 +234,52 @@ class TestCircuitBreakerBackoff:
         assert rm.check_circuit_breaker("node-a") is True
         assert rm.check_circuit_breaker("node-b") is False
 
+
+class TestDrainingCooldownRecovery:
+    """Draining set must be cleaned up when the circuit-breaker cooldown elapses.
+
+    Regression for B13/B24: ``record_failure`` adds a node to ``_draining_nodes``
+    when the circuit breaker opens, but cooldown expiry only allowed retries
+    without removing the node — so recovered nodes stayed excluded indefinitely
+    (capacity loss, skewed routing).
+    """
+
+    def test_cooldown_expiry_removes_from_draining(self):
+        rm = ResourceManager(CircuitBreakerConfig(threshold=3, base_delay=1.0))
+        for _ in range(3):
+            rm.record_failure("node-0")
+
+        # Circuit open and node draining.
+        assert rm.check_circuit_breaker("node-0") is True
+        assert rm.is_node_draining("node-0")
+        assert rm.get_draining_nodes() == ["node-0"]
+
+        # Simulate the cooldown elapsing.
+        rm._node_recovery_time["node-0"] = time.time() - 10
+
+        # Retry is allowed and draining state / failure counters are cleared.
+        assert rm.check_circuit_breaker("node-0") is False
+        assert rm.is_node_draining("node-0") is False
+        assert "node-0" not in rm.get_draining_nodes()
+        assert rm._node_failure_counts.get("node-0", 0) == 0
+        assert "node-0" not in rm._node_recovery_time
+
+    def test_cooldown_expiry_allows_retry_and_new_failure_cycle(self):
+        rm = ResourceManager(CircuitBreakerConfig(threshold=2, base_delay=1.0))
+        for _ in range(2):
+            rm.record_failure("node-1")
+        assert rm.is_node_draining("node-1")
+
+        rm._node_recovery_time["node-1"] = time.time() - 5
+        assert rm.check_circuit_breaker("node-1") is False
+        assert not rm.is_node_draining("node-1")
+
+        # A fresh failure cycle can open the breaker again normally.
+        for _ in range(2):
+            rm.record_failure("node-1")
+        assert rm.check_circuit_breaker("node-1") is True
+        assert rm.is_node_draining("node-1")
+
 class TestHealthCheckSync:
     """Tests for synchronous health checks."""
 

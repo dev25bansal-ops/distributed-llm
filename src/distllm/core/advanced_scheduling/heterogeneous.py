@@ -45,6 +45,20 @@ class HeterogeneousBudgetComputer:
     def update_nodes(self, nodes: dict[str, NodeCapabilityInfo]) -> None:
         self._nodes = nodes
 
+    def set_nodes(self, nodes: dict[str, NodeCapabilityInfo]) -> None:
+        """Set the node capability map (batch_scheduler contract name)."""
+        self.update_nodes(nodes)
+
+    def stats(self) -> dict[str, Any]:
+        """Return heterogeneous-scheduling statistics (batch_scheduler contract)."""
+        return {
+            "node_count": len(self._nodes),
+            "slowest_tflops": min(
+                (n.gpu_tflops for n in self._nodes.values() if n.gpu_tflops > 0),
+                default=0.0,
+            ),
+        }
+
     def compute_budget(self, base_budget: Any) -> Any:
         """Adjust budget based on node capabilities."""
         if not self._nodes:

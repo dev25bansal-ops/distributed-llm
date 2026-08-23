@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("distllm.audit")
 
 
 # Common PII patterns
@@ -161,7 +164,13 @@ class RequestAuditor:
             with open(log_file, "a") as f:
                 f.write(json.dumps(asdict(entry)) + "\n")
         except OSError as e:
-            pass  # Fail silently for audit logging
+            # SECURITY: a failing audit log must NOT fail silently — a broken
+            # or full audit trail is a compliance failure.  Surface it loudly.
+            logger.error("Audit log write failed (%s): %s", log_file, e)
+            try:
+                logger.critical("Audit trail unavailable — requests are not being audited")
+            except Exception:
+                pass
 
     def get(self, request_id: str) -> AuditEntry | None:
         with self._lock:

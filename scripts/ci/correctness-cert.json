@@ -1,0 +1,74 @@
+{
+  "generated_at": "2026-07-14T09:48:01.112758+00:00",
+  "logit_cosine_sim": 0.9999999403953552,
+  "token_exact_match": 1.0,
+  "determinism_hash": "8d63c195cd900e106c6f9e53462a809eac15c9e339c21cbef98755ccd137d2c6",
+  "pairs": [
+    {
+      "index": 0,
+      "logit_cosine_sim": 0.9999999403953552,
+      "token_exact_match": 1,
+      "determinism_hash": "2402cbe745da1e4562ffed897bc9a1aa2f53c7e06373da83690668b8d08e64b8",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 1,
+      "logit_cosine_sim": 1.0,
+      "token_exact_match": 1,
+      "determinism_hash": "7a39d22728c86222190407ed13e67298bb69c16bd75c3e7f53e82444e31418f3",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 2,
+      "logit_cosine_sim": 1.0,
+      "token_exact_match": 1,
+      "determinism_hash": "65a26095e3a5a461ed7dd50e0c4dfb247253b1824e305b8eb994b24eee3fd80c",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 3,
+      "logit_cosine_sim": 1.0000001192092896,
+      "token_exact_match": 1,
+      "determinism_hash": "db8c6d0dba727ea434d6ed0493198d62917caa5df6f084b368f9927a4a1951b5",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 4,
+      "logit_cosine_sim": 1.0,
+      "token_exact_match": 1,
+      "determinism_hash": "2ccd97a8f633fea31e1103215316284965794e83da49843a244cd91424442538",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 5,
+      "logit_cosine_sim": 1.0000001192092896,
+      "token_exact_match": 1,
+      "determinism_hash": "04ba7418762a37b5c475620d12204504408d71f7a31f65e842b3a46e98b60616",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 6,
+      "logit_cosine_sim": 1.0,
+      "token_exact_match": 1,
+      "determinism_hash": "87df1448b292f7b3b4f98a95f5e6e0b7057dd8218ac5ed70f74d81f217d77339",
+      "decision": true,
+      "passed": true
+    },
+    {
+      "index": 7,
+      "logit_cosine_sim": 1.0,
+      "token_exact_match": 1,
+      "determinism_hash": "7a33affa7faf7ce67b17a835fba1ac567c96c0ca14553e67501333001466791b",
+      "decision": true,
+      "passed": true
+    }
+  ],
+  "signer": "distllm-dev (UNSIGNED DEV KEY)",
+  "signature": "1f59abff8c9661ab7e3c5ed5a179a7dc115afa5bf7b81c3451bf6d7dd0faf21d"
+}

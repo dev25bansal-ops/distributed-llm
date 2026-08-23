@@ -14,7 +14,7 @@ from typing import Any
 from loguru import logger
 import torch
 
-from distllm.backends.protocol import BackendAdapter
+from distllm.backends.protocol import BackendAdapter, BackendState
 from distllm.errors import ModelLoadError, NodeUnreachableError
 
 
@@ -125,10 +125,13 @@ class VLLMNodeAdapter(BackendAdapter):
         self._is_pipeline_mode = layer_start is not None or layer_end is not None
         self._model = None
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.state = BackendState.UNINITIALIZED
 
     def load_model(self):
         """Initialize the vLLM engine. Must be called before any forward pass."""
         from vllm import LLM
+
+        self.state = BackendState.LOADING
 
         logger.info(
             f"[VLLM] Loading model {self.model_name} "
@@ -141,9 +144,11 @@ class VLLMNodeAdapter(BackendAdapter):
         except Exception as e:
             self._llm = None
             self._tokenizer = None
+            self.state = BackendState.ERROR
             logger.error(f"[VLLM] Failed to load model {self.model_name}: {e}")
             raise ModelLoadError(self.model_name, str(e)) from e
 
+        self.state = BackendState.READY
         logger.info(f"[VLLM] Model loaded: {self.model_name}")
 
     def forward(
@@ -159,6 +164,11 @@ class VLLMNodeAdapter(BackendAdapter):
         For single-node mode (full model), uses vLLM's generation loop.
         For pipeline mode, uses raw model forward with KV cache.
         """
+        if self.state is not BackendState.READY:
+            raise RuntimeError(
+                "Cannot forward: model not loaded (state "
+                f"{self.state.value}). Call load_model() first."
+            )
         if input_ids is not None:
             return self._forward_with_input_ids(input_ids)
         if hidden_states is not None:
@@ -315,6 +325,8 @@ class VLLMNodeAdapter(BackendAdapter):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("[VLLM] Engine shut down")
+        if self.state is not BackendState.ERROR:
+            self.state = BackendState.SHUTDOWN
 
     @classmethod
     def display_name(cls) -> str:

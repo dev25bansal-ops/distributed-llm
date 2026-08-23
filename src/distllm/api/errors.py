@@ -4,8 +4,14 @@ Provides standardized error responses used by all routers and middleware.
 Maps DistLLM error types to OpenAI-compatible error codes.
 """
 
+from __future__ import annotations
+
+from enum import Enum
+from typing import Any
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from distllm.errors.types import (
     DistLLMError,
@@ -27,6 +33,116 @@ from distllm.errors.types import (
     ProviderTimeoutError,
     CircuitBreakerError,
 )
+
+
+class ErrorCode(str, Enum):
+    """Standardized error codes matching OpenAI API conventions.
+
+    Every code is a string enum so it serialises to the JSON wire format
+    without a custom encoder.
+    """
+
+    RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    MODEL_NOT_FOUND = "model_not_found"
+    CONTEXT_LENGTH_EXCEEDED = "context_length_exceeded"
+    INVALID_REQUEST = "invalid_request"
+    AUTHENTICATION_ERROR = "authentication_error"
+    SERVER_ERROR = "server_error"
+    SERVICE_UNAVAILABLE = "service_unavailable"
+    BATCH_PARTIAL_FAILURE = "batch_partial_failure"
+    WEBHOOK_DELIVERY_FAILED = "webhook_delivery_failed"
+
+
+class ErrorResponse(BaseModel):
+    """Standardized error response matching OpenAI's error format.
+
+    Wire format::
+
+        {"error": {"message": "...", "type": "...",
+                   "code": "...", "param": null, "request_id": "..."}}
+    """
+
+    error: dict = Field(
+        default_factory=lambda: {
+            "message": "",
+            "type": "api_error",
+            "code": str(ErrorCode.SERVER_ERROR),
+            "param": None,
+            "request_id": None,
+        }
+    )
+
+
+class ErrorResponseBuilder:
+    """Registry-based builder for :class:`ErrorResponse` objects.
+
+    Usage::
+
+        builder = ErrorResponseBuilder()
+        builder.register("rate_limit", 429)
+        builder.register("model_not_found", 404)
+        response = builder.build(
+            "rate_limit", message="Too many requests", request_id="abc-123"
+        )
+    """
+
+    def __init__(self) -> None:
+        self._registry: dict[str, int] = {}
+
+    def register(self, error_type: str, status_code: int) -> None:
+        """Register *error_type* to map to *status_code*."""
+        self._registry[error_type] = status_code
+
+    def build(
+        self,
+        error_type: str,
+        message: str = "",
+        type: str = "api_error",
+        request_id: str | None = None,
+        param: Any = None,
+    ) -> ErrorResponse:
+        """Build an :class:`ErrorResponse` for the registered *error_type*.
+
+        Falls back to HTTP 500 if *error_type* has not been registered.
+        """
+        return ErrorResponse(
+            error={
+                "message": message,
+                "type": type,
+                "code": error_type,
+                "param": param,
+                "request_id": request_id,
+            }
+        )
+
+    def build_json(
+        self,
+        error_type: str,
+        message: str = "",
+        type: str = "api_error",
+        request_id: str | None = None,
+        param: Any = None,
+        status_code: int | None = None,
+    ) -> JSONResponse:
+        """Build a :class:`JSONResponse` with the appropriate HTTP status.
+
+        Uses the registered status code for *error_type* unless
+        *status_code* is explicitly provided.
+        """
+        code = status_code or self._registry.get(error_type, 500)
+        error_obj = self.build(
+            error_type,
+            message=message,
+            type=type,
+            request_id=request_id,
+            param=param,
+        )
+        return JSONResponse(
+            status_code=code,
+            content=error_obj.model_dump(),
+        )
+
 
 _HTTP_CODE_MAP: dict[int, str] = {
     400: "400",

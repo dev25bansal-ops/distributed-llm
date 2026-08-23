@@ -36,7 +36,7 @@ from typing import Any
 from loguru import logger
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import Depends, FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse
 except ImportError:
     pass  # FastAPI is optional for non-server usage
@@ -404,7 +404,27 @@ class DaaSServer:
         async def ready() -> Any:
             return self.ready_check()
 
-        @app.get("/metrics")
+        def _require_admin_auth(request: Request) -> None:
+            """Require the configured Bearer API key for admin endpoints.
+
+            Fails closed: when no ``api_key`` is configured the admin/metrics
+            endpoints are disabled instead of being open to the network (an
+            unauthenticated ``/admin/shutdown`` is a remote kill switch).
+            """
+            api_key = ""
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                api_key = auth[7:]
+            if not self._config.api_key:
+                raise HTTPException(
+                    status_code=403,
+                    detail="DaaS authentication is not configured; "
+                           "admin/metrics endpoints are disabled",
+                )
+            if api_key != self._config.api_key:
+                raise HTTPException(status_code=401, detail="Invalid API key")
+
+        @app.get("/metrics", dependencies=[Depends(_require_admin_auth)])
         async def metrics_endpoint() -> Any:
             return self.metrics()
 
@@ -418,7 +438,7 @@ class DaaSServer:
                 }]
             }
 
-        @app.post("/admin/shutdown")
+        @app.post("/admin/shutdown", dependencies=[Depends(_require_admin_auth)])
         async def admin_shutdown() -> Any:
             """Initiate graceful shutdown — rejects new requests, finishes in-flight."""
 

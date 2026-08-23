@@ -107,10 +107,12 @@ class RateLimiter:
             self._buckets[key] = bucket
         return bucket
 
-    def is_allowed(self, client_id: str, endpoint: str) -> bool:
+    def is_allowed(self, client_id: str, endpoint: str, tenant: str = "", model: str = "") -> bool:
         """Check whether a request from *client_id* to *endpoint* is allowed.
 
-        Consumes one token if available.
+        Consumes one token if available.  ``tenant``/``model`` are accepted
+        for interface compatibility with the tiered limiter and ignored by
+        this flat per-client bucket.
 
         Returns:
             True if the request should proceed, False if rate-limited.
@@ -131,6 +133,18 @@ class RateLimiter:
             remaining = bucket.get_remaining()
             retry_after = bucket.get_retry_after()
             return limit, remaining, retry_after
+
+    def retry_after(
+        self, client_id: str, endpoint: str = "", tenant: str = "", model: str = ""
+    ) -> float:
+        """Seconds until the next request from *client_id* may proceed.
+
+        Accepts (and ignores) tenant/model for interface compatibility with
+        the tiered limiter used by the unified middleware.
+        """
+        with self._lock:
+            bucket = self._get_bucket(client_id, endpoint)
+            return bucket.get_retry_after()
 
     def reset_client(self, client_id: str) -> None:
         """Reset all buckets for a specific client."""

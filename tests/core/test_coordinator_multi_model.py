@@ -11,8 +11,7 @@ class TestCoordinatorMultiModel:
 
     def _make_minimal_coordinator(self):
         """Create a coordinator with minimal mocking (no GPU needed)."""
-        with patch("distllm.core.coordinator.AutoTokenizer") as mock_tokenizer_cls, \
-             patch("distllm.core.coordinator.GRPCServer"):
+        with patch("distllm.core.coordinator.AutoTokenizer") as mock_tokenizer_cls:
 
             mock_tokenizer = MagicMock()
             mock_tokenizer.encode.side_effect = lambda text, **kwargs: [1, 2, 3]

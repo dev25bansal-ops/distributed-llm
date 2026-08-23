@@ -34,6 +34,7 @@ class CacheEntry:
     access_count: int = 0
     last_accessed: float = field(default_factory=time.time)
     ttl_seconds: float = 3600.0
+    scope: str = ""  # tenant / user isolation scope
 
 
 class SemanticCache:
@@ -80,6 +81,7 @@ class SemanticCache:
         response: str,
         embedding: list[float] | None = None,
         ttl: float | None = None,
+        scope: str = "",
     ) -> None:
         """Store a prompt-response pair in the cache.
 
@@ -88,8 +90,12 @@ class SemanticCache:
             response: The generated response.
             embedding: Optional prompt embedding for semantic matching.
             ttl: Time-to-live in seconds (uses default if None).
+            scope: Tenant/user isolation scope. Entries are only ever matched
+                against lookups with the SAME scope, so one tenant's cached
+                response can never be served to another tenant.
         """
         prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        scoped_key = f"{scope}:{prompt_hash}"
 
         entry = CacheEntry(
             prompt_hash=prompt_hash,
@@ -97,6 +103,7 @@ class SemanticCache:
             prompt_embedding=embedding or [],
             response=response,
             ttl_seconds=ttl or self._default_ttl,
+            scope=scope,
         )
 
         with self._lock:
@@ -104,30 +111,35 @@ class SemanticCache:
             if len(self._entries) >= self._max_entries:
                 self._evict_lru()
 
-            self._entries[prompt_hash] = entry
+            self._entries[scoped_key] = entry
 
     def lookup(
         self,
         prompt: str,
         embedding: list[float] | None = None,
+        scope: str = "",
     ) -> str | None:
         """Look up a cached response for a prompt.
 
         Uses semantic similarity if embeddings are available,
-        otherwise falls back to exact hash matching.
+        otherwise falls back to exact hash matching.  Only entries stored
+        under the same ``scope`` are considered (cross-tenant isolation).
 
         Args:
             prompt: The prompt to look up.
             embedding: Optional prompt embedding for semantic matching.
+            scope: Tenant/user isolation scope — must match the scope the
+                entry was stored with.
 
         Returns:
             Cached response text, or None if not found.
         """
         prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        scoped_key = f"{scope}:{prompt_hash}"
 
         with self._lock:
             # Exact match
-            entry = self._entries.get(prompt_hash)
+            entry = self._entries.get(scoped_key)
             if entry and not self._is_expired(entry):
                 entry.access_count += 1
                 entry.last_accessed = time.time()
@@ -136,7 +148,7 @@ class SemanticCache:
 
             # Semantic match
             if embedding:
-                best_match = self._find_similar(embedding)
+                best_match = self._find_similar(embedding, scope)
                 if best_match and not self._is_expired(best_match):
                     best_match.access_count += 1
                     best_match.last_accessed = time.time()
@@ -146,12 +158,20 @@ class SemanticCache:
             self._misses += 1
             return None
 
-    def _find_similar(self, query_embedding: list[float]) -> CacheEntry | None:
-        """Find the most similar cached entry by cosine similarity."""
+    def _find_similar(
+        self, query_embedding: list[float], scope: str = ""
+    ) -> CacheEntry | None:
+        """Find the most similar cached entry by cosine similarity.
+
+        Only entries in the same ``scope`` are considered, so semantic
+        matching can never cross tenant/user boundaries.
+        """
         best_entry = None
         best_similarity = -1.0
 
         for entry in self._entries.values():
+            if entry.scope != scope:
+                continue
             if not entry.prompt_embedding:
                 continue
             similarity = self._cosine_similarity(query_embedding, entry.prompt_embedding)
@@ -267,11 +287,20 @@ class SemanticCache:
         )
         del self._entries[oldest_key]
 
-    def invalidate(self, prompt: str) -> bool:
-        """Remove a specific prompt from the cache."""
+    def invalidate(self, prompt: str, scope: str = "") -> bool:
+        """Remove a specific prompt from the cache.
+
+        Entries are keyed by ``"{scope}:{prompt_hash}"``, so the same
+        scoped key used by :meth:`store`/:meth:`lookup` must be popped
+        here — otherwise stale/poisoned responses can never be purged.
+        Pass the ``scope`` the entry was stored under; an unscoped
+        invalidate only touches unscoped entries and is a safe no-op for
+        any scoped entry.
+        """
         prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        scoped_key = f"{scope}:{prompt_hash}"
         with self._lock:
-            return self._entries.pop(prompt_hash, None) is not None
+            return self._entries.pop(scoped_key, None) is not None
 
     def clear(self) -> None:
         """Clear all cached entries."""

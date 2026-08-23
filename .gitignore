@@ -87,3 +87,5 @@ og_*.txt
 website-astro/dist/
 website-astro/.astro/
 og_*.txt
+.vercel
+website.zip

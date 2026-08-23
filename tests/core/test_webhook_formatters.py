@@ -255,6 +255,7 @@ class TestManagerWithFormatter:
             "http://localhost:9999/hook",
             events=["node.failed"],
             formatter=slack_formatter,
+            allow_private=True,
         )
         with patch("httpx.post", side_effect=fake_post):
             self._dispatch_and_wait(mgr, WebhookEvent.NODE_FAILED, {"node_id": "node-0"})
@@ -270,7 +271,7 @@ class TestManagerWithFormatter:
             captured["body"] = json.loads(content)
             return MagicMock(status_code=200)
 
-        mgr.register("http://localhost:9999/hook", events=["node.joined"])
+        mgr.register("http://localhost:9999/hook", events=["node.joined"], allow_private=True)
         with patch("httpx.post", side_effect=fake_post):
             self._dispatch_and_wait(mgr, WebhookEvent.NODE_JOINED, {"node_id": "node-0"})
 
@@ -279,7 +280,7 @@ class TestManagerWithFormatter:
     def test_new_events_are_valid(self):
         """Verify the new incident event types work with dispatch."""
         mgr = WebhookManager()
-        mgr.register("http://localhost:9999/hook", events=["*"])
+        mgr.register("http://localhost:9999/hook", events=["*"], allow_private=True)
 
         for event in [
             WebhookEvent.NODE_DRAINING,

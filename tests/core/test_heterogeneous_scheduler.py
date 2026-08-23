@@ -32,6 +32,7 @@ def _get_module():
     const_mod = types.ModuleType("distllm.constants")
     DeviceFamily = enum.Enum("DeviceFamily", {"UNKNOWN": "unknown", "NVIDIA": "nvidia", "AMD": "amd"})
     const_mod.DeviceFamily = DeviceFamily
+    const_mod.DEVICE_FAMILY = {}
     const_mod.DEVICE_TO_FAMILY = {}
     const_mod.Device = enum.Enum("Device", {"UNKNOWN": "unknown"})
     sys.modules["distllm.constants"] = const_mod

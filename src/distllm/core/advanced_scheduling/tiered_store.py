@@ -27,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import mmap
 import os
 import struct
@@ -40,6 +41,10 @@ from typing import Any
 
 import torch
 from loguru import logger
+
+# Magic prefix distinguishing serialized torch.Tensor payloads (with
+# dtype/shape metadata) from raw byte payloads written to NVMe (L3).
+_TENSOR_MAGIC = b"distllm_tensor\x00\x01"
 
 
 class StorageTier(str, Enum):
@@ -415,12 +420,9 @@ class TieredMemoryPool:
             self._stats[StorageTier.COLD]["demotions"] += 1
             return
 
-        # Save to NVMe
-        data = entry.data
-        if isinstance(data, torch.Tensor):
-            data = data.cpu().numpy().tobytes()
-
-        if self._save_to_nvme(key, data):
+        # Save to NVMe (torch.Tensors persist with dtype/shape metadata so the
+        # L3 round-trip returns a real tensor, not opaque bytes).
+        if self._save_to_nvme(key, entry.data):
             entry.tier = StorageTier.COLD
             entry.data = None  # Data is on disk
             self._l3_cache[key] = entry
@@ -428,28 +430,61 @@ class TieredMemoryPool:
             self._stats[StorageTier.COLD]["demotions"] += 1
 
     def _save_to_nvme(self, key: str, data: Any) -> bool:
-        """Save data to NVMe storage."""
+        """Save data to NVMe storage.
+
+        ``torch.Tensor`` payloads are written as a magic-prefixed header
+        (dtype/shape) followed by the raw bytes so ``_load_from_nvme`` can
+        reconstruct the original tensor.  Non-tensor data is written verbatim.
+        """
         if self._nvme_path is None:
             return False
         try:
             file_path = self._nvme_path / f"{key}.bin"
             if isinstance(data, torch.Tensor):
-                data = data.cpu().numpy().tobytes()
-            file_path.write_bytes(data)
+                cpu = data.detach().cpu().contiguous()
+                meta = {
+                    "dtype": str(cpu.dtype).replace("torch.", ""),
+                    "shape": list(cpu.shape),
+                }
+                header = json.dumps(meta).encode("utf-8")
+                payload = (
+                    _TENSOR_MAGIC
+                    + struct.pack(">I", len(header))
+                    + header
+                    + cpu.numpy().tobytes()
+                )
+                file_path.write_bytes(payload)
+            else:
+                file_path.write_bytes(data)
             return True
         except OSError as e:
             logger.warning(f"NVMe write failed for {key}: {e}")
             return False
 
-    def _load_from_nvme(self, key: str) -> bytes | None:
-        """Load data from NVMe storage."""
+    def _load_from_nvme(self, key: str) -> Any:
+        """Load data from NVMe storage.
+
+        Reconstructs ``torch.Tensor`` payloads saved by ``_save_to_nvme``
+        (restoring dtype and shape) so callers receive the original tensor
+        rather than opaque bytes.
+        """
         if self._nvme_path is None:
             return None
         try:
             file_path = self._nvme_path / f"{key}.bin"
-            if file_path.exists():
-                return file_path.read_bytes()
-            return None
+            if not file_path.exists():
+                return None
+            raw = file_path.read_bytes()
+            if raw.startswith(_TENSOR_MAGIC):
+                offset = len(_TENSOR_MAGIC)
+                (hlen,) = struct.unpack(">I", raw[offset:offset + 4])
+                offset += 4
+                meta = json.loads(raw[offset:offset + hlen].decode("utf-8"))
+                offset += hlen
+                dtype = getattr(torch, meta["dtype"], torch.float32)
+                tensor = torch.frombuffer(raw[offset:], dtype=dtype)
+                return tensor.reshape(meta["shape"]).clone()
+            return raw
         except OSError as e:
             logger.warning(f"NVMe read failed for {key}: {e}")
             return None

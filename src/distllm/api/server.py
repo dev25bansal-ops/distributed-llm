@@ -42,6 +42,7 @@ from distllm.core.debug import set_debug_mode
 from distllm.observability.tracing import setup_tracing
 from distllm.observability.logging import setup_logging
 from distllm.observability.exporter import DistLLMPrometheusExporter
+from distllm.api.observability_middleware import ObservabilityMiddleware
 from loguru import logger
 from distllm.constants import HSTS_MAX_AGE
 
@@ -67,7 +68,9 @@ from distllm.api.routes import (
     defrag_router,
     batch_router,
     eval_router,
+    metrics_history_router,
 )
+from distllm.api.routes.tools import router as tools_router
 
 # Re-export models from route modules for backward compatibility
 from distllm.api.routes.chat import (
@@ -95,6 +98,13 @@ from distllm.api.streaming import (
     _stream_response,
 )
 
+
+# ── Named constants ──────────────────────────────────────────────
+CORS_MAX_AGE = 600                       # CORS preflight cache TTL (seconds)
+REQUEST_SIZE_LIMIT = 100_000_000         # Max request body size (100 MB)
+KEY_ROTATION_RATE_LIMIT = 60.0          # Min interval between key rotations (seconds)
+CLUSTER_KEY_ROTATION_GRACE_PERIOD = 300  # Old key grace period after rotation (seconds, 5 min)
+DEFAULT_COORD_PORT = 50050               # Default gRPC port for coordinator node server
 
 def _get_cors_origins() -> list[str]:
     """Get CORS origins from env var (falls back to settings default).
@@ -221,8 +231,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         state.ws_broadcast_task.cancel()
 
 
-# Disable OpenAPI docs in production (set DISTLLM_ENABLE_DOCS=1 to enable)
-_enable_docs = os.environ.get("DISTLLM_ENABLE_DOCS", "0").lower() in ("1", "true")
+# OpenAPI docs enabled by default (set DISTLLM_DISABLE_DOCS=1 to disable)
+_enable_docs = os.environ.get("DISTLLM_DISABLE_DOCS", "0").lower() not in ("1", "true")
 
 app = FastAPI(
     lifespan=lifespan,
@@ -231,6 +241,7 @@ app = FastAPI(
     version="0.4.0",
     docs_url="/docs" if _enable_docs else None,
     redoc_url="/redoc" if _enable_docs else None,
+    openapi_url="/openapi.json" if _enable_docs else None,
     openapi_tags=[
         {"name": "chat", "description": "Chat completion endpoints with streaming support across distributed nodes"},
         {"name": "completion", "description": "Text completion endpoints with streaming support across distributed nodes"},
@@ -248,7 +259,7 @@ app.add_middleware(
     allow_credentials=False,  # Security: Disable credentials for CORS
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Request-Timeout", "X-Priority"],
-    max_age=600,  # Cache preflight for 10 minutes
+    max_age=CORS_MAX_AGE,  # Cache preflight for 10 minutes
 )
 
 # Security headers middleware
@@ -309,6 +320,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+# CSRF Same-Origin middleware — validates Origin/Referer on state-changing
+# requests to prevent Cross-Site Request Forgery. Runs after CORS and security
+# headers but before AuthMiddleware so CSRF violations are caught early.
+from distllm.api.csrf_middleware import CSRFSameOriginMiddleware
+app.add_middleware(CSRFSameOriginMiddleware)
+
 
 # Structured error responses
 class ErrorResponse(BaseModel):
@@ -318,6 +335,57 @@ class ErrorResponse(BaseModel):
     type: str = "api_error"
     code: str | None = None
     request_id: str | None = None
+
+
+# ── API Response Models ────────────────────────────────────────────
+
+
+class ClusterNodeInfo(BaseModel):
+    """Individual cluster node information."""
+    node_id: str = ""
+    host: str = ""
+    port: int = 0
+    healthy: bool = False
+    start_layer: int = 0
+    end_layer: int = 0
+    gpu_name: str = ""
+    gpu_memory_free: int = 0
+    gpu_memory_total: int = 0
+    gpu_sm_count: int = 0
+
+
+class ClusterNodesResponse(BaseModel):
+    """Cluster node topology response."""
+    nodes: list[ClusterNodeInfo] = []
+    total_layers: int = 0
+
+
+class PipelineNodeHealth(BaseModel):
+    """Per-node health info within a pipeline."""
+    healthy: bool = False
+    latency_ms: float | None = None
+    start_layer: int = 0
+    end_layer: int = 0
+    gpu_name: str = ""
+
+
+class PipelineHealthResponse(BaseModel):
+    """Pipeline orchestrator health and metrics response."""
+    status: str = ""
+    nodes: dict[str, PipelineNodeHealth] = {}
+
+
+class ChangelogEntry(BaseModel):
+    """Single changelog entry."""
+    date: str = ""
+    change: str = ""
+
+
+class ChangelogResponse(BaseModel):
+    """API changelog response."""
+    version: str = ""
+    date: str = ""
+    changes: list[ChangelogEntry] = []
 
 
 def _error_response(
@@ -396,6 +464,99 @@ class _ServerState:
 
 state = _ServerState()
 
+# Created at module load so middleware mounted below (ObservabilityMiddleware)
+# can hold a direct reference; _init_observability reuses it at startup.
+state.metrics_exporter = DistLLMPrometheusExporter()
+
+
+class PluginHookMiddleware(BaseHTTPMiddleware):
+    """Dispatch plugin hooks around every request.
+
+    Registered before ``AuthMiddleware`` in code so that AuthMiddleware (which
+    is prepended later and therefore runs outermost/first) populates
+    ``request.state`` (api_key_role, api_key_id, tenant...) before the plugin
+    hooks dispatch.  Captures request context, dispatches ``on_request``,
+    delegates to the next handler, then dispatches ``on_response`` or
+    ``on_error`` based on the outcome.
+    """
+
+    SKIP_PATHS = {"/health", "/ready", "/live", "/healthz", "/readyz", "/metrics",
+                  "/docs", "/openapi.json", "/redoc", "/ws", "/dashboard"}
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        plugin_sys: PluginSystem | None = getattr(state, "plugin_system", None)
+        if plugin_sys is None or request.url.path in self.SKIP_PATHS:
+            return await call_next(request)
+
+        # Build plugin context from the request
+        # SECURITY: Only pass a redacted auth fingerprint in the general context
+        # to prevent arbitrary plugins from leaking credentials via logs
+        # or external storage. The auth plugin receives the full header
+        # separately via its own dispatch hook.
+        auth_header_raw = request.headers.get("authorization", "")
+        auth_fingerprint = ""
+        if auth_header_raw.startswith("Bearer "):
+            token = auth_header_raw[7:]
+            if len(token) > 8:
+                import hashlib
+                auth_fingerprint = f"Bearer {token[:8]}...{hashlib.sha256(token.encode()).hexdigest()[:8]}"
+            else:
+                auth_fingerprint = "Bearer (invalid)"
+        elif auth_header_raw:
+            auth_fingerprint = "(non-bearer)"
+        req_ctx = {
+            "method": request.method,
+            "path": request.url.path,
+            "query": str(request.query_params),
+            "request_id": getattr(request.state, "request_id", ""),
+            "tenant": getattr(request.state, "tenant", "default"),
+            "model": getattr(request.state, "model", ""),
+            "client_ip": request.client.host if request.client else "",
+            "user_agent": request.headers.get("user-agent", ""),
+            "api_key_role": getattr(request.state, "api_key_role", ""),
+            "api_key_id": getattr(request.state, "api_key_id", ""),
+            "auth_fingerprint": auth_fingerprint,
+            # Internal: full auth header for auth plugin JWT validation.
+            # WARNING: Do not log or persist this value. It contains the
+            # full bearer token / API key.
+            "_auth_header": auth_header_raw,
+        }
+
+        # Allow plugins to modify/reject the request
+        plugin_ctx = plugin_sys.dispatch_on_request(req_ctx)
+        reject = plugin_ctx.get("_reject")
+        if reject:
+            status = reject.get("status", 429)
+            error_body: dict[str, Any] = {
+                "message": reject.get("reason", "Request rejected"),
+                "type": "auth_error" if status in (401, 403) else "rate_limit",
+            }
+            if "retry_after" in reject:
+                error_body["retry_after"] = reject["retry_after"]
+            return JSONResponse(
+                status_code=status,
+                content={"error": error_body},
+            )
+
+        # Process the request
+        start = time.time()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            plugin_sys.dispatch("on_error", req_ctx, exc)
+            raise
+
+        # Post-process: dispatch on_response for non-streaming responses
+        duration_ms = (time.time() - start) * 1000
+        resp_ctx = {
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        }
+        plugin_sys.dispatch("on_response", req_ctx, resp_ctx)
+
+        return response
+
+
 
 
 
@@ -414,8 +575,49 @@ def _init_observability() -> None:
         sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
     )
 
-    state.metrics_exporter = DistLLMPrometheusExporter()
+    # Reuse the exporter created at module load so the middleware mounted above
+    # keeps recording into the same registry.
+    if getattr(state, "metrics_exporter", None) is None:
+        state.metrics_exporter = DistLLMPrometheusExporter()
 
+
+# ── Middleware Stack ─────────────────────────────────────────────────────────
+#
+# STARLETTE MIDDLEWARE vs PLUGIN SYSTEM — when to use each
+#
+# Starlette Middleware (app.add_middleware):
+#   Use for low-level, ordering-sensitive request/response pipeline processing.
+#   - Runs in the FastAPI/Starlette pipeline (reverse registration order).
+#   - Has direct access to the raw ASGI scope, Request, and Response objects.
+#   - Best for infrastructure cross-cutting concerns that MUST be at a
+#     specific position in the pipeline (auth before rate-limit, etc.).
+#   - Examples: auth, CORS, security headers, timeouts, backpressure,
+#     circuit breakers, request size limits, request IDs, deduplication,
+#     prompt injection detection.
+#   - Drawback: third parties cannot inject middleware; order is fragile.
+#
+# Plugin System (PluginHookMiddleware + PluginSystem):
+#   Use for extensible, swappable, lifecycle-managed behavior.
+#   - Runs via a single middleware entry point (PluginHookMiddleware, see below)
+#     that dispatches ``on_request`` / ``on_response`` / ``on_error`` hooks
+#     to all active plugins.
+#   - Has lifecycle management (init -> start -> stop).
+#   - Can be discovered from the filesystem, installed from PyPI, or
+#     registered programmatically — third-party extensible.
+#   - Best for: custom auth schemes, custom audit logging, custom metrics,
+#     custom health probes, anything that should be swappable/installable.
+#   - Drawback: does NOT have raw ASGI scope access; runs at a fixed point
+#     in the middleware stack (PluginHookMiddleware position).
+#
+# Rule of thumb:
+#   - If the concern MUST live at a precise position in the pipeline (e.g.
+#     auth must run before rate-limiting uses request.state), use Starlette
+#     middleware.
+#   - If the concern should be swappable, installable, or addable by users
+#     without touching the codebase, use a plugin.
+#   - If the concern needs lifecycle management beyond request/response
+#     (e.g. background loops, model load/unload hooks), use a plugin.
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Request timeout middleware
 # NOTE: Registered BEFORE AuthMiddleware so that AuthMiddleware runs first
@@ -459,7 +661,24 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimeoutMiddleware)
 
-# AuthMiddleware registered AFTER TimeoutMiddleware so it runs first (outermost)
+# DedupMiddleware — collapses identical concurrent POST requests. Registered
+# BEFORE AuthMiddleware so it runs AFTER auth (add_middleware prepends, so the
+# first-registered middleware executes last/innermost): an unauthenticated
+# replay must never hit a cached response, and the fingerprint is namespaced by
+# the authenticated api_key_id (see dedup.py).
+from distllm.api.dedup import DedupMiddleware
+app.add_middleware(DedupMiddleware)
+
+# PluginHookMiddleware runs via its own ASGI dispatch; it must execute
+# AFTER AuthMiddleware populates request.state (auth fingerprint, role,
+# tenant), so it is registered BEFORE AuthMiddleware in code (add_middleware
+# prepends, so the last-registered middleware runs first/outermost and the
+# first-registered runs last/innermost — AuthMiddleware runs before
+# PluginHookMiddleware on the way in).
+app.add_middleware(PluginHookMiddleware)
+
+# AuthMiddleware registered AFTER PluginHookMiddleware so it runs first
+# (outermost) and populates request.state before plugin hooks dispatch.
 app.add_middleware(AuthMiddleware)
 
 # RequestIDMiddleware registered after AuthMiddleware so it runs before it
@@ -472,18 +691,51 @@ app.add_middleware(RequestIDMiddleware)
 # available for rate-limit error responses.
 app.add_middleware(RequestRateLimitMiddleware)
 
-# DedupMiddleware — collapses identical concurrent POST requests
-# Only applies to /v1/chat/completions; uses content fingerprinting.
-from distllm.api.dedup import DedupMiddleware
-app.add_middleware(DedupMiddleware)
-
 # Prompt Injection Detection Middleware — detects and mitigates prompt
 # injection attacks (BLOCK / SANITIZE / FLAG). Runs after auth so blocked
 # requests don't consume resources, but before the main route handlers.
 from distllm.api.prompt_injection import PromptInjectionMiddleware
 app.add_middleware(PromptInjectionMiddleware)
 
+# ContentModerationMiddleware — intercepts requests/responses for toxicity,
+# PII, jailbreak, and topic-policy enforcement.  Enabled when the
+# DISTLLM_MODERATION=1 environment variable is set.
+#
+# Runs after AuthMiddleware so request.state is populated, and before
+# route handlers so blocked requests are rejected early.
+if os.environ.get("DISTLLM_MODERATION", "0") == "1":
+    from distllm.api.middleware import ContentModerationMiddleware
+    app.add_middleware(ContentModerationMiddleware)
+    logger.info("ContentModerationMiddleware registered (DISTLLM_MODERATION=1)")
 
+# Docs auth middleware — requires admin role for OpenAPI documentation pages
+class DocsAuthMiddleware(BaseHTTPMiddleware):
+    """Require admin role to access OpenAPI documentation.
+
+    Protects ``/docs``, ``/redoc``, and ``/openapi.json`` from
+    unauthorized access.  Must be registered **after** AuthMiddleware
+    so that ``request.state.api_key_role`` is populated.
+    """
+
+    DOCS_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.url.path in self.DOCS_PATHS:
+            role = getattr(request.state, "api_key_role", None)
+            if role != "admin":
+                return _error_response(
+                    status_code=403,
+                    error="Forbidden",
+                    message="Admin access required for API documentation. "
+                            "Authenticate with an admin API key.",
+                    type="auth_error",
+                    request=request,
+                )
+        return await call_next(request)
+
+# DocsAuthMiddleware — requires admin role on /docs, /redoc, /openapi.json
+# Registered after AuthMiddleware so request.state.api_key_role is set.
+app.add_middleware(DocsAuthMiddleware)
 
 
 class _RequestTooLarge(Exception):
@@ -554,7 +806,7 @@ class RequestSizeLimitMiddleware:
             return
 
 
-app.add_middleware(RequestSizeLimitMiddleware, max_size=100_000_000)
+app.add_middleware(RequestSizeLimitMiddleware, max_size=REQUEST_SIZE_LIMIT)
 
 
 # Backpressure middleware
@@ -655,6 +907,14 @@ app.add_middleware(CircuitBreakerMiddleware)
 
 
 # ── Plugin system ───────────────────────────────────────────────────────────
+#
+# Plugins are for extensible, swappable behavior (custom auth, custom logging,
+# custom metrics, health probes, etc.) that users or third parties can add or
+# remove without modifying the core codebase.  They run through the single
+# PluginHookMiddleware entry point below.
+#
+# See the "Middleware Stack" guide above for a full comparison between
+# Starlette middleware and the plugin system.
 
 def _init_plugins(ps: PluginSystem) -> None:
     """Register + load + init + start built-in plugins."""
@@ -666,100 +926,12 @@ def _init_plugins(ps: PluginSystem) -> None:
     logger.info(f"Plugin system ready: {len(ps.list_plugins())} plugins active")
 
 
-class PluginHookMiddleware(BaseHTTPMiddleware):
-    """Dispatch plugin hooks around every request.
-
-    Runs after ``BackpressureMiddleware`` (outermost) and before all other
-    middleware.  Captures request context, dispatches ``on_request``,
-    delegates to the next handler, then dispatches ``on_response`` or
-    ``on_error`` based on the outcome.
-    """
-
-    SKIP_PATHS = {"/health", "/ready", "/live", "/healthz", "/readyz", "/metrics",
-                  "/docs", "/openapi.json", "/redoc", "/ws", "/dashboard"}
-
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        plugin_sys: PluginSystem | None = getattr(state, "plugin_system", None)
-        if plugin_sys is None or request.url.path in self.SKIP_PATHS:
-            return await call_next(request)
-
-        # Build plugin context from the request
-        # SECURITY: Only pass a redacted auth fingerprint in the general context
-        # to prevent arbitrary plugins from leaking credentials via logs
-        # or external storage. The auth plugin receives the full header
-        # separately via its own dispatch hook.
-        auth_header_raw = request.headers.get("authorization", "")
-        auth_fingerprint = ""
-        if auth_header_raw.startswith("Bearer "):
-            token = auth_header_raw[7:]
-            if len(token) > 8:
-                import hashlib
-                auth_fingerprint = f"Bearer {token[:8]}...{hashlib.sha256(token.encode()).hexdigest()[:8]}"
-            else:
-                auth_fingerprint = "Bearer (invalid)"
-        elif auth_header_raw:
-            auth_fingerprint = "(non-bearer)"
-        req_ctx = {
-            "method": request.method,
-            "path": request.url.path,
-            "query": str(request.query_params),
-            "request_id": getattr(request.state, "request_id", ""),
-            "tenant": getattr(request.state, "tenant", "default"),
-            "model": getattr(request.state, "model", ""),
-            "client_ip": request.client.host if request.client else "",
-            "user_agent": request.headers.get("user-agent", ""),
-            "api_key_role": getattr(request.state, "api_key_role", ""),
-            "api_key_id": getattr(request.state, "api_key_id", ""),
-            "auth_fingerprint": auth_fingerprint,
-            # Internal: full auth header for auth plugin JWT validation.
-            # WARNING: Do not log or persist this value. It contains the
-            # full bearer token / API key.
-            "_auth_header": auth_header_raw,
-        }
-
-        # Allow plugins to modify/reject the request
-        plugin_ctx = plugin_sys.dispatch_on_request(req_ctx)
-        reject = plugin_ctx.get("_reject")
-        if reject:
-            status = reject.get("status", 429)
-            error_body: dict[str, Any] = {
-                "message": reject.get("reason", "Request rejected"),
-                "type": "auth_error" if status in (401, 403) else "rate_limit",
-            }
-            if "retry_after" in reject:
-                error_body["retry_after"] = reject["retry_after"]
-            return JSONResponse(
-                status_code=status,
-                content={"error": error_body},
-            )
-
-        # Process the request
-        start = time.time()
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            plugin_sys.dispatch("on_error", req_ctx, exc)
-            raise
-
-        # Post-process: dispatch on_response for non-streaming responses
-        duration_ms = (time.time() - start) * 1000
-        resp_ctx = {
-            "status_code": response.status_code,
-            "duration_ms": duration_ms,
-        }
-        plugin_sys.dispatch("on_response", req_ctx, resp_ctx)
-
-        return response
-
-
-app.add_middleware(PluginHookMiddleware)
-
-
 # Include route routers
 app.include_router(chat_router)
 app.include_router(chat_v2_router)
 app.include_router(completion_router)
 app.include_router(embeddings_router)
+app.include_router(tools_router)
 app.include_router(health_router)
 app.include_router(gossip_router)
 app.include_router(admin_router)
@@ -772,7 +944,7 @@ app.include_router(model_registry_router)
 app.include_router(router_admin_router)
 app.include_router(batch_router)
 app.include_router(eval_router)
-
+app.include_router(metrics_history_router)
 # Cost tracking middleware
 try:
     from distllm.api.cost_middleware import CostTrackingMiddleware
@@ -780,9 +952,45 @@ try:
 except ImportError:
     pass
 
+# Body cache middleware — outermost, reads request body ONCE and caches it so
+# downstream middlewares (auth, rate-limit, prompt-injection) do not each
+# re-read and re-parse the body independently.
+# Registered after CostTrackingMiddleware so it wraps all inner middleware.
+from distllm.api.body_cache_middleware import BodyCacheMiddleware
+app.add_middleware(BodyCacheMiddleware)
+
+# Tracing middleware — outermost, W3C Trace-Context propagation.
+# Registered LAST so it wraps the entire pipeline and captures the full
+# request lifecycle (auth, rate-limiting, inference phases).
+from distllm.api.tracing_middleware import TracingMiddleware
+app.add_middleware(TracingMiddleware)
+
+# Observability middleware — records RED (rate/errors/duration) metrics for
+# every request.  Registered outermost so it sees the full lifecycle including
+# auth rejections.
+app.add_middleware(
+    ObservabilityMiddleware,
+    metrics_exporter=state.metrics_exporter,
+)
+
+# SSO middleware — outer SSO/JWT authentication that falls through to
+# API-key auth (AuthMiddleware) when no valid SSO token is present.
+# Enables POST /v1/auth/{token,refresh,revoke}; a no-op unless DISTLLM_SSO_*
+# env vars configure a provider. Registered after tracing so it runs first,
+# matching AuthMiddleware's `request.state.auth_method == "sso"` skip path.
+from distllm.api.sso_middleware import setup_sso
+setup_sso(app)
+
 # --- Dashboard & WebSocket ---
 
 from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+
+
+# Mount dashboard static files (CSS, JS)
+dashboard_static = Path(__file__).parent.parent / "dashboard" / "static"
+dashboard_static.mkdir(parents=True, exist_ok=True)
+app.mount("/dashboard/static", StaticFiles(directory=str(dashboard_static)), name="dashboard_static")
 
 
 @app.websocket("/ws")
@@ -799,24 +1007,33 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
     """
     # SECURITY FIX: Removed query param token support — tokens in URLs are logged
     # in server access logs, proxy logs, browser history, and analytics.
-    # Token must come from Authorization header only.
+    # Token from Authorization header, or (browser WS clients) from a
+    # Sec-WebSocket-Protocol subprotocol pair: ["Bearer", "<key>"].
     auth_token = None
     auth_header = websocket.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         auth_token = auth_header[7:]
+    else:
+        sec_ws = websocket.headers.get("sec-websocket-protocol", "")
+        parts = [p.strip() for p in sec_ws.split(",") if p.strip()]
+        if len(parts) >= 2 and parts[0] == "Bearer":
+            auth_token = parts[1]
 
-    # Validate API key if auth is configured
+    # SECURITY: Reject connection when no API keys are configured
     from distllm.core.api_key_store import get_api_key_store
     store = get_api_key_store()
-    if store.get_key_count() > 0:
-        if not auth_token:
-            logger.warning("WebSocket connection rejected: missing API key")
-            await websocket.close(code=4001, reason="API key required")
-            return
-        result = store.authenticate(auth_token)
-        if result is None:
-            await websocket.close(code=4001, reason="Invalid API key")
-            return
+    if store.get_key_count() == 0:
+        logger.warning("WebSocket connection rejected: no API keys configured (auth disabled)")
+        await websocket.close(code=4001, reason="Server authentication not configured")
+        return
+    if not auth_token:
+        logger.warning("WebSocket connection rejected: missing API key")
+        await websocket.close(code=4001, reason="API key required")
+        return
+    result = store.authenticate(auth_token)
+    if result is None:
+        await websocket.close(code=4001, reason="Invalid API key")
+        return
 
     await manager.connect(websocket)
     try:
@@ -858,24 +1075,34 @@ async def metrics_websocket(websocket: WebSocket) -> None:
         categories: Comma-separated metric categories to include
         token: API key for authentication
     """
-    # SECURITY: Authenticate WebSocket connection via header only
+    # SECURITY: Authenticate WebSocket connection via header, or (browser
+    # WS clients) via Sec-WebSocket-Protocol subprotocol pair.
     # Query param tokens are insecure (logged in URLs, proxies, browser history)
-    from distllm.core.api_key_store import get_api_key_store
-    store = get_api_key_store()
     auth_token = None
     auth_header = websocket.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         auth_token = auth_header[7:]
+    else:
+        sec_ws = websocket.headers.get("sec-websocket-protocol", "")
+        parts = [p.strip() for p in sec_ws.split(",") if p.strip()]
+        if len(parts) >= 2 and parts[0] == "Bearer":
+            auth_token = parts[1]
 
-    if store.get_key_count() > 0:
-        if not auth_token:
-            logger.warning("Metrics WebSocket rejected: missing API key")
-            await websocket.close(code=4001, reason="API key required")
-            return
-        result = store.authenticate(auth_token)
-        if result is None:
-            await websocket.close(code=4001, reason="Invalid API key")
-            return
+    # SECURITY: Reject connection when no API keys are configured
+    from distllm.core.api_key_store import get_api_key_store
+    store = get_api_key_store()
+    if store.get_key_count() == 0:
+        logger.warning("Metrics WebSocket rejected: no API keys configured (auth disabled)")
+        await websocket.close(code=4001, reason="Server authentication not configured")
+        return
+    if not auth_token:
+        logger.warning("Metrics WebSocket rejected: missing API key")
+        await websocket.close(code=4001, reason="API key required")
+        return
+    result = store.authenticate(auth_token)
+    if result is None:
+        await websocket.close(code=4001, reason="Invalid API key")
+        return
 
     await websocket.accept()
     # Clamp interval to safe range (0.2s - 10.0s) to prevent DoS
@@ -960,7 +1187,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
 )
 async def dashboard_page() -> HTMLResponse:
     """Serve the real-time dashboard HTML."""
-    html_path = Path(__file__).parent.parent / "dashboard" / "static_v2" / "index.html"
+    html_path = Path(__file__).parent.parent / "dashboard" / "static" / "index.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text())
     return HTMLResponse(content="<h1>Dashboard not found</h1>")
@@ -1000,6 +1227,7 @@ async def model_registry_page() -> HTMLResponse:
     summary="Cluster node topology",
     description="Return all registered worker nodes with their GPU info, health status, and layer assignments.",
     response_description="List of cluster nodes with capabilities",
+    response_model=ClusterNodesResponse,
     dependencies=[Depends(require_role("auditor"))],
 )
 async def api_cluster_nodes(request: Request) -> dict:
@@ -1071,7 +1299,7 @@ async def federation_heartbeat(request: Request) -> dict:
     if not key_valid:
         pending_old = getattr(coord, "_pending_old_cluster_key", None)
         rotation_time = getattr(coord, "_key_rotation_time", 0)
-        grace_expiry = rotation_time + 300  # 5-minute grace period
+        grace_expiry = rotation_time + CLUSTER_KEY_ROTATION_GRACE_PERIOD  # 5-minute grace period
         if pending_old and time.time() < grace_expiry:
             key_valid = hmac.compare_digest(received_key, pending_old)
     if not key_valid:
@@ -1134,7 +1362,7 @@ async def rotate_cluster_key(request: Request) -> dict:
     # Rate limit: max 1 rotation per 60 seconds
     now = time.time()
     last_rotation = getattr(state, "_last_key_rotation_time", 0.0)
-    if now - last_rotation < 60.0:
+    if now - last_rotation < KEY_ROTATION_RATE_LIMIT:
         remaining = int(60.0 - (now - last_rotation))
         return JSONResponse(
             status_code=429,
@@ -1172,6 +1400,29 @@ async def rotate_cluster_key(request: Request) -> dict:
     }
 
 
+def _ha_secret_rejection(request: Request) -> JSONResponse | None:
+    """Return a 403 rejection when the HA shared secret is absent/mismatched.
+
+    HA replication endpoints fail CLOSED: with ``DISTLLM_HA_SECRET`` unset there
+    is no way to authenticate the sender, so the endpoint refuses rather than
+    accepting arbitrary leader-election or state-snapshot input from an
+    unauthenticated socket.
+    """
+    expected_secret = os.environ.get("DISTLLM_HA_SECRET", "")
+    if not expected_secret:
+        return JSONResponse(
+            status_code=403,
+            content={"status": "error", "detail": "HA shared secret not configured"},
+        )
+    received_secret = request.headers.get("X-HA-Secret", "")
+    if not hmac.compare_digest(received_secret, expected_secret):
+        return JSONResponse(
+            status_code=403,
+            content={"status": "error", "detail": "invalid HA secret"},
+        )
+    return None
+
+
 @app.post(
     "/api/v1/ha/snapshot",
     summary="HA state snapshot",
@@ -1188,27 +1439,91 @@ async def ha_state_snapshot(request: Request) -> dict:
     if coord is None:
         return {"status": "error", "detail": "coordinator not available"}
 
-    # SECURITY: Require HA shared secret
-    expected_secret = os.environ.get("DISTLLM_HA_SECRET", "")
-    if expected_secret:
-        received_secret = request.headers.get("X-HA-Secret", "")
-        if not hmac.compare_digest(received_secret, expected_secret):
-            return JSONResponse(
-                status_code=403,
-                content={"status": "error", "detail": "invalid HA secret"},
-            )
+    # SECURITY: Require HA shared secret (fail closed when not configured)
+    rejection = _ha_secret_rejection(request)
+    if rejection is not None:
+        return rejection
 
     try:
-        from pydantic import BaseModel
-
-        class HASnapshot(BaseModel):
-            nodes: dict = {}
-            metadata: dict = {}
-
         raw = await request.json()
-        snapshot = HASnapshot(**raw)
-        coord.apply_state_snapshot(raw)
-        return {"status": "ok", "applied_nodes": len(snapshot.nodes)}
+        if not isinstance(raw, dict):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "detail": "request body must be a JSON object"},
+            )
+
+        nodes = raw.get("nodes", {})
+        if not isinstance(nodes, dict):
+            nodes = {}
+        metadata = raw.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        validated: dict = {
+            "nodes": nodes,
+            "metadata": metadata,
+        }
+        coord.apply_state_snapshot(validated)
+        return {"status": "ok", "applied_nodes": len(nodes)}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.post(
+    "/api/v1/ha/heartbeat",
+    summary="HA leader-election heartbeat",
+    description="Receive a leader-election heartbeat from a peer coordinator, "
+                "refreshing its last-seen time and election term.",
+    include_in_schema=False,
+)
+async def ha_heartbeat(request: Request) -> dict:
+    """Receive a leader-election heartbeat from a peer coordinator.
+
+    Refreshes the sender's liveness and adopts its term if higher, which is
+    how the Raft-like leader election in ``RayFaultTolerance`` stays
+    consistent across coordinators. Authenticated with the same shared HA
+    secret as the snapshot endpoint when ``DISTLLM_HA_SECRET`` is configured.
+    """
+    coord = state.coordinator
+    if coord is None:
+        return {"status": "error", "detail": "coordinator not available"}
+
+    # SECURITY: Require the same HA shared secret as the snapshot endpoint
+    # (fail closed when not configured).
+    rejection = _ha_secret_rejection(request)
+    if rejection is not None:
+        return rejection
+
+    try:
+        raw = await request.json()
+        if not isinstance(raw, dict):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "detail": "request body must be a JSON object"},
+            )
+
+        sender_id = str(raw.get("coordinator_id", ""))
+        if not sender_id:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "detail": "missing coordinator_id"},
+            )
+        try:
+            term = int(raw.get("term", 0))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "detail": "term must be an integer"},
+            )
+        state_raw = raw.get("state")
+        peer_state = state_raw if isinstance(state_raw, dict) else None
+
+        election = getattr(getattr(coord, "_election", None), "_ha_election", None)
+        if election is None:
+            return {"status": "error", "detail": "HA election not enabled"}
+
+        peer = election.handle_heartbeat_request(sender_id, term, peer_state)
+        return {"status": "ok", "peer": peer}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
@@ -1218,6 +1533,7 @@ async def ha_state_snapshot(request: Request) -> dict:
     summary="Pipeline orchestrator health and metrics",
     description="Return pipeline health status, node execution metrics, transport info, and configuration.",
     response_description="Pipeline health and metrics",
+    response_model=PipelineHealthResponse,
     dependencies=[Depends(require_role("auditor"))],
 )
 async def api_pipeline_health(request: Request) -> dict:
@@ -1253,6 +1569,7 @@ async def api_pipeline_health(request: Request) -> dict:
     summary="Node reputation scores",
     description="Return reputation scores for all registered nodes based on reliability, speed, uptime, and health.",
     response_description="Reputation scores per node",
+    response_model=dict,
     dependencies=[Depends(require_role("auditor"))],
 )
 async def api_cluster_reputation(request: Request) -> dict:
@@ -1352,6 +1669,7 @@ async def api_waterfall(request: Request, limit: int = 50) -> list:
     summary="Edge-to-cloud continuum statistics",
     description="Return statistics about the edge-to-cloud device continuum including device types, transports, and layer assignments.",
     response_description="Continuum statistics",
+    response_model=dict,
     dependencies=[Depends(require_role("auditor"))],
 )
 async def api_continuum_stats(request: Request) -> dict:
@@ -1367,6 +1685,7 @@ async def api_continuum_stats(request: Request) -> dict:
     summary="Cost tracking summary",
     description="Return cost tracking summary including per-request costs, savings vs cloud APIs, and throughput metrics.",
     response_description="Cost summary",
+    response_model=dict,
     dependencies=[Depends(require_role("auditor"))],
 )
 async def api_cost_summary(request: Request, tenant_id: str = "") -> dict:
@@ -1408,6 +1727,40 @@ async def api_streaming_cost_stats(request: Request) -> dict:
         return get_streaming_cost_tracker().get_stats()
     except ImportError:
         return {"status": "not_available"}
+
+
+# ── API Changelog ─────────────────────────────────────────────────
+
+_API_CHANGELOG_DATA: dict[str, str | list[dict[str, str]]] = {
+    "version": "0.4.0",
+    "date": "2026-07-20",
+    "changes": [
+        {"date": "2026-07-20", "change": "OpenAPI docs enabled by default with admin-level auth gate on /docs"},
+        {"date": "2026-07-18", "change": "Added cluster key rotation with grace period"},
+        {"date": "2026-07-15", "change": "Added HA state snapshot endpoint for standby replication"},
+        {"date": "2026-07-12", "change": "Added cost tracking and streaming cost endpoints"},
+        {"date": "2026-07-10", "change": "Added edge-to-cloud continuum statistics endpoint"},
+        {"date": "2026-07-08", "change": "Added backpressure middleware with graduated shedding tiers"},
+        {"date": "2026-07-05", "change": "Added prompt injection detection and mitigation middleware"},
+        {"date": "2026-07-03", "change": "Added circuit breaker middleware for downstream protection"},
+        {"date": "2026-07-01", "change": "Extended federation with load-balancer and heartbeat protocol"},
+        {"date": "2026-06-28", "change": "Added WebSocket metrics streaming at /ws/metrics"},
+        {"date": "2026-06-25", "change": "Added SSE metrics stream at /api/metrics/stream"},
+    ],
+}
+
+
+@app.get(
+    "/api/changelog",
+    summary="API changelog",
+    description="Return recent API changes and version history.",
+    response_description="API changelog with version, date, and list of changes",
+    response_model=ChangelogResponse,
+    dependencies=[Depends(require_role("auditor"))],
+)
+async def api_changelog(request: Request) -> dict:
+    """Return recent API changelog entries."""
+    return _API_CHANGELOG_DATA
 
 
 def _extract_prom_gauge(data: bytes, metric_name: str) -> float | None:
@@ -1492,7 +1845,7 @@ def create_coordinator(
 
     # Start gRPC server for worker connections
     # Create a minimal node-like object for the gRPC server
-    coord_port = 50050  # Default coordinator gRPC port
+    coord_port = DEFAULT_COORD_PORT  # Default coordinator gRPC port
     try:
         from distllm.dist.node_service import NodeServer
 
@@ -1527,7 +1880,12 @@ def create_coordinator(
                 return True
 
         coord._node_wrapper = _CoordinatorNode(coord)
-        coord._node_server = NodeServer(coord._node_wrapper, port=coord_port, max_workers=4)
+        coord._node_server = NodeServer(
+            coord._node_wrapper,
+            port=coord_port,
+            max_workers=4,
+            cluster_key=getattr(coord.config, "cluster_key", None),
+        )
         coord._node_server.start(
             use_tls=coord_tls,
             cert_file=coord_cert_file,

@@ -15,7 +15,7 @@ class TestKVGossip:
     def test_gossip_store_and_discover(self):
         """Gossip should propagate KV cache entries between nodes."""
         from distllm.core.cache_index import CacheIndex
-        from distllm.core.gossip_protocol import GossipProtocol
+        from distllm.dist.p2p.gossip import GossipProtocol
 
         # Create gossip protocol for two nodes
         gossip_a = GossipProtocol(node_id="coordinator-a", max_peers=5, cache_ttl=60.0)
@@ -25,23 +25,27 @@ class TestKVGossip:
         gossip_a.add_peer("coordinator-b")
         gossip_b.add_peer("coordinator-a")
 
-        # Coordinator A stores a cache entry
+        # Coordinator A stores a cache entry in its index AND in the
+        # gossip protocol's local state (store_local is the propagation API).
         cache_index_a = CacheIndex()
         cache_index_a.add("prefix_abc123", "coordinator-a")
         gossip_a._cache_index = cache_index_a
+        gossip_a.store_local("prefix_abc123", "coordinator-a")
 
-        # Advertise
-        adv = gossip_a.advertise()
+        # Advertise: dict envelope with the advertised prefixes.
+        adv = gossip_a.advertise(delta_only=False)
+        assert isinstance(adv, dict)
         assert len(adv) > 0
+        assert "prefix_abc123" in adv["cache_prefixes"]
 
         # Coordinator B processes the advertisement
         # This simulates one gossip round
-        assert isinstance(adv, list)
+        assert adv["node_id"] == "coordinator-a"
 
     def test_gossip_advertise_and_process(self):
         """Advertise known prefixes, process remote advertisements."""
         from distllm.core.cache_index import CacheIndex
-        from distllm.core.gossip_protocol import GossipProtocol
+        from distllm.dist.p2p.gossip import GossipProtocol
 
         gossip = GossipProtocol(node_id="test-node")
         cache_index = CacheIndex()
@@ -58,7 +62,7 @@ class TestKVGossip:
     def test_gossip_request_response(self):
         """Request and response for missing cache entries."""
         from distllm.core.cache_index import CacheIndex, CacheIndexEntry
-        from distllm.core.gossip_protocol import GossipProtocol
+        from distllm.dist.p2p.gossip import GossipProtocol
 
         gossip = GossipProtocol(node_id="requester")
         cache_index = CacheIndex()
@@ -76,23 +80,24 @@ class TestKVGossip:
         gossip._cache_index = cache_index
 
         # Build request for missing prefix
-        request = gossip._build_request(["prefix_abc"])
-        assert request is not None or len(gossip._peers) == 0
+        request = gossip.build_request("peer-node", ["prefix_abc"])
+        assert request is not None or len(gossip.get_peers()) == 0
 
     def test_gossip_cleanup_expired(self):
         """Expired entries should be cleaned up."""
         from distllm.core.cache_index import CacheIndex
-        from distllm.core.gossip_protocol import GossipProtocol
+        from distllm.dist.p2p.gossip import GossipProtocol
 
         gossip = GossipProtocol(node_id="cleaner", cache_ttl=0.001)
         cache_index = CacheIndex()
-        cache_index.add("prefix_stale", "some-node")
+        cache_index.add("prefix_stale", "some-node", ttl=0.001)
         gossip._cache_index = cache_index
 
         time.sleep(0.01)
-        # Cleanup should remove expired entries
-        gossip._cleanup()
-        assert len(cache_index._entries) == 0 or cache_index.get("prefix_stale") is None
+        # Cleanup should remove expired entries.
+        gossip.cleanup_expired()
+        cache_index.prune_expired()
+        assert cache_index.lookup("prefix_stale") is None
 
 
 # ===================================================================
@@ -104,7 +109,7 @@ class TestCoordinatorGossipIntegration:
         """Coordinator should discover cache entries via gossip."""
         from distllm.core.coordinator import Coordinator
         from distllm.core.cache_index import CacheIndex
-        from distllm.core.gossip_protocol import GossipProtocol
+        from distllm.dist.p2p.gossip import GossipProtocol
 
         cache_index = CacheIndex()
         cache_index.add("prefix_known", "peer-coordinator")
@@ -112,13 +117,13 @@ class TestCoordinatorGossipIntegration:
         gossip = GossipProtocol(node_id="local-coord")
         gossip._cache_index = cache_index
 
-        # Verify gossip lookup works
-        result = gossip.lookup_in_cache_index("prefix_known")
-        assert result is not None or gossip._cache_index.get("prefix_known") is not None
+        # Verify lookup through the injected cache index works.
+        result = gossip._cache_index.lookup("prefix_known")
+        assert result is not None and result.owner == "peer-coordinator"
 
     def test_gossip_peer_management(self):
         """Peer addition and removal should work."""
-        from distllm.core.gossip_protocol import GossipProtocol
+        from distllm.dist.p2p.gossip import GossipProtocol
 
         gossip = GossipProtocol(node_id="node-a", max_peers=3)
         gossip.add_peer("node-b")
@@ -126,7 +131,7 @@ class TestCoordinatorGossipIntegration:
         gossip.add_peer("node-d")
         # Should not exceed max_peers
         gossip.add_peer("node-e")
-        assert len(gossip._peers) <= 3
+        assert len(gossip.get_peers()) <= 3
 
         gossip.remove_peer("node-c")
-        assert len(gossip._peers) == 2
+        assert len(gossip.get_peers()) == 2

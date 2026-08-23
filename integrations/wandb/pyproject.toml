@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distllm-wandb"
+version = "0.4.1"
+description = "Merged W&B integration for DistLLM — experiment tracking, GPU monitoring, latency histograms, partition plans, and quantization reporting"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Distributed LLM Contributors"},
+]
+keywords = [
+    "llm",
+    "inference",
+    "wandb",
+    "experiment-tracking",
+    "distributed",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "wandb>=0.18",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "nvidia-ml-py>=12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/distributed-llm/distributed-llm"
+Documentation = "https://github.com/distributed-llm/distributed-llm#readme"
+Repository = "https://github.com/distributed-llm/distributed-llm"
+Issues = "https://github.com/distributed-llm/distributed-llm/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["distllm_wandb*"]

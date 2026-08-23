@@ -4,6 +4,7 @@ import os
 import time
 
 import typer
+from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
@@ -1194,10 +1195,47 @@ def chat(
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
     max_tokens: int = typer.Option(256, "--max-tokens", help="Max tokens to generate"),
     temperature: float = typer.Option(0.7, "--temperature", help="Sampling temperature"),
+    stream: bool = typer.Option(False, "--stream", "-s", help="Use token-by-token streaming with Rich Live display"),
 ):
     """Interactive chat with the model via the API."""
-    from distllm.cli.chat import run_chat
-    run_chat(
+    if stream:
+        from distllm.cli.chat_stream import run_chat_stream
+        run_chat_stream(
+            model=model,
+            host=host,
+            port=port,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            console=console,
+        )
+    else:
+        from distllm.cli.chat import run_chat
+        run_chat(
+            model=model,
+            host=host,
+            port=port,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            console=console,
+        )
+
+
+@app.command("chat-stream")
+def chat_stream_command(
+    model: str = typer.Option("distributed-llm", "--model", "-m", help="Model identifier"),
+    host: str = typer.Option("localhost", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+    max_tokens: int = typer.Option(256, "--max-tokens", help="Max tokens to generate"),
+    temperature: float = typer.Option(0.7, "--temperature", help="Sampling temperature"),
+):
+    """Streaming interactive chat with token-by-token Rich Live display.
+
+    Supports multi-line input (Enter=newline, Meta+Enter=submit),
+    persistent history (``~/.distllm/chat_history``), and slash commands
+    (``/help`` for details).
+    """
+    from distllm.cli.chat_stream import run_chat_stream
+    run_chat_stream(
         model=model,
         host=host,
         port=port,
@@ -1393,8 +1431,16 @@ def system_cost_avoid(
 @system_app.command("doctor")
 def system_doctor():
     """Run system diagnostics (CUDA, ports, config, disk)."""
+    import sys
+
     from distllm.cli.doctor import main as doctor_main
-    doctor_main()
+    # `distllm system doctor` leaves ["system", "doctor"] in sys.argv, which the
+    # doctor CLI's argparse would reject as stray positionals — pass only the
+    # doctor-specific arguments.
+    doctor_argv = list(sys.argv[1:])
+    while doctor_argv and doctor_argv[0] in ("system", "doctor"):
+        doctor_argv = doctor_argv[1:]
+    doctor_main(doctor_argv)
 
 
 # --- Draft-as-a-Service (DaaS) group ---
@@ -1605,6 +1651,19 @@ def tutorial():
     """Interactive guided setup for first-time users."""
     from distllm.cli.tutorial import main as tutorial_main
     tutorial_main()
+
+
+@app.command()
+def onboard(
+    config_path: str = typer.Option(
+        "",
+        "--config", "-c",
+        help="Path to write generated config YAML (default: ~/.distllm/config.yaml)",
+    ),
+):
+    """Interactive first-run wizard — detect hardware, choose a model, generate config."""
+    from distllm.cli.onboard import run_onboard
+    run_onboard(config_path=config_path or None, console=console)
 
 
 @cluster_app.command("autopsy")

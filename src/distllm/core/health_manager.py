@@ -113,6 +113,15 @@ class HealthManager:
     def health_store(self) -> HealthStateStore:
         return self._health_store
 
+    def is_healthy(self) -> bool:
+        """Return whether the coordinator's health manager is running.
+
+        Used by the HA replication heartbeat as a lightweight liveness signal
+        (a manager that has been started with a live pipeline is considered
+        healthy).
+        """
+        return self._running.is_set() and self._pipeline is not None
+
     # --- State transition callback ---
 
     def _on_state_change(

@@ -5,6 +5,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -176,6 +177,17 @@ class BatchScheduler:
         self._scheduling_policy: SchedulingPolicy | None = None
 
         # 6. Preemption policy (delegated to PreemptionManager)
+
+    def set_model_info(self, model_info) -> None:
+        """Attach model metadata (dict or object) used for metric labels.
+
+        Dicts are normalized to an attribute namespace because metric code
+        reads ``self._model_info.model_name``.
+        """
+        if isinstance(model_info, dict):
+            model_info = SimpleNamespace(**model_info)
+        self._model_info = model_info
+        self._use_length_grouping = model_info is not None
 
     def set_cache_manager(self, cache_mgr) -> None:
         """Set the cache manager for radix tree prefix storage."""
@@ -1067,6 +1079,15 @@ class BatchScheduler:
             for rid in done_rids:
                 self.active.pop(rid, None)
                 self._chunked_prefill.pop(rid, None)
+                # Free the PagedAttention KV blocks for completed sequences
+                # (F-041: previously the free path only scanned still-active
+                # sequences, so blocks leaked per completed request until the
+                # pool was exhausted).
+                if self._kv_cache_mgr is not None:
+                    try:
+                        self._kv_cache_mgr.free_paged_blocks(rid)
+                    except Exception as exc:  # noqa: BLE001 - best-effort free
+                        logger.debug(f"Failed to free paged blocks for {rid}: {exc}")
 
         # Record energy usage for this iteration
         if self._energy_scheduler is not None:

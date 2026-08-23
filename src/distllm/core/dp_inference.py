@@ -280,7 +280,10 @@ class RDPAccounting:
         Returns:
             The smallest epsilon achievable for the given delta.
         """
-        if not self._total_rdp:
+        if not self._total_rdp or not any(self._total_rdp):
+            # No queries recorded: zero privacy spent.  (Skipping this makes
+            # the log(1/delta)/(alpha-1) term surface as a phantom ~0.01
+            # epsilon for an accountant that never saw a query.)
             return 0.0
 
         best_epsilon = float("inf")
@@ -915,58 +918,20 @@ class DifferentialPrivacyInference:
         if sigma <= 0:
             sigma = 0.001  # Small epsilon to avoid division issues
 
-        # Log warning that DP noise is not applied at this wrapper layer.
-        # DP noise must be applied at the logit level (before argmax/multinomial),
-        # but this wrapper only sees decoded strings from generate_stream().
-        # To apply actual DP, integrate dp_noise_injection() into the engine's
-        # _sample() method, or use the engine's forward() + _dp_sample() directly.
-        logger.warning(
-            "DP inference: noise mechanism not wired into the generation path. "
-            "Privacy budget is tracked but output tokens do not have DP guarantees. "
-            "Use dp_inference._dp_sample() on raw logits for actual DP."
+        # FAIL CLOSED: the DP mechanism is not wired into this engine's
+        # logit-level sampling path, so we cannot produce differentially-private
+        # output at this wrapper layer.  Raising — instead of returning
+        # plaintext and charging the tenant's privacy budget — prevents the
+        # false-advertising harm where a tenant believes they are protected
+        # while paying a budget that protects nothing.
+        raise NotImplementedError(
+            "DifferentialPrivacyInference cannot produce DP output at this "
+            "wrapper layer: the engine's logit-level sampling path is not wired "
+            "through _dp_sample(). No privacy budget was charged. Wire the "
+            "engine's forward()/sampling through _dp_sample(), or apply "
+            "apply_dp_to_logits() to raw logits, before using this class for "
+            "generation."
         )
-
-        if hasattr(self._engine, "generate_stream"):
-            stream = self._engine.generate_stream(
-                prompt,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                user_id=user_id,
-                **kwargs,
-            )
-            tokens = list(stream)
-            text = "".join(tokens)
-            token_count = len(tokens)
-            eps_cost = self._estimate_epsilon_cost(sigma, token_count)
-            self._budget_manager.record_query(user_id, sigma, epsilon_cost=eps_cost)
-            return DPGenerationResult(
-                text=text,
-                privacy_cost=self._budget_manager.check_budget(user_id),
-                token_count=token_count,
-                noise_scale=sigma,
-            )
-
-        elif hasattr(self._engine, "generate"):
-
-            eps_cost = self._estimate_epsilon_cost(sigma, token_count)
-            self._budget_manager.record_query(
-                user_id, sigma, epsilon_cost=eps_cost,
-            )
-
-            return DPGenerationResult(
-                text=text,
-                privacy_cost=self._budget_manager.check_budget(user_id),
-                token_count=token_count,
-                noise_scale=sigma,
-            )
-
-        else:
-            raise TypeError(
-                "Underlying engine does not have a 'generate' or "
-                "'generate_stream' method."
-            )
 
     # --
     # Internal
@@ -993,7 +958,7 @@ class DifferentialPrivacyInference:
             if temperature == 0:
                 return noisy_logits.argmax(dim=-1)
             probs = torch.softmax(noisy_logits / temperature, dim=-1)
-            return torch.multinomial(probs, num_samples=1)
+            return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     def _estimate_epsilon_cost(self, sigma: float, num_tokens: int) -> float:
         """Estimate the privacy cost (epsilon) for *num_tokens* tokens.

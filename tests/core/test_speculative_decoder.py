@@ -30,16 +30,20 @@ def _always_logit(token_id: int):
 def _identity_target(input_ids, **kwargs):
     """Mock target: logits[pos] predicts the token AT input[pos].
 
-    Convention: ``target_logits[:, pos, :]`` represents the distribution
-    over the token at input position ``pos`` (not ``pos+1``).  This
-    matches the convention used by SpeculativeDecoder._verify_tokens.
+    Convention: ``target_logits[:, pos, :]`` is the distribution over the
+    token at position ``pos+1`` — the same convention used by
+    ``SpeculativeDecoder._verify_tokens``.  The last position predicts the
+    last token itself so greedy verification of a final draft token works.
     """
     batch, seq_len = input_ids.shape
     logits = torch.full((batch, seq_len, 100), -10.0)
-    for i in range(seq_len):
-        t = input_ids[0, i].item()
+    for i in range(seq_len - 1):
+        t = input_ids[0, i + 1].item()
         if t < 100:
             logits[0, i, t] = 10.0
+    lt = input_ids[0, -1].item()
+    if lt < 100:
+        logits[0, -1, lt] = 10.0
     return logits
 
 

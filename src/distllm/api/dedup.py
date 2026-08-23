@@ -32,7 +32,15 @@ class _FingerprintCache:
         self._wait_events: dict[str, set[asyncio.Event]] = {}
         self._max_results = max_size * 2  # Cap results dict separately
 
-    def fingerprint(self, body: bytes) -> str:
+    def fingerprint(self, body: bytes, tenant_id: str | None = None) -> str:
+        """Return a SHA-256 fingerprint of *body*.
+
+        When ``tenant_id`` is given it is mixed into the hash BEFORE the body,
+        so a cached response for one tenant/key can never be served to another
+        (the same body under a different identity produces a different key).
+        """
+        if tenant_id:
+            body = f"{tenant_id}|".encode("utf-8") + body
         return hashlib.sha256(body).hexdigest()
 
     def is_in_flight(self, fp: str) -> bool:
@@ -133,7 +141,11 @@ class DedupMiddleware(BaseHTTPMiddleware):
         if _is_streaming_request(body_bytes):
             return await call_next(request)
 
-        fp = _cache.fingerprint(body_bytes)
+        # Namespace the fingerprint by the authenticated identity (api_key_id,
+        # set by AuthMiddleware which runs OUTSIDE this middleware) so a cached
+        # response for one tenant/key can never be served to another tenant/key.
+        key_id = getattr(request.state, "api_key_id", "") or getattr(request.state, "tenant", "")
+        fp = _cache.fingerprint(body_bytes, tenant_id=key_id or None)
         request.state.dedup_fingerprint = fp
 
         cached = _cache.lookup(fp)

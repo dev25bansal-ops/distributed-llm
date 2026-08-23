@@ -62,8 +62,6 @@ def to_proto_tensor(tensor: torch.Tensor) -> node_pb2.TensorProto:
 
 def from_proto_tensor(pb: node_pb2.TensorProto, device: str = "cpu") -> torch.Tensor:
     """Convert protobuf TensorProto back to torch tensor."""
-    if not pb.shape:
-        return torch.empty(0, device=device)
     dtype_map = {
         "torch.float32": torch.float32,
         "torch.float16": torch.float16,
@@ -84,9 +82,13 @@ def from_proto_tensor(pb: node_pb2.TensorProto, device: str = "cpu") -> torch.Te
     tdtype = dtype_map.get(pb.dtype, torch.float32)
     if pb.raw_data:
         arr = np.frombuffer(pb.raw_data, dtype=np.uint8)
+        # reshape([]) restores a 0-dim scalar; reshape([...]) the full shape.
         tensor = torch.from_numpy(arr).view(tdtype).reshape(list(pb.shape))
-    else:
+    elif pb.data:
         tensor = torch.tensor(list(pb.data), dtype=tdtype).reshape(list(pb.shape))
+    else:
+        # Genuinely empty tensor (no payload at all).
+        tensor = torch.empty(0, dtype=tdtype)
     return tensor.to(device)
 
 

@@ -19,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from distllm.constants import DeviceFamily, DEVICE_TO_FAMILY
+from distllm.constants import DeviceFamily, DEVICE_FAMILY
 from distllm.core.device_registry import DeviceInfo, detect_all_devices
 
 
@@ -85,7 +85,7 @@ def build_heterogeneous_cluster(
 
         dev_info = DeviceInfo(
             device_type=device_type,
-            device_family=DEVICE_TO_FAMILY.get(device_type, DeviceFamily.UNKNOWN),
+            device_family=DEVICE_FAMILY.get(device_type, DeviceFamily.UNKNOWN),
             device_id=cfg.get("device_id", 0),
             name=cfg.get("gpu_name", device_type.upper()),
             total_memory_bytes=cfg.get("total_memory", 8 * 1024**3),

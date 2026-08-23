@@ -10,6 +10,17 @@ from distllm.dist.pipeline.simulator import PipelineSimulator
 from distllm.dist.pipeline.strategy import PipelineStrategy, StrategySelector
 from distllm.dist.pipeline.transport import TransportBackend, TensorTransport
 from distllm.dist.pipeline.orchestrator import PipelineOrchestrator
+from distllm.dist.pipeline.pipeline_reconfig import (
+    TopologyVersion,
+    NodeAssignment,
+    PipelineCheckpoint,
+    PipelineCheckpointer,
+    ReconfigState,
+    ReconfigurationPlan,
+    PipelineReconfigurator,
+    RequestRoute,
+    RequestPipelineSelector,
+)
 from distllm.dist.pipeline.serialization import (
     cleanup_tensor_copy_streams,
     get_tensor_copy_stream,
@@ -39,6 +50,15 @@ __all__ = [
     "TransportBackend",
     "TensorTransport",
     "PipelineOrchestrator",
+    "TopologyVersion",
+    "NodeAssignment",
+    "PipelineCheckpoint",
+    "PipelineCheckpointer",
+    "ReconfigState",
+    "ReconfigurationPlan",
+    "PipelineReconfigurator",
+    "RequestRoute",
+    "RequestPipelineSelector",
     "cleanup_tensor_copy_streams",
     "get_tensor_copy_stream",
     "forward_request_to_proto",

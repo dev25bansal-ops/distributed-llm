@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namePrefix: distllm-
+
+commonLabels:
+  app.kubernetes.io/name: distllm
+  app.kubernetes.io/managed-by: kustomize
+  app.kubernetes.io/component: coordinator
+
+resources:
+  - coordinator-deployment.yaml
+  - worker-deployment.yaml
+  - service.yaml
+  - configmap.yaml
+  - hpa.yaml

@@ -1,0 +1,23 @@
+name: Pre-commit Auto-Fix
+on:
+  pull_request:
+    types: [opened, synchronize]
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pre-commit
+        run: pip install pre-commit
+      - name: Run pre-commit
+        run: pre-commit run --all-files || true
+      - name: Commit fixes
+        run: |
+          git config user.name "pre-commit-ci"
+          git config user.email "noreply@github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "[pre-commit] Auto-fix formatting and lint"
+          git push

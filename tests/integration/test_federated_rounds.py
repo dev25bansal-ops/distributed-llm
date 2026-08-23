@@ -84,6 +84,7 @@ class TestFederatedRounds:
             node_id="node-1",
             local_steps=5,
             num_rounds=1,
+            dp_epsilon=float("inf"),  # deterministic: this test isolates averaging
             gossip_receive=mock_receive,
             apply_gradients=lambda g, lr: applied_grads.append(g),
         )

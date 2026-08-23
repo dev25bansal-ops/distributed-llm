@@ -243,7 +243,7 @@ class DQNAgent:
         """Load model weights from disk."""
         if hasattr(self, '_q_net') and self._q_net is not None and os.path.exists(path):
             import torch
-            self._q_net.load_state_dict(torch.load(path))
+            self._q_net.load_state_dict(torch.load(path, weights_only=True))
             self._target_net.load_state_dict(self._q_net.state_dict())
             return True
         return False

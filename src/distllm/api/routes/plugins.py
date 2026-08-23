@@ -15,13 +15,31 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..auth_deps import require_role
 
 
-router = APIRouter(tags=["plugins"], prefix="/v1/plugins")
+# Plugin management is admin-only: install/unload/toggle change what code
+# runs inside every inference request on this node.
+router = APIRouter(
+    tags=["plugins"],
+    prefix="/v1/plugins",
+    dependencies=[Depends(require_role("admin"))],
+)
+
+
+def _require_plugin_system() -> Any:
+    """Return the coordinator's plugin system or raise 503."""
+    plugin_sys = getattr(g, "coordinator", None)
+    if plugin_sys is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Coordinator not available — plugins require a loaded model",
+        )
+    return plugin_sys
 
 
 # ── Models ─────────────────────────────────────────────────────────────
@@ -72,7 +90,7 @@ PLUGIN_DOCS: dict[str, dict[str, str]] = {
 @router.get("", response_model=PluginListResponse)
 async def list_plugins():
     """List all installed plugins with their status."""
-    plugin_sys = getattr(g, "coordinator", None)
+    plugin_sys = _require_plugin_system()
     if plugin_sys is None:
         return PluginListResponse(plugins=[], total=0)
 
@@ -106,7 +124,7 @@ async def plugin_registry():
 @router.get("/{plugin_name}", response_model=PluginInfo)
 async def get_plugin(plugin_name: str):
     """Get details of a specific plugin."""
-    plugin_sys = getattr(g, "coordinator", None)
+    plugin_sys = _require_plugin_system()
     if plugin_sys is None:
         raise HTTPException(status_code=404, detail="Plugin system not initialized")
 

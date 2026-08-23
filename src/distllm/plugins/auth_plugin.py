@@ -17,7 +17,9 @@ Roles (highest to lowest privilege):
 Configuration (environment variables):
 
 * ``DISTLLM_AUTH_ENABLED`` — enable the plugin (default: "1")
-* ``DISTLLM_AUTH_SECRET`` — HMAC secret for JWT validation
+* ``DISTLLM_AUTH_SECRET`` — HMAC secret for JWT validation (must be a random
+  shared secret of at least 32 characters; PEM keys are only supported via
+  PyJWT for RS256). An insecure secret disables JWT authentication (fail closed).
 * ``DISTLLM_AUTH_JWT_AUDIENCE`` — expected JWT audience claim
 * ``DISTLLM_AUTH_JWT_ISSUER`` — expected JWT issuer claim
 * ``DISTLLM_AUTH_RATELIMIT_ADMIN`` — admin rate limit per hour (default: 0 = unlimited)
@@ -79,8 +81,13 @@ METHOD_ROLE_MAP: dict[str, str] = {
 #: Paths exempt from authorization checks (already handled by AuthMiddleware).
 _EXEMPT_PATHS: frozenset[str] = frozenset({
     "/health",
+    "/v1/health",
+    "/v1/health/readiness",
+    "/v1/health/liveness",
     "/ready",
     "/live",
+    "/healthz",
+    "/readyz",
     "/metrics",
 })
 
@@ -92,6 +99,10 @@ _DEFAULT_ROLE_LIMITS: dict[str, int] = {
     "inference-only": 1000,
     "read-only": 100,
 }
+
+#: Minimum acceptable shared-secret length for HS256 JWT validation. Shorter
+#: secrets are brute-forceable and must never authenticate a token.
+_MIN_JWT_SECRET_LENGTH = 32
 
 
 # ── Sliding window counter ────────────────────────────────────────────────
@@ -152,16 +163,43 @@ def _b64_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data)
 
 
+def _is_pem_key(secret: str | None) -> bool:
+    """Return ``True`` if *secret* looks like a PEM-encoded key/cert block.
+
+    A PEM *public* key is public material — using it as an HMAC secret makes
+    every HS256 token forgeable, so the pure-Python fallback must never accept
+    it. RS256 deployments must use PyJWT, which handles PEM keys correctly.
+    """
+    return bool(secret) and secret.lstrip().startswith("-----BEGIN")
+
+
 def _validate_jwt_hs256(token: str, secret: str) -> dict[str, Any] | None:
-    """Validate an HS256 JWT without PyJWT (pure-Python fallback).
+    """Validate an HS256 JWT without PyJWT (hardened pure-Python fallback).
+
+    Fail-closed by design:
+
+    * Only ``alg == "HS256"`` tokens are accepted — ``alg: none`` and
+      asymmetric algorithms are rejected (CVE-2015-9235-style confusion).
+    * The shared secret must be at least ``_MIN_JWT_SECRET_LENGTH`` chars.
+    * PEM-encoded keys are rejected: a PEM *public* key is public material,
+      so HMAC-ing with it would let anyone forge tokens.
 
     Returns the decoded payload on success, ``None`` on failure.
     """
     try:
+        if not secret or _is_pem_key(secret) or len(secret) < _MIN_JWT_SECRET_LENGTH:
+            return None
+
         parts = token.split(".")
         if len(parts) != 3:
             return None
         header_b64, payload_b64, signature_b64 = parts
+
+        # Parse and whitelist the algorithm before trusting the signature.
+        header = json.loads(_b64_decode(header_b64))
+        if header.get("alg") != "HS256":
+            logger.warning("JWT rejected: fallback only supports HS256 (got %r)", header.get("alg"))
+            return None
 
         # Verify signature
         message = f"{header_b64}.{payload_b64}".encode()
@@ -173,6 +211,8 @@ def _validate_jwt_hs256(token: str, secret: str) -> dict[str, Any] | None:
         # Decode payload
         payload_bytes = _b64_decode(payload_b64)
         payload = json.loads(payload_bytes)
+        if not isinstance(payload, dict):
+            return None
 
         # Check expiry
         now = time.time()
@@ -186,7 +226,7 @@ def _validate_jwt_hs256(token: str, secret: str) -> dict[str, Any] | None:
             return None
 
         return payload
-    except (json.JSONDecodeError, ValueError, KeyError, Exception) as exc:
+    except Exception as exc:
         logger.debug(f"JWT fallback validation failed: {exc}")
         return None
 
@@ -204,6 +244,15 @@ def validate_jwt(
 
     Returns the decoded payload dict on success, ``None`` on failure.
     """
+    # Fail closed on weak credentials on BOTH paths. A PEM key is only usable
+    # when PyJWT can verify an asymmetric signature; a short shared secret is
+    # brute-forceable and must never authenticate a token.
+    if _is_pem_key(secret):
+        if not _HAS_PYJWT:
+            return None
+    elif not secret or len(secret) < _MIN_JWT_SECRET_LENGTH:
+        return None
+
     if _HAS_PYJWT:
         try:
             options: dict[str, Any] = {
@@ -212,8 +261,7 @@ def validate_jwt(
             }
             # Auto-detect: if secret looks like a PEM public key, use RS256;
             # otherwise use HS256 (shared secret).
-            _is_pem = secret.strip().startswith("-----BEGIN") if isinstance(secret, str) else False
-            _algorithms = ["RS256", "RS384", "RS512"] if _is_pem else ["HS256"]
+            _algorithms = ["RS256", "RS384", "RS512"] if _is_pem_key(secret) else ["HS256"]
 
             payload = _pyjwt.decode(
                 token,
@@ -242,11 +290,13 @@ def validate_jwt(
     if payload is None:
         return None
 
-    # Manual audience/issuer checks for the fallback path
-    if audience and payload.get("aud") and payload["aud"] != audience:
+    # Strict audience/issuer checks for the fallback path: when the server is
+    # configured with an expected aud/iss, the claim MUST be present and match
+    # — a missing claim is a rejection, not a pass.
+    if audience is not None and payload.get("aud") != audience:
         logger.warning("JWT audience mismatch (fallback)")
         return None
-    if issuer and payload.get("iss") and payload["iss"] != issuer:
+    if issuer is not None and payload.get("iss") != issuer:
         logger.warning("JWT issuer mismatch (fallback)")
         return None
 
@@ -287,7 +337,13 @@ class AuthPlugin(PluginBase):
         self._jwt_audience = os.environ.get("DISTLLM_AUTH_JWT_AUDIENCE", "")
         self._jwt_issuer = os.environ.get("DISTLLM_AUTH_JWT_ISSUER", "")
 
-        self._validate_config()
+        # Fail closed: a forgeable JWT config (weak or PEM secret without the
+        # PyJWT RS256 path) disables JWT rather than authenticating tokens.
+        if self._jwt_secret and not self._validate_config():
+            self._jwt_secret = ""
+            self._jwt_audience = ""
+            self._jwt_issuer = ""
+
         self._init_rate_limiters()
 
         jwt_status = "PyJWT" if _HAS_PYJWT else "fallback HS256"
@@ -297,18 +353,43 @@ class AuthPlugin(PluginBase):
             f"rate limits for {len(self._role_limiters)} roles"
         )
 
-    def _validate_config(self) -> None:
-        """Log warnings for insecure or missing configuration."""
-        if self._jwt_secret and len(self._jwt_secret) < 32:
-            logger.warning(
+    def _validate_config(self) -> bool:
+        """Validate ``DISTLLM_AUTH_SECRET`` and report whether JWT is usable.
+
+        Returns ``True`` when the configured secret can safely authenticate
+        tokens, ``False`` when JWT must be disabled (fail closed). A secret
+        that would make tokens forgeable — a short shared secret, or a PEM
+        key with no PyJWT to verify asymmetric signatures — disables JWT
+        with a loud error rather than running insecurely.
+        """
+        if not self._jwt_secret:
+            return False
+
+        if _is_pem_key(self._jwt_secret):
+            if not _HAS_PYJWT:
+                logger.error(
+                    "AuthPlugin: DISTLLM_AUTH_SECRET is a PEM key but PyJWT is not "
+                    "installed, so RS256 tokens cannot be verified. JWT authentication "
+                    "DISABLED. Install PyJWT or configure a random shared secret."
+                )
+                return False
+            logger.info("AuthPlugin: PEM key configured; validating RS256 tokens via PyJWT.")
+            return True
+
+        if len(self._jwt_secret) < _MIN_JWT_SECRET_LENGTH:
+            logger.error(
                 "AuthPlugin: DISTLLM_AUTH_SECRET is shorter than 32 characters. "
-                "Use a strong secret in production."
+                "Short shared secrets allow token forgery; JWT authentication "
+                "DISABLED. Set a random secret of at least 32 characters."
             )
-        if self._jwt_secret and not _HAS_PYJWT:
+            return False
+
+        if not _HAS_PYJWT:
             logger.info(
-                "AuthPlugin: PyJWT not installed; using built-in HS256 fallback. "
+                "AuthPlugin: PyJWT not installed; using hardened built-in HS256 fallback. "
                 "Install PyJWT for full algorithm support: pip install PyJWT"
             )
+        return True
 
     def _init_rate_limiters(self) -> None:
         """Read per-role rate limits from environment variables."""

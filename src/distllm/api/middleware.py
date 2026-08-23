@@ -2,14 +2,17 @@
 
 import os
 import hmac
+import threading
 import time
 import uuid
 import secrets
 from collections import OrderedDict, defaultdict, deque
+from typing import Any, Callable, Optional
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from distllm.api.errors import error_response
 from distllm.api.ip_utils import get_client_ip
@@ -46,6 +49,12 @@ class _RateLimiter:
         self._attempts: dict[str, deque[float]] = defaultdict(deque)
         self._access_order: OrderedDict[str, None] = OrderedDict()
         self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        """Clear all tracked attempts (used between test cases)."""
+        with self._lock:
+            self._attempts.clear()
+            self._access_order.clear()
 
     def set_key_by(self, mode: str) -> None:
         """Change rate limiting key mode at runtime.
@@ -155,16 +164,23 @@ def _get_or_generate_api_key() -> str | None:
     # SECURITY: Log a fingerprint, not the full key. Full keys in logs = credential leak.
     # Logs are written to disk, captured by log aggregators, and visible in CI output.
     import hashlib
+    import sys
     fingerprint = generated_key[:8] + "..." + hashlib.sha256(generated_key.encode()).hexdigest()[:8]
     logger.warning(
         f"API_KEY not set. Generated a secure random API key.\n"
         f"Key fingerprint: {fingerprint}\n"
-        "Save the full key printed below — it will never be shown again:\n"
-        f"Generated API key:\n{generated_key}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "IMPORTANT: Copy this key now and set API_KEY=<key> in your environment.\n"
-        "This is the only time the full key will be displayed.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        "The full key is printed once to stdout (NOT via the logger), so it is "
+        "not persisted in log files, aggregators, or CI. Set API_KEY=<key> in "
+        "your environment and restart."
+    )
+    # Surface the one-time key on stdout only — never through the logger, so the
+    # secret is not written to disk logs or captured by log aggregators.
+    print(
+        "\nGenerated API key (shown once — do NOT paste into logs/screenshots/CI):\n"
+        f"{generated_key}\n"
+        "Set API_KEY=<key> in your environment and restart.\n",
+        file=sys.stdout,
+        flush=True,
     )
     return generated_key
 
@@ -214,11 +230,60 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 "Authentication is always required. Remove this env var."
             )
 
-        # Skip auth for health endpoints (K8s probes, load balancers) and OPTIONS (CORS preflight)
-        if request.url.path in ("/health", "/ready", "/live", "/metrics") or request.method == "OPTIONS":
+        # Health endpoints are exempt — K8s probes, load balancers, and
+        # monitoring systems need unauthenticated access for uptime checks.
+        # The HA leader-election heartbeat is also exempt so peer coordinators
+        # can exchange liveness without per-peer API keys; it is still gated by
+        # the shared X-HA-Secret when DISTLLM_HA_SECRET is configured (see the
+        # /api/v1/ha/heartbeat route).
+        if request.url.path in (
+            "/health",
+            "/v1/health",
+            "/v1/health/readiness",
+            "/v1/health/liveness",
+            "/ready",
+            "/live",
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/api/v1/ha/heartbeat",
+        ):
+            return await call_next(request)
+
+        # OPTIONS (CORS preflight) is intentionally allowed without auth.
+        #
+        # Security note: The browser sends a CORS preflight (OPTIONS) before
+        # any actual authenticated request. It carries no user data, sets no
+        # cookies, and is entirely read-only. Requiring auth here would break
+        # legitimate cross-origin workflows (e.g., a JS client on a different
+        # origin) without providing any meaningful security gain — an attacker
+        # who can send OPTIONS cannot do anything they could not already do
+        # with a normal GET. The actual CORS origin/method/header validation
+        # is enforced server-side by Starlette/FastAPI's CORSMiddleware.
+        if request.method == "OPTIONS":
+            # Log non-trivial OPTIONS paths for observability so operators
+            # can detect unexpected OPTIONS traffic to auth-required endpoints.
+            if request.url.path not in ("/", ""):
+                logger.debug(
+                    "OPTIONS request from {} to {} — CORS preflight (auth bypassed)",
+                    get_client_ip(request),
+                    request.url.path,
+                )
+            return await call_next(request)
+
+        # If SsoMiddleware already authenticated, skip API-key validation.
+        if getattr(request.state, "auth_method", None) == "sso":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
+        if not auth_header:
+            # Browser WebSocket clients cannot set arbitrary headers; the
+            # convention is to pass the token as a subprotocol pair
+            # ["Bearer", "<key>"] in Sec-WebSocket-Protocol.
+            sec_ws = request.headers.get("Sec-WebSocket-Protocol", "")
+            parts = [p.strip() for p in sec_ws.split(",") if p.strip()]
+            if len(parts) >= 2 and parts[0] == "Bearer":
+                auth_header = f"Bearer {parts[1]}"
         client_ip = get_client_ip(request)
 
         if not auth_header.startswith("Bearer ") or len(auth_header) < 8:
@@ -342,3 +407,300 @@ class RequestRateLimitMiddleware(BaseHTTPMiddleware):
                 )
             _request_rate_limiter.record_attempt(client_ip)
         return await call_next(request)
+
+
+# ── ContentModerationMiddleware ──────────────────────────────────────────
+
+import enum as _enum
+from distllm.security.content_moderation.pipeline import ContentModerationPipeline
+from distllm.security.content_moderation.base import ModerationResult
+
+
+class ModerationAction(str, _enum.Enum):
+    """Action to take when moderation is triggered."""
+
+    BLOCK = "block"
+    SANITIZE = "sanitize"
+    FLAG = "flag"
+
+
+class ModerationScope(str, _enum.Enum):
+    """Scope of moderation checking."""
+
+    INPUTS = "inputs"
+    OUTPUTS = "outputs"
+    BOTH = "both"
+
+
+class ContentModerationMiddleware(BaseHTTPMiddleware):
+    """Intercept requests/responses and run the content moderation pipeline.
+
+    Configurable action on violation:
+
+    * ``BLOCK`` -- return a 451 response immediately.
+    * ``SANITIZE`` -- allow the request through but replace the content
+      with the redacted version.
+    * ``FLAG`` -- pass the request through but add ``X-Moderation-Flag``
+      and ``X-Moderation-Detail`` headers to the response.
+
+    Configurable scope per endpoint (default ``BOTH``):
+
+    * ``INPUTS`` -- only moderate request bodies.
+    * ``OUTPUTS`` -- only moderate response bodies.
+    * ``BOTH`` -- moderate both directions.
+
+    Must be placed **after** ``AuthMiddleware`` so that
+    ``request.state.api_key_role`` is populated, but **before** the route
+    handlers so that blocked requests are rejected early.
+
+    Environment variables:
+
+    * ``DISTLLM_MODERATION_ACTION`` -- one of ``block``, ``sanitize``,
+      ``flag`` (default: ``sanitize``).
+    * ``DISTLLM_MODERATION_SCOPE`` -- one of ``inputs``, ``outputs``,
+      ``both`` (default: ``both``).
+    * ``DISTLLM_MODERATION_SKIP_PATHS`` -- comma-separated path prefixes
+      to skip (default: ``/health,/ready,/live,/metrics,/docs,/openapi.json,/redoc``).
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        pipeline: ContentModerationPipeline | None = None,
+        action: ModerationAction | str | None = None,
+        scope: ModerationScope | str | None = None,
+        skip_paths: set[str] | None = None,
+    ) -> None:
+        super().__init__(app)
+        self._pipeline = pipeline or ContentModerationPipeline()
+
+        raw_action = action or os.environ.get("DISTLLM_MODERATION_ACTION", "sanitize")
+        self._action = (
+            ModerationAction(raw_action)
+            if isinstance(raw_action, str)
+            else raw_action
+        )
+
+        raw_scope = scope or os.environ.get("DISTLLM_MODERATION_SCOPE", "both")
+        self._scope = (
+            ModerationScope(raw_scope)
+            if isinstance(raw_scope, str)
+            else raw_scope
+        )
+
+        raw_skip = os.environ.get(
+            "DISTLLM_MODERATION_SKIP_PATHS",
+            "/health,/ready,/live,/metrics,/docs,/openapi.json,/redoc",
+        )
+        self._skip_paths = skip_paths or {p.strip() for p in raw_skip.split(",") if p.strip()}
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.url.path in self._skip_paths:
+            return await call_next(request)
+
+        # ── Input moderation ──────────────────────────────────────────
+        if self._scope in (ModerationScope.INPUTS, ModerationScope.BOTH):
+            result = await self._moderate_request(request)
+            if result is not None:
+                return result  # BLOCK action returned an error response
+
+        # ── Process the request ──────────────────────────────────────
+        response = await call_next(request)
+
+        # ── Output moderation ─────────────────────────────────────────
+        if self._scope in (ModerationScope.OUTPUTS, ModerationScope.BOTH):
+            response = await self._moderate_response(request, response)
+
+        return response
+
+    async def _moderate_request(self, request: Request) -> Response | None:
+        """Moderate the incoming request body.  Returns an error response if
+        the action is BLOCK, otherwise modifies request state in place."""
+        # Read the body if we can (it may already be cached by BodyCacheMiddleware).
+        body_bytes = None
+        try:
+            body_bytes = await request.body()
+        except Exception:
+            pass
+        if not body_bytes:
+            return None
+
+        # Try to parse JSON body.
+        try:
+            import json
+            body = json.loads(body_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+
+        # Extract text content from common LLM request formats.
+        content = self._extract_text(body)
+        if not content:
+            return None
+
+        result = await self._pipeline.async_process(content)
+        if result.passed:
+            return None
+
+        if self._action == ModerationAction.BLOCK:
+            from fastapi.responses import JSONResponse as _JSONResponse
+            detail = self._build_detail(result)
+            return _JSONResponse(
+                status_code=451,
+                content={
+                    "error": {
+                        "message": f"Content moderation blocked: {detail}",
+                        "type": "content_moderation",
+                        "code": "451",
+                    },
+                },
+            )
+
+        if self._action == ModerationAction.SANITIZE:
+            # Store the redacted text so route handlers can use it.
+            request.state.moderation_redacted_text = result.redacted_text
+            request.state.moderation_result = result
+
+        if self._action == ModerationAction.FLAG:
+            request.state.moderation_result = result
+
+        return None
+
+    async def _moderate_response(self, request: Request, response: Response) -> Response:
+        """Moderate the outgoing response body (FLAG and SANITIZE only)."""
+        # Only moderate JSON responses.
+        content_type = response.headers.get("content-type", "")
+        if "json" not in content_type:
+            return response
+
+        body = getattr(response, "body", None)
+        if body is None:
+            return response
+
+        try:
+            import json
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+            return response
+
+        # Extract output text from common LLM response formats.
+        text = self._extract_output_text(payload)
+        if not text:
+            return response
+
+        result = await self._pipeline.async_process(text)
+        if result.passed:
+            return response
+
+        if self._action == ModerationAction.BLOCK:
+            from fastapi.responses import JSONResponse as _JSONResponse
+            detail = self._build_detail(result)
+            return _JSONResponse(
+                status_code=451,
+                content={
+                    "error": {
+                        "message": f"Output moderation blocked: {detail}",
+                        "type": "content_moderation",
+                        "code": "451",
+                    },
+                },
+            )
+
+        if self._action == ModerationAction.SANITIZE:
+            # Replace output text with redacted version.
+            new_body = self._replace_output_text(payload, result.redacted_text)
+            import json as _json
+            from starlette.responses import Response as _Response
+            response = _Response(
+                content=_json.dumps(new_body),
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+
+        if self._action == ModerationAction.FLAG:
+            detail = self._build_detail(result)
+            response.headers["X-Moderation-Flag"] = "true"
+            response.headers["X-Moderation-Detail"] = detail
+
+        return response
+
+    def _extract_text(self, body: dict[str, Any]) -> str:
+        """Extract the primary text content from a request body dict.
+
+        Handles chat completion, completion, and embedding formats.
+        """
+        # Chat messages format
+        messages = body.get("messages", [])
+        if messages and isinstance(messages, list):
+            parts = []
+            for msg in messages:
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    parts.append(content)
+                elif isinstance(content, list):
+                    # Multimodal content -- extract text parts only.
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            parts.append(item.get("text", ""))
+            return " ".join(parts)
+
+        # Prompt / input format
+        prompt = body.get("prompt", body.get("input", ""))
+        if isinstance(prompt, str):
+            return prompt
+
+        return ""
+
+    def _extract_output_text(self, payload: dict[str, Any]) -> str:
+        """Extract generated text from common LLM response formats."""
+        # Chat completion format
+        choices = payload.get("choices", [])
+        if choices and isinstance(choices, list):
+            parts = []
+            for choice in choices:
+                msg = choice.get("message", choice.get("delta", {}))
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    parts.append(content)
+            return " ".join(parts)
+
+        # Simple text response
+        text = payload.get("text", payload.get("response", ""))
+        if isinstance(text, str):
+            return text
+
+        return ""
+
+    def _replace_output_text(
+        self, payload: dict[str, Any], redacted_text: str
+    ) -> dict[str, Any]:
+        """Replace the generated text in a response payload with *redacted_text*."""
+        choices = payload.get("choices", [])
+        if choices and isinstance(choices, list):
+            for choice in choices:
+                msg = choice.get("message", choice.get("delta", {}))
+                if "content" in msg:
+                    msg["content"] = redacted_text
+            return payload
+
+        if "text" in payload:
+            payload["text"] = redacted_text
+        elif "response" in payload:
+            payload["response"] = redacted_text
+
+        return payload
+
+    @staticmethod
+    def _build_detail(result: ModerationResult) -> str:
+        """Build a human-readable detail string from a moderation result."""
+        parts: list[str] = []
+        if result.toxicity and result.toxicity.toxic:
+            parts.append(f"toxicity={result.toxicity.score:.2f}")
+        if result.jailbreak and result.jailbreak.jailbreak_attempt:
+            parts.append(f"jailbreak={result.jailbreak.confidence:.2f}")
+        if result.topic_filter and not result.topic_filter.allowed:
+            parts.append(f"topics={','.join(result.topic_filter.violated_policies)}")
+        if result.pii and result.pii.entities_found:
+            pii_types = sorted(set(e.type for e in result.pii.entities_found))
+            parts.append(f"pii={','.join(pii_types)}")
+        return "; ".join(parts) if parts else "unknown"

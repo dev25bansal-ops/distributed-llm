@@ -297,10 +297,21 @@ class ResourceManager:
 
             recovery_at = self._node_recovery_time.get(node_id, 0)
             if recovery_at > 0 and time.time() >= recovery_at:
-                logger.info(f"Circuit breaker cooldown elapsed for {node_id}, allowing retry")
-                return False
+                # Cooldown elapsed — clear failure counters and draining state
+                # so the node can be retried and routed to again.
+                self._node_failure_counts[node_id] = 0
+                self._node_recovery_time.pop(node_id, None)
+                cooldown_elapsed = True
+            else:
+                cooldown_elapsed = False
 
-            return True
+        if cooldown_elapsed:
+            with self._lock:
+                self._draining_nodes.discard(node_id)
+            logger.info(f"Circuit breaker cooldown elapsed for {node_id}, allowing retry")
+            return False
+
+        return True
 
     def record_success(self, node_id: str) -> None:
         """Record a successful node operation and clear circuit breaker state."""

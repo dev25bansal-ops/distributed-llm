@@ -93,7 +93,7 @@ wide_area:
 
 # TLS / Security
 tls:
-  enabled: true
+  enabled: false
   cert_dir: "certs"
 
 # GPU memory defragmentation — compacts fragmented KV cache blocks

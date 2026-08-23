@@ -1,6 +1,7 @@
 """Embedding tests: POST /v1/embeddings."""
 
 import os
+import secrets
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,24 @@ import torch
 from fastapi.testclient import TestClient
 
 from distllm.api.api_state import g
+from distllm.core.api_key_store import reset_api_key_store
 from distllm.api.server import app
+
+
+def _make_client():
+    test_api_key = secrets.token_urlsafe(32)
+    os.environ.pop("API_KEY_WAS_SET", None)
+    os.environ["API_KEY"] = test_api_key
+    reset_api_key_store()
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
+    return client
+
+
+def _cleanup_auth():
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("API_KEY_WAS_SET", None)
+    reset_api_key_store()
 
 
 def make_mock_coordinator():
@@ -39,6 +57,7 @@ def make_mock_coordinator():
         return " ".join(f"tok-{t}" for t in token_list)
     coord.tokenizer.decode.side_effect = decode_side_effect
     coord.tokenizer.eos_token_id = 0
+    coord.tokenizer.chat_template = None
     coord.generate.return_value = "test response"
 
     mock_model = MagicMock()
@@ -53,6 +72,7 @@ def make_mock_coordinator():
     coord._embedding_loader = None
     coord._vlm_pipeline = None
     coord._spec_decoder = None
+    coord._model_router = None
     return coord
 
 
@@ -61,34 +81,30 @@ class TestEmbeddingsBasic:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        os.environ.pop("API_KEY", None)
-        os.environ.pop("API_KEY_WAS_SET", None)
-        os.environ["DISABLE_AUTH"] = "1"
-        os.environ["DISTLLM_DEV_MODE"] = "1"
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_single_text_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
         assert resp.status_code == 200
 
     def test_multiple_texts_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello", "world", "test"]},
         )
         assert resp.status_code == 200
 
     def test_response_has_data(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
@@ -97,7 +113,7 @@ class TestEmbeddingsBasic:
         assert len(data["data"]) == 1
 
     def test_embedding_is_float_list(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
@@ -106,14 +122,14 @@ class TestEmbeddingsBasic:
         assert all(isinstance(v, float) for v in emb)
 
     def test_response_object_type(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
         assert resp.json()["object"] == "list"
 
     def test_response_has_id(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
@@ -121,7 +137,7 @@ class TestEmbeddingsBasic:
         assert resp.json()["id"].startswith("embed-")
 
     def test_embedding_index_order(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["first", "second", "third"]},
         )
@@ -131,7 +147,7 @@ class TestEmbeddingsBasic:
         assert data[2]["index"] == 2
 
     def test_batch_embedding_count(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["one", "two", "three"]},
         )
@@ -139,7 +155,7 @@ class TestEmbeddingsBasic:
         assert len(data["data"]) == 3
 
     def test_encoding_format_float_explicit(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"], "encoding_format": "float"},
         )
@@ -151,7 +167,7 @@ class TestEmbeddingsBasic:
 
     def test_base64_encoding(self):
         import base64, struct
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"], "encoding_format": "base64"},
         )
@@ -164,7 +180,7 @@ class TestEmbeddingsBasic:
         assert all(isinstance(v, float) for v in floats)
 
     def test_dimension_truncation(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"], "dimensions": 5},
         )
@@ -177,17 +193,18 @@ class TestEmbeddingsBasic:
     def test_without_coordinator_returns_503(self):
         original = g.coordinator
         g.coordinator = None
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/embeddings",
-                json={"model": "distributed-llm", "input": ["Hello world"]},
+                json={"model": "distributed-llm", "input": ["503 test - no coordinator"]},
             )
             assert resp.status_code == 503
         finally:
             g.coordinator = original
 
     def test_normalize_returns_unit_vector(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"], "normalize": True},
         )
@@ -202,21 +219,17 @@ class TestEmbeddingFallback:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        os.environ.pop("API_KEY", None)
-        os.environ.pop("API_KEY_WAS_SET", None)
-        os.environ["DISABLE_AUTH"] = "1"
-        os.environ["DISTLLM_DEV_MODE"] = "1"
         coord = make_mock_coordinator()
         assert coord._embedding_loader is None
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_fallback_to_generation_model(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
@@ -228,7 +241,7 @@ class TestEmbeddingFallback:
     def test_fallback_fails_without_local_partitioner(self):
         coord = g.coordinator
         coord.local_partitioner = None
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
@@ -240,10 +253,6 @@ class TestDedicatedEmbeddingModel:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        os.environ.pop("API_KEY", None)
-        os.environ.pop("API_KEY_WAS_SET", None)
-        os.environ["DISABLE_AUTH"] = "1"
-        os.environ["DISTLLM_DEV_MODE"] = "1"
         coord = make_mock_coordinator()
         embed_loader = MagicMock()
         embed_loader.embedding_model = MagicMock()
@@ -251,20 +260,20 @@ class TestDedicatedEmbeddingModel:
         coord._embedding_loader = embed_loader
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_dedicated_model_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
         assert resp.status_code == 200
 
     def test_dedicated_model_embedding_vector(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello world"]},
         )
@@ -278,10 +287,6 @@ class TestRerank:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        os.environ.pop("API_KEY", None)
-        os.environ.pop("API_KEY_WAS_SET", None)
-        os.environ["DISABLE_AUTH"] = "1"
-        os.environ["DISTLLM_DEV_MODE"] = "1"
         coord = make_mock_coordinator()
         embed_loader = MagicMock()
         embed_loader.rerank_model = MagicMock()
@@ -289,13 +294,13 @@ class TestRerank:
         coord._embedding_loader = embed_loader
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_rerank_success(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank",
             json={
                 "query": "machine learning",
@@ -305,7 +310,7 @@ class TestRerank:
         assert resp.status_code == 200
 
     def test_rerank_results_order(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank",
             json={
                 "query": "machine learning",
@@ -318,7 +323,7 @@ class TestRerank:
         assert data["results"][0]["relevance_score"] >= data["results"][1]["relevance_score"]
 
     def test_rerank_top_n(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank",
             json={
                 "query": "machine learning",
@@ -330,7 +335,7 @@ class TestRerank:
         assert len(data["results"]) == 2
 
     def test_rerank_results_have_fields(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank",
             json={
                 "query": "machine learning",
@@ -345,10 +350,11 @@ class TestRerank:
     def test_rerank_without_coordinator_returns_503(self):
         original = g.coordinator
         g.coordinator = None
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/rerank",
-                json={"query": "test", "documents": ["doc"]},
+                json={"query": "503 test", "documents": ["doc"]},
             )
             assert resp.status_code == 503
         finally:
@@ -360,10 +366,6 @@ class TestHybridRerank:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        os.environ.pop("API_KEY", None)
-        os.environ.pop("API_KEY_WAS_SET", None)
-        os.environ["DISABLE_AUTH"] = "1"
-        os.environ["DISTLLM_DEV_MODE"] = "1"
         coord = make_mock_coordinator()
         embed_loader = MagicMock()
         embed_loader.embedding_model = MagicMock()
@@ -373,13 +375,13 @@ class TestHybridRerank:
         coord._embedding_loader = embed_loader
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_hybrid_rerank_success(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank/hybrid",
             json={
                 "query": "machine learning",
@@ -389,7 +391,7 @@ class TestHybridRerank:
         assert resp.status_code == 200
 
     def test_hybrid_rerank_results_sorted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank/hybrid",
             json={
                 "query": "machine learning",
@@ -402,7 +404,7 @@ class TestHybridRerank:
         assert scores == sorted(scores, reverse=True)
 
     def test_hybrid_rerank_top_n(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/rerank/hybrid",
             json={
                 "query": "machine learning",
@@ -415,10 +417,11 @@ class TestHybridRerank:
     def test_hybrid_rerank_without_coordinator_returns_503(self):
         original = g.coordinator
         g.coordinator = None
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/rerank/hybrid",
-                json={"query": "test", "documents": ["doc"]},
+                json={"query": "503 test", "documents": ["doc"]},
             )
             assert resp.status_code == 503
         finally:
@@ -468,20 +471,16 @@ class TestEmbeddingsInputValidation:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        os.environ.pop("API_KEY", None)
-        os.environ.pop("API_KEY_WAS_SET", None)
-        os.environ["DISABLE_AUTH"] = "1"
-        os.environ["DISTLLM_DEV_MODE"] = "1"
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_empty_input_list_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": []},
         )
@@ -490,14 +489,14 @@ class TestEmbeddingsInputValidation:
         assert data["data"] == []
 
     def test_missing_input_rejected(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm"},
         )
         assert resp.status_code == 422
 
     def test_negative_dimensions_rejected(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello"], "dimensions": -1},
         )

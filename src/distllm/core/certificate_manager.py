@@ -391,6 +391,7 @@ class CertificateManager:
         persisted make the private key file permanently unrecoverable on
         process restart (CWE-654).
         """
+        from cryptography.hazmat.primitives import serialization
         if os.name == "nt":
             # Try SecretManager first, then environment variable fallback
             passphrase: str | None = None

@@ -203,7 +203,7 @@ class CarbonMigrationEngine:
             return
         # Trigger migration
         logger.warning(
-            f"Carbon spike in {self._active_region}: {current.gco2_per_kwh:.0f} gCO2/kWh "
+            f"Carbon spike in {self._active_region}: {current_gco2:.0f} gCO2/kWh "
             f"(threshold: {self._threshold}). Migrating to {best_region} ({best_carbon:.0f})"
         )
         event = MigrationEvent(

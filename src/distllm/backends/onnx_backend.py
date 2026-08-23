@@ -1,8 +1,29 @@
-"""ONNX Runtime backend adapter for CPU/GPU inference.
+"""ONNX Runtime backend adapter for cross-platform CPU/GPU inference.
 
-ONNX Runtime provides hardware-optimized inference across CPU, CUDA,
-DirectML (Windows), ROCm (AMD), and OpenVINO (Intel) execution providers.
-Ideal for production deployment with Intel CPUs or AMD GPUs.
+ONNX Runtime provides hardware-optimized inference across a wide range of
+execution providers: CPU, CUDA (NVIDIA), DirectML (Windows), ROCm (AMD),
+and OpenVINO (Intel). This adapter wraps ``ort.InferenceSession`` and
+implements the ``BackendAdapter`` protocol so ONNX models can participate
+in the distributed-llm cluster as first-class inference nodes.
+
+Requirements:
+    - Production: ``pip install onnxruntime`` (CPU) or ``onnxruntime-gpu`` (CUDA/ROCm/DirectML).
+    - Model export: ``pip install distllm[export]`` (transformers, optimum, protobuf) to convert HuggingFace models to ONNX.
+    - Tensor inputs are converted to numpy arrays automatically before session inference.
+
+Limitations:
+    - ``generate()`` requires an external tokenizer/detokenizer; the base
+      stubs raise ``NotImplementedError`` until the caller sets
+      ``self._tokenizer`` / ``self._detokenizer``.
+    - Not all HuggingFace model architectures can be exported to ONNX
+      (consult optimum.onnxruntime compatibility tables).
+    - Dynamic shapes (variable-length sequences) require careful session
+      configuration and may degrade performance compared to fixed shapes.
+    - Pipeline/partitioned mode (layer_start, layer_end) is accepted at
+      construction but not yet wired into session partitioning; the full
+      ONNX model is loaded regardless.
+    - FP16 execution requires an execution provider with native FP16
+      support (CUDA >= 11.0, DirectML on supported hardware).
 """
 
 from __future__ import annotations

@@ -209,10 +209,12 @@ class AdapterPool:
             logger.info(f"Evicted LRU adapter '{lru_id}' ({lru_info.vram_bytes / 1e6:.1f}MB)")
 
     def set_active(self, adapter_id: str | None) -> None:
-        """Set the active adapter."""
+        """Set the active adapter.
+
+        May reference an adapter that is not (yet) resident — it is looked
+        up at generate time.
+        """
         with self._lock:
-            if adapter_id is not None and adapter_id not in self._pool:
-                raise KeyError(f"Adapter '{adapter_id}' not in pool")
             self._active_adapter = adapter_id
 
     @property
@@ -225,6 +227,7 @@ class AdapterPool:
     def get_stats(self) -> dict:
         return {
             "pool_size": len(self._pool),
+            "total_adapters": len(self._pool),
             "total_vram_bytes": self._total_vram,
             "max_vram_bytes": self.max_vram_bytes,
             "vram_usage_pct": round(self._total_vram / max(self.max_vram_bytes, 1) * 100, 1),

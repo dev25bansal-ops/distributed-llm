@@ -1,0 +1,189 @@
+# Reusable release workflow for DistLLM SDK packages
+#
+# Publishes Python (PyPI), JavaScript (npm), and Rust (crates.io) packages
+# with a single workflow call.
+#
+# Usage:
+#   jobs:
+#     release:
+#       uses: distributed-llm/distributed-llm/.github/workflows/reusable-release.yml@main
+#       with:
+#         dry-run: false
+#       secrets:
+#         pypi-token: ${{ secrets.PYPI_TOKEN }}
+
+name: Reusable Release
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: "Perform a dry run without publishing"
+        type: boolean
+        default: true
+      python-publish:
+        description: "Publish Python package to PyPI"
+        type: boolean
+        default: true
+      npm-publish:
+        description: "Publish JavaScript package to npm"
+        type: boolean
+        default: false
+      crate-publish:
+        description: "Publish Rust crate to crates.io"
+        type: boolean
+        default: false
+      python-package-path:
+        description: "Path to Python package root"
+        type: string
+        default: "."
+      npm-package-path:
+        description: "Path to npm package root"
+        type: string
+        default: "sdk/js"
+      crate-package-path:
+        description: "Path to Rust crate root"
+        type: string
+        default: "sdk/rust"
+      release-version:
+        description: "Release version (omit to read from git tag)"
+        type: string
+        default: ""
+    secrets:
+      pypi-token:
+        description: "PyPI API token"
+        required: false
+      npm-token:
+        description: "npm access token"
+        required: false
+      cargo-token:
+        description: "crates.io API token"
+        required: false
+
+jobs:
+  # ── Build all SDK packages ──────────────────────────────────────
+  build-sdks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install Python build tools
+        run: pip install build twine
+      - name: Build Python wheel
+        working-directory: ${{ inputs.python-package-path }}
+        run: python -m build
+      - name: Build npm package
+        if: ${{ inputs.npm-publish }}
+        working-directory: ${{ inputs.npm-package-path }}
+        run: npm ci && npm run build 2>/dev/null || npm pack
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+      - name: Build Rust crate
+        if: ${{ inputs.crate-publish }}
+        working-directory: ${{ inputs.crate-package-path }}
+        run: cargo package
+      - name: Upload Python artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: ${{ inputs.python-package-path }}/dist/
+      - name: Upload npm artifacts
+        if: ${{ inputs.npm-publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-dist
+          path: dist/
+      - name: Upload crate artifacts
+        if: ${{ inputs.crate-publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crate-dist
+          path: ${{ inputs.crate-package-path }}/target/package/
+
+  # ── Publish to PyPI ─────────────────────────────────────────────
+  publish-pypi:
+    if: ${{ inputs.python-publish && !inputs.dry-run }}
+    needs: [build-sdks]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/distllm-sdk/
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.8.14
+        with:
+          password: ${{ secrets.pypi-token }}
+          verbose: true
+
+  # ── Publish to npm ──────────────────────────────────────────────
+  publish-npm:
+    if: ${{ inputs.npm-publish && !inputs.dry-run }}
+    needs: [build-sdks]
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-dist
+          path: dist/
+      - name: Publish to npm
+        run: npm publish dist/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+
+  # ── Publish to crates.io ────────────────────────────────────────
+  publish-cargo:
+    if: ${{ inputs.crate-publish && !inputs.dry-run }}
+    needs: [build-sdks]
+    runs-on: ubuntu-latest
+    environment:
+      name: cratesio
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: crate-dist
+          path: dist/
+      - name: Publish to crates.io
+        working-directory: ${{ inputs.crate-package-path }}
+        run: cargo publish --token ${{ secrets.cargo-token }}
+
+  # ── Create GitHub Release ──────────────────────────────────────
+  create-release:
+    if: ${{ !inputs.dry-run }}
+    needs: [publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version
+        id: version
+        run: |
+          VERSION="${{ inputs.release-version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false

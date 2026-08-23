@@ -9,10 +9,17 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def server_client():
-    """TestClient for the main API server."""
+def server_client(monkeypatch):
+    """TestClient for the main API server, authenticated with a known key."""
     from distllm.api.server import app
-    return TestClient(app)
+    from distllm.core.api_key_store import reset_api_key_store
+
+    monkeypatch.setenv("API_KEY", "dash-test-key-0123456789abcdef")
+    reset_api_key_store()
+    c = TestClient(app)
+    c.headers["Authorization"] = "Bearer dash-test-key-0123456789abcdef"
+    yield c
+    reset_api_key_store()
 
 
 class TestDashboardPage:

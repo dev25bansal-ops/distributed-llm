@@ -1,0 +1,42 @@
+{
+  "name": "@distllm/pulumi",
+  "version": "0.1.0",
+  "description": "A Pulumi provider for managing DistLLM clusters — models, deployments, nodes, and federations",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/distributed-llm/distributed-llm.git"
+  },
+  "keywords": [
+    "pulumi",
+    "distllm",
+    "llm",
+    "inference",
+    "infrastructure"
+  ],
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "clean": "rm -rf dist/",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@pulumi/pulumi": "^3.100.0",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0",
+    "@types/node-fetch": "^2.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ]
+}

@@ -239,7 +239,12 @@ class AudioPipeline:
             if is_speech:
                 self._buffer.append(frame)
                 self._last_speech_time = time.time()
-                if self._state == PipelineState.IDLE:
+                # Resume listening when new speech arrives, even if the
+                # previous utterance's TTS was still playing (F-043: state got
+                # permanently stuck in SPEAKING after the first utterance, so
+                # no second one was ever transcribed).  Transitioning to
+                # LISTENING re-arms the silence-timeout path below.
+                if self._state in (PipelineState.IDLE, PipelineState.SPEAKING):
                     self._state = PipelineState.LISTENING
                 return None
             else:

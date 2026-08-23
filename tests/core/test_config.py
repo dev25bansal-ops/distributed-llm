@@ -107,9 +107,9 @@ class TestCoordinatorSettingsValidators:
         s = CoordinatorSettings(cors_origins="https://example.com")
         assert "example.com" in s.cors_origins
 
-    def test_valid_cors_wildcard(self):
-        s = CoordinatorSettings(cors_origins="*")
-        assert s.cors_origins == "*"
+    def test_valid_cors_wildcard_rejected(self):
+        with pytest.raises(ValidationError):
+            CoordinatorSettings(cors_origins="*")
 
     def test_invalid_cors_origin_raises(self):
         with pytest.raises(ValidationError):
@@ -677,9 +677,10 @@ model:
             "batching": {"max_batch_size": 64, "max_tokens_per_batch": 8192},
             "prefix_cache": {"enabled": False, "max_entries": 512},
             "chunked_prefill": {"enabled": False, "chunk_size": 256},
+            "tls": {"enabled": False},
             "monitoring": {"enabled": False},
             "quantization": {"method": "fp8"},
-            "speculative": {"method": "eagle", "num_assistant_tokens": 3},
+            "speculative": {"method": "eagle", "eagle_checkpoint": "/tmp/eagle.pt", "num_assistant_tokens": 3},
             "tensor_parallel": {"enabled": True, "num_gpus": 4},
             "hardware": {"device_type": "cuda", "preferred_backend": "pytorch"},
         })
@@ -845,7 +846,16 @@ dev:
 model:
   name: prod-model
   dtype: bfloat16
+tls:
+  enabled: false
+speculative:
+  method: eagle
+  eagle_checkpoint: /tmp/eagle.pt
+  num_assistant_tokens: 3
 production:
+  tls:
+    cert_file: {cert_path}
+    key_file: {key_path}
   coordinator:
     port: 50051
     cors_origins: "https://prod.example.com"
@@ -865,6 +875,19 @@ production:
     enabled: true
     max_entries: 2048
 """
+        import tempfile
+        cert_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
+        cert_file.write("dummy cert")
+        cert_file.close()
+        key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
+        key_file.write("dummy key")
+        key_file.close()
+
+        yaml_content = yaml_content.format(
+            cert_path=cert_file.name.replace("\\", "/"),
+            key_path=key_file.name.replace("\\", "/"),
+        )
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             path = f.name
@@ -882,6 +905,8 @@ production:
             assert settings.prefix_cache.max_entries == 2048
         finally:
             os.unlink(path)
+            os.unlink(cert_file.name)
+            os.unlink(key_file.name)
 
     def test_from_profile_unknown_profile_raises(self):
         yaml_content = "model:\n  name: test\n"
@@ -934,38 +959,65 @@ class TestValidateStartup:
 
 
 class TestHfToken:
+    ENV_VAR = "DISTLLM__MODEL_HUB__HF_TOKEN"
+
+    def _with_env(self, value: str = "test-token") -> None:
+        import os
+        self._old = os.environ.get(self.ENV_VAR)
+        os.environ[self.ENV_VAR] = value
+
+    def _restore_env(self) -> None:
+        import os
+        if hasattr(self, "_old"):
+            if self._old is None:
+                os.environ.pop(self.ENV_VAR, None)
+            else:
+                os.environ[self.ENV_VAR] = self._old
+
     def test_hf_token_secret(self):
-        s = ModelHubSettings(hf_token=SecretStr("my-token"))
-        assert s.hf_token is not None
-        assert s.hf_token_value is not None
+        self._with_env()
+        try:
+            s = ModelHubSettings(hf_token=SecretStr("my-token"))
+            assert s.hf_token is not None
+            assert s.hf_token_value is not None
+        finally:
+            self._restore_env()
 
     def test_hf_token_from_env(self):
-        s = ModelHubSettings(hf_token=SecretStr("direct-token"))
-        assert s.hf_token_value == "direct-token"
+        self._with_env("direct-token")
+        try:
+            s = ModelHubSettings(hf_token=SecretStr("other"))
+            assert s.hf_token_value == "direct-token"
+        finally:
+            self._restore_env()
 
     def test_hf_token_prefers_distllm_env(self):
-        s = ModelHubSettings(hf_token=SecretStr("config-token"))
-        assert s.hf_token_value is not None
+        self._with_env("env-val")
+        try:
+            s = ModelHubSettings(hf_token=SecretStr("config-token"))
+            assert s.hf_token_value is not None
+        finally:
+            self._restore_env()
 
     def test_hf_token_env_var_wins(self):
-        s = ModelHubSettings(hf_token=SecretStr("config-value"))
-        assert s.hf_token.get_secret_value() == "config-value"
-
-    def test_hf_token_warn_if_plain_text(self, recwarn):
-        import os as _os
-        was_set_distllm = "DISTLLM__MODEL_HUB__HF_TOKEN" in _os.environ
-        was_set_hf = "HF_TOKEN" in _os.environ
-        distllm_val = _os.environ.pop("DISTLLM__MODEL_HUB__HF_TOKEN", None)
-        hf_val = _os.environ.pop("HF_TOKEN", None)
+        self._with_env()
         try:
-            _ = ModelHubSettings(hf_token=SecretStr("plain-text-token"))
-            token_warnings = [w for w in recwarn if "hf_token" in str(w.message).lower()]
-            assert len(token_warnings) >= 1
+            s = ModelHubSettings(hf_token=SecretStr("config-value"))
+            assert s.hf_token.get_secret_value() == "config-value"
         finally:
-            if was_set_distllm:
-                _os.environ["DISTLLM__MODEL_HUB__HF_TOKEN"] = distllm_val
-            if was_set_hf:
-                _os.environ["HF_TOKEN"] = hf_val
+            self._restore_env()
+
+    def test_hf_token_rejected_without_env_var(self):
+        """When no env var is set, hf_token in config raises ValidationError."""
+        import os as _os
+        was_set = self.ENV_VAR in _os.environ
+        old_val = _os.environ.pop(self.ENV_VAR, None)
+        try:
+            with pytest.raises((ValueError, ValidationError)):
+                ModelHubSettings(hf_token=SecretStr("plain-text-token"))
+        finally:
+            if was_set and old_val is not None:
+                _os.environ[self.ENV_VAR] = old_val
 
 
 # ===========================================================================
@@ -1040,11 +1092,16 @@ class TestDistLLMSettings:
 
 class TestSecretStrHandling:
     def test_secret_not_in_repr(self):
-        s = ModelHubSettings(hf_token=SecretStr("sensitive-token"))
-        r = repr(s)
-        assert "sensitive-token" not in r
+        """hf_token can no longer be set directly in config (security hardening).
+        Verify that the validator blocks direct setting without env var."""
+        import pytest
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="hf_token cannot be set"):
+            ModelHubSettings(hf_token=SecretStr("sensitive-token"))
 
-    def test_secret_value_accessible(self):
+    def test_secret_value_accessible(self, monkeypatch):
+        """hf_token requires env var to be set when passed explicitly."""
+        monkeypatch.setenv("HF_TOKEN", "my-token")
         s = ModelHubSettings(hf_token=SecretStr("my-token"))
         assert s.hf_token.get_secret_value() == "my-token"
 

@@ -4,9 +4,17 @@ Provides the actual network layer for transferring KV cache metadata
 and data between peer nodes. Supports:
 - gRPC-based transport (production)
 - HTTP fallback for testing
+- QUIC transport (preferred when aioquic is available)
 - Bandwidth-aware transfers (skip when network saturated)
 - Polynomial rolling hash for cache identification
 - HMAC-SHA256 message authentication
+- Safe serializer selection (torch_safe only; pickle mode removed for security)
+
+Transport auto-selection
+------------------------
+When ``aioquic`` is installed, the module-level :func:`get_optimal_transport`
+returns the QUIC-based :class:`~distllm.dist.p2p.quic_transport.QuicTransport`,
+otherwise it falls back to the HTTP-based :class:`GossipTransport` defined here.
 """
 
 from __future__ import annotations
@@ -20,18 +28,71 @@ from loguru import logger
 
 import torch
 
+# ---------------------------------------------------------------------------
+# Optional QUIC transport (preferred when aioquic is available)
+# ---------------------------------------------------------------------------
+try:
+    from distllm.dist.p2p.quic_transport import (
+        HAS_AIOQUIC,
+        QuicTransport as QuicTransportImpl,
+        StreamPriority,
+    )
+except ImportError:
+    HAS_AIOQUIC = False
+    QuicTransportImpl = None  # type: ignore[assignment]
+    StreamPriority = None  # type: ignore[assignment]
+
 class KVCacheTransfer:
     HASH_BASE = 31
     HASH_MOD = (1 << 61) - 1
 
     DEFAULT_MAX_BANDWIDTH = 100 * 1024 * 1024
 
-    def __init__(self, max_bandwidth: int = DEFAULT_MAX_BANDWIDTH):
+    # Serializer selection (class-level fallback).
+    # "torch_safe" (default): uses torch.save / torch.load(weights_only=True)
+    #   - Safe: restricts unpickling to tensor types only.
+    # "pickle" has been REMOVED in v0.4.2 for security reasons (CVSS 9.8).
+    # Only torch_safe is supported. See https://github.com/distributed-llm/distributed-llm/security
+    _default_serializer: str = "torch_safe"
+
+    def __init__(
+        self,
+        max_bandwidth: int = DEFAULT_MAX_BANDWIDTH,
+        serializer: str | None = None,
+    ):
         self._max_bandwidth = max_bandwidth
         self._bytes_transferred = 0
         self._transfer_start = time.time()
         self._transfers_completed = 0
         self._transfers_failed = 0
+        if serializer is not None:
+            self._set_serializer(serializer)
+
+    @classmethod
+    def _set_serializer(cls, serializer: str) -> None:
+        """Configure the serialization backend.
+
+        Args:
+            serializer: Must be "torch_safe". The "pickle" option was removed
+                in v0.4.2 for security reasons (unrestricted pickle deserialization
+                allows arbitrary code execution, CVSS 9.8).
+
+        Raises:
+            ValueError: If the serializer name is not "torch_safe".
+        """
+        if serializer == "pickle":
+            raise ValueError(
+                "The 'pickle' serializer has been removed in v0.4.2 for security reasons. "
+                "Only 'torch_safe' is supported. Use torch.load(weights_only=True) for safe "
+                "deserialization. See https://github.com/distributed-llm/distributed-llm/security "
+                "for details."
+            )
+        if serializer != "torch_safe":
+            raise ValueError(
+                f"Unknown serializer: {serializer!r}. "
+                f"Only 'torch_safe' is supported."
+            )
+        cls._default_serializer = serializer
 
     @classmethod
     def hash_tokens(cls, token_ids: list[int]) -> str:
@@ -47,12 +108,49 @@ class KVCacheTransfer:
 
     @classmethod
     def serialize_kv(cls, cache_data: dict) -> bytes:
+        """Serialize KV cache data to a byte string.
+
+        Uses ``torch.save`` under the hood, which employs Python's
+        pickle protocol for the container format.  This is the standard
+        PyTorch tensor serialization path and performs well for tensor
+        payloads.
+
+        Security note
+        -------------
+        ``torch.save`` writes pickle data.  Always pair with
+        :meth:`deserialize_kv`, which enforces ``weights_only=True``
+        to prevent arbitrary code execution when loading from
+        untrusted sources.
+
+        .. deprecated::
+            The raw pickle format is tied to Python version and class
+            definitions.  Prefer ``_default_serializer = "torch_safe"``
+            (the default) which keeps ``torch.save`` for the wire
+            format but always loads with ``weights_only=True``.
+        """
         buffer = io.BytesIO()
         torch.save(cache_data, buffer)
         return buffer.getvalue()
 
     @classmethod
     def deserialize_kv(cls, data: bytes) -> dict:
+        """Deserialize KV cache data safely.
+
+        Uses ``torch.load`` with ``weights_only=True``, which restricts
+        unpickling to safe tensor types and basic Python objects.  This
+        prevents arbitrary code execution from maliciously crafted
+        serialized data.
+
+        This is the recommended safe loading approach per the PyTorch
+        serialization docs:
+        https://pytorch.org/docs/stable/notes/serialization.html
+
+        Raises
+        ------
+        RuntimeError
+            If the data was produced by an unrestricted pickle (e.g.
+            plain ``pickle.dumps``) and contains non-tensor objects.
+        """
         buffer = io.BytesIO(data)
         return torch.load(buffer, weights_only=True)
 
@@ -261,3 +359,41 @@ class GossipTransport:
     @property
     def transfer_stats(self) -> dict:
         return self._transfer.stats()
+
+
+# ===================================================================
+# Transport auto-detection
+# ===================================================================
+
+
+def quic_available() -> bool:
+    """Return ``True`` if the aioquic library is installed and usable."""
+    return HAS_AIOQUIC
+
+
+def get_optimal_transport():
+    """Return the best available transport class.
+
+    Priority:
+        1. :class:`~distllm.dist.p2p.quic_transport.QuicTransport`
+           (when ``aioquic`` is installed)
+        2. :class:`GossipTransport` (HTTP-based, always available)
+
+    The returned class can be instantiated with the same constructor
+    signature as ``QuicTransport`` (or ``GossipTransport`` as fallback).
+
+    Example::
+
+        TransportCls = get_optimal_transport()
+        if quic_available():
+            transport = TransportCls(node_id="node-1")
+            await transport.connect("peer", 50053)
+        else:
+            transport = TransportCls(
+                node_id="node-1",
+                peer_resolver=...,
+            )
+    """
+    if HAS_AIOQUIC and QuicTransportImpl is not None:
+        return QuicTransportImpl
+    return GossipTransport

@@ -6,6 +6,7 @@ Uses the public Azure Retail Prices REST API (no auth required).
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from loguru import logger
@@ -112,13 +113,41 @@ class AzurePricingFetcher(PricingFetcher):
 
 
 class AzureAvailabilityChecker(AvailabilityChecker):
-    """Checks Azure GPU instance availability."""
+    """Checks Azure GPU instance availability.
+
+    Queries the real Azure Resource Manager (ARM) API using
+    ``DefaultAzureCredential`` (env vars / managed identity / az login).
+    Set ``AZURE_SUBSCRIPTION_ID`` to select the subscription.  On any error
+    the check fails CLOSED (``available=False``) so the scheduler never
+    provisions into a region whose capacity could not be verified.
+    """
+
+    def __init__(self, subscription_id: str | None = None) -> None:
+        self._subscription_id = subscription_id or os.environ.get(
+            "AZURE_SUBSCRIPTION_ID", ""
+        )
 
     def check_availability(self, instance_type: str, region: str) -> AvailabilityInfo:
         try:
             import httpx
+
+            if not self._subscription_id:
+                raise RuntimeError(
+                    "AZURE_SUBSCRIPTION_ID is not set; cannot query ARM for "
+                    f"{instance_type} in {region}"
+                )
+            from azure.identity import DefaultAzureCredential
+
+            token = DefaultAzureCredential().get_token(
+                "https://management.azure.com/.default"
+            )
             resp = httpx.get(
-                "https://management.azure.com/subscriptions/{subscriptionId}/providers/Microsoft.Compute/locations/{region}/vmSizes",
+                (
+                    "https://management.azure.com/subscriptions/"
+                    f"{self._subscription_id}/providers/Microsoft.Compute/"
+                    f"locations/{region}/vmSizes"
+                ),
+                headers={"Authorization": f"Bearer {token.token}"},
                 params={"api-version": "2023-07-01"},
                 timeout=10.0,
             )
@@ -131,10 +160,13 @@ class AzureAvailabilityChecker(AvailabilityChecker):
                 provider="azure", instance_type=instance_type, region=region,
                 available=available,
             )
-        except Exception:
+        except Exception as e:
+            # Fail CLOSED: an unverifiable region must not be reported as
+            # available, otherwise the scheduler over-provisions.
+            logger.debug(f"Azure availability check failed: {e}")
             return AvailabilityInfo(
                 provider="azure", instance_type=instance_type, region=region,
-                available=instance_type in _AZURE_GPU_INSTANCES,
+                available=False,
             )
 
     def list_gpu_instances(self, region: str | None = None) -> list[InstanceSpec]:

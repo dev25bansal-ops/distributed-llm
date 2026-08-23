@@ -18,7 +18,6 @@ from distllm.dist.partition.quantization_tuner import (
     ACTIVATION_PROFILES,
     KV_PROFILES,
     ActivationQuantMethod,
-    KVCacheBits,
     NodeQuantRecommendation,
     QuantMethod,
     QuantProfile,
@@ -154,9 +153,6 @@ class QuantizationAwareCostModel:
                 fits_in_memory=base.fits_in_memory,
             )
 
-        # Apply weight quantization to memory
-        weight_mem = int(base.memory_bytes * profile.memory_reduction)
-
         # Apply speed penalty to compute
         compute_ms = base.compute_time_ms * profile.speed_penalty
 
@@ -164,20 +160,33 @@ class QuantizationAwareCostModel:
         kv_profile = KV_PROFILES.get(quant_recommendation.kv_cache_bits, {})
         kv_reduction = kv_profile.get("memory_reduction", 1.0)
 
-        # Recompute KV portion with reduction
-        # KV cache is a fraction of total memory; estimate it as 20% of base
+        # Memory recomposition — never subtract from the quantized weight
+        # figure. ``memory_bytes_with_quant`` is the quantized *weights* only;
+        # the node's real footprint is quantized weights + quantized KV cache
+        # + (unquantized) activation/other memory.
+        quant_weights = quant_recommendation.memory_bytes_with_quant
+        # Prefer the base cost model's own weight breakdown when available;
+        # otherwise fall back to the APO recommendation's weights estimate.
+        weights_fn = getattr(self._base, "weights_memory_bytes", None)
+        if weights_fn is not None:
+            weights_base = int(weights_fn(start_layer, end_layer))
+        else:
+            weights_base = quant_recommendation.memory_bytes_without_quant
+        if weights_base <= 0 or weights_base > base.memory_bytes:
+            # Last-resort defensive split (weights ≈ 80% of the footprint).
+            weights_base = int(base.memory_bytes * 0.8)
+
+        # KV cache is estimated as 20% of the unquantized footprint, but
+        # never larger than the non-weight portion.
         kv_fraction = 0.2
         kv_base = int(base.memory_bytes * kv_fraction)
+        kv_base = min(kv_base, base.memory_bytes - weights_base)
         kv_quant = int(kv_base * kv_reduction)
-        non_kv = base.memory_bytes - kv_base
-        total_mem = weight_mem + kv_quant - int(non_kv * (1 - profile.memory_reduction))
 
-        # More accurate: use the actual recommendation bytes
-        total_mem = quant_recommendation.memory_bytes_with_quant
-        if quant_recommendation.kv_cache_bits != KVCacheBits.NONE:
-            # Add KV savings on top of weight savings
-            kv_savings = int(kv_base * (1 - kv_reduction))
-            total_mem = max(0, total_mem - kv_savings)
+        # Non-weight, non-KV memory (activations etc.) stays unquantized
+        activations = max(0, base.memory_bytes - weights_base - kv_base)
+
+        total_mem = quant_weights + kv_quant + activations
 
         # Apply activation quantization to communication
         act_profile = ACTIVATION_PROFILES.get(quant_recommendation.activation_quant, {})

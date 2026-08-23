@@ -1,32 +1,58 @@
 ---
 tags:
   - tests
+  - quality
+  - verification
+aliases:
+  - Tests
+  - Test Suite
 ---
-# Test Suite
+# Test Suite — `tests/`
 
-**Location:** `tests/` — **~5 MB, ~300 files across 30+ directories**
+**812 .py files · 228,741 LOC · ~48 packages.**
 
-## Test Directories
-| Directory | Files | Type |
-|-----------|-------|------|
-| `core/` | 100+ | Unit |
-| `api/` | 30 | Unit/Integration |
-| `dist/` | 17 | Unit/Integration |
-| `e2e/` | 20+ | E2E |
-| `integration/` | 20+ | Integration |
-| `security/` | 6+ | Security |
-| `fuzz/` | 7 | Fuzz |
-| `load/` | 8 | Load/Locust |
+> The full verification surface, exercising every subtree of `src/distllm`. Heavily **stubbed** so suites run on CPU without real GPUs (`_import_helper.py`, `helpers.py`, per-package `_stubs.py`/`stubs.py`). `regression_high/` holds 70 letter-indexed regression gates (`a1–a8, c2–c16, e1–e13, m2–m17, n1–n10, h3–h14, pbt-*`) mapping to verified senior-audit findings.
+>
+> **Run:** `pytest` (config: `pytest.ini`, coverage ≥ 80%). **CI:** [[09 Infrastructure]] gates.
 
-## Key New Tests
-| File | What It Covers |
-|------|----------------|
-| `tests/dist/pipeline/test_1f1b_scheduling.py` | 1F1B scheduling + bubble ratio (18 test cases) |
-| `tests/distributed/test_real_multi_gpu.py` | Real multi-GPU inference |
-| `tests/security/test_jwt_auth.py` | JWT HS256 end-to-end |
-| `tests/security/test_oauth_state_csrf.py` | OAuth CSRF protection |
-| `tests/core/test_kv_cache_fp8.py` | FP8 per-step quantization |
-| `tests/core/test_coordinator_state_replication.py` | HA replication |
-| `tests/core/test_cost_tracker_all.py` | Cost tracking (pytest-style) |
-| `tests/core/test_gbnf.py` | GBNF grammar (pytest-style) |
-| `tests/fuzz/fuzz_auth_bypass.py` | Auth bypass fuzzing (81 cases) |
+## Per-package map
+
+| Package | files | LOC | covers |
+|---------|------:|-----:|--------|
+| (root) | 48 | 10,687 | cross-suite feature/integration smoke, high/medium-severity fixes |
+| `core` | 218 | 64,984 | engine subsystems: scheduler, coordinator, kv_cache, spec, routers, autoscaler, multimodal, structured output |
+| `dist` | 121 | 62,306 | distributed layer: pipeline, p2p, partition/quant, topology, federation, transport |
+| `api` | 47 | 16,970 | HTTP+WS API, auth, middleware, rate-limit, batch |
+| `regression_high` | 70 | 12,110 | letter-indexed audit gates (a/h/c/e/m/n/pbt) |
+| `integration` | 22 | 4,920 | distributed pipeline, spec e2e, gRPC reconnect, LoRA, TLS |
+| `security` | 23 | 4,369 | JWT/SSRF/CSRF/poisoning/moderation/vulnerabilities |
+| `cli` | 8 | 3,973 | CLI commands + modules |
+| `comprehensive` | 12 | 2,099 | broad sweeps (kv-cache, serialization, NAT, rate-limit) |
+| `e2e` | 18 | 3,810 | full flows: disaster recovery, cross-machine, graceful shutdown |
+| `chaos` | 11 | 2,469 | fault injection, node failure, split-brain |
+| `correctness` | 10 | 1,975 | determinism, spec-vs-greedy parity, quant quality |
+| `benchmark` | 15 | 2,183 | perf + regression gates |
+| `property` | 8 | 1,661 | property-based invariants |
+| `introspection` (`verification`) | 3 | 1,433 | project-wide walk |
+| `fuzz` | 10 | 1,295 | API/auth/CLI/config/grammar/grpc/proto fuzzers |
+| `load` (+`locust`) | 17 | 1,672+ | Locust load, SLO, draft contention |
+| `partition` | 13 | 2,043 | partitioner, optimizer, quant, topology |
+| **… other suites** | — | — | backends, client, cloud, dashboard, deploy, errors, evaluation, models, observability, plugins, prompts, sdk, ui, utils, stability/soak, stress, mutation, infra … |
+
+> Full per-file table (all 812) is maintained in the source report at `.claude/obsidian-grasp/reports/tests.md`; the per-package table above is the summary index.
+
+## Key harnesses
+- `tests/fixtures/draft_model_server.py` — shared draft-model HTTP server fixture.
+- `tests/_import_helper.py`, `tests/helpers.py` — import-bootstrap + generic helpers.
+- `_stubs.py` doubles in `api`, `cli`, `core`, `integration`, `verification`.
+- `tests/regression_high/` — themed regressions (a1 spec-invariant … h14 retry-storm, e12 metered billing, m13/14).
+
+## Suites to run by area
+| Area | Command |
+|------|---------|
+| Core | `python -m pytest tests/core -v` |
+| Distributed | `python -m pytest tests/dist -v` |
+| API | `python -m pytest tests/api -v` |
+| Security | `python -m pytest tests/security tests/security_pkg -v` |
+| CLI/config | `python -m pytest tests/cli tests/config -v` |
+| Full + quality gates | `make test` / `make cov` / `make check` (bandit, coverage, flaky, mutation gates) |

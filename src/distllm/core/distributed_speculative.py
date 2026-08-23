@@ -209,7 +209,9 @@ class RemoteDraftModel:
         ))
     """
 
-    def __init__(self, config: RemoteDraftConfig):
+    def __init__(self, config: RemoteDraftConfig | str):
+        if isinstance(config, str):
+            config = RemoteDraftConfig(endpoint_url=config)
         self._config = config
         self._stats = DraftLatencyStats()
         self._client: Any = None
@@ -238,7 +240,7 @@ class RemoteDraftModel:
         if self._grpc_stub is None:
             import grpc
 
-            from distllm.proto import node_pb2_grpc  # noqa: I001
+            from distllm.dist import node_pb2_grpc  # noqa: I001
 
             if self._config.verify_ssl:
                 try:
@@ -304,6 +306,13 @@ class RemoteDraftModel:
                     prompt_tokens, num_tokens, temperature, top_k, top_p,
                 )
             elapsed = time.monotonic() - start
+            # Honor the requested budget: endpoints may return more draft
+            # tokens than asked for, which would inflate stats and skew
+            # speculative acceptance.
+            if len(result.token_ids) > num_tokens:
+                result.token_ids = result.token_ids[:num_tokens]
+                if result.logprobs:
+                    result.logprobs = result.logprobs[:num_tokens]
             self._stats.total_calls += 1
             self._stats.total_tokens += len(result.token_ids)
             self._stats.total_latency_s += elapsed
@@ -583,7 +592,7 @@ class RemoteDraftModel:
         top_p: float,
     ) -> DraftTokenResult:
         """Call remote draft model via gRPC."""
-        from distllm.proto import node_pb2
+        from distllm.dist import node_pb2
 
         stub = self._get_grpc_stub()
         request = node_pb2.ForwardPassRequest(
@@ -788,6 +797,7 @@ class DistributedSpeculativeDecoder:
         temperature: float = 1.0,
         top_k: int = 20,
         device: str = "cuda",
+        fallback_batch: int = 3,
     ):
         self._target = target_forward
         self._fleet = draft_fleet
@@ -795,13 +805,15 @@ class DistributedSpeculativeDecoder:
         self._min_candidates = min_candidates
         self._max_candidates = max_candidates
         self._current_candidates = num_candidates
+        self._fallback_batch = fallback_batch
 
         if draft_model is None and draft_fleet is None:
             raise ValueError("Either draft_model or draft_fleet must be provided")
 
         if isinstance(draft_model, str):
-            config = RemoteDraftConfig(endpoint_url=draft_model)
-            self._draft = RemoteDraftModel(config)
+            self._draft = RemoteDraftModel(draft_model)
+        elif isinstance(draft_model, RemoteDraftConfig):
+            self._draft = RemoteDraftModel(draft_model)
         elif draft_model is not None:
             self._draft = draft_model
         else:
@@ -860,7 +872,7 @@ class DistributedSpeculativeDecoder:
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
         past_key_values: Any = None,
-        fallback_batch: int = 3,
+        fallback_batch: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using distributed speculative decoding.
@@ -911,8 +923,11 @@ class DistributedSpeculativeDecoder:
 
             if not draft_result.ok:
                 # Draft model failed — multi-token target-only fallback
+                fb_count = min(
+                    self._fallback_batch if fallback_batch is None else fallback_batch,
+                    remaining,
+                )
                 logger.debug("Draft fallback: {}", draft_result.error)
-                fb_count = min(fallback_batch, remaining)
                 for _ in range(fb_count):
                     if generated.shape[1] >= target_len:
                         break
@@ -925,11 +940,15 @@ class DistributedSpeculativeDecoder:
                     actual_draft_tokens += 1
                 continue
 
-            draft_token_ids = draft_result.token_ids
-            draft_logprobs = draft_result.logprobs
+            # Cap draft tokens to the remaining budget.  A misbehaving
+            # draft model can return more tokens than requested.
+            draft_token_ids = draft_result.token_ids[:remaining]
+            draft_logprobs = draft_result.logprobs[:remaining]
 
+            # Anchor to the running sequence's device — self._device may
+            # differ (e.g. cuda default vs cpu tensors in tests/embedders).
             draft_tokens = torch.tensor(
-                [draft_token_ids], dtype=torch.long, device=self._device,
+                [draft_token_ids], dtype=torch.long, device=generated.device,
             )
 
             # --- Verification phase ---
@@ -947,9 +966,17 @@ class DistributedSpeculativeDecoder:
             actual_draft_tokens += len(draft_token_ids)
 
             if accepted_count < len(draft_token_ids):
-                next_logits = target_logits[:, generated.shape[1] - 1, :]
-                next_token = self._sample(next_logits)
-                generated = torch.cat([generated, next_token], dim=1)
+                corr_pos = generated.shape[1] - 1
+                if corr_pos < target_logits.shape[1]:
+                    next_logits = target_logits[:, corr_pos, :]
+                    next_token = self._sample(next_logits)
+                    generated = torch.cat([generated, next_token], dim=1)
+                else:
+                    # Target under-produced logits for the correction
+                    # position — sample from its last available row so the
+                    # sequence still makes progress (no infinite loop).
+                    next_token = self._sample(target_logits[:, -1, :])
+                    generated = torch.cat([generated, next_token], dim=1)
 
             # --- Adaptive candidate count ---
             if self._adaptive:
@@ -980,7 +1007,7 @@ class DistributedSpeculativeDecoder:
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
         past_key_values: Any = None,
-        fallback_batch: int = 3,
+        fallback_batch: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Async generation with draft/verify overlap.
@@ -1021,7 +1048,7 @@ class DistributedSpeculativeDecoder:
         input_ids: torch.Tensor,
         max_new_tokens: int,
         past_key_values: Any,
-        fallback_batch: int,
+        fallback_batch: int | None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Internal async generation loop with draft/verify overlap."""
@@ -1060,7 +1087,10 @@ class DistributedSpeculativeDecoder:
 
             if not draft_result.ok:
                 logger.debug("Draft fallback: {}", draft_result.error)
-                fb_count = min(fallback_batch, remaining)
+                fb_count = min(
+                    self._fallback_batch if fallback_batch is None else fallback_batch,
+                    remaining,
+                )
                 for _ in range(fb_count):
                     if generated.shape[1] >= target_len:
                         break
@@ -1072,11 +1102,13 @@ class DistributedSpeculativeDecoder:
                     generated = torch.cat([generated, next_token], dim=1)
                     actual_draft_tokens += 1
             else:
-                draft_token_ids = draft_result.token_ids
-                draft_logprobs = draft_result.logprobs
+                # Cap draft tokens to the remaining budget.  A misbehaving
+                # draft model can return more tokens than requested.
+                draft_token_ids = draft_result.token_ids[:remaining]
+                draft_logprobs = draft_result.logprobs[:remaining]
 
                 draft_tokens = torch.tensor(
-                    [draft_token_ids], dtype=torch.long, device=self._device,
+                    [draft_token_ids], dtype=torch.long, device=generated.device,
                 )
 
                 # Verify current batch first, then launch next draft based
@@ -1167,8 +1199,13 @@ class DistributedSpeculativeDecoder:
         greedy verification (``temperature=0``) or a uniform-draft
         approximation (``p * vocab_size``).
         """
-        num_draft = draft_tokens.shape[1]
         prefix_len = prefix.shape[1] - 1
+        # Defensive cap: never index past the logits the target returned
+        # (a malformed/under-producing upstream must not crash generation).
+        num_draft = min(
+            draft_tokens.shape[1],
+            max(0, target_logits.shape[1] - prefix_len),
+        )
 
         # Greedy path — deterministic, no sampling needed
         if self._temperature == 0:

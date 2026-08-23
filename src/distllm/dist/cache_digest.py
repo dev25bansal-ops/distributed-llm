@@ -25,9 +25,13 @@ _DIGEST_VERSION = 1
 
 
 def _rolling_hash(token_ids: list[int], window_size: int = 128) -> dict[int, int]:
-    """Compute polynomial rolling hash over sliding windows.
+    """Compute polynomial rolling hash over sliding windows in O(n) time.
 
-    Returns a dict mapping ``(window_start, window_end)`` to a 61-bit hash.
+    Uses Rabin-Karp style rolling hash: subtracts the oldest term's contribution
+    and adds the newest term in O(1) per step, avoiding O(n * window_size)
+    recomputation.
+
+    Returns a dict mapping ``window_start`` to a 61-bit hash.
     Only windows that start at multiples of ``window_size // 4`` are included
     (stride = window_size // 4) to keep the digest compact.
     """
@@ -35,13 +39,41 @@ def _rolling_hash(token_ids: list[int], window_size: int = 128) -> dict[int, int
         return {}
 
     stride = max(1, window_size // 4)
-    hashes: dict[int, int] = {}
     n = len(token_ids)
+    hashes: dict[int, int] = {}
 
-    for start in range(0, n, stride):
-        end = min(start + window_size, n)
+    # All stride-aligned start positions
+    stride_starts = list(range(0, n, stride))
+
+    # --- Full-size windows (exactly window_size tokens) ---
+    # Compute via O(n) rolling hash (Rabin-Karp style).
+    full_starts = [s for s in stride_starts if s + window_size <= n]
+    if full_starts:
+        k = window_size
+
+        # First window [0, k) computed directly
         h = 0
-        for tid in token_ids[start:end]:
+        for tid in token_ids[:k]:
+            h = (h * _HASH_BASE + tid) % _HASH_MOD
+        hashes[0] = h
+
+        # Precompute B^(k-1) mod M to remove the oldest term in O(1)
+        pow_k_minus_1 = pow(_HASH_BASE, k - 1, _HASH_MOD)
+        needed = frozenset(full_starts)
+
+        # Slide one position at a time; record only stride-aligned starts
+        for start in range(1, n - k + 1):
+            # Remove token_ids[start-1], add token_ids[start + k - 1]
+            h = ((h - token_ids[start - 1] * pow_k_minus_1) * _HASH_BASE
+                 + token_ids[start + k - 1]) % _HASH_MOD
+            if start in needed:
+                hashes[start] = h
+
+    # --- Partial trailing windows (< window_size) ---
+    # At most ``stride`` such windows; compute directly.
+    for start in (s for s in stride_starts if s + window_size > n):
+        h = 0
+        for tid in token_ids[start:]:
             h = (h * _HASH_BASE + tid) % _HASH_MOD
         hashes[start] = h
 

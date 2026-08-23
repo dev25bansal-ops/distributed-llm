@@ -142,6 +142,13 @@ async def _generate_tokens(
             response_format, tokenizer=local_tokenizer
         )
 
+    if local_partitioner is None:
+        # Single-node serving loads weights into the INFERENCE ENGINE's
+        # partitioner (request_handler.load_local_model), not onto the
+        # coordinator — without this fallback streaming yielded nothing.
+        engine = getattr(local_coord, "_inference_engine", None)
+        local_partitioner = getattr(engine, "local_partitioner", None)
+
     if local_partitioner:
         model = local_partitioner.full_model
         tokenizer = local_tokenizer
@@ -305,7 +312,16 @@ async def _stream_response(
             puc.register(request_id)
 
     model_name = request.model
-    user_id = getattr(request.state, 'tenant', None) or getattr(request.state, 'user', None) or 'default'
+    # ``request`` here is the pydantic BODY model (no .state); guard the
+    # tenant lookup so a missing state can't crash the SSE generator
+    # (an exception mid-generator yields an empty stream).
+    _state = getattr(request, 'state', None)
+    user_id = (
+        getattr(_state, 'tenant', None)
+        or getattr(_state, 'user', None)
+        or getattr(request, 'user', None)
+        or 'default'
+    )
     local_tokenizer = getattr(local_coord, 'tokenizer', None) if local_coord else None
     prompt_len = len(local_tokenizer.encode(prompt)) if local_tokenizer else 0
 

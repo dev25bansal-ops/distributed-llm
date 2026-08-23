@@ -100,6 +100,12 @@ class TestNoHardcodedSecrets:
             content = py_file.read_text(encoding="utf-8", errors="ignore")
             for pattern in self.SECRET_PATTERNS:
                 if pattern.lower() in content.lower():
+                    if pattern == "ghp_" and "ghp_[" in content:
+                        # False positive: the secret-DETECTION regex (e.g.
+                        # moderation.py) legitimately contains "ghp_[a-zA-Z0-9]"
+                        # to match real tokens — skip that, it is the scanner
+                        # itself, not a hardcoded secret.
+                        continue
                     found_secrets.append(f"{py_file.relative_to(PROJECT_ROOT)}: {pattern[:20]}")
 
         assert not found_secrets, (

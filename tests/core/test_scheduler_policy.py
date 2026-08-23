@@ -258,11 +258,12 @@ class TestPolicyIntegration:
 
 def _make_node(node_id: str, latency_ms: float = 1.0):
     from distllm.core.advanced_scheduling import NodeCapabilityInfo, DeviceClass
+    # Real NodeCapabilityInfo schema (heterogeneous.py): no gpu_name /
+    # memory-byte / latency fields. latency_ms is kept for call compat.
     return NodeCapabilityInfo(
         node_id=node_id,
-        gpu_name="RTX-4090",
-        device_class=DeviceClass.MID_RANGE_GPU,
-        total_memory_bytes=24 * 1024**3,
-        free_memory_bytes=16 * 1024**3,
-        measured_latency_ms=latency_ms,
+        device_class=DeviceClass.CONSUMER,
+        gpu_tflops=80.0,
+        gpu_memory_gb=24.0,
+        bandwidth_gbps=100.0,
     )

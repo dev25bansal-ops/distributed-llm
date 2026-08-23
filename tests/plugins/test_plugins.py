@@ -38,7 +38,13 @@ class TestRateLimitPlugin:
         plugin = RateLimitPlugin()
         if hasattr(plugin, "configure"):
             plugin.configure(max_requests=10, window_seconds=60)
-            assert True
+            # Verify config was applied by checking the limit behavior
+            if hasattr(plugin, "check"):
+                allowed = plugin.check(client_id="test")
+                # After configure, check should still work without error
+                assert isinstance(allowed, (bool, type(None)))
+        else:
+            pytest.skip("RateLimitPlugin.configure not implemented")
 
 
 class TestAuditLogPlugin:
@@ -55,13 +61,20 @@ class TestAuditLogPlugin:
 
         plugin = AuditLogPlugin()
         if hasattr(plugin, "log"):
+            # log() should not raise; verify it returns normally
             plugin.log(
                 action="model_load",
                 user="test_user",
                 model="test-model",
                 success=True,
             )
-            assert True
+            # Check that an entry was recorded if the plugin tracks logs
+            if hasattr(plugin, "get_entries"):
+                entries = plugin.get_entries()
+                assert len(entries) >= 1
+                assert entries[-1]["action"] == "model_load"
+        else:
+            pytest.skip("AuditLogPlugin.log not implemented")
 
     def test_audit_log_with_error(self):
         from distllm.plugins.builtin import AuditLogPlugin
@@ -75,7 +88,12 @@ class TestAuditLogPlugin:
                 success=False,
                 error="OOM",
             )
-            assert True
+            if hasattr(plugin, "get_entries"):
+                entries = plugin.get_entries()
+                matching = [e for e in entries if e.get("error") == "OOM"]
+                assert len(matching) >= 1
+        else:
+            pytest.skip("AuditLogPlugin.log not implemented")
 
 
 class TestMetricsPlugin:
@@ -92,8 +110,13 @@ class TestMetricsPlugin:
 
         plugin = MetricsPlugin()
         if hasattr(plugin, "collect"):
-            plugin.collect(metric_name="requests_total", value=1.0)
-            assert True
+            result = plugin.collect(metric_name="requests_total", value=1.0)
+            # Verify the metric was recorded
+            if hasattr(plugin, "get_metrics"):
+                metrics = plugin.get_metrics()
+                assert "requests_total" in metrics
+        else:
+            pytest.skip("MetricsPlugin.collect not implemented")
 
     def test_metrics_labels(self):
         from distllm.plugins.builtin import MetricsPlugin
@@ -105,7 +128,11 @@ class TestMetricsPlugin:
                 value=0.5,
                 labels={"endpoint": "/v1/chat", "method": "POST"},
             )
-            assert True
+            if hasattr(plugin, "get_metrics"):
+                metrics = plugin.get_metrics()
+                assert "latency" in metrics
+        else:
+            pytest.skip("MetricsPlugin.collect not implemented")
 
 
 class TestPluginSystem:

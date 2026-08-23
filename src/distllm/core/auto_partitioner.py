@@ -16,6 +16,50 @@ if TYPE_CHECKING:
     from distllm.core.gpu_profiler import GPUInfo
 
 
+def best_fit_decreasing_partition(
+    caps: dict[str, int], layer_bytes: list[int]
+) -> dict[str, list[int]]:
+    """Partition ``layer_bytes`` across devices by best-fit-decreasing.
+
+    Args:
+        caps: Device id -> capacity in bytes.
+        layer_bytes: Size of each layer (index = layer id).
+
+    Returns:
+        Mapping device id -> list of layer indices placed on it.
+
+    Raises:
+        ValueError: If a layer does not fit any device (true OOM).
+    """
+    if not layer_bytes:
+        return {dev: [] for dev in caps}
+    # Sort layers by size descending (best-fit-decreasing), tracking indices.
+    order = sorted(range(len(layer_bytes)), key=lambda i: -layer_bytes[i])
+    placement: dict[str, list[int]] = {dev: [] for dev in caps}
+    remaining: dict[str, int] = {dev: int(cap) for dev, cap in caps.items()}
+
+    for idx in order:
+        size = int(layer_bytes[idx])
+        # Best fit: device with the smallest remaining capacity that fits.
+        best_dev: str | None = None
+        best_left: int | None = None
+        for dev, left in remaining.items():
+            if left >= size:
+                if best_left is None or left < best_left:
+                    best_left = left
+                    best_dev = dev
+        if best_dev is None:
+            raise ValueError(
+                f"Layer {idx} ({size} bytes) does not fit any device — true OOM"
+            )
+        placement[best_dev].append(idx)
+        remaining[best_dev] -= size
+
+    for dev in placement:
+        placement[dev] = sorted(placement[dev])
+    return placement
+
+
 @dataclass
 class LayerInfo:
     """Information about a single model layer."""

@@ -31,7 +31,10 @@ def _url(path: str) -> str:
 
 @pytest.fixture(scope="module")
 def client() -> httpx.Client:
-    return httpx.Client(timeout=REQUEST_TIMEOUT)
+    """Authenticated client: live servers always require an API key."""
+    api_key = os.environ.get("TEST_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    return httpx.Client(timeout=REQUEST_TIMEOUT, headers=headers)
 
 
 def _get_docker_client():
@@ -88,7 +91,10 @@ class TestNodeFailure:
     @pytest.mark.timeout(60)
     def test_cluster_status_after_failure(self, client: httpx.Client):
         """Cluster status should report correct node count."""
-        resp = client.get(_url("/admin/v1/cluster/status"))
+        try:
+            resp = client.get(_url("/admin/v1/cluster/status"))
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         assert resp.status_code in (200, 401, 503)
         if resp.status_code == 200:
             data = resp.json()
@@ -97,7 +103,10 @@ class TestNodeFailure:
     @pytest.mark.timeout(60)
     def test_health_degraded_after_node_loss(self, client: httpx.Client):
         """Health endpoint should report degraded status when nodes are missing."""
-        resp = client.get(_url("/v1/health"))
+        try:
+            resp = client.get(_url("/v1/health"))
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         assert resp.status_code == 200
         data = resp.json()
         # May be "ok" or "degraded" depending on test timing

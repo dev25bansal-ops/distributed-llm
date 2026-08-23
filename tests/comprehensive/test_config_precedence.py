@@ -84,6 +84,33 @@ class TestConfigPrecedence:
         )
         assert settings.generation.max_new_tokens == 256
 
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        """A DISTLLM_* env var must beat a value in a checked-in YAML file.
+
+        Regression for the audit finding: ``cls(**data)`` gave YAML (init
+        kwargs) the highest pydantic-settings precedence, so an env-set value
+        (e.g. a secret) could be clobbered by config.yaml.
+        """
+        yml = tmp_path / "config.yaml"
+        yml.write_text("model:\n  name: yaml-model\n  dtype: float32\n")
+        monkeypatch.setenv("DISTLLM_MODEL__DTYPE", "float16")
+
+        settings = _config_settings.DistLLMSettings.from_yaml(config_path=str(yml))
+
+        assert settings.model.dtype == "float16"   # env wins
+        assert settings.model.name == "yaml-model"  # YAML fills the rest
+
+    def test_env_overrides_only_its_leaf(self, tmp_path, monkeypatch):
+        """A nested env var must not clobber YAML's other leaves."""
+        yml = tmp_path / "config.yaml"
+        yml.write_text("model:\n  name: yaml-model\n  dtype: float32\n")
+        monkeypatch.setenv("DISTLLM_MODEL__NAME", "env-model")
+
+        settings = _config_settings.DistLLMSettings.from_yaml(config_path=str(yml))
+
+        assert settings.model.name == "env-model"   # env leaf wins
+        assert settings.model.dtype == "float32"    # YAML leaf preserved
+
     def test_apply_cli_overrides_nested_dict(self):
         data = {"auto_partition": {"enabled": False, "strategy": "auto"}}
         overrides = {"auto_partition": {"enabled": True}}

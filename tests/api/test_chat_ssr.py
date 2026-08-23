@@ -1,6 +1,7 @@
 """SSRF protection tests: image_url with internal addresses rejected."""
 
 import os
+import secrets
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from distllm.api.api_state import g
+from distllm.core.api_key_store import reset_api_key_store
 from distllm.api.server import app
 
 
@@ -15,11 +17,20 @@ from distllm.api.server import app
 # Shared helpers (duplicated so each file is self-contained)
 # ---------------------------------------------------------------------------
 
-def disable_auth():
+def _make_client():
+    test_api_key = secrets.token_urlsafe(32)
+    os.environ.pop("API_KEY_WAS_SET", None)
+    os.environ["API_KEY"] = test_api_key
+    reset_api_key_store()
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
+    return client
+
+
+def _cleanup_auth():
     os.environ.pop("API_KEY", None)
     os.environ.pop("API_KEY_WAS_SET", None)
-    os.environ["DISABLE_AUTH"] = "1"
-    os.environ["DISTLLM_DEV_MODE"] = "1"
+    reset_api_key_store()
 
 
 def make_mock_coordinator():
@@ -62,7 +73,9 @@ def make_mock_coordinator():
     coord.list_models.return_value = ["test-model"]
     coord._vlm_pipeline = None
     coord._spec_decoder = None
+    coord._model_router = None
     coord._shutting_down = False
+    coord.tokenizer.chat_template = None
     return coord
 
 
@@ -80,14 +93,13 @@ class TestChatSSRF:
 
     @pytest.fixture(autouse=True)
     def auth(self):
-        disable_auth()
+        self.client = _make_client()
         yield
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     @staticmethod
-    def _req(url: str):
-        return TestClient(app).post(
+    def _req(url: str, client):
+        return client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -109,7 +121,7 @@ class TestChatSSRF:
         original = g.coordinator
         g.coordinator = coord
         try:
-            resp = self._req("https://example.com/image.jpg")
+            resp = self._req("https://example.com/image.jpg", self.client)
             assert resp.status_code == 200
         finally:
             g.coordinator = original
@@ -119,37 +131,37 @@ class TestChatSSRF:
         original = g.coordinator
         g.coordinator = coord
         try:
-            resp = self._req("data:image/png;base64,iVBORw0KGgo=")
+            resp = self._req("data:image/png;base64,iVBORw0KGgo=", self.client)
             assert resp.status_code == 200
         finally:
             g.coordinator = original
 
     def test_localhost_hostname_rejected(self):
-        resp = self._req("http://localhost/image.png")
+        resp = self._req("http://localhost/image.png", self.client)
         assert resp.status_code == 422
 
     def test_localhost_ip_rejected(self):
-        resp = self._req("http://127.0.0.1/image.png")
+        resp = self._req("http://127.0.0.1/image.png", self.client)
         assert resp.status_code == 422
 
     def test_localhost_ipv6_rejected(self):
-        resp = self._req("http://[::1]/image.png")
+        resp = self._req("http://[::1]/image.png", self.client)
         assert resp.status_code == 422
 
     def test_private_10_dot_rejected(self):
-        resp = self._req("http://10.0.0.1/image.png")
+        resp = self._req("http://10.0.0.1/image.png", self.client)
         assert resp.status_code == 422
 
     def test_private_172_dot_rejected(self):
-        resp = self._req("http://172.16.0.1/image.png")
+        resp = self._req("http://172.16.0.1/image.png", self.client)
         assert resp.status_code == 422
 
     def test_private_192_dot_rejected(self):
-        resp = self._req("http://192.168.1.1/image.png")
+        resp = self._req("http://192.168.1.1/image.png", self.client)
         assert resp.status_code == 422
 
     def test_link_local_rejected(self):
-        resp = self._req("http://169.254.1.1/image.png")
+        resp = self._req("http://169.254.1.1/image.png", self.client)
         assert resp.status_code == 422
 
     def test_public_ip_allowed(self):
@@ -157,7 +169,7 @@ class TestChatSSRF:
         original = g.coordinator
         g.coordinator = coord
         try:
-            resp = self._req("http://8.8.8.8/image.png")
+            resp = self._req("http://8.8.8.8/image.png", self.client)
             assert resp.status_code == 200
         finally:
             g.coordinator = original

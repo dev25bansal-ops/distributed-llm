@@ -32,7 +32,10 @@ def _url(path: str) -> str:
 
 @pytest.fixture(scope="module")
 def client() -> httpx.Client:
-    return httpx.Client(timeout=REQUEST_TIMEOUT)
+    """Authenticated client: live servers always require an API key."""
+    api_key = os.environ.get("TEST_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    return httpx.Client(timeout=REQUEST_TIMEOUT, headers=headers)
 
 
 class TestWANPipeline:
@@ -41,29 +44,35 @@ class TestWANPipeline:
     @pytest.mark.timeout(60)
     def test_basic_throughput(self, client: httpx.Client):
         """Even under latency, basic generation should work."""
-        resp = client.post(
-            _url("/v1/chat/completions"),
-            json={
-                "model": "roneneldan/TinyStories-1M",
-                "messages": [{"role": "user", "content": "Write a sentence."}],
-                "max_tokens": 20,
-            },
-        )
+        try:
+            resp = client.post(
+                _url("/v1/chat/completions"),
+                json={
+                    "model": "roneneldan/TinyStories-1M",
+                    "messages": [{"role": "user", "content": "Write a sentence."}],
+                    "max_tokens": 20,
+                },
+            )
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         assert resp.status_code == 200
         assert "choices" in resp.json()
 
     @pytest.mark.timeout(120)
     def test_longer_generation(self, client: httpx.Client):
         """Longer generation under latency should accumulate and complete."""
-        resp = client.post(
-            _url("/v1/chat/completions"),
-            json={
-                "model": "roneneldan/TinyStories-1M",
-                "messages": [{"role": "user", "content": "Write a short paragraph about distributed computing."}],
-                "max_tokens": 60,
-                "temperature": 0.5,
-            },
-        )
+        try:
+            resp = client.post(
+                _url("/v1/chat/completions"),
+                json={
+                    "model": "roneneldan/TinyStories-1M",
+                    "messages": [{"role": "user", "content": "Write a short paragraph about distributed computing."}],
+                    "max_tokens": 60,
+                    "temperature": 0.5,
+                },
+            )
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         assert resp.status_code == 200
         data = resp.json()
         choices = data.get("choices", [])
@@ -76,15 +85,18 @@ class TestWANPipeline:
     @pytest.mark.timeout(30)
     def test_streaming_under_latency(self, client: httpx.Client):
         """Streaming should still work under WAN latency."""
-        resp = client.post(
-            _url("/v1/chat/completions"),
-            json={
-                "model": "roneneldan/TinyStories-1M",
-                "messages": [{"role": "user", "content": "Count from 1 to 5."}],
-                "max_tokens": 30,
-                "stream": True,
-            },
-        )
+        try:
+            resp = client.post(
+                _url("/v1/chat/completions"),
+                json={
+                    "model": "roneneldan/TinyStories-1M",
+                    "messages": [{"role": "user", "content": "Count from 1 to 5."}],
+                    "max_tokens": 30,
+                    "stream": True,
+                },
+            )
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         assert resp.status_code == 200
         # Verify we got at least one data chunk
         chunks = [line for line in resp.text.split("\n") if line.startswith("data: ")]

@@ -46,3 +46,23 @@ def require_role(*roles: str):
         )
 
     return _check_role
+
+
+def require_coordinator():
+    """FastAPI dependency: require a loaded coordinator (503 otherwise).
+
+    Usage::
+
+        router = APIRouter(dependencies=[Depends(require_coordinator())])
+    """
+
+    async def _check_coordinator() -> None:
+        from .api_state import g
+
+        if g.coordinator is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Coordinator not available — model not loaded",
+            )
+
+    return _check_coordinator

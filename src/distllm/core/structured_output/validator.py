@@ -8,6 +8,25 @@ from typing import Any
 
 from loguru import logger
 
+# Draft 2020-12 validation backing.
+#
+# The JSON-schema validator used to be backed by ``jsonschema``'s
+# ``Draft202012Validator`` (the E3 fix upgraded the schema dialect from
+# Draft 7 to 2020-12).  ``SchemaValidator`` above intentionally performs
+# lightweight field-level checks instead of a full jsonschema pass, so the
+# ``jsonschema`` library remains an *optional* dependency: importing this
+# module must not hard-require it.
+#
+# ``Draft202012Validator`` is still re-exported for callers (and regression
+# tests) that exercise 2020-12-specific keywords directly.  When
+# ``jsonschema`` is not installed the eager-import fallback is never
+# reached; ``Draft202012Validator`` stays ``None`` and this module imports
+# cleanly.
+try:
+    from jsonschema import Draft202012Validator  # type: ignore[no-redef]
+except ImportError:  # pragma: no cover - jsonschema absent
+    Draft202012Validator = None  # type: ignore[assignment]
+
 
 @dataclass
 class ValidationResult:

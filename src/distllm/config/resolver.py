@@ -186,6 +186,15 @@ class ConfigResolver:
     # ── Internal helpers ─────────────────────────────────────────────
 
     @staticmethod
+    def resolve_config_path(entry_point: str, args: argparse.Namespace) -> str | None:
+        """Resolve the configuration file path for *entry_point* from CLI args.
+
+        Public wrapper around :meth:`_resolve_config_path` so entry points
+        (API server, coordinator) do not reach into the private helper.
+        """
+        return ConfigResolver._resolve_config_path(entry_point, args)
+
+    @staticmethod
     def _validate_only() -> None:
         DistLLMSettings.validate_startup()
         print("Config validation passed")

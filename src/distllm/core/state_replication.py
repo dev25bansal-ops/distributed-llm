@@ -171,14 +171,15 @@ class StateReplicationStore:
                 "updated_at": state.updated_at,
                 "updated_by": state.updated_by,
             }
-            # Atomic write: write to temp file, then rename
+            # Atomic write: write to temp file, then replace.  os.replace
+            # overwrites the target on Windows too (os.rename does not).
             tmp_path = path.with_suffix(".json.tmp")
             try:
-                with open(tmp_path, "w") as f:
-                    json.dump(data, f, indent=2, default=str)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.rename(str(tmp_path), str(path))
+                    with open(tmp_path, "w") as f:
+                        json.dump(data, f, indent=2, default=str)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(str(tmp_path), str(path))
             except Exception:
                 # Clean up temp file on failure
                 if tmp_path.exists():

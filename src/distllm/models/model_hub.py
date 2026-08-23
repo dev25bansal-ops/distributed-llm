@@ -101,10 +101,12 @@ class ModelHub:
         (a few KB), determines which shard files contain the requested
         layers, and downloads only those shards.
 
-        Layers are downloaded into the HuggingFace shared cache
-        (``~/.cache/huggingface/hub/``) which deduplicates across
-        concurrent workers.  A lightweight manifest is written to the
-        ModelHub cache so that subsequent calls are instant.
+        Shards are downloaded into a layer-scoped directory under the
+        ModelHub cache (``{cache_dir}/{model}/{revision}/layers_S_E``).
+        A lightweight ``.layer_manifest`` records the downloaded shard
+        files so that subsequent calls are instant, and every shard is
+        verified to be present (and non-empty) before the path is
+        returned.
 
         Args:
             model_name: HuggingFace model ID (e.g. ``"meta-llama/Llama-3.1-8B"``).
@@ -120,7 +122,8 @@ class ModelHub:
 
         Raises:
             ModelHubError: If ``huggingface-hub`` is not installed.
-            DownloadError: If the index download fails after retries.
+            DownloadError: If the index download fails after retries,
+                or the downloaded subset is missing files.
         """
         if not HAS_HF_HUB:
             raise ModelHubError(
@@ -133,12 +136,20 @@ class ModelHub:
         manifest_path = layer_subdir / ".layer_manifest"
 
         # --- Check if already cached ---
-        if manifest_path.exists():
+        # The manifest alone is not enough: a manifest whose shard files
+        # are missing from disk (e.g. written by an older buggy version,
+        # or wiped by cleanup) must trigger a re-download.
+        if manifest_path.exists() and self._layer_files_present(layer_subdir):
             logger.info(
                 f"Layer subset {start_layer}-{end_layer} for "
                 f"{model_name}@{revision} already cached at {layer_subdir}"
             )
             return str(layer_subdir)
+        if manifest_path.exists():
+            logger.warning(
+                f"Layer manifest at {manifest_path} lists shard files that "
+                f"are missing on disk; re-downloading layer subset"
+            )
 
         # --- 1. Download & parse the index ---
         from distllm.models.safetensors_index import SafetensorsIndex
@@ -176,6 +187,10 @@ class ModelHub:
             f"({len(index.get_keys_for_layer_range(start_layer, end_layer))} params)"
         )
 
+        # Download directly into the layer-scoped directory so the path
+        # returned below physically contains the index + shard files.
+        layer_subdir.mkdir(parents=True, exist_ok=True)
+
         if len(needed_shards) > 1 or (
             len(needed_shards) == 1
             and "index.json" not in next(iter(needed_shards))
@@ -185,6 +200,7 @@ class ModelHub:
                 filename="model.safetensors.index.json",
                 revision=revision,
                 token=token,
+                local_dir=str(layer_subdir),
             )
             logger.debug(f"Index cached at {index_path}")
 
@@ -197,6 +213,7 @@ class ModelHub:
                     filename=shard,
                     revision=revision,
                     token=token,
+                    local_dir=str(layer_subdir),
                 )
         else:
             logger.info(
@@ -217,8 +234,21 @@ class ModelHub:
                 ],
             )
 
-        # --- 2. Write layer-scoped manifest ---
-        layer_subdir.mkdir(parents=True, exist_ok=True)
+        # --- 2. Verify the subset is physically complete ---
+        missing = sorted(
+            name
+            for name in needed_shards
+            if not (layer_subdir / name).is_file()
+            or (layer_subdir / name).stat().st_size == 0
+        )
+        if missing:
+            raise DownloadError(
+                f"Layer subset {start_layer}-{end_layer} for "
+                f"{model_name}@{revision} is incomplete; missing or empty "
+                f"files in {layer_subdir}: {missing}"
+            )
+
+        # --- 3. Write layer-scoped manifest ---
         import time as time_module
 
         needed_keys = index.get_keys_for_layer_range(start_layer, end_layer)
@@ -262,7 +292,12 @@ class ModelHub:
         manifest_path = layer_subdir / ".layer_manifest"
 
         if manifest_path.exists():
-            return str(layer_subdir)
+            if self._layer_files_present(layer_subdir):
+                return str(layer_subdir)
+            logger.warning(
+                f"Layer manifest at {manifest_path} lists shard files that "
+                f"are missing on disk; ignoring stale layer subset"
+            )
 
         if model_cache_path.exists() and (model_cache_path / ".manifest").exists():
             logger.info(
@@ -274,6 +309,23 @@ class ModelHub:
         return self.download_layer_subset(
             model_name, start_layer, end_layer,
             revision=revision, token=token,
+        )
+
+    @staticmethod
+    def _layer_files_present(layer_subdir: Path) -> bool:
+        """Whether every shard recorded in ``.layer_manifest`` exists on disk.
+
+        Used to detect stale layer caches (manifest written but shard
+        files missing), in which case the subset must be re-downloaded.
+        """
+        try:
+            with open(layer_subdir / ".layer_manifest") as f:
+                manifest = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return False
+        shard_files = manifest.get("shard_files") or []
+        return bool(shard_files) and all(
+            (layer_subdir / name).is_file() for name in shard_files
         )
 
     @staticmethod

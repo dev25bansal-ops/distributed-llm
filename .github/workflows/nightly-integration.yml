@@ -1,0 +1,70 @@
+# Nightly Multi-Node Integration + Soak (§6.6.3)
+#
+# Too slow / stateful for per-PR, so it runs nightly. Deploys a full
+# DistLLM cluster (coordinator + 2+ worker nodes), runs the distributed
+# integration suite, then a long-duration SOAK to surface thread/queue
+# leaks and unbounded structures (M16) that only appear over time.
+
+name: Nightly Integration + Soak
+
+on:
+  schedule:
+    - cron: "17 3 * * *"  # 03:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: "Soak duration in minutes"
+        default: "30"
+
+env:
+  COMPOSE_FILE: tests/dist/integration/docker-compose.yml
+  SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '30' }}
+
+jobs:
+  multi-node-integration:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start cluster (coordinator + 2 workers)
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} up --build -d coordinator node_0 node_1
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8000/v1/health && break
+            sleep 5
+          done
+          curl -sf http://localhost:8000/v1/health || { echo "Cluster failed to start"; exit 1; }
+
+      - name: Run multi-node integration tests
+        run: |
+          pip install httpx pytest
+          python -m pytest tests/dist/integration/ -v -k "not chaos" --timeout=600
+
+      - name: Soak test (sustained traffic to surface leaks, §6.6.3/M16)
+        run: |
+          pip install locust
+          locust -f tests/load/locust/locustfile.py \
+            --headless -u 20 -r 2 --run-time ${{ env.SOAK_MINUTES }}m \
+            --host http://localhost:8000 \
+            --csv tests/load/results/soak --csv-full-body \
+            --stop-timeout 10
+        continue-on-error: false
+
+      - name: SLO check after soak
+        run: |
+          python tests/load/locust/slo_check.py \
+            --csv tests/load/results/soak_stats.csv \
+            --p95-latency-ms 8000 \
+            --p99-latency-ms 15000 \
+            --error-rate 0.02
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-soak-${{ github.run_id }}
+          path: tests/load/results/
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f ${{ env.COMPOSE_FILE }} down -v

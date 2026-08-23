@@ -108,12 +108,7 @@ class TestCoordinatorAdapterIntegration:
             CacheManager=MagicMock,
             PipelineOrchestrator=MagicMock,
             TokenGenerator=MagicMock,
-            ModelManager=MagicMock,
-            HealthChecker=MagicMock,
-            NodeRegistrar=MagicMock,
-            MetricsManager=MagicMock,
             RequestTracker=MagicMock,
-            Container=MagicMock,
             SubsystemManager=MagicMock,
         ):
             with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
@@ -135,12 +130,7 @@ class TestCoordinatorAdapterIntegration:
             CacheManager=MagicMock,
             PipelineOrchestrator=MagicMock,
             TokenGenerator=MagicMock,
-            ModelManager=MagicMock,
-            HealthChecker=MagicMock,
-            NodeRegistrar=MagicMock,
-            MetricsManager=MagicMock,
             RequestTracker=MagicMock,
-            Container=MagicMock,
             SubsystemManager=MagicMock,
         ):
             with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:

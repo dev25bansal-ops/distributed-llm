@@ -18,8 +18,6 @@ import hmac
 import pytest
 from fastapi.testclient import TestClient
 
-import distllm.api.server as server_module
-from distllm.api.server import app
 from distllm.api.validation import validate_adapter_path, ALLOWED_ADAPTER_BASES
 from distllm.api.routes.chat import ImageURLContent
 from distllm.prompts.engine import TemplateEngine
@@ -32,11 +30,12 @@ from distllm.prompts.engine import TemplateEngine
 class TestTimingAttackResistance:
     """Verify HMAC comparison is constant-time and no early-exit exists."""
 
-    def test_auth_middleware_uses_hmac_compare_digest(self):
-        """Auth comparison must use hmac.compare_digest, not == or !=."""
-        src = Path(server_module.__file__).parent / "middleware.py"
-        code = src.read_text()
-        assert "hmac.compare_digest" in code, "AuthMiddleware must use constant-time comparison"
+    def test_api_key_store_uses_compare_digest(self):
+        """ApiKeyStore.authenticate must use compare_digest, not == or !=."""
+        from distllm.core.api_key_store import __file__ as aks_file
+        src = Path(aks_file)
+        code = src.read_text(encoding="utf-8")
+        assert "compare_digest" in code, "ApiKeyStore.authenticate must use compare_digest"
 
     def test_hmac_different_keys_no_timing_leak(self):
         """hmac.compare_digest prevents timing leaks for different key lengths."""
@@ -48,18 +47,18 @@ class TestTimingAttackResistance:
 
     def test_auth_rejects_invalid_key_constant_time(self, coordinator, monkeypatch):
         """Verify invalid keys are rejected regardless of length (no timing leak)."""
-        monkeypatch.delenv("DISABLE_AUTH", raising=False)
-        monkeypatch.delenv("DISTLLM_DEV_MODE", raising=False)
+        from distllm.core.api_key_store import reset_api_key_store
+        reset_api_key_store()
         monkeypatch.setenv("API_KEY", "valid-key-12345")
-        import distllm.api.server as server_module
-        original = server_module.coordinator
-        server_module.coordinator = coordinator
+        from distllm.api.api_state import g
         from distllm.api.server import app
+        original = g.coordinator
+        g.coordinator = coordinator
         client = TestClient(app, raise_server_exceptions=False)
         for wrong_key in ["wrong", "a" * 100, "x" * 8, ""]:
             resp = client.get("/v1/models", headers={"Authorization": f"Bearer {wrong_key}"})
             assert resp.status_code in (401, 503), f"Key={wrong_key!r} got {resp.status_code}"
-        server_module.coordinator = original
+        g.coordinator = original
 
 
 # ---------------------------------------------------------------------------
@@ -249,10 +248,14 @@ class TestPromptInjection:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+_TEST_API_KEY = "test-key-for-security-tests"
+
+
 @pytest.fixture
 def _disable_api_key(monkeypatch):
-    monkeypatch.setenv("DISABLE_AUTH", "1")
-    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+    from distllm.core.api_key_store import reset_api_key_store
+    reset_api_key_store()
+    monkeypatch.setenv("API_KEY", _TEST_API_KEY)
 
 
 @pytest.fixture
@@ -283,10 +286,12 @@ def coordinator():
 
 @pytest.fixture
 def api_client(coordinator, _disable_api_key):
-    """TestClient with mock coordinator and auth disabled."""
-    import distllm.api.server as server_module
-    original = server_module.coordinator
-    server_module.coordinator = coordinator
+    """TestClient with mock coordinator and valid API key."""
+    from distllm.api.api_state import g
+    from distllm.api.server import app
+    original = g.coordinator
+    g.coordinator = coordinator
     client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {_TEST_API_KEY}"})
     yield client
-    server_module.coordinator = original
+    g.coordinator = original

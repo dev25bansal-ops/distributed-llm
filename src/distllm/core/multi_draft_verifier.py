@@ -114,8 +114,12 @@ class MultiDraftVerifier:
                 target_logits = self._target(full_input, **kwargs)
                 self._stats["target_calls"] += 1
 
-                # Rejection-sample each token in the chain
-                prefix_len = generated.shape[1]
+                # Rejection-sample each token in the chain.
+                # Draft token i occupies position prefix_len+i (prefix_len =
+                # generated.shape[1]) and is predicted by logits at prefix_len+i-1
+                # (logits[k] -> token[k+1]). F-046: prefix_len must be -1 here so
+                # pos = prefix_len + i lands on the correct prediction.
+                prefix_len = generated.shape[1] - 1
                 accepted = 0
                 for i in range(num_draft):
                     pos = prefix_len + i

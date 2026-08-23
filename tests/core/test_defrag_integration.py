@@ -288,6 +288,10 @@ def test_defrag_end_to_end_via_coordinator():
     coord._defragmenters = {}
     coord._defrag_interval = 60.0
     coord._metrics_collector = None
+    # init_defragmentation delegates to the configurator (real __init__
+    # creates it at line ~121); __new__ bypasses that, so wire it here.
+    from distllm.core.coordinator_config_wiring import CoordinatorConfigurator
+    coord._configurator = CoordinatorConfigurator(coord)
 
     # Call init_defragmentation with settings
     from distllm.config.settings import DefragmentationSettings

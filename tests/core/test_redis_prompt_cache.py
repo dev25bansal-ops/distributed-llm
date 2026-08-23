@@ -1,7 +1,13 @@
-"""Tests for RedisPromptCache with mocked Redis client."""
+"""Tests for RedisPromptCache with mocked Redis client.
+
+The ``redis`` package is an optional dependency (the module fails closed
+when it is absent), so these tests inject a fake module-level ``redis``
+namespace rather than requiring the real package.
+"""
 
 import time
-from unittest.mock import MagicMock, patch
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -9,20 +15,25 @@ from distllm.core.redis_prompt_cache import RedisPromptCache, CachedPrompt
 
 
 @pytest.fixture
-def mock_redis():
-    with patch("distllm.core.redis_prompt_cache.redis.from_url") as mock_from_url:
-        client = MagicMock()
-        client.ping.return_value = True
-        client.setex.return_value = True
-        client.zadd.return_value = 1
-        client.zcard.return_value = 0
-        client.hincrby.return_value = 1
-        client.get.return_value = None
-        client.delete.return_value = True
-        client.zrem.return_value = 1
-        client.keys.return_value = []
-        mock_from_url.return_value = client
-        yield client
+def mock_redis(monkeypatch):
+    import distllm.core.redis_prompt_cache as rpc
+
+    fake_redis = types.ModuleType("fake_redis")
+    client = MagicMock()
+    client.ping.return_value = True
+    client.setex.return_value = True
+    client.zadd.return_value = 1
+    client.zcard.return_value = 0
+    client.hincrby.return_value = 1
+    client.get.return_value = None
+    client.delete.return_value = True
+    client.zrem.return_value = 1
+    client.keys.return_value = []
+    fake_redis.ConnectionPool = MagicMock()
+    fake_redis.ConnectionPool.from_url.return_value = MagicMock()
+    fake_redis.Redis = MagicMock(return_value=client)
+    monkeypatch.setattr(rpc, "redis", fake_redis)
+    return client
 
 
 @pytest.fixture

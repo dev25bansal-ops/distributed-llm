@@ -54,6 +54,17 @@
       "desktop": {
         "schemes": ["distllm"]
       }
+    },
+    "updater": {
+      "active": true,
+      "dialog": true,
+      "pubkey": "TODO_REPLACE_WITH_YOUR_UPDATER_SIGNING_PUBKEY",
+      "endpoints": [
+        "https://releases.distributed-llm.dev/{{target}}/{{current_version}}"
+      ]
+    },
+    "notification": {
+      "all": true
     }
   }
 }

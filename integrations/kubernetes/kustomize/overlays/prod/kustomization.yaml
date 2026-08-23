@@ -1,0 +1,79 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namePrefix: prod-
+
+commonLabels:
+  environment: prod
+  app.kubernetes.io/environment: prod
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: coordinator
+    path: coordinator-patch.yaml
+  - target:
+      kind: Deployment
+      name: worker
+    path: coordinator-patch.yaml
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: coordinator
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 20
+      - op: add
+        path: /spec/behavior
+        value:
+          scaleDown:
+            stabilizationWindowSeconds: 300
+          scaleUp:
+            policies:
+              - type: Percent
+                value: 100
+                periodSeconds: 15
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: worker
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 50
+      - op: add
+        path: /spec/behavior
+        value:
+          scaleDown:
+            stabilizationWindowSeconds: 300
+          scaleUp:
+            policies:
+              - type: Percent
+                value: 100
+                periodSeconds: 15
+  - target:
+      kind: ConfigMap
+      name: config
+    patch: |-
+      - op: replace
+        path: /data/distllm.yaml
+        value: |
+          coordinator:
+            host: "0.0.0.0"
+          log_level: warn
+          redis:
+            address: "prod-distllm-redis:6379"
+
+replicas:
+  - name: coordinator
+    count: 3
+  - name: worker
+    count: 5

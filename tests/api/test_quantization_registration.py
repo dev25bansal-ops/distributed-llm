@@ -1,13 +1,24 @@
-"""Tests for quantization in gRPC registration flow."""
+"""Tests for quantization in gRPC registration flow.
+
+DEPENDENCY NOTE: This entire file is skipped because the module it imports
+has been removed from the codebase:
+  - distllm.communication.grpc  (removed)
+
+The CoordinatorService class no longer exists. To re-enable: refactor tests
+to use the new gRPC registration path (if one exists) or remove this file.
+"""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-try:
-    from distllm.communication.grpc import CoordinatorService
-except ImportError:
-    pytest.skip("distllm.communication.grpc module removed", allow_module_level=True)
+pytest.importorskip(
+    "distllm.communication.grpc",
+    reason="distllm.communication.grpc module removed — CoordinatorService no "
+           "longer exists; re-enable after refactoring to new gRPC path",
+)
+
+from distllm.communication.grpc import CoordinatorService  # noqa: E402
 
 
 class TestCoordinatorServiceQuantization:

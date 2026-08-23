@@ -11,8 +11,12 @@ export interface AppSettings {
     modelDownloads: boolean;
     inferenceRequests: boolean;
     errors: boolean;
+    native: boolean;
+    updateAvailable: boolean;
   };
   pythonPath: string;
+  apiEndpoint: string;
+  updateServerUrl: string;
 }
 
 const defaults: AppSettings = {
@@ -26,8 +30,12 @@ const defaults: AppSettings = {
     modelDownloads: true,
     inferenceRequests: false,
     errors: true,
+    native: true,
+    updateAvailable: true,
   },
   pythonPath: "",
+  apiEndpoint: "",
+  updateServerUrl: "https://releases.distributed-llm.dev",
 };
 
 function loadSettings(): AppSettings {

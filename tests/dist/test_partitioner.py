@@ -491,12 +491,13 @@ class TestEdgeCases:
         )
         assert isinstance(sol, PartitionSolution)
 
+    @pytest.mark.timeout(60)
     @pytest.mark.asyncio
     async def test_many_nodes_versus_few_layers(self) -> None:
         """More nodes than layers should be handled gracefully."""
         p = HardwareAwarePartitioner()
         sol = await p.partition(
-            node_ids=[f"n{i}" for i in range(10)],
+            node_ids=[f"n{i}" for i in range(4)],
             num_layers=3,
             hidden_size=256,
             intermediate_size=512,

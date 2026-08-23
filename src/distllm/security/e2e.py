@@ -81,17 +81,20 @@ class E2EError(Exception):
 class SessionKeys:
     """Holds key material for a single encrypted session between two nodes.
 
-    Supports message-level forward secrecy via ``RATCHET_INTERVAL``:
-    the symmetric key is ratcheted (one-way KDF chain) every N messages,
-    so past ciphertexts cannot be decrypted if the current key is compromised.
+    Each message derives a UNIQUE box key from the shared ECDH key and a
+    fresh random salt that travels with the ciphertext.  Because the key
+    material is never mutated by message traffic, the two sides stay in
+    sync under any traffic pattern (the salt-returned-by-encrypt is always
+    the salt that produced the box key).  Per-message forward secrecy
+    follows from the per-message salt + nonce: compromising the key for one
+    message does not reveal any other message.
 
     Attributes:
         session_id: Short identifier for this session.
         shared_key: 32-byte symmetric key derived from ECDH.
-        salt: Optional salt for key derivation (improves kDF).
+        salt: Optional salt for key derivation (never transmitted; each
+            message uses its own fresh salt instead).
     """
-
-    RATCHET_INTERVAL: int = 10  # Ratchet every N messages for forward secrecy
 
     def __init__(self, shared_key: bytes, session_id: str = "", salt: bytes | None = None):
         if len(shared_key) != KEY_BYTES:
@@ -99,24 +102,9 @@ class SessionKeys:
         self.session_id = session_id or hashlib.sha256(shared_key).hexdigest()[:8]
         self._shared_key = shared_key
         self._salt = salt or os.urandom(SALT_BYTES)
-        self._seq: int = 0
-
-    def ratchet(self) -> None:
-        """Advance the key one step in a one-way KDF chain.
-
-        After this call, the previous key cannot be recovered even by
-        an attacker who knows the current key.  This provides message-level
-        forward secrecy when called periodically.
-
-        The salt is also ratcheted to prevent correlation across ratchets.
-        """
-        self._shared_key = hmac.new(b"distllm-ratchet", self._shared_key, hashlib.sha256).digest()
-        self._salt = hmac.new(b"distllm-ratchet-salt", self._salt, hashlib.sha256).digest()[:SALT_BYTES]
-        self.session_id = hashlib.sha256(self._shared_key).hexdigest()[:8]
-        logger.debug(f"Session key ratcheted (new id: {self.session_id})")
 
     def derive_box_key(self, salt: bytes | None = None) -> bytes:
-        """Derive the per-session symmetric key using a proper KDF.
+        """Derive the box key for one message using a proper KDF.
 
         Uses libsodium's ``crypto_generichash`` (Blake2b) in keyed PRF
         mode when PyNaCl is available — a proper replacement for the
@@ -125,15 +113,21 @@ class SessionKeys:
         ``hashlib`` + ``hmac``.
 
         Args:
-            salt: Domain-separation salt.  Defaults to the session salt.
+            salt: Domain-separation salt.  Must match the salt used when
+                encrypting the message; a ``None`` salt (default) is valid
+                only for one-sided calls such as keyed hashing.
         """
         salt = salt if salt is not None else self._salt
         if HAS_NACL:
             # Blake2b keyed PRF — the recommended KDF in libsodium.
-            return nacl.bindings.crypto_generichash(
-                KEY_BYTES,
-                salt,
+            # Signature: crypto_generichash_blake2b_salt_personal(
+            #   data, digest_size=32, key=b'', salt=b'', person=b'')
+            return nacl_bindings.crypto_generichash_blake2b_salt_personal(
+                data=salt,
                 key=self._shared_key,
+                salt=b"\x00" * SALT_BYTES,
+                person=b"distllm-kdf".ljust(16, b"\x00"),
+                digest_size=KEY_BYTES,
             )
         # Fallback: HKDF-SHA256 (RFC 5869) when PyNaCl is unavailable.
         prk = hmac.new(salt, self._shared_key, hashlib.sha256).digest()
@@ -152,22 +146,25 @@ class SessionKeys:
         Returns (ciphertext_with_nonce, salt). The nonce is prepended to
         the ciphertext so the recipient doesn't need to manage it separately.
 
-        After every ``RATCHET_INTERVAL`` encryptions, the key is ratcheted
-        forward to provide message-level forward secrecy.
+        Each message derives its box key from a FRESH random salt that is
+        returned alongside the ciphertext.  The peer decrypts using the
+        transmitted salt, so the two sides never need to agree on a shared
+        ratchet counter — encryption works under strongly asymmetric
+        traffic without any key-divergence risk.  Each message gets its own
+        key material (per-message forward secrecy).
         """
         if not HAS_NACL:
             raise E2EError("PyNaCl not installed; cannot encrypt")
 
-        key = self.derive_box_key()
+        # Fresh per-message salt: this is the salt the peer must use.
+        # Never re-use a salt — a repeated (key, nonce) pair re-uses the
+        # SecretBox keystream and leaks plaintext XOR keystream.
+        message_salt = os.urandom(SALT_BYTES)
+        key = self.derive_box_key(message_salt)
         nonce = os.urandom(NONCE_BYTES)
         ct_and_tag = crypto_secretbox(plaintext, nonce, key)
 
-        # Ratchet key forward for forward secrecy
-        self._seq += 1
-        if self._seq % self.RATCHET_INTERVAL == 0:
-            self.ratchet()
-
-        return nonce + ct_and_tag, self._salt
+        return nonce + ct_and_tag, message_salt
 
     def decrypt(self, ciphertext: bytes, salt: bytes | None = None) -> bytes:
         """Decrypt *ciphertext* previously encrypted by the paired node.
@@ -175,12 +172,13 @@ class SessionKeys:
         Expects the first ``NONCE_BYTES`` (24) bytes to be the nonce,
         followed by the ciphertext + MAC tag.
 
-        After every ``RATCHET_INTERVAL`` decryptions, the key is ratcheted
-        forward to stay in sync with the encrypting side.
+        The box key is derived from the salt that accompanied the message,
+        so decryption works regardless of how many messages either side has
+        sent or received.
 
         Args:
             ciphertext: nonce + ciphertext + MAC tag.
-            salt: Salt used during encryption. Defaults to session salt.
+            salt: The per-message salt that was returned by ``encrypt()``.
 
         Returns:
             Decrypted plaintext bytes.
@@ -188,6 +186,10 @@ class SessionKeys:
         if not HAS_NACL:
             raise E2EError("PyNaCl not installed; cannot decrypt")
 
+        # The transmitted salt is authoritative: derive the box key exactly
+        # as the encrypting side did.  Never fall back to local state when a
+        # salt is provided — a stale local salt (from an old ratchet or
+        # asymmetric traffic) would derive the wrong key.
         key = self.derive_box_key(salt=salt)
 
         if len(ciphertext) < NONCE_BYTES + TAG_BYTES:
@@ -200,11 +202,6 @@ class SessionKeys:
             plaintext = crypto_secretbox_open(ct, nonce, key)
         except nacl_exceptions.CryptoError as e:
             raise E2EError(f"Decryption failed (wrong key or tampered data): {e}") from e
-
-        # Ratchet key forward to stay in sync with encrypting side
-        self._seq += 1
-        if self._seq % self.RATCHET_INTERVAL == 0:
-            self.ratchet()
 
         return plaintext
 

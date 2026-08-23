@@ -192,10 +192,31 @@ class CacheManager:
                     return tier_name, blob
             return None, None
 
+    def _prune_ghost_cache(self) -> None:
+        """Drop expired ghost-cache entries (bounded; called under the lock).
+
+        Previously the ghost cache was append-only — every SSD eviction added
+        an entry that was never removed, so the dict grew without bound.
+        """
+        if not self._ghost_cache:
+            return
+        now = time.time()
+        cutoff = now - self._ghost_cache_ttl
+        self._ghost_cache = {
+            h: t for h, t in self._ghost_cache.items() if t > cutoff
+        }
+        # Hard cap to bound memory even under heavy eviction churn.
+        max_ghost = 100_000
+        if len(self._ghost_cache) > max_ghost:
+            oldest = sorted(self._ghost_cache.items(), key=lambda kv: kv[1])
+            for h, _ in oldest[: len(self._ghost_cache) - max_ghost]:
+                self._ghost_cache.pop(h, None)
+
     def _tier_store(self, tier_name: str, prefix_hash: str, blob: Any, size: int) -> None:
         """Store *blob* in *tier_name*, evicting if necessary.
         Must be called with self._lock held.
         """
+        self._prune_ghost_cache()
         tier = self._tiers[tier_name]
         while tier["used_bytes"] + size > tier["max_bytes"] and tier["entries"]:
             victim_hash, (victim_blob, _, victim_size) = min(
@@ -248,7 +269,9 @@ class CacheManager:
             _tier, blob = self._tier_lookup(prefix_hash)
             if blob is not None:
                 if isinstance(blob, tuple) and len(blob) == 2:
-                    return blob
+                    # Stored form is (matched_len, kv_data); return the data
+                    # itself — every caller treats element 1 as the KV blob.
+                    return blob[0], blob[1]
                 return len(tokens), blob
 
         # 2. Predictive cache (ML-based pattern matching)
@@ -298,13 +321,13 @@ class CacheManager:
             for v in kv_data.values():
                 if isinstance(v, torch.Tensor):
                     total += v.element_size() * v.numel()
-            return total
+            return total if total else 1024
         if isinstance(kv_data, (list, tuple)):
             total = 0
             for v in kv_data:
                 if isinstance(v, torch.Tensor):
                     total += v.element_size() * v.numel()
-            return total
+            return total if total else 1024
         return 1024  # default 1KB for unknown types
 
     def store_prefix(self, tokens: list[int], kv_data: Any) -> None:
@@ -316,7 +339,10 @@ class CacheManager:
         """
         # Store in multi-tier cache (GPU L1)
         if tokens:
-            prefix_hash = self._hash_tokens(tokens[:32])
+            # NOTE: must hash the FULL token list — the lookup path hashes the
+            # entire prompt, so hashing only the first 32 tokens here made the
+            # whole tier cache a guaranteed miss for any prompt >32 tokens.
+            prefix_hash = self._hash_tokens(tokens)
             size = self._estimate_entry_size(kv_data)
             self._tier_store("gpu", prefix_hash, (len(tokens), kv_data), size)
 

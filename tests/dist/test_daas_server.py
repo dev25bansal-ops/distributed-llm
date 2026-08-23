@@ -415,10 +415,10 @@ class TestDaaSServerFastAPI:
         assert resp.json()["ready"] is True
 
     def test_metrics_endpoint(self) -> None:
-        server = DaaSServer()
+        server = DaaSServer(DaaSConfig(api_key="k"))
         app = server.create_app()
         client = TestClient(app)
-        resp = client.get("/metrics")
+        resp = client.get("/metrics", headers={"Authorization": "Bearer k"})
         assert resp.status_code == 200
         assert resp.json()["total_requests"] == 0
 
@@ -550,58 +550,64 @@ class TestDaaSServerFastAPI:
         assert resp2.status_code == 429
 
     def test_metrics_reflects_rate_limited_requests(self) -> None:
-        server = DaaSServer(DaaSConfig(api_key="", rate_limit_per_minute=1))
+        server = DaaSServer(DaaSConfig(api_key="k", rate_limit_per_minute=1))
         app = server.create_app()
         client = TestClient(app)
+        h = {"Authorization": "Bearer k"}
 
-        client.post("/v1/completions", json={"prompt": [1], "max_tokens": 1})
-        client.post("/v1/completions", json={"prompt": [1], "max_tokens": 1})
+        client.post("/v1/completions", json={"prompt": [1], "max_tokens": 1}, headers=h)
+        client.post("/v1/completions", json={"prompt": [1], "max_tokens": 1}, headers=h)
 
-        metrics = client.get("/metrics").json()
+        metrics = client.get("/metrics", headers=h).json()
         assert metrics["rate_limited"] >= 1
 
     # --- Shutdown ---
 
     def test_admin_shutdown_response(self) -> None:
-        server = DaaSServer()
+        server = DaaSServer(DaaSConfig(api_key="k"))
         app = server.create_app()
         client = TestClient(app)
-        resp = client.post("/admin/shutdown")
+        resp = client.post("/admin/shutdown", headers={"Authorization": "Bearer k"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "shutting_down"
         assert "active_requests" in data
 
     def test_shutdown_rejects_completions(self) -> None:
-        server = DaaSServer()
+        server = DaaSServer(DaaSConfig(api_key="k"))
         app = server.create_app()
         client = TestClient(app)
-        client.post("/admin/shutdown")
-        resp = client.post("/v1/completions", json={"prompt": [1], "max_tokens": 1})
+        h = {"Authorization": "Bearer k"}
+        client.post("/admin/shutdown", headers=h)
+        resp = client.post(
+            "/v1/completions", json={"prompt": [1], "max_tokens": 1}, headers=h
+        )
         assert resp.status_code == 503
         assert "shutting down" in resp.json()["detail"].lower()
 
     def test_health_still_works_after_shutdown(self) -> None:
         """Non-completions endpoints should still respond after shutdown."""
-        server = DaaSServer()
+        server = DaaSServer(DaaSConfig(api_key="k"))
         app = server.create_app()
         client = TestClient(app)
-        client.post("/admin/shutdown")
+        h = {"Authorization": "Bearer k"}
+        client.post("/admin/shutdown", headers=h)
         assert client.get("/health").status_code == 200
         assert client.get("/ready").status_code == 200
-        assert client.get("/metrics").status_code == 200
+        assert client.get("/metrics", headers=h).status_code == 200
 
     # --- Metrics reflect activity ---
 
     def test_metrics_updates_after_completions(self) -> None:
-        server = DaaSServer()
+        server = DaaSServer(DaaSConfig(api_key="k"))
         app = server.create_app()
         client = TestClient(app)
+        h = {"Authorization": "Bearer k"}
 
-        client.post("/v1/completions", json={"prompt": [1, 2], "max_tokens": 3})
-        client.post("/v1/completions", json={"prompt": [3, 4], "max_tokens": 5})
+        client.post("/v1/completions", json={"prompt": [1, 2], "max_tokens": 3}, headers=h)
+        client.post("/v1/completions", json={"prompt": [3, 4], "max_tokens": 5}, headers=h)
 
-        m = client.get("/metrics").json()
+        m = client.get("/metrics", headers=h).json()
         assert m["total_requests"] == 2
 
     # --- Semaphore initialization ---
@@ -611,3 +617,50 @@ class TestDaaSServerFastAPI:
         server.create_app()
         assert server._semaphore is not None
         assert server._semaphore._value == 7  # asyncio.Semaphore internals
+
+
+class TestDaaSServerAdminAuth:
+    """Admin/metrics endpoints must never be reachable without the API key.
+
+    Fixes the P0 finding: ``/admin/shutdown`` was an unauthenticated remote
+    kill switch and ``/metrics`` leaked billing data (``cost_per_hour``).
+    """
+
+    def _app(self, api_key: str = ""):
+        server = DaaSServer(DaaSConfig(api_key=api_key))
+        return server.create_app()
+
+    def test_shutdown_fails_closed_without_key(self) -> None:
+        """No api_key configured -> admin endpoints are disabled (403)."""
+        client = TestClient(self._app(api_key=""))
+        resp = client.post("/admin/shutdown")
+        assert resp.status_code == 403
+
+    def test_metrics_fails_closed_without_key(self) -> None:
+        client = TestClient(self._app(api_key=""))
+        resp = client.get("/metrics")
+        assert resp.status_code == 403
+
+    def test_shutdown_requires_valid_key(self) -> None:
+        client = TestClient(self._app(api_key="secret-123"))
+        assert client.post("/admin/shutdown").status_code == 401
+        assert (
+            client.post("/admin/shutdown", headers={"Authorization": "Bearer wrong"})
+            .status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/admin/shutdown", headers={"Authorization": "Bearer secret-123"}
+            ).status_code
+            == 200
+        )
+
+    def test_metrics_requires_valid_key(self) -> None:
+        client = TestClient(self._app(api_key="secret-123"))
+        assert client.get("/metrics").status_code == 401
+        assert (
+            client.get("/metrics", headers={"Authorization": "Bearer secret-123"})
+            .status_code
+            == 200
+        )

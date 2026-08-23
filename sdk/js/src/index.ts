@@ -150,7 +150,7 @@ export class DistLLMClient {
   private maxRetries: number;
   private defaultHeaders: Record<string, string>;
 
-  public chat: ChatCompletions;
+  public chat: { completions: ChatCompletions };
   public completions: Completions;
   public embeddings: Embeddings;
   public models: Models;
@@ -162,7 +162,7 @@ export class DistLLMClient {
     this.maxRetries = options.maxRetries || 3;
     this.defaultHeaders = options.headers || {};
 
-    this.chat = new ChatCompletions(this);
+    this.chat = { completions: new ChatCompletions(this) };
     this.completions = new Completions(this);
     this.embeddings = new Embeddings(this);
     this.models = new Models(this);

@@ -14,7 +14,9 @@ import uuid
 
 import pytest
 import torch
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
+from distllm.dist.byzantine import _sign_bytes
 from distllm.dist.federated_merge import (
     AdapterVersion,
     FederatedMergeCoordinator,
@@ -711,3 +713,90 @@ class TestSecureAggregator:
         agg.aggregate_received_shares(grads, received)
         assert torch.equal(grads[0], grad_before)
         assert torch.equal(received["n2"][0], received_before)
+
+
+# =========================================================================
+# Security: authenticated submissions + dataset_size capping
+# =========================================================================
+
+
+class TestFederatedMergeSecurity:
+    """P0: untrusted adapter + self-reported dataset_size must not enable
+    model poisoning or unfair weight dominance."""
+
+    def _coord_with_round(self, min_nodes=1, **kwargs):
+        coord = FederatedMergeCoordinator(min_nodes_per_round=min_nodes, **kwargs)
+        coord.register_node("n1", dataset_size=100)
+        coord.start_round()
+        return coord
+
+    def test_dataset_size_is_capped(self):
+        coord = self._coord_with_round()
+        assert coord.submit_node_adapter("n1", "/tmp/n1.pt", 0.1, dataset_size=10**15) is True
+        state = coord.get_node_states()["n1"]
+        assert state.dataset_size == coord._max_dataset_size
+
+    def test_dataset_size_capped_custom_max(self):
+        coord = self._coord_with_round(max_dataset_size=5000)
+        coord.submit_node_adapter("n1", "/tmp/n1.pt", 0.1, dataset_size=10**9)
+        assert coord.get_node_states()["n1"].dataset_size == 5000
+
+    def test_capped_weight_does_not_dominate_fedavg(self):
+        coord = FederatedMergeCoordinator(min_nodes_per_round=2)
+        coord.register_node("n1", dataset_size=100)
+        coord.register_node("n2", dataset_size=100)
+        coord.start_round()
+        coord.submit_node_adapter("n1", "/tmp/n1.pt", 0.1, dataset_size=10**15)
+        coord.submit_node_adapter("n2", "/tmp/n2.pt", 0.1, dataset_size=100)
+        round_ = coord.get_current_round()
+        assert round_ is not None
+        # n1's inflated self-report is capped; it cannot claim 10^15 and win
+        # the federated average against n2's honest 100.
+        assert round_.node_weights["n1"] == coord._max_dataset_size
+        assert round_.node_weights["n2"] == 100
+
+    def test_signature_required_when_key_registered(self):
+        key = ed25519.Ed25519PrivateKey.generate()
+        coord = self._coord_with_round()
+        coord.register_node_public_key("n1", key.public_key())
+        # No signature -> rejected (fail closed).
+        assert coord.submit_node_adapter("n1", "/tmp/n1.pt", 0.1, dataset_size=100) is False
+
+    def test_invalid_signature_rejected(self):
+        key = ed25519.Ed25519PrivateKey.generate()
+        other_key = ed25519.Ed25519PrivateKey.generate()
+        coord = self._coord_with_round()
+        coord.register_node_public_key("n1", key.public_key())
+        round_id = coord.get_current_round().round_id
+        wrong = _sign_bytes(
+            other_key, f"n1|{round_id}|/tmp/n1.pt|0.1|100"
+        )
+        assert coord.submit_node_adapter(
+            "n1", "/tmp/n1.pt", 0.1, dataset_size=100, signature=wrong
+        ) is False
+
+    def test_tampered_values_rejected(self):
+        key = ed25519.Ed25519PrivateKey.generate()
+        coord = self._coord_with_round()
+        coord.register_node_public_key("n1", key.public_key())
+        round_id = coord.get_current_round().round_id
+        # Signed over dataset_size=100 but submitted with 1000.
+        sig = _sign_bytes(key, f"n1|{round_id}|/tmp/n1.pt|0.1|100")
+        assert coord.submit_node_adapter(
+            "n1", "/tmp/n1.pt", 0.1, dataset_size=1000, signature=sig
+        ) is False
+
+    def test_valid_signature_accepted(self):
+        key = ed25519.Ed25519PrivateKey.generate()
+        coord = self._coord_with_round()
+        coord.register_node_public_key("n1", key.public_key())
+        round_id = coord.get_current_round().round_id
+        sig = _sign_bytes(key, f"n1|{round_id}|/tmp/n1.pt|0.1|100")
+        assert coord.submit_node_adapter(
+            "n1", "/tmp/n1.pt", 0.1, dataset_size=100, signature=sig
+        ) is True
+
+    def test_unkeyed_node_still_accepted(self):
+        # Backward compatibility: nodes without a registered key keep working.
+        coord = self._coord_with_round()
+        assert coord.submit_node_adapter("n1", "/tmp/n1.pt", 0.1, dataset_size=100) is True

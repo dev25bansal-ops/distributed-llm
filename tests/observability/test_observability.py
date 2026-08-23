@@ -13,33 +13,25 @@ class TestMetrics:
         assert metrics is not None
 
     def test_metrics_collector(self):
-        from distllm.observability.metrics import MetricsCollector
+        from distllm.observability.metrics import DistLLMMetrics
 
-        mc = MetricsCollector()
+        mc = DistLLMMetrics()
         assert mc is not None
 
     def test_request_counter(self):
-        from distllm.observability.metrics import MetricsCollector
+        from distllm.observability.metrics import DistLLMMetrics
 
-        mc = MetricsCollector()
-        if hasattr(mc, "increment"):
-            mc.increment("requests_total")
+        mc = DistLLMMetrics()
+        if hasattr(mc, "tokens_generated"):
+            mc.tokens_generated.add(1)
             assert True
 
     def test_latency_histogram(self):
-        from distllm.observability.metrics import MetricsCollector
+        from distllm.observability.metrics import DistLLMMetrics
 
-        mc = MetricsCollector()
-        if hasattr(mc, "record"):
-            mc.record("latency_ms", 42.5)
-            assert True
-
-    def test_concurrent_gauge(self):
-        from distllm.observability.metrics import MetricsCollector
-
-        mc = MetricsCollector()
-        if hasattr(mc, "set"):
-            mc.set("active_requests", 5)
+        mc = DistLLMMetrics()
+        if hasattr(mc, "node_latency"):
+            mc.node_latency.record(42.5)
             assert True
 
 
@@ -75,10 +67,9 @@ class TestTracing:
             assert True
 
     def test_trace_span(self):
-        from distllm.observability.spans import create_span
+        from distllm.observability.spans import span_prefill
 
-        if callable(create_span):
-            span = create_span("test_span")
+        with span_prefill("test_span", 100) as span:
             assert span is not None
 
 
@@ -118,7 +109,7 @@ class TestLokiSink:
         assert loki_sink is not None
 
     def test_loki_sink_factory(self):
-        from distllm.loki_sink import make_loki_sink
+        from distllm.observability.loki_sink import make_loki_sink
 
         if callable(make_loki_sink):
             sink = make_loki_sink("http://localhost:3100")
@@ -133,17 +124,15 @@ class TestSpans:
         assert spans is not None
 
     def test_create_span(self):
-        from distllm.observability.spans import create_span
+        from distllm.observability.spans import span_prefill
 
-        if callable(create_span):
-            span = create_span("test_operation")
+        with span_prefill("test_operation", 100) as span:
             assert span is not None
 
     def test_span_attributes(self):
-        from distllm.observability.spans import create_span
+        from distllm.observability.spans import span_prefill
 
-        if callable(create_span):
-            span = create_span("test_op")
+        with span_prefill("test_op", 100) as span:
             if hasattr(span, "set_attribute"):
                 span.set_attribute("key", "value")
                 assert True

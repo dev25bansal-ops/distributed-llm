@@ -176,6 +176,20 @@ class PartitionCostModel:
             fits_in_memory=fits,
         )
 
+    def weights_memory_bytes(self, start_layer_id: int, end_layer_id: int) -> int:
+        """Total weight (model parameter) memory for a layer range, in bytes.
+
+        Used by quantization-aware cost models so that weight-quantization
+        reductions are applied only to the weights portion of the footprint
+        (KV cache and activations are not shrunk by weight quantization).
+        """
+        return int(
+            sum(
+                l.weight_memory_bytes
+                for l in self._layer_weights[start_layer_id:end_layer_id]
+            )
+        )
+
     def evaluate_partition(
         self,
         partition: list[tuple[str, int, int]],

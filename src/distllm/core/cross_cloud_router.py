@@ -410,7 +410,7 @@ class CarbonIntensityProvider:
 class CloudProvider:
     """A cloud provider with its current pricing, latency, and carbon footprint."""
     name: str  # "aws", "gcp", "azure"
-    region: str = "us-east-1"
+    region: str = ""  # empty = not region-expanded
     instance_type: str = ""
     gpu_type: str = ""
     gpu_count: int = 1
@@ -602,7 +602,13 @@ class CrossCloudRouter:
         return (time.time() - self._pricing_last_updated) / 3600
 
     def _check_pricing_staleness(self) -> None:
-        """Log a warning if pricing data is stale (>24 hours old)."""
+        """Log a warning if pricing data is stale (>24 hours old).
+
+        A router that has NEVER synced live pricing (timestamp <= 0) is not
+        "stale" — there is no data to have gone off — so it stays silent.
+        """
+        if self._pricing_last_updated <= 0:
+            return
         age_h = self.pricing_age_hours
         if age_h > 24 and not self._pricing_stale_warning_issued:
             logger.warning(

@@ -24,6 +24,8 @@ from typing import Any
 import torch
 from loguru import logger
 
+from distllm.dist.byzantine import _decode_public_key, _verify_bytes
+
 
 @dataclass
 class FederatedRound:
@@ -79,16 +81,21 @@ class FederatedMergeCoordinator:
         merge_strategy: str = "fedavg",  # fedavg, weighted, reputation
         min_nodes_per_round: int = 2,
         rounds_per_checkpoint: int = 5,
+        max_dataset_size: int = 1_000_000,
     ):
         self._adapter_mgr = adapter_manager
         self._merge_strategy = merge_strategy
         self._min_nodes = min_nodes_per_round
         self._checkpoint_interval = rounds_per_checkpoint
+        # Upper bound on a node's self-reported dataset size so a single node
+        # cannot dominate the federated average.
+        self._max_dataset_size = max_dataset_size
 
         self._nodes: dict[str, NodeTrainingState] = {}
         self._rounds: list[FederatedRound] = []
         self._versions: dict[str, AdapterVersion] = {}
         self._current_round: FederatedRound | None = None
+        self._node_public_keys: dict[str, Any] = {}
         self._lock = __import__("threading").Lock()
 
     # ── Node Registration ───────────────────────────────────────────────
@@ -116,6 +123,17 @@ class FederatedMergeCoordinator:
         """Remove a node from federated training."""
         with self._lock:
             self._nodes.pop(node_id, None)
+
+    def register_node_public_key(self, node_id: str, public_key: Any) -> None:
+        """Register a node's Ed25519 public key for submission verification.
+
+        Once a key is registered, ``submit_node_adapter`` REQUIRES a valid
+        signature from that node (fail closed), so a submission cannot be
+        forged or tampered with.  Accepts an Ed25519 key object, raw bytes, or
+        the base64 string produced by ``distllm.dist.byzantine``.
+        """
+        with self._lock:
+            self._node_public_keys[node_id] = _decode_public_key(public_key)
 
     # ── Round Management ────────────────────────────────────────────────
 
@@ -164,6 +182,7 @@ class FederatedMergeCoordinator:
         adapter_path: str,
         loss: float,
         dataset_size: int = 0,
+        signature: str = "",
     ) -> bool:
         """Submit a node's locally trained adapter for merging.
 
@@ -171,10 +190,15 @@ class FederatedMergeCoordinator:
             node_id: The submitting node.
             adapter_path: Path to the node's LoRA adapter weights.
             loss: Final training loss from this node.
-            dataset_size: Size of the node's local dataset.
+            dataset_size: Size of the node's local dataset (capped at
+                ``max_dataset_size`` so one node cannot dominate the average).
+            signature: Base64 Ed25519 signature over
+                ``node_id|round_id|adapter_path|loss|dataset_size``.  Required
+                (fail closed) once the node's public key is registered.
 
         Returns:
-            True if accepted, False if node not in current round.
+            True if accepted, False if node not in current round or the
+            submission is not authenticated.
         """
         with self._lock:
             if not self._current_round or self._current_round.status != "collecting":
@@ -186,12 +210,31 @@ class FederatedMergeCoordinator:
             if not state:
                 return False
 
+            # SECURITY: authenticate the submission when the node has a
+            # registered public key.  The signature binds node_id, the round,
+            # and the submitted values so they cannot be forged or tampered.
+            public_key = self._node_public_keys.get(node_id)
+            if public_key is not None:
+                if not signature:
+                    logger.warning(
+                        f"Node {node_id}: signed adapter required but no signature supplied"
+                    )
+                    return False
+                message = (
+                    f"{node_id}|{self._current_round.round_id}|"
+                    f"{adapter_path}|{loss}|{dataset_size}"
+                )
+                if not _verify_bytes(public_key, message, signature):
+                    logger.warning(f"Node {node_id}: invalid adapter submission signature")
+                    return False
+
             state.adapter_path = adapter_path
             state.last_loss = loss
             state.last_sync = time.time()
             state.status = "completed"
             if dataset_size > 0:
-                state.dataset_size = dataset_size
+                # Cap self-reported dataset size to prevent weight dominance.
+                state.dataset_size = min(dataset_size, self._max_dataset_size)
 
             self._current_round.node_weights[node_id] = state.dataset_size
             self._current_round.loss_values[node_id] = loss

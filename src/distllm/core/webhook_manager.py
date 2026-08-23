@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
+import os
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -21,6 +24,85 @@ from urllib.parse import urlparse
 WebhookFormatter = Callable[[str, dict[str, Any]], tuple[dict[str, Any], dict[str, str]]]
 
 from loguru import logger
+
+
+def _is_safe_webhook_url(url: str, allowlist: set[str] | None = None) -> bool:
+    """Return True only for http(s) URLs that cannot hit metadata/private targets.
+
+    Server-Side Request Forgery guard: rejects non-http(s) schemes, cloud
+    metadata addresses (169.254.169.254), loopback, private/link-local ranges,
+    and any host that resolves to a private address.  When
+    ``DISTLLM_WEBHOOK_ALLOWLIST`` (or the *allowlist* arg) is set, ONLY
+    allowlisted hosts are permitted (deny-by-default).
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    if allowlist is None:
+        allowlist = set(
+            h for h in os.environ.get("DISTLLM_WEBHOOK_ALLOWLIST", "").split(",") if h.strip()
+        )
+    if allowlist:
+        return host in allowlist
+    if host == "169.254.169.254":
+        return False
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return False
+    # A literal IP literal: reject private/loopback/link-local directly.
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+        return True  # literal public IP is safe
+    except ValueError:
+        pass  # not a literal IP — resolve below
+    # Resolve the host; reject only if it demonstrably maps to a private
+    # address.  Unresolvable hosts are accepted (delivery will fail naturally);
+    # we do NOT hard-fail on DNS lookups for non-literal hosts.
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, OSError):
+        return True
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast):
+            return False
+    return True
+
+
+def _is_private_webhook_url(url: str) -> bool:
+    """Return True if the URL targets loopback or a private/link-local host.
+
+    Used to gate the explicit ``allow_private`` opt-in on webhook registration.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast)
+        except ValueError:
+            return False
+    except ValueError:
+        return False
 
 
 class WebhookEvent(Enum):
@@ -123,6 +205,7 @@ class WebhookManager:
         timeout_s: float = 5.0,
         label: str = "",
         formatter: WebhookFormatter | None = None,
+        allow_private: bool = False,
     ) -> bool:
         """Register a webhook target URL.
 
@@ -135,12 +218,15 @@ class WebhookManager:
             label: Human-readable label for this target.
             formatter: Optional callable that transforms (event, payload) into
                        (body_dict, extra_headers_dict) for platform-specific formatting.
+            allow_private: Allow explicitly private/localhost targets.  Defaults
+                to False (SSRF-safe); operators registering a local-only webhook
+                must opt in knowingly.
 
         Returns:
             True if registered successfully.
         """
-        if not urlparse(url).scheme in ("http", "https"):
-            logger.warning(f"Invalid webhook URL: {url}")
+        if not _is_safe_webhook_url(url) and not (allow_private and _is_private_webhook_url(url)):
+            logger.warning(f"Invalid webhook URL (unsafe/unsupported): {url}")
             return False
 
         with self._lock:

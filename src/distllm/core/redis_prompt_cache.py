@@ -26,6 +26,7 @@ class CachedPrompt:
     prefix_hash: str
     tokens: list[int] = field(default_factory=list)
     kv_cache_ref: str = ""
+    response: str = ""
     token_count: int = 0
     created_at: float = field(default_factory=time.time)
     ttl: float = 3600.0
@@ -123,8 +124,20 @@ class RedisPromptCache:
             h.update(tok.to_bytes(4, "little", signed=True))
         return h.hexdigest()
 
-    def store(self, token_ids: list[int], kv_cache_ref: str = "") -> str:
+    def store(
+        self,
+        token_ids: list[int],
+        kv_cache_ref: str = "",
+        response: str = "",
+        ttl_seconds: float | None = None,
+    ) -> str:
         """Store a prompt prefix in Redis.
+
+        Args:
+            token_ids: Token IDs of the prompt prefix.
+            kv_cache_ref: Reference to the cached KV cache (node:cache:key).
+            response: Optional generated response text stored for exact-match reuse.
+            ttl_seconds: Per-entry TTL override; defaults to the cache's TTL.
 
         Returns:
             The prefix hash (16-char hex prefix).
@@ -139,13 +152,15 @@ class RedisPromptCache:
             prefix_hash=prefix_hash,
             tokens=token_ids,
             kv_cache_ref=kv_cache_ref,
+            response=response,
             token_count=len(token_ids),
         )
 
         try:
-            self._client.setex(key, int(self._ttl), json.dumps({
+            self._client.setex(key, int(ttl_seconds or self._ttl), json.dumps({
                 "prefix_hash": entry.prefix_hash,
                 "kv_cache_ref": entry.kv_cache_ref,
+                "response": entry.response,
                 "token_count": entry.token_count,
                 "created_at": entry.created_at,
             }))

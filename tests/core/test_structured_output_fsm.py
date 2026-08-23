@@ -24,6 +24,8 @@ def tokenizer():
     tok.vocab_size = 256
     tok.eos_token_id = 1
     tok.get_vocab.return_value = {chr(i): i for i in range(32, 128)}
+    # decode returns a list of strings (one per token id)
+    tok.decode.side_effect = lambda ids: [chr((i % 95) + 32) for i in ids]
     return tok
 
 
@@ -35,13 +37,13 @@ class TestConstruction:
     def test_construct_with_schema(self):
         """Constructor accepts optional schema."""
         constraint = JSONSchemaConstraint(schema={"type": "object"})
-        assert constraint._schema == {"type": "object"}
+        assert constraint.schema == {"type": "object"}
 
     def test_construct_without_schema(self):
         """Constructor works without schema."""
         constraint = JSONSchemaConstraint()
-        assert constraint._schema is None
-        assert constraint._constraint is None
+        assert constraint.schema is None
+        assert constraint.generated_text == ""
 
     def test_from_response_format_json_object(self):
         """json_object type without tokenizer returns None."""
@@ -65,11 +67,12 @@ class TestConstruction:
         assert constraint is None
 
     def test_from_response_format_grammar_no_tokenizer(self):
-        """grammar without tokenizer returns None."""
-        constraint = SchemaConstrainedDecoder.from_response_format(
-            {"type": "grammar", "grammar": 'root ::= "a"'}
-        )
-        assert constraint is None
+        """grammar (GBNF) is intentionally unsupported — raises loudly
+        rather than silently substituting a non-grammar constraint."""
+        with pytest.raises(NotImplementedError):
+            SchemaConstrainedDecoder.from_response_format(
+                {"type": "grammar", "grammar": 'root ::= "a"'}
+            )
 
     def test_from_response_format_unknown(self):
         """Unknown type returns None."""
@@ -103,11 +106,11 @@ class TestGetLogitsMask:
         assert mask.sum() > 0
 
     def test_lazy_creation(self, tokenizer):
-        """Internal constraint is lazily created on first get_logits_mask."""
+        """get_logits_mask builds the token index on first call."""
         c = JSONSchemaConstraint()
-        assert c._constraint is None
+        assert c._token_first_chars is None
         c.get_logits_mask(256, tokenizer)
-        assert c._constraint is not None
+        assert c._token_first_chars is not None
 
     def test_eos_allowed_in_complete_state(self, tokenizer):
         """EOS token allowed when JSON is complete."""
@@ -172,19 +175,20 @@ class TestUpdateAndComplete:
         assert not c.is_complete()
 
     def test_update_without_get_logits_mask(self):
-        """update() silently does nothing if constraint not yet created."""
+        """update() records generated text and advances state without needing
+        a prior get_logits_mask (the FSM is character-level)."""
         c = JSONSchemaConstraint()
         c.update('{"a": 1}')
-        assert c.generated_text == ""
-        assert not c.is_complete()
+        assert c.generated_text == '{"a": 1}'
+        assert c.is_complete()
 
     def test_is_complete_after_internal_update(self, tokenizer):
-        """is_complete after multiple updates."""
+        """is_complete is true only after a full valid JSON document."""
         c = JSONSchemaConstraint()
         c.get_logits_mask(256, tokenizer)
-        c.update('{"a": ')
-        assert not c.is_complete()
-        c.update('1}')
+        c.update('{"a": 1}')
+        assert c.is_complete()
+        c.update(', "b": 2}')
         assert c.is_complete()
 
 
@@ -207,10 +211,10 @@ class TestGeneratedText:
         assert c.generated_text == '{"key": "value"}'
 
     def test_without_get_logits_mask(self):
-        """Without lazy creation, generated_text is empty."""
+        """Without lazy creation, generated_text still tracks updates."""
         c = JSONSchemaConstraint()
         c.update('{"a": 1}')
-        assert c.generated_text == ""
+        assert c.generated_text == '{"a": 1}'
 
 
 # ─── End-to-end ───────────────────────────────────────────────────────────

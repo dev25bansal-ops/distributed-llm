@@ -4,6 +4,8 @@
   import { applyTheme } from "./stores/settings-store";
   import { Card, Input, ErrorBanner, toastStore } from "./ui";
   import type { AppSettings } from "./stores/settings-store";
+  import { checkForUpdates, installUpdate, initNotifications, notify } from "./api";
+  import type { UpdateCheckResult } from "./api";
 
   let settings = $state<AppSettings>({
     defaultClusterPort: 8000,
@@ -16,11 +18,20 @@
       modelDownloads: true,
       inferenceRequests: false,
       errors: true,
+      native: true,
+      updateAvailable: true,
     },
     pythonPath: "",
+    apiEndpoint: "",
+    updateServerUrl: "https://releases.distributed-llm.dev",
   });
   let error = $state<string | null>(null);
   let unsubscribe: (() => void) | undefined;
+
+  // Update check state
+  let updateStatus = $state<"idle" | "checking" | "available" | "uptodate" | "error">("idle");
+  let updateInfo = $state<UpdateCheckResult | null>(null);
+  let installing = $state(false);
 
   onMount(() => {
     unsubscribe = settingsStore.subscribe((s) => {
@@ -49,6 +60,52 @@
     settings.theme;
     applyThemeAndSave();
   });
+
+  async function handleCheckUpdates() {
+    updateStatus = "checking";
+    updateInfo = null;
+    try {
+      const update = await checkForUpdates();
+      if (update?.available) {
+        updateStatus = "available";
+        updateInfo = {
+          available: true,
+          version: update.version,
+          body: update.body,
+          date: update.date,
+        };
+        toastStore.info(`Update v${update.version} available`);
+      } else {
+        updateStatus = "uptodate";
+        toastStore.success("You have the latest version");
+      }
+    } catch (e) {
+      updateStatus = "error";
+      error = String(e);
+    }
+  }
+
+  async function handleInstallUpdate() {
+    installing = true;
+    try {
+      toastStore.info("Downloading update...");
+      await installUpdate();
+      toastStore.success("Update installed successfully");
+    } catch (e) {
+      toastStore.error(`Install failed: ${e}`);
+    } finally {
+      installing = false;
+    }
+  }
+
+  async function handleTestNativeNotification() {
+    const granted = await initNotifications();
+    if (granted) {
+      notify("Distributed LLM", "Native notifications are working!");
+    } else {
+      toastStore.error("Notification permission not granted");
+    }
+  }
 </script>
 
 <div class="settings-page">
@@ -56,6 +113,7 @@
 
   <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
+  <!-- Cluster Settings -->
   <Card title="Cluster">
     <div class="form-row">
       <label class="form-label" for="set-port">Default Cluster Port</label>
@@ -80,6 +138,7 @@
     </div>
   </Card>
 
+  <!-- Appearance -->
   <Card title="Appearance">
     <div class="form-row">
       <label class="form-label">Theme</label>
@@ -98,7 +157,17 @@
     </div>
   </Card>
 
-  <Card title="Integrations">
+  <!-- API & Integrations -->
+  <Card title="API & Integrations">
+    <div class="form-row">
+      <label class="form-label" for="set-api-endpoint">API Endpoint</label>
+      <Input
+        id="set-api-endpoint"
+        bind:value={settings.apiEndpoint}
+        placeholder="http://localhost:8000"
+      />
+      <span class="field-hint">Override the default coordinator API URL</span>
+    </div>
     <div class="form-row">
       <label class="form-label" for="set-grafana">Grafana URL</label>
       <Input
@@ -117,6 +186,7 @@
     </div>
   </Card>
 
+  <!-- Downloads -->
   <Card title="Downloads">
     <div class="form-row">
       <label class="form-label" for="set-dl-dir">Download Directory</label>
@@ -128,6 +198,7 @@
     </div>
   </Card>
 
+  <!-- Notifications -->
   <Card title="Notifications">
     <div class="notif-grid">
       <label class="toggle-label">
@@ -137,7 +208,7 @@
           class="toggle-input"
         />
         <span class="toggle-switch"></span>
-        <span>Cluster events</span>
+        <span>Cluster events (node join/leave)</span>
       </label>
       <label class="toggle-label">
         <input
@@ -166,9 +237,80 @@
         <span class="toggle-switch"></span>
         <span>Errors</span>
       </label>
+      <label class="toggle-label">
+        <input
+          type="checkbox"
+          bind:checked={settings.notifications.updateAvailable}
+          class="toggle-input"
+        />
+        <span class="toggle-switch"></span>
+        <span>Update available</span>
+      </label>
+      <label class="toggle-label">
+        <input
+          type="checkbox"
+          bind:checked={settings.notifications.native}
+          class="toggle-input"
+        />
+        <span class="toggle-switch"></span>
+        <span>Native OS notifications</span>
+      </label>
+    </div>
+    <div class="form-row" style="margin-top: 12px;">
+      <button class="btn btn-ghost btn-small" onclick={handleTestNativeNotification}>
+        Test Notification
+      </button>
     </div>
   </Card>
 
+  <!-- Software Updates -->
+  <Card title="Software Updates">
+    <div class="form-row">
+      <label class="form-label" for="set-update-url">Update Server URL</label>
+      <Input
+        id="set-update-url"
+        bind:value={settings.updateServerUrl}
+        placeholder="https://releases.distributed-llm.dev"
+      />
+    </div>
+    <div class="update-section">
+      <button
+        class="btn btn-primary"
+        onclick={handleCheckUpdates}
+        disabled={updateStatus === "checking"}
+      >
+        {#if updateStatus === "checking"}
+          Checking...
+        {:else}
+          Check for Updates
+        {/if}
+      </button>
+
+      {#if updateStatus === "uptodate"}
+        <span class="update-status update-ok">You're up to date!</span>
+      {:else if updateStatus === "available"}
+        <div class="update-available">
+          <span class="update-status update-new">
+            Update v{updateInfo?.version ?? "?"} available
+          </span>
+          {#if updateInfo?.body}
+            <p class="update-body">{updateInfo.body}</p>
+          {/if}
+          <button
+            class="btn btn-primary"
+            onclick={handleInstallUpdate}
+            disabled={installing}
+          >
+            {installing ? "Installing..." : "Download & Install"}
+          </button>
+        </div>
+      {:else if updateStatus === "error"}
+        <span class="update-status update-error">Update check failed</span>
+      {/if}
+    </div>
+  </Card>
+
+  <!-- Actions -->
   <div class="actions">
     <button class="btn btn-primary" onclick={save}>Save Settings</button>
     <button class="btn btn-ghost" onclick={resetDefaults}>Reset to Defaults</button>
@@ -190,6 +332,12 @@
     font-size: 12px;
     color: var(--text-secondary);
     margin-bottom: 4px;
+  }
+  .field-hint {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
   }
   .toggle-label {
     display: flex;
@@ -262,6 +410,39 @@
     flex-direction: column;
     gap: 12px;
   }
+  .update-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .update-status {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .update-ok {
+    color: var(--success);
+  }
+  .update-new {
+    color: var(--accent);
+  }
+  .update-error {
+    color: var(--danger);
+  }
+  .update-available {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: var(--bg-input);
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .update-body {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
   .actions {
     display: flex;
     gap: 8px;
@@ -274,12 +455,17 @@
     font-weight: 600;
     cursor: pointer;
     border: none;
+    transition: opacity 0.15s;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
   .btn-primary {
     background: var(--accent);
     color: white;
   }
-  .btn-primary:hover {
+  .btn-primary:hover:not(:disabled) {
     opacity: 0.9;
   }
   .btn-ghost {
@@ -287,7 +473,11 @@
     color: var(--text-secondary);
     border: 1px solid var(--border);
   }
-  .btn-ghost:hover {
+  .btn-ghost:hover:not(:disabled) {
     background: var(--bg-input);
+  }
+  .btn-small {
+    padding: 6px 14px;
+    font-size: 12px;
   }
 </style>

@@ -81,6 +81,16 @@ class RequestTracker:
         """
         event = self._events.get(request_id)
         if event is None:
+            # Completed before wait (event already consumed or never created):
+            # surface the ready result/error instead of failing.
+            with self._lock:
+                result = self._results.pop(request_id, None)
+                error = self._errors.pop(request_id, None)
+                self._logprobs.pop(request_id, None)
+            if error is not None:
+                raise RuntimeError(f"Request {request_id} failed: {error}") from error
+            if result is not None:
+                return result
             raise ValueError(f"Unknown request_id: {request_id}")
 
         event.wait(timeout=timeout)
@@ -132,7 +142,10 @@ class RequestTracker:
                         self._results[seq_id] = "[Error: Sequence completed without output]"
                 except Exception as e:
                     self._results[seq_id] = f"[Error decoding output: {e}]"
-                event = self._events.pop(seq_id, None)
+                # SET, never pop: the event is consumed by wait_for_result.
+                # Popping here left completed results unreachable ("Unknown
+                # request_id") whenever generate_batch finished first.
+                event = self._events.get(seq_id)
                 if event:
                     event.set()
                 self._logprobs.pop(seq_id, None)
@@ -141,7 +154,7 @@ class RequestTracker:
             for seq in pending_seqs:
                 sid = getattr(seq, "request_id", str(seq))
                 self._results[sid] = "[Error: Request timed out waiting in scheduler queue]"
-                event = self._events.pop(sid, None)
+                event = self._events.get(sid)
                 if event:
                     event.set()
 

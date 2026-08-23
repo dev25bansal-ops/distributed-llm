@@ -6,9 +6,11 @@ and layer splitting WITHOUT spawning subprocesses. This validates that
 the distributed pipeline code path works correctly.
 
 Usage:
-    python tests/test_pipeline.py
+    pytest tests/test_pipeline.py -v                         # skipped by default
+    DISTLLM_RUN_MANUAL_TESTS=1 pytest tests/test_pipeline.py -v  # requires model download
 
-Note: These are legacy manual tests. Run via pytest with --run-manual flag.
+Note: These tests require downloading TinyStories-1M model weights.
+Set DISTLLM_RUN_MANUAL_TESTS=1 to enable.
 """
 
 import os
@@ -18,18 +20,35 @@ import time
 import pytest
 import torch
 
+# Removed modules: gracefully degrade instead of hard-failing.
 try:
     from distllm.communication.grpc import GRPCServer, NodeService
+except ImportError:
+    GRPCServer = None
+    NodeService = None
+
+try:
     from distllm.communication.serializers import kv_cache_to_proto, proto_to_kv_cache, proto_to_tensor, tensor_to_proto
 except ImportError:
-    pass
+    kv_cache_to_proto = None
+    proto_to_kv_cache = None
+    proto_to_tensor = None
+    tensor_to_proto = None
 
 from distllm.core.coordinator import Coordinator
 from distllm.core.kv_cache import KVCache
 from distllm.models.partitioner import ModelPartitioner, get_model_info
 
 
-@pytest.mark.skip(reason="Legacy manual test, requires model download")
+# ---- Skip condition -------------------------------------------------------
+_RUN_MANUAL = bool(os.environ.get("DISTLLM_RUN_MANUAL_TESTS"))
+manual_test = pytest.mark.skipif(
+    not _RUN_MANUAL,
+    reason="Set DISTLLM_RUN_MANUAL_TESTS=1 to enable (requires model download)",
+)
+
+
+@manual_test
 def test_tensor_serialization():
     """Test that tensor -> proto -> tensor roundtrip preserves data."""
     print("\n[Test 1] Tensor serialization roundtrip")
@@ -53,7 +72,7 @@ def test_tensor_serialization():
     print("  PASSED")
 
 
-@pytest.mark.skip(reason="Legacy manual test, requires model download")
+@manual_test
 def test_kv_cache_serialization():
     """Test KV cache serialization roundtrip."""
     print("\n[Test 2] KV cache serialization roundtrip")
@@ -83,7 +102,7 @@ def test_kv_cache_serialization():
     print("  PASSED")
 
 
-@pytest.mark.skip(reason="Legacy manual test, requires model download")
+@manual_test
 def test_layer_splitting(model_name: str = "roneneldan/TinyStories-1M"):
     """Test that layer splitting produces same output as full model."""
     print(f"\n[Test 3] Layer splitting: {model_name}")
@@ -157,7 +176,7 @@ def test_layer_splitting(model_name: str = "roneneldan/TinyStories-1M"):
         return False
 
 
-@pytest.mark.skip(reason="Legacy manual test, requires model download")
+@manual_test
 def test_distributed_pipeline_in_process(model_name: str = "roneneldan/TinyStories-1M"):
     """Test full gRPC pipeline in-process (no subprocesses).
 

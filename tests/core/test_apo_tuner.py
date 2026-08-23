@@ -105,7 +105,7 @@ class TestScoreWeights:
 
     def test_normalized_zero_total_returns_defaults(self):
         w = ScoreWeights(headroom=0, quality=0, speed=0).normalized()
-        assert w.headroom == 0.5  # default fallback
+        assert w.headroom == 1.0 / 3  # equal division fallback
 
     def test_custom_weights(self):
         w = ScoreWeights(headroom=0.7, quality=0.2, speed=0.1)

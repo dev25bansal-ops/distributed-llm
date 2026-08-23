@@ -6,6 +6,8 @@ All hardware-dependent paths fall back gracefully to CPU defaults.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from distllm.dist.partition.cost_model import NodeCost, PartitionCostModel
@@ -882,8 +884,18 @@ class TestQuantizationAwareCostModelEdgeCases:
         # INT4 KV cache has memory_reduction=0.25
         assert result.kv_cache_bits == KVCacheBits.INT4.value
         assert result.kv_memory_reduction == 0.25
-        # Total memory should be <= recommendation bytes minus KV savings
-        assert result.memory_bytes <= 50_000_000
+        # Recomposition model: total footprint = quantized weights + KV cache
+        # + activations, so it can never drop below the quantized-weights
+        # figure; INT4 KV savings must still shrink it vs no KV quantization.
+        assert result.memory_bytes >= rec.memory_bytes_with_quant
+        no_kv = dataclasses.replace(rec, kv_cache_bits=KVCacheBits.NONE)
+        baseline = quant_cost_model.evaluate_with_quant(
+            node_id="node-0",
+            start_layer=0,
+            end_layer=2,
+            quant_recommendation=no_kv,
+        )
+        assert result.memory_bytes < baseline.memory_bytes
 
     def test_recommendation_with_no_kv_cache(
         self,

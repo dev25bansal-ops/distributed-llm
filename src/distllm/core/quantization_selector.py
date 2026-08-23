@@ -166,3 +166,45 @@ class QuantizationSelector:
             f"WARNING: {choice.level.upper()} ({choice.estimated_memory_gb:.0f}GB) "
             f"may not fit in available memory. {choice.reason}"
         )
+
+
+def apply_kv_cache_quantization(
+    key: "torch.Tensor",
+    value: "torch.Tensor",
+    bits: int = 8,
+) -> tuple:
+    """Quantize KV cache tensors to reduce memory usage.
+
+    Per-token symmetric integer quantization with a dynamic scale per row.
+    ``bits`` selects the clipping range (4 or 8).  The returned pair-of-pairs
+    matches the call sites in ``kv_cache.KVCache``:
+
+        (qk, sk), (qv, sv) = apply_kv_cache_quantization(key, value, bits)
+
+    Dequantize later with ``dequantize_kv_cache(q, scale, bits)``.
+    """
+    import torch
+
+    if bits not in (4, 8):
+        bits = 8
+    max_val = (1 << (bits - 1)) - 1  # 127 for int8, 7 for int4
+
+    def _quant(t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        scale = t.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / max_val
+        q = torch.round(t / scale).clamp(-max_val, max_val).to(torch.int8)
+        return q, scale
+
+    qk, sk = _quant(key)
+    qv, sv = _quant(value)
+    return (qk, sk), (qv, sv)
+
+
+def dequantize_kv_cache(
+    q: "torch.Tensor",
+    scale: "torch.Tensor",
+    bits: int = 8,
+) -> "torch.Tensor":
+    """Dequantize a quantized KV cache segment back to float32 (``q * scale``)."""
+    import torch
+
+    return q.to(torch.float32) * scale

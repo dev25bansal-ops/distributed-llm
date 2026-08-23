@@ -389,8 +389,11 @@ class TestStragglerDetector:
         detector = StragglerDetector(abs_threshold=1.5)
         detector.set_expected({"node-0": 100.0})
 
+        # The detector compares the *sliding-window average* against the
+        # expected latency, so the straggling latency must be sustained
+        # (a single spike is diluted by prior healthy samples).
         for _ in range(5):
-            detector.record(LatencySample(node_id="node-0", latency_ms=100.0))
+            detector.record(LatencySample(node_id="node-0", latency_ms=200.0))
 
         report = detector.record(LatencySample(node_id="node-0", latency_ms=200.0))
         assert report is not None

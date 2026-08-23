@@ -32,11 +32,37 @@ class ProvisioningConfig:
     user_data: str = ""  # Startup script
 
 
+def _validate_terraform_value(field_name: str, value: object) -> None:
+    """Reject HCL injection in a config value interpolated into Terraform.
+
+    Any ``${``/``$``` interpolation sequence or newline is unsafe when placed
+    unquoted into an HCL string literal, so it is rejected fail-closed with a
+    ValueError naming the offending field.
+    """
+    if value is None:
+        return
+    text = str(value)
+    bad = ("${", "$$", "\n", "\r", " ")
+    if any(sub in text for sub in bad):
+        raise ValueError(
+            f"HCL injection detected in field '{field_name}': value contains "
+            "an interpolation/newline sequence"
+        )
+
+
 def generate_terraform(config: ProvisioningConfig) -> str:
     """Generate Terraform HCL for a GPU instance.
 
-    Returns the complete .tf content as a string.
+    Validates every interpolated config field fail-closed against HCL
+    injection before rendering.  Returns the complete .tf content as a string.
     """
+    for field_name in ("instance_type", "region", "ssh_key_name", "subnet_id", "gpu_type", "user_data"):
+        _validate_terraform_value(field_name, getattr(config, field_name, ""))
+    for k, v in (config.tags or {}).items():
+        _validate_terraform_value(f"tag[{k}]", v)
+        _validate_terraform_value(f"tag-key[{v}]", k)
+    for sid in config.security_group_ids:
+        _validate_terraform_value("security_group_id", sid)
     if config.provider == "aws":
         return _terraform_aws(config)
     elif config.provider == "gcp":

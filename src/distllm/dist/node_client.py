@@ -6,6 +6,7 @@ Includes a channel pool to reuse connections and reduce overhead.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from dataclasses import dataclass
 
@@ -14,9 +15,129 @@ from loguru import logger
 
 from distllm.dist import node_pb2_grpc
 
-# Channel pool: target -> (channel, ref_count)
-_channel_pool: dict[str, tuple[grpc.Channel, int]] = {}
-_channel_pool_lock = threading.Lock()
+class ChannelPool:
+    """Thread-safe channel pool with reference counting.
+
+    Encapsulates the pool so it can be reset between tests,
+    avoiding global mutable state that leaks across test cases.
+    """
+
+    def __init__(self) -> None:
+        self._pool: dict[str, tuple[grpc.Channel, int]] = {}
+        self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Public query / mutation API
+    # ------------------------------------------------------------------
+
+    def increment_ref(self, target: str) -> tuple[grpc.Channel, int] | None:
+        """Atomically look up *target* and increment its refcount.
+
+        Returns the ``(channel, new_count)`` tuple, or *None* if
+        *target* is not in the pool.
+        """
+        with self._lock:
+            entry = self._pool.get(target)
+            if entry is None:
+                return None
+            ch, count = entry
+            self._pool[target] = (ch, count + 1)
+            return (ch, count + 1)
+
+    def decrement_ref(self, target: str) -> tuple[grpc.Channel, int] | None:
+        """Atomically decrement the refcount for *target*.
+
+        When the count reaches zero the underlying channel is closed
+        and the entry is removed from the pool.  Returns the updated
+        ``(channel, new_count)`` tuple, or *None* if the entry was
+        removed (or was not present at all).
+        """
+        with self._lock:
+            entry = self._pool.get(target)
+            if entry is None:
+                return None
+            ch, count = entry
+            if count <= 1:
+                try:
+                    ch.close()
+                except Exception:
+                    pass
+                del self._pool[target]
+                return None
+            self._pool[target] = (ch, count - 1)
+            return (ch, count - 1)
+
+    def set(self, target: str, channel: grpc.Channel, ref_count: int = 1) -> None:
+        """Insert or overwrite the entry for *target*."""
+        with self._lock:
+            self._pool[target] = (channel, ref_count)
+
+    def ref_count(self, target: str) -> int | None:
+        """Return the current reference count for *target*, or *None*."""
+        with self._lock:
+            entry = self._pool.get(target)
+            return entry[1] if entry is not None else None
+
+    def set_if_absent(self, target: str, new_channel: grpc.Channel) -> grpc.Channel:
+        """Atomically insert *new_channel* for *target* if absent.
+
+        If *target* already exists, increment its refcount, close
+        *new_channel* and return the pooled channel.  If *target* is
+        absent, insert *new_channel* with refcount 1 and return it.
+
+        This handles the race when multiple threads create channels
+        for the same target simultaneously.
+        """
+        with self._lock:
+            existing = self._pool.get(target)
+            if existing is not None:
+                ch, count = existing
+                self._pool[target] = (ch, count + 1)
+                try:
+                    new_channel.close()
+                except Exception:
+                    pass
+                return ch
+            self._pool[target] = (new_channel, 1)
+            return new_channel
+
+    def clear(self) -> None:
+        """Close all tracked channels and empty the pool."""
+        with self._lock:
+            for ch, _ in self._pool.values():
+                try:
+                    ch.close()
+                except Exception:
+                    pass
+            self._pool.clear()
+
+    # ------------------------------------------------------------------
+    # Container protocol (convenience for test assertions)
+    # ------------------------------------------------------------------
+
+    def __contains__(self, target: object) -> bool:
+        if not isinstance(target, str):
+            return False
+        with self._lock:
+            return target in self._pool
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._pool)
+
+
+# Channel-pool singleton -- shared by all NodeClient instances.
+# Use reset_channel_pool() in test fixtures to guarantee isolation.
+channel_pool = ChannelPool()
+
+
+def reset_channel_pool() -> None:
+    """Close all tracked channels and empty the pool.
+
+    Call this from test ``autouse`` fixtures to prevent state leakage
+    between test cases.
+    """
+    channel_pool.clear()
 
 
 @dataclass
@@ -29,14 +150,7 @@ class NodeClient:
 
     def close(self) -> None:
         try:
-            with _channel_pool_lock:
-                if self._target in _channel_pool:
-                    ch, count = _channel_pool[self._target]
-                    if count <= 1:
-                        ch.close()
-                        del _channel_pool[self._target]
-                    else:
-                        _channel_pool[self._target] = (ch, count - 1)
+            channel_pool.decrement_ref(self._target)
             self.channel.close()
         except Exception:
             pass
@@ -83,15 +197,14 @@ def create_node_client(host: str, port: int,
     target = f"{host}:{port}"
 
     # Check channel pool first
-    with _channel_pool_lock:
-        if target in _channel_pool:
-            channel, count = _channel_pool[target]
-            _channel_pool[target] = (channel, count + 1)
-            stub = node_pb2_grpc.NodeServiceStub(channel)
-            logger.debug(f"gRPC client reusing pooled connection to {target}")
-            client = NodeClient(channel=channel, stub=stub, cluster_key=cluster_key)
-            client._target = target
-            return client
+    entry = channel_pool.increment_ref(target)
+    if entry is not None:
+        channel, _ = entry
+        stub = node_pb2_grpc.NodeServiceStub(channel)
+        logger.debug(f"gRPC client reusing pooled connection to {target}")
+        client = NodeClient(channel=channel, stub=stub, cluster_key=cluster_key)
+        client._target = target
+        return client
 
     MAX_MSG_SIZE = 100 * 1024 * 1024  # 100 MB — must match server setting
     channel_options = [
@@ -116,9 +229,11 @@ def create_node_client(host: str, port: int,
     stub = node_pb2_grpc.NodeServiceStub(channel)
     logger.debug(f"gRPC client connected to {target}")
 
-    # Add to pool
-    with _channel_pool_lock:
-        _channel_pool[target] = (channel, 1)
+    # Atomically insert -- handles the race when another thread
+    # created a channel for the same target simultaneously.
+    channel = channel_pool.set_if_absent(target, channel)
+    stub = node_pb2_grpc.NodeServiceStub(channel)
+    logger.debug(f"gRPC client connected to {target}")
 
     client = NodeClient(channel=channel, stub=stub, cluster_key=cluster_key)
     client._target = target
@@ -152,7 +267,8 @@ async def create_async_node_client(host: str, port: int,
     else:
         channel = grpc.aio.insecure_channel(target, options=channel_options)
 
-    await channel.channel_ready(timeout=timeout_s)
+    # grpc.aio's channel_ready() takes no timeout kwarg — wrap it.
+    await asyncio.wait_for(channel.channel_ready(), timeout=timeout_s)
     stub = node_pb2_grpc.NodeServiceStub(channel)
     logger.debug(f"Async gRPC client connected to {target}")
     return AsyncNodeClient(channel=channel, stub=stub, cluster_key=cluster_key)
@@ -224,6 +340,8 @@ def forward_request(
     request_id: str = "",
     cluster_key: str | None = None,
     timeout_s: float = 30.0,
+    use_tls: bool = False,
+    ca_cert: str | None = None,
 ) -> torch.Tensor:
     """Run a forward pass on a remote worker node via synchronous gRPC.
 
@@ -238,6 +356,8 @@ def forward_request(
         request_id: Request ID for tracking.
         cluster_key: Optional shared cluster auth key.
         timeout_s: RPC timeout in seconds.
+        use_tls: Encrypt the channel (activations/KV travel over the wire).
+        ca_cert: Optional CA cert path for verifying the node's certificate.
 
     Returns:
         Output tensor from the remote node.
@@ -248,7 +368,11 @@ def forward_request(
     from distllm.dist import node_pb2
     import time
 
-    client = create_node_client(host, port, timeout_s=timeout_s, cluster_key=cluster_key)
+    client = create_node_client(
+        host, port,
+        use_tls=use_tls, ca_cert=ca_cert,
+        timeout_s=timeout_s, cluster_key=cluster_key,
+    )
     try:
         kv_cache_pb = node_pb2.KVCacheProto()
         if kv_cache:
@@ -292,6 +416,8 @@ async def forward_request_async(
     request_id: str = "",
     cluster_key: str | None = None,
     timeout_s: float = 30.0,
+    use_tls: bool = False,
+    ca_cert: str | None = None,
 ) -> torch.Tensor:
     """Run a forward pass on a remote worker node via async gRPC (grpc.aio).
 
@@ -306,6 +432,8 @@ async def forward_request_async(
         request_id: Request ID for tracking.
         cluster_key: Optional shared cluster auth key.
         timeout_s: RPC timeout in seconds.
+        use_tls: Encrypt the channel (activations/KV travel over the wire).
+        ca_cert: Optional CA cert path for verifying the node's certificate.
 
     Returns:
         Output tensor from the remote node.
@@ -316,7 +444,11 @@ async def forward_request_async(
     from distllm.dist import node_pb2
     import time
 
-    client = await create_async_node_client(host, port, timeout_s=timeout_s, cluster_key=cluster_key)
+    client = await create_async_node_client(
+        host, port,
+        use_tls=use_tls, ca_cert=ca_cert,
+        timeout_s=timeout_s, cluster_key=cluster_key,
+    )
     try:
         kv_cache_pb = node_pb2.KVCacheProto()
         if kv_cache:
@@ -384,20 +516,53 @@ def request_layer_weights_stream(
             cluster_key=cluster_key or '',
         )
         buffer = bytearray()
+        expected_index = 0
+        total_chunks = None
+        seen_final = False
         for resp in client.stub.TransferWeightsStream(req):
-            if resp.success and resp.state_dict_bytes:
-                buffer.extend(resp.state_dict_bytes)
-            elif not resp.success:
+            if not resp.success:
                 logger.warning(f"Stream chunk error: {resp.error_message}")
                 client.close()
                 return None
+            if not resp.state_dict_bytes:
+                continue
+            # F-049: verify chunk ordering + completeness so a reordered,
+            # truncated, or duplicate stream is never assembled and loaded.
+            if resp.chunk_index != expected_index:
+                logger.warning(
+                    f"Weight stream out of order: expected chunk {expected_index}, "
+                    f"got {resp.chunk_index} — rejecting corrupted transfer"
+                )
+                client.close()
+                return None
+            if total_chunks is not None and resp.total_chunks != total_chunks:
+                logger.warning("Weight stream total_chunks changed mid-transfer — rejecting")
+                client.close()
+                return None
+            total_chunks = resp.total_chunks
+            if resp.is_final_chunk and seen_final:
+                logger.warning("Weight stream duplicated final chunk — rejecting")
+                client.close()
+                return None
+            if resp.is_final_chunk:
+                seen_final = True
+            buffer.extend(resp.state_dict_bytes)
+            expected_index += 1
         client.close()
-        if buffer:
-            logger.info(f"Streamed weights for {model_name} layers {start_layer}-{end_layer} "
-                         f"({len(buffer)} bytes)")
-            return bytes(buffer)
-        logger.warning("Streamed weight transfer returned empty buffer")
-        return None
+        if not buffer:
+            logger.warning("Streamed weight transfer returned empty buffer")
+            return None
+        # Completeness: every chunk up to total_chunks must have arrived.
+        if total_chunks is None or expected_index < total_chunks or not seen_final:
+            logger.warning(
+                f"Weight stream incomplete: {expected_index}/{total_chunks} chunks, "
+                f"final={seen_final} — rejecting truncated transfer"
+            )
+            return None
+        # Integrity: reject a stream producing no bytes (all-empty chunks dup).
+        logger.info(f"Streamed weights for {model_name} layers {start_layer}-{end_layer} "
+                     f"({len(buffer)} bytes, {expected_index}/{total_chunks} chunks)")
+        return bytes(buffer)
     except Exception as e:
         logger.warning(f"Streaming weight transfer failed: {e}")
         return None

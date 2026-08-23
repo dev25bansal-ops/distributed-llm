@@ -231,17 +231,20 @@ class SpotEnsembleManager:
             self._interruptions += 1
 
             if provider_key == self._active_leader:
+                old_leader = self._active_leader
                 self._elect_leader()
                 logger.warning(
                     f"Leader {provider_key} interrupted — "
                     f"promoted {self._active_leader}"
                 )
+                # Count every actual leadership change, callback or not.
+                if self._active_leader and self._active_leader != old_leader:
+                    self._leader_changes += 1
                 if self._migration_callback and self._active_leader:
                     try:
                         self._migration_callback(
                             provider_key, self._active_leader, []
                         )
-                        self._leader_changes += 1
                     except Exception as e:
                         logger.error(f"Migration callback failed: {e}")
 
@@ -304,12 +307,16 @@ class SpotEnsembleManager:
     @property
     def stats(self) -> dict:
         with self._lock:
+            healthy_spares = [
+                k for k, v in self._providers.items()
+                if v["healthy"] and k != self._active_leader
+            ]
             return {
                 "providers": len(self._providers),
                 "active_leader": self._active_leader,
                 "interruptions": self._interruptions,
                 "leader_changes": self._leader_changes,
-                "healthy_spares": len(self.get_healthy_spares()),
+                "healthy_spares": len(healthy_spares),
             }
 
 

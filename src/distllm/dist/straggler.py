@@ -134,12 +134,21 @@ class AdaptiveThreshold:
         return math.sqrt(self._m2 / (self._count - 1))
 
     def is_outlier(self, value: float) -> bool:
-        """Check if value is an outlier (> sensitivity * std from mean)."""
+        """Check if value is an outlier (> sensitivity * std from mean).
+
+        With a zero-variance baseline (e.g. 20 identical samples) any
+        deviation beyond a small relative floor is still an outlier —
+        ``std == 0`` must not silently mask spikes.
+        """
         if self._count < 10:
             return False  # Not enough data
         std = self.std
         if std <= 0:
-            return False
+            # Zero variance: flag deviations beyond a quarter of the mean
+            # (scaled by sensitivity). A change of this magnitude cannot be
+            # explained by noise on an otherwise stable distribution.
+            floor = self.sensitivity * max(abs(self._mean) * 0.25, 1e-9)
+            return abs(value - self._mean) > floor
         return abs(value - self._mean) > self.sensitivity * std
 
     def percentile_rank(self, value: float) -> float:
@@ -321,6 +330,9 @@ class StragglerDetector:
         callback_cooldown_s: float = 60.0,
         # Baseline EMA alpha (fixes #1)
         baseline_alpha: float = 0.1,
+        # Network RTT filtering (B-19)
+        network_rtt_threshold: float = 0.0,
+        network_rtt_fn: Callable[[str], float] | None = None,
         # Root cause attribution
         gpu_health_fn: Callable[[str], RootCauseAttribution] | None = None,
     ):
@@ -349,6 +361,10 @@ class StragglerDetector:
 
         # Baseline alpha
         self._baseline_alpha = baseline_alpha
+
+        # Network RTT filtering (B-19)
+        self._network_rtt_threshold = network_rtt_threshold
+        self._network_rtt_fn = network_rtt_fn
 
         # Root cause
         self._gpu_health_fn = gpu_health_fn
@@ -417,15 +433,18 @@ class StragglerDetector:
         reports: list[StragglerReport] = []
 
         with self._lock:
-            if len(self._nodes) < 2:
-                return []
-
-            # Check for stale nodes (fixes #4)
+            # Check for stale nodes (fixes #4) — independent of peer count:
+            # a single silent node is still a failure.
             stale_reports = self._check_stale_nodes(now)
+
+            if len(self._nodes) < 2:
+                return stale_reports
 
             eligible_nodes = {
                 nid: n for nid, n in self._nodes.items()
                 if len(n.latencies) >= 5
+                or (self._detection_method == DetectionMethod.THROUGHPUT
+                    and len(n.throughputs) >= 5)
             }
             if len(eligible_nodes) < 2:
                 return stale_reports
@@ -451,33 +470,69 @@ class StragglerDetector:
                     mad = statistics.median(devs) if devs else 0
                     if mad > 0:
                         is_slow = abs(node.p95_latency - median_p95) / mad > self._mad_threshold
-                    # Fixes #2: MAD=0 with non-identical data fallback
+                        # Fixes #2: MAD=0 with non-identical data fallback.
+                        # With two nodes both deviate from the median equally,
+                        # so MAD alone cannot discriminate; fall back to the
+                        # threshold rule so the slower node is still caught.
+                        if not is_slow and node.p95_latency > median_p95 * self._threshold_multiplier:
+                            is_slow = True
                     elif node.p95_latency > median_p95 * self._threshold_multiplier:
                         is_slow = True
                 elif method == DetectionMethod.TREND:
-                    if node.baseline_latency > 0:
+                    # Windowed trend: compare the recent half of the window
+                    # against the earlier half.  Using the rolling EMA baseline
+                    # here is self-defeating — a sustained slowdown drags its
+                    # own baseline up and eventually masks the very signal it
+                    # is meant to capture.
+                    lats = list(node.latencies)
+                    n = len(lats)
+                    if n >= 4:
+                        half = n // 2
+                        older_avg = sum(lats[:half]) / half
+                        recent_avg = sum(lats[half:]) / (n - half)
+                        is_slow = recent_avg > older_avg * self._trend_multiplier
+                    elif node.baseline_latency > 0:
                         is_slow = node.avg_latency > node.baseline_latency * self._trend_multiplier
                 elif method == DetectionMethod.THROUGHPUT:
-                    if node.baseline_throughput > 0:
+                    # Same windowed reasoning as TREND, inverted (lower is worse).
+                    tps = list(node.throughputs)
+                    n = len(tps)
+                    if n >= 4:
+                        half = n // 2
+                        older_avg = sum(tps[:half]) / half
+                        recent_avg = sum(tps[half:]) / (n - half)
+                        is_slow = recent_avg < older_avg * self._throughput_floor
+                    elif node.baseline_throughput > 0:
                         is_slow = node.avg_throughput < node.baseline_throughput * self._throughput_floor
 
                 if is_slow:
-                    # Compute slowdown relative to this node's own baseline only.
-                    # Using median_p95 as a fallback when baseline_latency is 0
-                    # produced meaningless ratios (e.g. a brand-new node would
-                    # appear "faster" than expected).  When there is no baseline
-                    # the factor is NaN — callers / serializers handle this via
-                    # "N/A" rendering.
+                    # Compute slowdown relative to this node's own baseline
+                    # (which captures sustained degradation) and relative to
+                    # the peer median excluding this node (which captures
+                    # disparity without the node skewing its own reference);
+                    # severity follows the stronger signal.  For detection,
+                    # the median still includes this node (peer-relative
+                    # methods like THRESHOLD/MAD are defined over all nodes).
                     base = node.baseline_latency
                     if base > 0:
                         slowdown = node.p95_latency / base
                     else:
                         slowdown = float("nan")
+                    peer_vals = [p for p in all_p95_vals if p != node.p95_latency]
+                    if peer_vals:
+                        peers_median = statistics.median(peer_vals)
+                        if peers_median > 0:
+                            peer_slowdown = node.p95_latency / peers_median
+                            slowdown = max(slowdown, peer_slowdown)
                     if slowdown > self._severe_multiplier:
                         severity = StragglerSeverity.SEVERE
                     elif slowdown > self._moderate_multiplier:
                         severity = StragglerSeverity.MODERATE
                     elif slowdown > self._mild_multiplier:
+                        severity = StragglerSeverity.MILD
+                    # Non-baseline methods (THRESHOLD/MAD) have no meaningful
+                    # ratio; the method signal itself is the severity evidence.
+                    if severity == StragglerSeverity.NONE:
                         severity = StragglerSeverity.MILD
 
                     node.consecutive_slow += 1
@@ -485,6 +540,7 @@ class StragglerDetector:
                     node.consecutive_slow = 0
 
                 node.is_straggler = node.consecutive_slow >= self._consecutive_threshold
+                node.is_straggler = node.is_straggler and self._rtt_allows(node_id)
                 node.severity = severity if node.is_straggler else StragglerSeverity.NONE
 
                 if node.is_straggler:
@@ -543,7 +599,8 @@ class StragglerDetector:
         """Check for nodes that stopped reporting (fixes #4)."""
         reports = []
         for node_id, node in self._nodes.items():
-            if node.last_seen <= 0:
+            # A node that never reported has nothing to go stale.
+            if node.last_seen <= 0 and not node.latencies:
                 continue
             if now - node.last_seen > self._stale_timeout_s and not node.is_straggler:
                 node.is_straggler = True
@@ -595,6 +652,20 @@ class StragglerDetector:
             self._callback_cooldowns[node_id] = now
             return True
         return False
+
+    def _rtt_allows(self, node_id: str) -> bool:
+        """Apply the network RTT filter (B-19).
+
+        A node whose RTT exceeds the threshold is experiencing a network
+        problem rather than a compute problem — suppress straggler detection
+        for it.  When no RTT callback is configured every node passes.
+        """
+        if self._network_rtt_threshold <= 0 or self._network_rtt_fn is None:
+            return True
+        try:
+            return self._network_rtt_fn(node_id) < self._network_rtt_threshold
+        except Exception:
+            return True
 
     def _recommend_action(self, severity: StragglerSeverity) -> str:
         if severity == StragglerSeverity.SEVERE:
@@ -737,6 +808,7 @@ class StragglerDetector:
                         "p95_latency": round(node.p95_latency, 2),
                         "avg_throughput": round(node.avg_throughput, 1),
                         "baseline_latency": round(node.baseline_latency, 2),
+                        "slowdown": round(node.avg_latency / max(node.baseline_latency, 1), 2),
                         "consecutive_slow": node.consecutive_slow,
                         "is_straggler": node.is_straggler,
                         "severity": node.severity.value,

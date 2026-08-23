@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator
+  labels:
+    app.kubernetes.io/component: coordinator
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+    - port: 50051
+      targetPort: grpc
+      name: grpc
+    - port: 9090
+      targetPort: metrics
+      name: metrics
+  selector:
+    app.kubernetes.io/component: coordinator
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/component: worker
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: metrics
+      name: metrics
+  selector:
+    app.kubernetes.io/component: worker

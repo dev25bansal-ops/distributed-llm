@@ -26,6 +26,11 @@ class ModelRegistry:
         self.max_models = max_models
 
     def register(self, name, path, total_layers):
+        # Refresh-in-place if re-registered; otherwise evict the OLDEST
+        # entry (dict insertion order) once the registry is at capacity.
+        if name not in self._models and len(self._models) >= self.max_models:
+            oldest = next(iter(self._models))
+            del self._models[oldest]
         self._models[name] = ModelEntry(name, path, total_layers)
         return self._models[name]
 
@@ -131,6 +136,9 @@ class ModelHotSwapManager:
     ):
         self.registry = model_registry or ModelRegistry(max_models=max_models)
         self.memory_budget = ModelMemoryBudget(total_gpu_memory_gb=total_gpu_memory_gb)
+        # Back-compat aliases (older call sites/tests use the underscore names).
+        self._registry = self.registry
+        self._total_gpu_memory_gb = total_gpu_memory_gb
         self._max_models = max_models
 
         # Loaded models: name -> ModelInstance
@@ -423,7 +431,10 @@ class GPUTimeSlicer:
         self._slas: dict[str, ModelSLA] = models or {}
         self._active_model: str | None = None
         self._slice_start: float = 0.0
-        self._lock = threading.Lock()
+        # RLock so nested acquisition works: stats() holds this lock and then
+        # calls check_sla_violations(), which acquires it again — a plain Lock
+        # would self-deadlock on the second acquire.
+        self._lock = threading.RLock()
         self._stats: dict[str, dict] = {}
 
     def register_model(self, sla: ModelSLA) -> None:

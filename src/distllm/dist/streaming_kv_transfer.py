@@ -73,10 +73,16 @@ class StreamingKVTransfer:
         Yields:
             KVChunk objects.
         """
-        # Serialize tensor to bytes
+        # Serialize tensor to bytes.
+        # NOTE: torch.Tensor.numpy() does not support bfloat16 (no NumPy
+        # equivalent dtype), so upcast bf16 to float32 first — an exact,
+        # lossless conversion (fp32 fully represents bf16). reassemble_chunks
+        # decodes these buffers back to bf16 via the matching dtype entry.
         t = tensor.detach().contiguous()
         if t.is_cuda:
             t = t.cpu()
+        if t.dtype == torch.bfloat16:
+            t = t.float()
         raw = bytes(memoryview(t.numpy()))
 
         total_bytes = len(raw)
@@ -133,7 +139,10 @@ class StreamingKVTransfer:
         dtype_map = {
             "torch.float32": (np.float32, torch.float32),
             "torch.float16": (np.float16, torch.float16),
-            "torch.bfloat16": (np.float16, torch.float16),  # BF16 stored as float16
+            # BF16 has no NumPy equivalent: chunk_tensor upcasts it to float32
+            # on the send side, so decode as fp32 then cast back to bf16
+            # (lossless — fp32 exactly represents every bf16 value).
+            "torch.bfloat16": (np.float32, torch.bfloat16),
         }
 
         shape = chunks[0].shape

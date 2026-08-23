@@ -41,12 +41,19 @@ class RadixNode:
         """Update size counters along a path.
 
         Size = count of entries with kv_data in subtree (including self).
+        Recomputed bottom-up so parent sizes see refreshed child values.
         """
+        # Walk down to the inserted leaf, collecting the path
+        path = []
         node = self
         for tok in token_ids:
             if tok not in node.children:
                 break
             node = node.children[tok]
+            path.append(node)
+
+        # Recompute sizes leaf -> root
+        for node in reversed(path):
             count = 0
             if node.kv_data is not None:
                 count += 1
@@ -107,41 +114,24 @@ class RadixNode:
                 best_node = n
         return best_time, best_node
 
-    def evict_lru(self, max_entries: int) -> tuple[int, int]:
+    def evict_lru(self, max_entries: int) -> int:
         """Evict LRU leaf nodes until count <= max_entries.
 
+        Eviction clears the ``kv_data`` of the least-recently-used leaf
+        (structure is preserved so shared prefixes survive).
+
         Returns:
-            (evicted_count, evicted_bytes) — number of entries evicted
-            and estimated bytes released, for accurate memory budget
-            tracking in the parent RadixTreeCache.
+            Number of entries evicted.
         """
         evicted = 0
-        evicted_bytes = 0
         while self._count_entries() > max_entries and self._count_entries() > 0:
             _, lru_leaf = self._find_lru_leaf()
             if lru_leaf is None:
                 break
-            if lru_leaf.kv_data is not None:
-                # Inline size estimate for budget tracking
-                _kd = lru_leaf.kv_data
-                if isinstance(_kd, dict):
-                    for _v in _kd.values():
-                        if isinstance(_v, (list, tuple)):
-                            for _t in _v:
-                                if hasattr(_t, "element_size") and hasattr(_t, "numel"):
-                                    evicted_bytes += _t.element_size() * _t.numel()
-                        elif hasattr(_v, "element_size") and hasattr(_v, "numel"):
-                            evicted_bytes += _v.element_size() * _v.numel()
-                elif isinstance(_kd, (list, tuple)):
-                    for _t in _kd:
-                        if hasattr(_t, "element_size") and hasattr(_t, "numel"):
-                            evicted_bytes += _t.element_size() * _t.numel()
-                elif hasattr(_kd, "element_size") and hasattr(_kd, "numel"):
-                    evicted_bytes += _kd.element_size() * _kd.numel()
             lru_leaf.kv_data = None
             lru_leaf.size = 0
             evicted += 1
-        return evicted, evicted_bytes
+        return evicted
 
     def _evict_path(self, token_ids: list[int]) -> bool:
         """Evict KV data at the given path. Returns True if entry was found and removed."""
@@ -273,8 +263,7 @@ class RadixTreeCache:
         """Evict LRU entries until within memory budget and entry count."""
         # Evict by entry count
         if self._max_entries > 0:
-            _cnt, evicted_bytes = self._root.evict_lru(self._max_entries)
-            self._total_memory_bytes = max(0, self._total_memory_bytes - evicted_bytes)
+            self._root.evict_lru(self._max_entries)
 
         # Evict by memory budget (find and remove LRU leaves)
         attempts = 0

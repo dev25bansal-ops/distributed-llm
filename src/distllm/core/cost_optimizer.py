@@ -85,12 +85,27 @@ class CostOptimizer:
         arbitrage_engine: Any = None,
         budget_alert_callback: Callable[[CostAlert], None] | None = None,
         check_interval_s: float = 60.0,
+        cloud_cost_per_1k_tokens: float = 0.0,
     ):
+        """Initialize the cost optimizer.
+
+        Args:
+            cost_tracker: Optional cost tracker instance.
+            pricing_manager: Optional pricing manager instance.
+            arbitrage_engine: Optional arbitrage engine instance.
+            budget_alert_callback: Optional callback for budget alerts.
+            check_interval_s: Interval between optimization checks.
+            cloud_cost_per_1k_tokens: USD cost per 1k tokens for the
+                equivalent cloud/hosted inference (used to estimate
+                ``cloud_equivalent_cost`` and savings in ROI reports).
+                ``0.0`` disables cloud-cost estimation.
+        """
         self._cost_tracker = cost_tracker
         self._pricing = pricing_manager
         self._arbitrage = arbitrage_engine
         self._on_alert = budget_alert_callback
         self._check_interval = check_interval_s
+        self._cloud_rate_per_1k = cloud_cost_per_1k_tokens
 
         self._model_costs: dict[str, dict] = {}  # model -> cost data
         self._alerts: list[CostAlert] = []
@@ -129,7 +144,12 @@ class CostOptimizer:
         tokens: int,
         requests: int = 1,
     ) -> None:
-        """Record cost data for a model."""
+        """Record cost data for a model.
+
+        When a ``cloud_cost_per_1k_tokens`` rate is configured, the
+        cloud-equivalent cost is estimated from the recorded token count so
+        ROI reports can compare self-hosted vs hosted inference.
+        """
         with self._lock:
             if model_name not in self._model_costs:
                 self._model_costs[model_name] = {
@@ -142,6 +162,8 @@ class CostOptimizer:
             mc["total_cost"] += cost_usd
             mc["total_tokens"] += tokens
             mc["total_requests"] += requests
+            if self._cloud_rate_per_1k > 0:
+                mc["cloud_cost"] += (tokens / 1000) * self._cloud_rate_per_1k
 
     def get_roi_report(self) -> dict:
         """Generate ROI report for all tracked models."""
@@ -244,15 +266,16 @@ class CostOptimizer:
             return []
 
         try:
-            opportunities = self._arbitrage.find_opportunities()
+            opportunities = self._arbitrage.detect_opportunities()
             recommendations = []
             for opp in opportunities:
+                d = opp.to_dict()
                 recommendations.append({
-                    "type": opp.get("type", ""),
-                    "current_provider": opp.get("current_provider", ""),
-                    "recommended_provider": opp.get("recommended_provider", ""),
-                    "estimated_savings": opp.get("estimated_savings", 0),
-                    "risk": opp.get("risk", "low"),
+                    "type": d.get("type", ""),
+                    "current_provider": opp.current_provider,
+                    "recommended_provider": opp.recommended_provider,
+                    "estimated_savings": d.get("savings_per_hour", 0),
+                    "risk": d.get("migration_risk", "low"),
                 })
                 self._stats["migrations_recommended"] += 1
             return recommendations
@@ -269,7 +292,7 @@ class CostOptimizer:
                 # Update spot pricing if available
                 if self._pricing:
                     try:
-                        self._pricing.update_prices()
+                        self._pricing.refresh()
                     except Exception:
                         pass
 

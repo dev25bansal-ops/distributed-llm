@@ -1,0 +1,589 @@
+{
+  "findings": [
+    {
+      "file": "src/distllm/api/server.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1732 lines -- more than double the 800-line ceiling. Merges middleware setup, 17+ route registrations, CORS origin validation, plugin init, SIGHUP handler, restart logic, and main(). Should be decomposed.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/cli/main.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1736 lines, far exceeding 800-line limit. All CLI commands live in one monolithic file. Each typer command group should be extracted into its own module (backup, deploy, cluster, etc.).",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/coordinator.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1634 lines. Coordinator class has 50+ instance attributes mixing state replication, node recovery, health checks, generation, and defragmentation responsibilities.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/evaluation_harness.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1578 lines. Combines dataset loading, prompt formatting, parallel eval, scoring, reporting, and SQLite persistence in one file.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/distributed_speculative.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1526 lines. Contains RemoteDraftModel, DraftModelFleet, DraftModelRouter, and DistributedSpeculativeDecoder all in one file.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/batch_scheduler.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1321 lines. BatchScheduler mixes scheduling, preemption, chunked prefill, KV cache management, and budget computation responsibilities.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/kv_cache.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1254 lines. Combines PagedKVCacheBackend, KVCache, serialization helpers, and FP8 quantization logic.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/sdk/client.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1171 lines. The DistLLMClient class contains sync and async variants of chat, completion, embedding, batch, audio, image, moderation, files, and fine-tuning methods.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/prompts/library.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1198 lines. Contains both SQLite-backed PromptRepository and a massive SYSTEM_PROMPTS dict with 100+ prompt templates. The static SYSTEM_PROMPTS dictionary alone is ~800 lines.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/dp_inference.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1051 lines. Contains DPConfig, RDPAccounting, PrivacyBudgetManager, DifferentialPrivacyInference, and multiple helper functions in one file.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/inference_engine.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1048 lines. Contains multiple generation strategies (_LocalStrategy, _DistributedStrategy, _SpeculativeStrategy) plus the InferenceEngine class.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/speculative_decoder.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1017 lines. Contains SpecDecoderBase mixin, SpeculativeDecoder, and multiple verification strategies.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/dashboard/ws_handler.py",
+      "line": 75,
+      "category": "error-handling",
+      "description": "Bare except Exception at line 75 inside broadcast_filtered silently swallows send errors and disconnects client with no logging of the error.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/dashboard/ws_handler.py",
+      "line": 87,
+      "category": "error-handling",
+      "description": "Bare except Exception at line 87 inside send_to swallows connection errors with no logging.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/dashboard/ws_handler.py",
+      "line": 291,
+      "category": "error-handling",
+      "description": "Bare except Exception in broadcast loop silently swallows errors with no re-raise or logging of exception details.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/dashboard/ws_handler.py",
+      "line": 478,
+      "category": "error-handling",
+      "description": "Bare except Exception inside inner loop with empty except block -- an exception is caught and completely ignored.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/backends/__init__.py",
+      "line": 117,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass at line 118 inside backend loading loop silently swallows import errors without logging which backend or what error occurred.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/backends/vllm_backend.py",
+      "line": 445,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass at lines 446, 453, 475 inside vLLM adapter silently swallows errors during tensor movement operations.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/backends/triton_backend.py",
+      "line": 817,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass at lines 817, 835, 840 inside internal helper silently swallows errors.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/api/server.py",
+      "line": 117,
+      "category": "error-handling",
+      "description": "Bare except Exception at line 117 inside _get_cors_origins silently falls back to default origins with no warning if DistLLMSettings() fails.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/api/circuit_breaker_middleware.py",
+      "line": 184,
+      "category": "error-handling",
+      "description": "Bare except Exception silently swallows circuit breaker callback errors with no logging.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/api/quota_middleware.py",
+      "line": 56,
+      "category": "error-handling",
+      "description": "Bare except Exception swallows quota check errors with pass, silently allowing requests when quota system fails instead of returning an error to the user.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/terraform/__init__.py",
+      "line": 124,
+      "category": "error-handling",
+      "description": "Multiple bare except Exception with pass at lines 125, 170, 211, 255 silently swallow errors during Terraform operations with no logging.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/cloud/aws.py",
+      "line": 53,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass at lines 53, 57, 137 silently swallows cloud API errors during spot price and availability checks.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/cloud/azure.py",
+      "line": 55,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass at line 134 silently swallows Azure API errors during pricing queries.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/cloud/gcp.py",
+      "line": 57,
+      "category": "error-handling",
+      "description": "Multiple bare except Exception with pass at lines 141, 186 silently swallows GCP API errors.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/coordinator.py",
+      "line": 288,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass at line 289 in _on_node_mark_dead silently swallows errors from AutonomousHealer without logging.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/persistence.py",
+      "line": 45,
+      "category": "type-safety",
+      "description": "Function _register_migration lacks return type hint on decorator wrapper and uses type: ignore[type-arg] to suppress the issue rather than fixing the type.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/persistence.py",
+      "line": 405,
+      "category": "type-safety",
+      "description": "Method _transaction uses type: ignore[no-untyped-def] on its wrapper/return type, suppressing a real type checking issue.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/distributed_speculative.py",
+      "line": 636,
+      "category": "type-safety",
+      "description": "Uses type: ignore[misc] on raise statement to suppress mypy complaint about BaseException union narrowing.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/sdk/client.py",
+      "line": 781,
+      "category": "type-safety",
+      "description": "Multiple type: ignore[misc] comments at lines 781, 807, 1144, 1170 suppress mypy errors about BaseException union narrowing rather than fixing the type handling.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/errors/retry.py",
+      "line": 79,
+      "category": "type-safety",
+      "description": "Multiple type: ignore[misc] at lines 79, 112, 168 suppress mypy errors about BaseException union narrowing in retry logic.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/cloud/common.py",
+      "line": 181,
+      "category": "type-safety",
+      "description": "Uses type: ignore to suppress unchecked attribute access on lazy-loaded _fetcher and _checker attributes.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/nat.py",
+      "line": 722,
+      "category": "type-safety",
+      "description": "Uses type: ignore[misc] to suppress an error about a function definition with *args, **kwargs that should be properly typed.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/otel.py",
+      "line": 93,
+      "category": "type-safety",
+      "description": "Uses type: ignore[possibly-undefined] to suppress an error where span/e might be undefined in the except block due to the try/except/else structure.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/tracing.py",
+      "line": 52,
+      "category": "type-safety",
+      "description": "Uses type: ignore[no-redef] to suppress redefinition error for SpanKind class when OpenTelemetry is not installed.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/redis_cache.py",
+      "line": 163,
+      "category": "type-safety",
+      "description": "Uses type: ignore[union-attr] to suppress errors about _redis being potentially None in multiple places.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/inference_engine.py",
+      "line": 24,
+      "category": "type-safety",
+      "description": "Uses type: ignore[assignment,misc] to suppress type errors on lazy-imported AutoTokenizer and ModelPartitioner set to None as fallback.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/__init__.py",
+      "line": 21,
+      "category": "dead-code",
+      "description": "Over 40 lines of _register() calls that manually re-export symbols from other modules. These are import-time side-effect registrations that create tight coupling to every core submodule at import time.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/coordinator.py",
+      "line": 1090,
+      "category": "complexity",
+      "description": "generate_async method at line 1090 is ~70 lines with deeply nested try/except, inner function _run, and two fallback code paths making it hard to reason about.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/coordinator.py",
+      "line": 1520,
+      "category": "complexity",
+      "description": "shutdown() method is ~100+ lines with 9 numbered steps, deeply nested try/except blocks, and multiple condition branches.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/api/server.py",
+      "line": 100,
+      "category": "complexity",
+      "description": "_get_cors_origins function is ~47 lines with complex branching logic for env vars, settings, wildcard validation, URL parsing, and fallbacks.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/api/server.py",
+      "line": 165,
+      "category": "complexity",
+      "description": "The lifespan() function is ~90 lines mixing plugin init, SIGHUP registration, async event processing, security warnings, API key logging, and WebSocket broadcaster startup.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/plugins/cache_plugin.py",
+      "line": 55,
+      "category": "type-safety",
+      "description": "Uses type: ignore[assignment,misc] to set SemanticCache and _redis_mod to None rather than using Optional type or a proper lazy-init pattern.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/plugins/auth_plugin.py",
+      "line": 54,
+      "category": "type-safety",
+      "description": "Uses type: ignore[assignment] to set _pyjwt to None when PyJWT is not installed.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/redis_prompt_cache.py",
+      "line": 20,
+      "category": "type-safety",
+      "description": "Uses type: ignore[assignment] to set redis module variable to None rather than using Optional type annotation.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/api/server.py",
+      "line": 48,
+      "category": "coupling",
+      "description": "Re-exports 15+ models, routers, and helper functions from separate modules for backward compatibility. This creates fragile aliasing that makes refactoring difficult.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/request_pipeline.py",
+      "line": 39,
+      "category": "coupling",
+      "description": "RequestPipeline class accesses coordinator internal attributes directly (coord._coord._token_gen, coord._coord._batch_scheduler._lock) creating tight coupling that violates encapsulation boundaries.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/backends/vllm_backend.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File exceeds 500 lines with vLLM backend containing deep integration logic, multiple error handling patterns, fallback logic, and model loading complexity.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/backends/nim_backend.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 873 lines. Contains NIM model loading, inference, health checks, and CUDAGraph capture logic.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/partition/quantization_tuner.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1383 lines. Contains quantization method enums, NodeInfo, profiling, and the full Adaptive Precision Optimizer logic.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/federation.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1140 lines. FederationConfig, FederationGateway, FederationPeerManager, and discovery logic all in one file.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/cross_cloud_router.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 918 lines. Contains GPU instance index, dataclasses, pricing integration, carbon-aware routing, and routing strategy.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/nat.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 934 lines. Contains StunClient, TurnServer, IceNegotiator, and NAT traversal logic.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/model_router.py",
+      "line": 122,
+      "category": "naming",
+      "description": "ModelRouter class field _workload_patterns uses dict[str, dict] with no type annotation for the nested dict structure, making the schema unclear.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/api/routes/chat.py",
+      "line": 38,
+      "category": "naming",
+      "description": "Type hint uses lower-case 'callable' instead of typing.Callable or collections.abc.Callable for register_tool method parameter.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/persistence.py",
+      "line": 52,
+      "category": "naming",
+      "description": "The _register_migration decorator wraps a closure named 'wrapper' but the decorator itself has no return type annotation, using type: ignore instead.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/dp_inference.py",
+      "line": 206,
+      "category": "standards",
+      "description": "Line exceeds the 88-character PEP 8 limit with a complex regex pattern for IP address redaction (~230 chars).",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/certificate_manager.py",
+      "line": 257,
+      "category": "standards",
+      "description": "Line exceeds 88-char PEP 8 limit with chained attribute access for gRPC SSL configuration.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/batch_scheduler.py",
+      "line": 976,
+      "category": "standards",
+      "description": "Line exceeds 88-char PEP 8 limit with complex list comprehension for length variance calculation.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/kv_cache.py",
+      "line": 83,
+      "category": "standards",
+      "description": "Line exceeds 88-char PEP 8 limit with chained attribute multiplication for memory usage calculation.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/coordinator.py",
+      "line": 263,
+      "category": "standards",
+      "description": "Line exceeds 88-char PEP 8 limit with hasattr() check inside register() call.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/dist/nat.py",
+      "line": 1,
+      "category": "standards",
+      "description": "Missing from __future__ import annotations -- one of few modules in the dist/ layer that omits this import while most others include it.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/ab_test_coordinator.py",
+      "line": 24,
+      "category": "standards",
+      "description": "Imports Any and Callable from typing instead of using collections.abc.Callable as recommended by modern Python. This is inconsistent with files that use from collections.abc imports.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/core/coordinator.py",
+      "line": 235,
+      "category": "other",
+      "description": "Seven instance attributes (_semantic_cache through _arbitrage_engine) are typed as Any = None. This is a lazy placeholder pattern that masks the class's actual dependency graph.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/api/sso_auth.py",
+      "line": 132,
+      "category": "error-handling",
+      "description": "Multiple bare except Exception handlers at lines 132, 154, 212, 294, 322, 378, 477 catch all exceptions in SSO/OAuth flow which could mask authentication failures and confuse debugging.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/api/prompt_injection.py",
+      "line": 187,
+      "category": "error-handling",
+      "description": "Multiple bare except Exception handlers at lines 187, 207, 360, 397, 405 in the prompt injection detection module that could mask detection failures.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/api/cost_middleware.py",
+      "line": 86,
+      "category": "error-handling",
+      "description": "Bare except Exception at lines 86, 118 catches cost tracking errors silently, allowing billing failures to go undetected.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/api/grpc_bridge.py",
+      "line": 224,
+      "category": "error-handling",
+      "description": "Bare except Exception at lines 224, 275 catches gRPC errors silently, potentially masking communication failures.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/security/watermark.py",
+      "line": 315,
+      "category": "error-handling",
+      "description": "Bare except Exception at lines 315, 335 silently catches errors in watermark verification with pass, making tampering detection failures invisible.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/health/prober.py",
+      "line": 29,
+      "category": "error-handling",
+      "description": "Bare except Exception catches health probe errors which could make the system believe all services are healthy when probes are silently failing.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/backends/paged_attention.py",
+      "line": 185,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass in paged attention block allocation silently swallows allocation errors.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/backends/llamacpp_backend.py",
+      "line": 229,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass in llama.cpp backend silently swallows errors during model operations.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/backends/registry.py",
+      "line": 339,
+      "category": "error-handling",
+      "description": "Bare except Exception with pass in backend registry silently swallows errors during backend cleanup.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/partition/partitioner.py",
+      "line": 204,
+      "category": "type-safety",
+      "description": "Line 204 creates list[Any] with type: ignore[assignment] comment rather than proper type annotation for gpu profiles.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/partition/persistence.py",
+      "line": 153,
+      "category": "type-safety",
+      "description": "Function returns run_id with type: ignore[return-value] suppressing the type check rather than fixing the return type.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dashboard/__init__.py",
+      "line": 65,
+      "category": "error-handling",
+      "description": "Bare except Exception catches all errors silently during dashboard initialization.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/backends/onnx_backend.py",
+      "line": 1,
+      "category": "docs",
+      "description": "ONNX backend file has minimal documentation and no module-level docstring explaining how to use this backend.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/backends/webgpu_backend.py",
+      "line": 1,
+      "category": "docs",
+      "description": "WebGPU backend file has minimal documentation. The class has sparse method-level docstrings and no usage examples.",
+      "severity": "Low"
+    },
+    {
+      "file": "src/distllm/cli/autopsy.py",
+      "line": 80,
+      "category": "error-handling",
+      "description": "Multiple bare except Exception blocks (lines 80, 90, 97, 104, 111, 118, 133, 173, 269) across the autopsy CLI silently swallow diagnostic failures.",
+      "severity": "High"
+    },
+    {
+      "file": "src/distllm/core/types.py",
+      "line": 1,
+      "category": "type-safety",
+      "description": "Many core types files use generic types without proper type parameterization. A spot check shows incomplete type coverage.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/dist/parallel.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 1061 lines. HybridParallelEngine mixes topology detection, strategy selection, TP launcher integration, and EP (expert parallel) orchestration.",
+      "severity": "Medium"
+    },
+    {
+      "file": "src/distllm/core/persistence.py",
+      "line": 1,
+      "category": "complexity",
+      "description": "File is 947 lines. Contains StorageBackend interface, SQLiteBackend implementation, JSONLBackend, migrations, and schema definitions.",
+      "severity": "Medium"
+    }
+  ],
+  "totalFindings": 74,
+  "highCount": 30,
+  "summary": "This codebase shows strengths in modular architecture with many well-defined components but has systemic issues around file sizes (19 files exceed 800-line limit), error handling (36+ instances of bare except Exception with pass), and type safety (30+ type: ignore suppression comments). The largest concentration of issues is in core/ (coordinator.py at 1634 lines, evaluation_harness.py at 1578 lines, distributed_speculative.py at 1526 lines) and api/server.py (1732 lines). Error handling is the most critical pattern: exceptions are frequently caught broadly and silently discarded, especially in dashboard WebSocket handler, cloud provider adapters, and the SSO auth module. The type: ignore comments scattered across 20+ files indicate the type system is not fully leveraged. File-level complexity is the most pervasive issue: 6 files exceed 1000 lines, with the top 12 files alone accounting for over 16,000 lines of code. Many files would benefit from decomposition into smaller, focused modules.",
+  "overallGrade": "C"
+}

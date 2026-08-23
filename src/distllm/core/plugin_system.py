@@ -2,8 +2,32 @@
 
 Provides a generic plugin framework with hook-based extension points,
 lifecycle management (init, start, stop), and filesystem discovery.
-Backend-specific plugins use ``backends/registry.py``; this is for
-general-purpose plugins (custom auth, custom logging, custom middleware).
+
+DISTINCTION FROM FASTAPI MIDDLEWARE:
+  Starlette middleware (app.add_middleware) handles low-level,
+  ordering-sensitive request/response pipeline processing (auth,
+  rate-limiting, CORS, timeouts, backpressure, security headers).
+  Middleware has raw ASGI scope access but cannot be added by third
+  parties without modifying the codebase.
+
+  Plugins provide extensible, swappable, lifecycle-managed behavior
+  that users or third parties can install, register, or remove
+  without touching the core codebase.  Plugins run through a single
+  middleware entry point (PluginHookMiddleware) that dispatches
+  ``on_request`` / ``on_response`` / ``on_error`` lifecycle hooks.
+  They do NOT have raw ASGI scope access but benefit from lifecycle
+  management (init -> start -> stop) and dynamic filesystem/PyPI
+  discovery.
+
+  Rule of thumb:
+  - Infra cross-cutting concerns that MUST be at a precise position
+    in the pipeline -> Starlette middleware.
+  - Swappable / installable / user-extensible features -> Plugin.
+  - Behavior needing lifecycle hooks beyond request/response -> Plugin.
+
+Backend-specific plugins use ``backends/registry.py``; this module
+is for general-purpose plugins (custom auth, custom logging, custom
+metrics, custom health probes).
 """
 
 from __future__ import annotations

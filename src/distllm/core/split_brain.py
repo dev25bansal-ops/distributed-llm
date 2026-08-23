@@ -74,7 +74,10 @@ class SplitBrainDetector:
         self._partition_peers: list[str] = []
 
         for pid in (peer_cluster_ids or []):
-            self._peers[pid] = PeerState(cluster_id=pid)
+            # A configured peer with no heartbeat yet is not alive: it must
+            # not vouch for quorum until its first heartbeat arrives, so a
+            # silent peer fails closed instead of masking a partition.
+            self._peers[pid] = PeerState(cluster_id=pid, is_alive=False)
 
     def heartbeat(self, cluster_id: str, timestamp: float | None = None) -> None:
         """Record a heartbeat from a peer cluster.

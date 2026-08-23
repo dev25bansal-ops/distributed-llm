@@ -102,9 +102,11 @@ class KVCache:
     blocks can be offloaded to CPU RAM and swapped back on access.
     """
 
-    def __init__(self, max_seq_len: int = 0):
+    def __init__(self, max_seq_len: int = 0, num_layers: int = 0, quantize: bool = False):
+        # num_layers/quantize are accepted for API compatibility with callers
+        # of the older richer constructor; layer count grows dynamically.
         self.cache: list[tuple[torch.Tensor, torch.Tensor]] = []
-        self.num_layers = 0
+        self.num_layers = num_layers
         self._max_seq_len = max_seq_len
         self._seq_lens: list[int] = []
         # Quantization state
@@ -122,7 +124,10 @@ class KVCache:
         self._offloaded: bool = False
         self._cpu_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None
         self._offload_device: str = "cpu"
-        self._lock = threading.Lock()
+        # RLock so nested lock acquisition works: CacheManager.release_kv_cache
+        # acquires this lock and then calls clear(), which acquires it again —
+        # a plain Lock would self-deadlock on the second acquire.
+        self._lock = threading.RLock()
 
     def init_cache(self, num_layers: int, batch_size: int, num_heads: int, head_dim: int, device: str = "cpu"):
         """Initialize empty KV cache for all layers with pre-allocated buffer."""
@@ -158,12 +163,24 @@ class KVCache:
             # Bulk compress() path: cache holds quantized tensors directly
             if self._quantized and layer_idx < len(self.cache):
                 k, v = self.cache[layer_idx]
-                # Dequantize FP8/E5M2: multiply by scale
-                if self._quant_fp8 and layer_idx < len(self._scale_k):
-                    k_deq = (k.float() * self._scale_k[layer_idx]).to(k.dtype)
-                    v_deq = (v.float() * self._scale_v[layer_idx]).to(v.dtype)
+                # Dequantize any scaled bulk path (fp8 / int8 / int4 /
+                # adaptive mixed): multiply by the stored per-layer scale.
+                # Integer dtypes are promoted to float32 so the product is
+                # not truncated back to integers.
+                if (
+                    layer_idx < len(self._scale_k)
+                    and self._scale_k[layer_idx] is not None
+                    and layer_idx < len(self._scale_v)
+                    and self._scale_v[layer_idx] is not None
+                ):
+                    out_dtype = k.dtype if k.is_floating_point() else torch.float32
+                    k_deq = k.float() * self._scale_k[layer_idx]
+                    v_deq = v.float() * self._scale_v[layer_idx]
+                    if out_dtype != torch.float32:
+                        k_deq = k_deq.to(out_dtype)
+                        v_deq = v_deq.to(out_dtype)
                     return k_deq, v_deq
-                return k, v  # Return raw quantized if no scale available
+                return k, v  # No scale stored (e.g. fp16 layers in an adaptive plan)
 
             if layer_idx < len(self.cache):
                 return self.cache[layer_idx]

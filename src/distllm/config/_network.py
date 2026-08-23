@@ -14,6 +14,55 @@ __all__ = [
 ]
 
 
+class CORSError(ValueError):
+    """Raised when a CORS origin configuration is unsafe (wildcard/deny-by-default)."""
+
+
+def resolve_cors_origins(
+    raw: str | None = None,
+    allow_credentials: bool = False,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Resolve the allowed CORS origins, deny-by-default.
+
+    Fail-closed behavior (M4):
+    * No allowlist configured -> empty list (all cross-origin requests denied).
+    * ``DISTLLM_CORS_ALLOWED_ORIGINS`` -> those origins, returned verbatim.
+    * A wildcard ``*`` is ALWAYS rejected (CORSError), regardless of
+      ``DISTLLM_CORS_ALLOW_ALL`` (the old escape hatch is ignored).
+    * A wildcard combined with credentials, or in production, is fatal.
+    * Non-URL origins are rejected.
+    """
+    env = env or {}
+    allowed_raw = raw
+    if allowed_raw is None:
+        allowed_raw = env.get("DISTLLM_CORS_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in allowed_raw.split(",") if o.strip()]
+
+    # A configured wildcard is never permitted.
+    if "*" in origins:
+        raise CORSError("Wildcard CORS origin '*' is not allowed")
+
+    for origin in origins:
+        if not (origin.startswith("http://") or origin.startswith("https://")
+                or origin.startswith("chrome-extension://")
+                or origin.startswith("moz-extension://")):
+            raise CORSError(f"CORS origin '{origin}' must be a valid URL (http(s) or extension scheme)")
+
+    if origins and "*" in origins:
+        raise CORSError("Wildcard CORS origin '*' is not allowed")
+
+    # A wildcard requested explicitly (even if not in the parsed list) is fatal.
+    requested_raw = raw or env.get("DISTLLM_CORS_ALLOWED_ORIGINS", "")
+    if requested_raw.strip() == "*":
+        if allow_credentials:
+            raise CORSError("Wildcard CORS origin with credentials is not allowed")
+        if env.get("DISTLLM_ENV") == "production":
+            raise CORSError("Wildcard CORS origin is not allowed in production")
+
+    return origins
+
+
 class CoordinatorSettings(BaseModel):
     """Coordinator configuration."""
     host: str = "localhost"

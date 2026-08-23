@@ -210,6 +210,37 @@ async def list_nodes():
     )
 
 
+@router.get(
+    "/cluster/status",
+    summary="Cluster status overview",
+    description="Aggregated cluster state: model, node counts by health/draining, and per-node summaries.",
+)
+async def cluster_status():
+    """Return an aggregated snapshot of the whole cluster."""
+    coord = _resolve_coordinator()
+
+    nodes_list = []
+    healthy_count = 0
+    draining_count = 0
+    for node_id, node in coord.nodes.items():
+        info = _format_node(node_id, node, coord)
+        nodes_list.append(info)
+        if info.healthy:
+            healthy_count += 1
+        if info.draining:
+            draining_count += 1
+
+    return {
+        "status": "healthy" if healthy_count > 0 else "degraded",
+        "model": getattr(coord, "model_name", ""),
+        "total_nodes": len(nodes_list),
+        "healthy_nodes": healthy_count,
+        "draining_nodes": draining_count,
+        "total_layers": getattr(coord, "total_layers", 0),
+        "nodes": [n.model_dump() for n in nodes_list],
+    }
+
+
 @router.post(
     "/nodes/{node_id}/drain",
     summary="Drain a node",

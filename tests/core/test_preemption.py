@@ -464,10 +464,11 @@ class TestPreemptionStats:
         """set_max_preempted updates the limit."""
         sched = BatchScheduler(max_batch_size=4)
         sched.set_max_preempted(10)
-        assert sched._max_preempted == 10
+        # The limit lives on the delegated PreemptionManager.
+        assert sched._preemption_mgr._max_preempted == 10
 
     def test_set_max_preempted_clamps_negative(self):
         """set_max_preempted clamps negative values to 0."""
         sched = BatchScheduler(max_batch_size=4)
         sched.set_max_preempted(-5)
-        assert sched._max_preempted == 0
+        assert sched._preemption_mgr._max_preempted == 0

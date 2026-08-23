@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 import pytest
+import torch
 
 # Mark as integration test — slow and requires real model loading
 pytestmark = [

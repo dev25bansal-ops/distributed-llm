@@ -30,6 +30,7 @@ import importlib.metadata
 import importlib.util
 import sys
 import threading
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,9 @@ if TYPE_CHECKING:
 
 _registry: dict[str, "BackendPlugin"] = {}
 """Global registry: backend_name -> BackendPlugin."""
+
+_plugin_by_class: dict[type, str] = {}
+"""Reverse mapping: adapter_class -> backend_name for O(1) plugin lookup."""
 
 
 # ── Plugin descriptor ──────────────────────────────────────────────────
@@ -136,13 +140,31 @@ class BackendRegistry:
         )
         with cls._lock:
             _registry[backend_name] = plugin
+            _plugin_by_class[adapter_class] = backend_name
         logger.debug(f"Registered backend '{backend_name}': {adapter_class.__name__}")
 
     @classmethod
     def unregister(cls, name: str) -> None:
         """Remove a backend from the registry."""
         with cls._lock:
-            _registry.pop(name, None)
+            plugin = _registry.pop(name, None)
+            if plugin:
+                _plugin_by_class.pop(plugin.adapter_class, None)
+
+    @classmethod
+    def reset(cls) -> None:
+        """Clear the registry and reset the singleton instance.
+
+        This is primarily useful in test teardown to prevent state
+        leaking between test cases.  After calling ``reset()`` the
+        registry is in the same state as before any backends were
+        registered — callers must re-run autodiscovery or re-register
+        backends before using the registry again.
+        """
+        with cls._lock:
+            _registry.clear()
+            _plugin_by_class.clear()
+            cls._instance = None
 
     # ── Query ──────────────────────────────────────────────────────────
 
@@ -243,16 +265,25 @@ class BackendRegistry:
         device_type: str | None = None,
         preferred_backend: str | None = None,
     ) -> BackendPlugin | None:
-        """Like ``select()`` but returns the full ``BackendPlugin``."""
+        """Like ``select()`` but returns the full ``BackendPlugin``.
+
+        .. deprecated::
+            Use ``select()`` to get the adapter class, then
+            ``get_plugin()`` by name if the plugin descriptor is needed.
+        """
+        warnings.warn(
+            "BackendRegistry.select_plugin() is deprecated; "
+            "use select() + get_plugin() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         adapter = cls.select(
             device_type=device_type, preferred_backend=preferred_backend
         )
         if adapter is None:
             return None
-        for p in _registry.values():
-            if p.adapter_class is adapter:
-                return p
-        return None
+        name = _plugin_by_class.get(adapter)
+        return _registry.get(name) if name else None
 
     # ── Entry-point discovery ───────────────────────────────────────────
 

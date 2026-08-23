@@ -45,7 +45,13 @@ def _load_module(rel_path: str):
         raise ImportError(f"Could not load {filepath}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[dotted] = mod
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        # F-007: drop a partial module on exec failure so it can't poison later
+        # real imports (e.g. half-loaded distllm.config.settings).
+        sys.modules.pop(dotted, None)
+        raise
     return mod
 
 

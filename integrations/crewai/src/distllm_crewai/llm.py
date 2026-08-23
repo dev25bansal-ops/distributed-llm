@@ -70,7 +70,6 @@ class DistLLMCrewLLM:
             max_tokens=_resolve_max_tokens(
                 kwargs.pop("max_tokens", None), self.max_tokens
             ),
-            stream=True,
         ):
             delta = chunk if isinstance(chunk, dict) else {}
             content = (
@@ -108,7 +107,6 @@ class DistLLMCrewLLM:
             max_tokens=_resolve_max_tokens(
                 kwargs.pop("max_tokens", None), self.max_tokens
             ),
-            stream=True,
         ):
             delta = chunk if isinstance(chunk, dict) else {}
             content = (

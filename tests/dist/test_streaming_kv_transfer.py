@@ -343,9 +343,13 @@ class TestFloat16Support:
     def test_roundtrip_bfloat16(self):
         s = StreamingKVTransfer(chunk_size_mb=0.001)
         original = torch.randn(64, 64, dtype=torch.bfloat16)
-        # Note: .numpy() does not support BFloat16; chunk_tensor will raise
-        with pytest.raises(TypeError, match="BFloat16"):
-            list(s.chunk_tensor(original, request_id="r", layer_idx=0))
+        # F-053 fix: chunk_tensor upcasts bf16 to float32 before .numpy(),
+        # so the round-trip succeeds exactly instead of raising TypeError.
+        chunks = list(s.chunk_tensor(original, request_id="r", layer_idx=0))
+        restored = s.reassemble_chunks(chunks)
+        assert restored is not None
+        assert restored.dtype == torch.bfloat16
+        assert torch.equal(restored, original)
 
     def test_chunk_dtype_string_float16(self):
         s = StreamingKVTransfer()

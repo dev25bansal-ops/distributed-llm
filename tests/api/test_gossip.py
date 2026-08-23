@@ -1,5 +1,6 @@
 """Gossip API route tests: POST /api/v1/gossip/exchange, /api/v1/gossip/fetch."""
 
+import secrets
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,18 +8,23 @@ from fastapi.testclient import TestClient
 
 from distllm.api.api_state import g
 from distllm.api.server import app
+from distllm.core.api_key_store import reset_api_key_store
+
+_TEST_API_KEY = secrets.token_hex(32)
 
 
 @pytest.fixture(autouse=True)
-def _disable_auth(monkeypatch):
-    monkeypatch.setenv("DISABLE_AUTH", "1")
-    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
-    monkeypatch.delenv("API_KEY", raising=False)
+def _setup_auth(monkeypatch):
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    monkeypatch.setenv("API_KEY", _TEST_API_KEY)
+    reset_api_key_store()
 
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    c = TestClient(app)
+    c.headers["Authorization"] = f"Bearer {_TEST_API_KEY}"
+    return c
 
 
 @pytest.fixture
@@ -52,9 +58,10 @@ class TestExchangeGossip:
     def test_exchange_success(self, coord, client):
         proto = MagicMock()
         proto.advertise.return_value = {"node_id": "local", "entries": 5}
+        proto.verify_message.return_value = True
         coord._gossip_protocol = proto
 
-        resp = client.post("/api/v1/gossip/exchange", json={"node_id": "peer-1"})
+        resp = client.post("/api/v1/gossip/exchange", json={"node_id": "peer-1", "_hmac": "validhmac"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["node_id"] == "local"
@@ -72,14 +79,14 @@ class TestExchangeGossip:
         )
         assert resp.status_code == 403
 
-    def test_exchange_unsigned_peer_accepted(self, coord, client):
+    def test_exchange_unsigned_peer_rejected(self, coord, client):
+        """Unsigned messages are now rejected with 403 (HMAC required)."""
         proto = MagicMock()
         proto.advertise.return_value = {"node_id": "local"}
         coord._gossip_protocol = proto
 
         resp = client.post("/api/v1/gossip/exchange", json={"node_id": "peer-1"})
-        assert resp.status_code == 200
-        assert resp.json()["node_id"] == "local"
+        assert resp.status_code == 403
 
 
 class TestFetchGossip:

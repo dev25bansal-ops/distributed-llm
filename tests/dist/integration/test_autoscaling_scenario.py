@@ -28,7 +28,10 @@ NUM_CONCURRENT = 20
 
 @pytest.fixture(scope="module")
 def client() -> httpx.Client:
-    return httpx.Client(timeout=REQUEST_TIMEOUT)
+    """Authenticated client: live servers always require an API key."""
+    api_key = os.environ.get("TEST_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    return httpx.Client(timeout=REQUEST_TIMEOUT, headers=headers)
 
 
 class TestAutoScaling:
@@ -37,6 +40,10 @@ class TestAutoScaling:
     @pytest.mark.timeout(120)
     def test_burst_load(self, client: httpx.Client):
         """Send NUM_CONCURRENT requests in parallel and wait for all to complete."""
+        try:
+            resp = client.get(f"{COORDINATOR_URL}/v1/health")
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         results: list[dict[str, Any]] = []
         errors: list[Exception] = []
         lock = threading.Lock()
@@ -75,5 +82,8 @@ class TestAutoScaling:
     @pytest.mark.timeout(30)
     def test_cluster_healthy_after_load(self, client: httpx.Client):
         """Cluster should be healthy after burst load."""
-        resp = client.get(f"{COORDINATOR_URL}/v1/health")
+        try:
+            resp = client.get(f"{COORDINATOR_URL}/v1/health")
+        except httpx.ConnectError:
+            pytest.skip("Coordinator server not available")
         assert resp.status_code == 200

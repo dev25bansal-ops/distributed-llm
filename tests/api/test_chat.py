@@ -27,7 +27,6 @@ from tests.api.test_chat_basic import (  # noqa: F401
     TestChatStopSequences,
     TestChatTemperatureBounds,
     TestChatTopPBounds,
-    disable_auth,
     make_mock_coordinator,
 )
 from tests.api.test_chat_streaming import TestChatStreaming  # noqa: F401

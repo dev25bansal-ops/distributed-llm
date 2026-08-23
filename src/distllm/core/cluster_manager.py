@@ -102,14 +102,32 @@ class ClusterManager:
         if total_layers:
             self._pipeline.total_layers = total_layers
         if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self._model_name,
-                trust_remote_code=self._trust_remote_code,
-                revision=self.model_revision,
-            )
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self._model_name,
+                    trust_remote_code=self._trust_remote_code,
+                    revision=self.model_revision,
+                )
+            except Exception as exc:
+                # Node registration must not require network/HF access —
+                # the operator sets coord.tokenizer explicitly (or a peer
+                # provides weights) when the hub is unavailable.
+                logger.warning(
+                    f"Tokenizer load failed for '{self._model_name}' "
+                    f"during node registration ({exc}); continuing without it"
+                )
         if self.model_info is None:
-            self.model_info = get_model_info(self._model_name, self._trust_remote_code)
-            if total_layers is None:
+            try:
+                self.model_info = get_model_info(self._model_name, self._trust_remote_code)
+            except Exception as exc:
+                # Model metadata is optional at registration time — the hub
+                # may be unreachable and the model uncached.  The operator
+                # (or weight pull) supplies layer counts explicitly.
+                logger.warning(
+                    f"Model info unavailable for '{self._model_name}' "
+                    f"during node registration ({exc})"
+                )
+            if total_layers is None and self.model_info:
                 self.total_layers = self.model_info["num_layers"]
                 self._pipeline.total_layers = self.total_layers
 

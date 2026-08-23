@@ -1,6 +1,7 @@
 """Adapter (LoRA) loading via adapter parameter tests."""
 
 import os
+import secrets
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from distllm.api.api_state import g
+from distllm.core.api_key_store import reset_api_key_store
 from distllm.api.server import app
 
 
@@ -15,11 +17,20 @@ from distllm.api.server import app
 # Shared helpers (duplicated so each file is self-contained)
 # ---------------------------------------------------------------------------
 
-def disable_auth():
+def _make_client():
+    test_api_key = secrets.token_urlsafe(32)
+    os.environ.pop("API_KEY_WAS_SET", None)
+    os.environ["API_KEY"] = test_api_key
+    reset_api_key_store()
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
+    return client
+
+
+def _cleanup_auth():
     os.environ.pop("API_KEY", None)
     os.environ.pop("API_KEY_WAS_SET", None)
-    os.environ["DISABLE_AUTH"] = "1"
-    os.environ["DISTLLM_DEV_MODE"] = "1"
+    reset_api_key_store()
 
 
 def make_mock_coordinator():
@@ -62,7 +73,9 @@ def make_mock_coordinator():
     coord.list_models.return_value = ["test-model"]
     coord._vlm_pipeline = None
     coord._spec_decoder = None
+    coord._model_router = None
     coord._shutting_down = False
+    coord.tokenizer.chat_template = None
     return coord
 
 
@@ -77,20 +90,19 @@ class TestChatAdapter:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         coord.adapter_manager = MagicMock()
         coord.adapter_manager.list_adapters.return_value = [self.VALID_ADAPTER, "other-lora"]
         original = g.coordinator
         g.coordinator = coord
         self._coord = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_adapter_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -102,7 +114,7 @@ class TestChatAdapter:
         assert resp.status_code == 200
 
     def test_invalid_adapter_returns_400(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -114,7 +126,7 @@ class TestChatAdapter:
         assert resp.status_code == 400
 
     def test_invalid_adapter_error_message(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -131,8 +143,9 @@ class TestChatAdapter:
         coord.adapter_manager = None
         original = g.coordinator
         g.coordinator = coord
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/chat/completions",
                 json={
                     "model": "distributed-llm",
@@ -146,7 +159,7 @@ class TestChatAdapter:
             g.coordinator = original
 
     def test_adapter_no_adapter_provided_still_works(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",

@@ -51,7 +51,7 @@ class TokenGenerator:
             if min_tokens_to_keep > 0:
                 sorted_indices_to_remove[..., -min_tokens_to_keep:] = False
             indices_to_remove = sorted_indices_to_remove.scatter(
-                1, sorted_indices, sorted_indices_to_remove
+                -1, sorted_indices, sorted_indices_to_remove
             )
             logits[indices_to_remove] = float('-inf')
 

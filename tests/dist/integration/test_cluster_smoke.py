@@ -30,25 +30,41 @@ def _url(path: str) -> str:
 
 @pytest.fixture(scope="session")
 def client() -> httpx.Client:
-    return httpx.Client(timeout=REQUEST_TIMEOUT)
+    """Authenticated client: live servers always require an API key."""
+    api_key = os.environ.get("TEST_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    return httpx.Client(timeout=REQUEST_TIMEOUT, headers=headers)
 
 
 # ── Health ────────────────────────────────────────────────────────────
 
 
+def _check_server() -> None:
+    """Skip test if the coordinator server is not reachable."""
+    try:
+        resp = httpx.get(_url("/v1/health"), timeout=5.0)
+        resp.raise_for_status()
+    except (httpx.ConnectError, httpx.TimeoutException):
+        pytest.skip("Coordinator server not available")
+
+
 class TestHealth:
     def test_health_endpoint(self, client: httpx.Client):
+        _check_server()
         resp = client.get(_url("/v1/health"))
         assert resp.status_code == 200
         data = resp.json()
         assert "status" in data
-        assert data["status"] in ("ok", "degraded", "starting")
+        assert data["status"] in ("ok", "healthy", "degraded", "starting")
 
     def test_readiness(self, client: httpx.Client):
+        _check_server()
         resp = client.get(_url("/v1/health/readiness"))
         assert resp.status_code in (200, 503)
         if resp.status_code == 200:
-            assert resp.json().get("ready") is True
+            body = resp.json()
+            # Live server returns {"status": "ready"}.
+            assert body.get("status") == "ready" or body.get("ready") is True
 
 
 # ── Chat completions ──────────────────────────────────────────────────
@@ -57,6 +73,7 @@ class TestHealth:
 class TestChatCompletions:
     def test_simple_chat(self, client: httpx.Client):
         """Basic chat completion without streaming."""
+        _check_server()
         resp = client.post(
             _url("/v1/chat/completions"),
             json={
@@ -76,6 +93,7 @@ class TestChatCompletions:
 
     def test_streaming_chat(self, client: httpx.Client):
         """Chat completion with SSE streaming."""
+        _check_server()
         resp = client.post(
             _url("/v1/chat/completions"),
             json={
@@ -96,6 +114,7 @@ class TestChatCompletions:
     @pytest.mark.timeout(60)
     def test_longer_generation(self, client: httpx.Client):
         """Generate enough tokens to exercise the pipeline across both workers."""
+        _check_server()
         resp = client.post(
             _url("/v1/chat/completions"),
             json={
@@ -118,6 +137,7 @@ class TestChatCompletions:
 
 class TestCompletions:
     def test_simple_completion(self, client: httpx.Client):
+        _check_server()
         resp = client.post(
             _url("/v1/completions"),
             json={
@@ -136,11 +156,13 @@ class TestCompletions:
 
 class TestClusterState:
     def test_list_nodes(self, client: httpx.Client):
+        _check_server()
         resp = client.get(_url("/admin/v1/nodes"))
         # May be 401 if auth required, but should respond.
         assert resp.status_code in (200, 401, 403)
 
     def test_cluster_status(self, client: httpx.Client):
+        _check_server()
         resp = client.get(_url("/admin/v1/cluster/status"))
         assert resp.status_code in (200, 401, 403)
         if resp.status_code == 200:
@@ -155,6 +177,7 @@ class TestConcurrentLoad:
     @pytest.mark.timeout(120)
     def test_concurrent_requests(self, client: httpx.Client):
         """Send multiple requests concurrently and verify all complete."""
+        _check_server()
         import concurrent.futures
 
         def _send(prompt: str) -> tuple[int, dict[str, Any]]:
@@ -196,6 +219,7 @@ class TestDegradation:
         (that would require Docker API access).  It verifies the system
         doesn't crash under load.
         """
+        _check_server()
         for _ in range(3):
             resp = client.post(
                 _url("/v1/chat/completions"),

@@ -12,9 +12,42 @@ Usage:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import torch
+
+
+class BackendState(Enum):
+    """Lifecycle state of a backend adapter.
+
+    Adapters start ``UNINITIALIZED``, move to ``LOADING`` while
+    ``load_model()`` runs, then ``READY`` on success or ``ERROR`` on
+    failure, and ``SHUTDOWN`` once ``shutdown()`` has run.
+    """
+
+    UNINITIALIZED = "uninitialized"
+    LOADING = "loading"
+    READY = "ready"
+    ERROR = "error"
+    SHUTDOWN = "shutdown"
+
+
+@dataclass(frozen=True)
+class ForwardInput:
+    """Bundle of all parameters for a single forward pass.
+
+    Using this dataclass reduces the parameter count of ``forward()`` and
+    makes it easier to store, log, or replay requests.  It is fully
+    backward-compatible — the existing ``forward()`` signature still works.
+    """
+
+    hidden_states: torch.Tensor | None = None
+    attention_mask: torch.Tensor | None = None
+    position_ids: torch.Tensor | None = None
+    past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None
+    input_ids: torch.Tensor | None = None
 
 
 class BackendAdapter(ABC):
@@ -37,6 +70,17 @@ class BackendAdapter(ABC):
         Must be called once before any call to ``forward()``.
         """
 
+    # NOTE: ``forward()`` currently takes 5 optional parameters, making it
+    # a fat interface (ISP violation).  It is kept as-is for backward
+    # compatibility, but new code should consider splitting it into narrower
+    # sub-interfaces:
+    #
+    #   ``EncoderForward`` — pure encoder (hidden_states + mask)
+    #   ``DecoderForward`` — decoder (hidden_states + mask + kv-cache)
+    #   ``PreFillForward`` — first-token prefill (input_ids + position_ids)
+    #
+    # Alternatively, callers can bundle parameters via the ``ForwardInput``
+    # dataclass defined at module level.
     @abstractmethod
     def forward(
         self,
@@ -113,6 +157,22 @@ class BackendAdapter(ABC):
         """
 
     # ── Optional health / load methods ──────────────────────────────────
+
+    @classmethod
+    def probe_health(cls) -> bool:
+        """Class-level health probe: report whether the adapter itself is
+        usable without constructing an instance.
+
+        Distinct from ``is_available()`` (which checks the third-party
+        runtime): a probe answers "is this adapter class coherent and
+        importable" — which it is, by definition, when this method runs.
+        Subclasses may override with a real health check.  Fail-closed:
+        any error returns ``False``.
+        """
+        try:
+            return True
+        except Exception:
+            return False
 
     def health_check(self) -> bool:
         """Return ``True`` if the backend is healthy and ready to serve.

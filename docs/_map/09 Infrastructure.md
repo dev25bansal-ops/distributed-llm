@@ -3,43 +3,58 @@ tags:
   - infra
   - ci
   - docker
+  - k8s
+  - proto
+aliases:
+  - Infrastructure
+  - Infrastructure & CI
 ---
-# Infrastructure
+# Infrastructure — CI/CD, deployment, packaging, gRPC contract & tooling
 
-**Location:** Root + `deploy/` + `benchmarks/` + `docs/` + `.github/` — **~0.5 MB**
+**Covers:** root infra (`pyproject.toml`, `Makefile`, Dockerfiles, docker-compose, devcontainer, install scripts), `deploy/` (k8s/helm/kustomize/operator/grafana/ray), `.github/workflows/` (23), `proto/`, and the operators' `benchmarks/` + `scripts/`.
 
-## CI Pipeline (15 jobs)
-```mermaid
-graph TD
-    lint --> test[test 4x matrix]
-    lint --> security-sast[bandit]
-    lint --> security-deps[pip-audit]
-    lint --> security-container[Trivy per PR]
-    test --> benchmark
-    test --> build-docker[3x CUDA + Trivy + SBOM]
-    test --> load-test[Locust + SLO gate]
-```
+> The operational surface: everything that builds, packages, ships, and reconciles DistLLM as running infrastructure rather than Python source.
 
-## Key Configs
-| File | Purpose |
-|------|---------|
-| `Dockerfile` | Main image (CUDA 12.8, multi-stage) |
-| `.github/workflows/ci.yml` | CI pipeline |
-| `.github/workflows/release.yml` | Release pipeline |
-| `.github/workflows/nightly-benchmark.yml` | Nightly benchmarks (NEW) |
-| `.github/workflows/nightly-loadtest.yml` | Nightly load tests (NEW) |
-| `.github/dependabot.yml` | Auto-updates (NEW) |
-| `.pre-commit-config.yaml` | Pre-commit hooks w/ pip-audit |
-| `benchmarks/Dockerfile` | Benchmark environment (NEW) |
-| `docs/BENCHMARKS.md` | Benchmark methodology (NEW) |
+## Packaging & build (root)
 
-## Coverage: 80% (unified across CI, release, pyproject.toml)
+| file | LOC | purpose |
+|------|-----|---------|
+| `pyproject.toml` | 289 | setuptools src-layout, 30+ extras, console scripts (`distllm`, `distllm-coordinator`, `distllm-api`, `distllm-node`), ruff/black/mypy/pytest/coverage config |
+| `Makefile` | 196 | install/lint/format/test/bench/cov/proto-gen/docker/helm/kustomize/load-test/chaos/security/tauri |
+| `install.sh` | 200 | CUDA-aware one-command bootstrap (driver detect, nvidia-container-toolkit, docker build, compose, health wait) |
+| `runner.sh` | 16 | manual dev scratch runner (not CI-referenced) |
+| `Dockerfile` (+`cuda12.1`,`cuda12.6`) | 107/63/63 | multi-stage CUDA builds (variants are aliases) |
+| `docker-compose.yml`/`.gpu.yml`/`.pro.yml` | 58/145/243 | baseline / scalable-worker GPU / production (LB + monitoring + auth profiles) |
+| `.devcontainer/` | 66 | VS Code dev container (nvidia dd-in-ddc) |
 
-## Recent Work
-- ✅ Dependabot for pip + GitHub Actions
-- ✅ Nightly benchmark + load test pipelines
-- ✅ Container security scanning on every PR
-- ✅ Coverage thresholds unified at 80%
-- ✅ Trivy pinned to `0.29.0`
-- ✅ pip-audit in pre-commit
-- ✅ Auth bypass fuzz test (81 parametrized cases)
+## CI/CD — `.github/workflows/` (23 workflows + reusable)
+`ci.yml` (main: ruff/mypy lint, test matrix, benchmark gates) · `release.yml` · `integration-test.yml` · `gpu-tests.yml` (self-hosted) · `load-testing.yml` · `memory-profile.yml` · `chaos-engineering.yml` · `nightly-{benchmark,loadtest,integration}.yml` · `quality-gates.yml` · `coverage/bandit/secrets` ratchets · `helm-publish.yml` · `deploy-website.yml` + `reusable-{ci,docker,deploy,release}.yml`.
+- Pre-commit hooks (bandit + pip-audit), Dependabot.
+- **Latest work:** E11 SLA tiers, `dist/` audit, scheduling wiring.
+
+## `deploy/` — Kubernetes & observability manifests
+| Area | Files | Purpose |
+|------|-------|---------|
+| `crds/` | `distllm.zeroroute.ai_crds.yaml` | CRD for `DistributedLLMCluster` |
+| `helm/distllm-operator/` | Chart + CRDs + coordinator/worker/operator templates | run via Helm |
+| `inference/` | coordinator deployment+PDB+network-policy+PVC, worker StatefulSet | raw manifests |
+| `kustomize/{base,dev,staging,production}/` | base + environment patches + autoscaling | matrix overlay |
+| `operator/controller.py` | 213 | **SCAFFOLD** polling k8s controller (reconcile is `logger.info` only) |
+| `grafana/` `prometheus/` `loki/` | dashboards, alert rules, scrape/log configs | observability |
+| `ray/` | autoscaler, serve_config, ci-workflow | Ray deployment path |
+| `scripts/` | `backup.sh`, `setup-cron.sh` | ops |
+
+## `proto/` — gRPC contract
+- `node.proto` (167) — `NodeService`/`DraftModelService`: ForwardPass, HealthCheck, TransferWeights, `TensorProto`/`KVCacheProto`. Codegen via `make proto` → `src/distllm/communication` (`node_pb2*`).
+
+## Operators' tooling
+- **`benchmarks/`** (`run.py` 887, `cluster_benchmark.py`, `scaling_tests.py`, `competitive_benchmark.py`, `run_competitive.py`, `compare.py` vs vLLM/SGLang, `cost_routing_benchmark.py`, `ray_vs_grpc.py`, `regression_check.py`, `run_cpu_benchmarks.py` + `regression_config.json`/`baseline.json` + saved `results/*.json` + `HARDWARE_GUIDE.md`).
+- **`scripts/`** — `install.sh`, Windows `.bat` launchers, `security_audit.py`/`security_scan.sh`, `bench_sla.py` (M13), `sla_tiers.py` (E11), plus `scripts/ci/` ratchet gates: `bandit_ratchet.py`, `coverage_ratchet.py`, `flaky_test_collector.py`/`flaky_test_ratchet.py`, `mutation_floor.py`, `run_correctness_cert.py`, `check_secrets_baseline.py` — each with a committed baseline JSON.
+
+## Notes / dead code
+- `deploy/operator/controller.py` is a **stub** (no k8s API calls — `_list_crs` returns empty unless `DISTLLM_CR_SAMPLE` set).
+- Docker/kustomize/helm all target the same `DistributedLLMCluster` CR — parallel, non-shared paths.
+- The K8s operator is effectively uncovered by tests.
+
+## Tests
+`tests/deploy/` (`test_gitops`, `test_helm`, `test_kustomize`, `test_operator`, `test_observability`), `tests/chaos/`, `tests/integration/`, `tests/benchmark/`, `tests/load/`, `tests/profiling/`; workflow-driven.

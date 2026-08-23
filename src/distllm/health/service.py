@@ -145,12 +145,15 @@ class HealthCheckService:
             record.memory_used = data.get("memory_used", 0)
             record.memory_total = data.get("memory_total", 0)
 
+        # Capture state BEFORE evaluate: evaluate() mutates record.state in
+        # place, so comparing record.state != new_state *after* the call is
+        # always False and the OFFLINE/self-healing branch is unreachable.
+        old_state = record.state
         new_state = self._failover.evaluate(record, success, latency_ms)
-        if record.state != new_state:
+        if old_state != new_state:
             logger.info(
-                f"Node {node_id} state changed: {record.state.value} -> {new_state.value}"
+                f"Node {node_id} state changed: {old_state.value} -> {new_state.value}"
             )
-            old_state = record.state
             record.state = new_state
 
             # Trigger self-healing when a node goes OFFLINE

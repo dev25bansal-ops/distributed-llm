@@ -333,26 +333,26 @@ class ModelPartitioner:
                     torch_dtype, trust=trust,
                 )
 
-            # Step 2: download only the needed shard files.
-            #         ``download_layer_subset`` ensures the index + shards
-            #         are in the HuggingFace shared cache.
-            hub.download_layer_subset(
-                self.model_name, start_layer, end_layer,
-                revision=self.model_revision,
+            # Step 2: download only the needed shard files into the
+            #         layer-scoped ModelHub cache directory; the returned
+            #         path contains the index + every needed shard.
+            layer_dir = os.fspath(
+                hub.download_layer_subset(
+                    self.model_name, start_layer, end_layer,
+                    revision=self.model_revision,
+                )
             )
 
-            # Step 3: resolve downloaded shard paths via hf_hub_download
-            #         (returns cached path if already downloaded).
-            from huggingface_hub import hf_hub_download
-
+            # Step 3: resolve shard paths inside the returned layer dir.
             shard_paths: dict[str, str] = {}
             for shard in sorted(needed_shards):
                 if shard == "model.safetensors.index.json":
                     continue
-                path = hf_hub_download(
-                    self.model_name, shard,
-                    revision=self.model_revision,
-                )
+                path = os.path.join(layer_dir, shard)
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(
+                        f"Shard {shard} missing from layer dir {layer_dir}"
+                    )
                 shard_paths[shard] = path
 
             # Step 4: create model skeleton on meta device (no memory allocated)

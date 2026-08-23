@@ -211,10 +211,7 @@ class DistLLMChat(BaseChatModel):
 
         # 3.1.4 — Callback enrichment
         if run_manager and result.generations:
-            run_manager.on_llm_end(
-                result,
-                response=result.generations[0].message,
-            )
+            run_manager.on_llm_end(result)
 
         return result
 
@@ -282,7 +279,7 @@ class DistLLMChat(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         payload = self._build_payload(messages, stop, kwargs)
-        for chunk in self._client.chat_completions_stream(**payload, stream=True):
+        for chunk in self._client.chat_completions_stream(**payload):
             delta = chunk if isinstance(chunk, dict) else {}
             content = (
                 delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
@@ -315,9 +312,7 @@ class DistLLMChat(BaseChatModel):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         payload = self._build_payload(messages, stop, kwargs)
-        async for chunk in self._async_client.chat_completions_stream(
-            **payload, stream=True
-        ):
+        async for chunk in self._async_client.chat_completions_stream(**payload):
             delta = chunk if isinstance(chunk, dict) else {}
             content = (
                 delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
@@ -478,7 +473,12 @@ class DistLLMChat(BaseChatModel):
             if isinstance(choice, dict):
                 msg_data = choice.get("message", choice)
             else:
-                msg_data = choice
+                # Typed SDK object (e.g. ChatChoice): unwrap its .message
+                msg_obj = getattr(choice, "message", None)
+                msg_data = {
+                    "role": getattr(msg_obj, "role", "assistant"),
+                    "content": getattr(msg_obj, "content", "") or "",
+                }
             message = _convert_dict_to_message(
                 msg_data
                 if isinstance(msg_data, dict)

@@ -2,6 +2,7 @@
 
 import json as _json
 import os
+import secrets
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from distllm.api.api_state import g
+from distllm.core.api_key_store import reset_api_key_store
 from distllm.api.server import app
 
 
@@ -16,11 +18,21 @@ from distllm.api.server import app
 # Shared helpers (duplicated so each file is self-contained)
 # ---------------------------------------------------------------------------
 
-def disable_auth():
+def _make_client():
+    """Create a TestClient with API key auth pre-configured."""
+    test_api_key = secrets.token_urlsafe(32)
+    os.environ.pop("API_KEY_WAS_SET", None)
+    os.environ["API_KEY"] = test_api_key
+    reset_api_key_store()
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {test_api_key}"
+    return client
+
+
+def _cleanup_auth():
     os.environ.pop("API_KEY", None)
     os.environ.pop("API_KEY_WAS_SET", None)
-    os.environ["DISABLE_AUTH"] = "1"
-    os.environ["DISTLLM_DEV_MODE"] = "1"
+    reset_api_key_store()
 
 
 def make_mock_coordinator():
@@ -63,7 +75,10 @@ def make_mock_coordinator():
     coord.list_models.return_value = ["test-model"]
     coord._vlm_pipeline = None
     coord._spec_decoder = None
+    coord._model_router = None
     coord._shutting_down = False
+    # Ensure TemplateEngine falls through to naive join fallback
+    coord.tokenizer.chat_template = None
     return coord
 
 
@@ -76,24 +91,23 @@ class TestChatBasic:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_single_user_message_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.status_code == 200
 
     def test_response_has_choices(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
@@ -102,14 +116,14 @@ class TestChatBasic:
         assert len(data["choices"]) >= 1
 
     def test_response_object_type(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.json()["object"] == "chat.completion"
 
     def test_choice_has_message(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
@@ -118,35 +132,35 @@ class TestChatBasic:
         assert "content" in choice["message"]
 
     def test_response_has_id(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.json()["id"].startswith("chatcmpl-")
 
     def test_response_has_created_timestamp(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.json()["created"] > 0
 
     def test_response_model_matches_request(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.json()["model"] == "distributed-llm"
 
     def test_finish_reason_present(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.json()["choices"][0]["finish_reason"] is not None
 
     def test_system_message_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -160,7 +174,7 @@ class TestChatBasic:
         assert resp.status_code == 200
 
     def test_multi_turn_conversation(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -175,7 +189,7 @@ class TestChatBasic:
         assert resp.status_code == 200
 
     def test_temperature_within_range(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -187,7 +201,7 @@ class TestChatBasic:
         assert resp.status_code == 200
 
     def test_temperature_at_max(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -199,7 +213,7 @@ class TestChatBasic:
         assert resp.status_code == 200
 
     def test_temperature_at_min(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -211,7 +225,7 @@ class TestChatBasic:
         assert resp.status_code == 200
 
     def test_top_p_within_range(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -223,26 +237,28 @@ class TestChatBasic:
         assert resp.status_code == 200
 
     def test_max_tokens_respected(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 5},
         )
         assert resp.status_code == 200
 
     def test_min_max_tokens(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 1},
         )
         assert resp.status_code == 200
 
     def test_without_coordinator_returns_503(self):
+        # Use a distinct request body to avoid dedup cache collision
         original = g.coordinator
         g.coordinator = None
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/chat/completions",
-                json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
+                json={"model": "distributed-llm", "messages": [{"role": "user", "content": "503 test - no coordinator"}], "max_tokens": 10},
             )
             assert resp.status_code == 503
         finally:
@@ -254,53 +270,55 @@ class TestChatMultiTurn:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
         self._coord = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_history_reflected_in_prompt(self):
-        resp = TestClient(app).post(
+        # Use unique message to avoid dedup cache hit
+        messages = [
+            {"role": "user", "content": "Hello from test_history"},
+            {"role": "assistant", "content": "Hi there!"},
+            {"role": "user", "content": "What do you think?"},
+        ]
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
-                "messages": [
-                    {"role": "user", "content": "Hi"},
-                    {"role": "assistant", "content": "Hello!"},
-                    {"role": "user", "content": "How are you?"},
-                ],
+                "messages": messages,
                 "max_tokens": 10,
             },
         )
         assert resp.status_code == 200
         prompt_arg = self._coord.generate.call_args[0][0]
-        assert "Hi" in prompt_arg
-        assert "Hello!" in prompt_arg
-        assert "How are you?" in prompt_arg
-        assert prompt_arg.index("Hi") < prompt_arg.index("Hello!")
-        assert prompt_arg.index("Hello!") < prompt_arg.index("How are you?")
+        assert "Hello from test_history" in prompt_arg
+        assert "Hi there!" in prompt_arg
+        assert "What do you think?" in prompt_arg
+        assert prompt_arg.index("Hello from test_history") < prompt_arg.index("Hi there!")
+        assert prompt_arg.index("Hi there!") < prompt_arg.index("What do you think?")
 
     def test_system_prompt_prepended(self):
-        resp = TestClient(app).post(
+        # Use unique message to avoid dedup cache hit
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
                 "messages": [
-                    {"role": "system", "content": "Be concise."},
-                    {"role": "user", "content": "Hello"},
+                    {"role": "system", "content": "Be very concise."},
+                    {"role": "user", "content": "System prompt test"},
                 ],
                 "max_tokens": 10,
             },
         )
         assert resp.status_code == 200
         prompt_arg = self._coord.generate.call_args[0][0]
-        assert "Be concise." in prompt_arg
-        assert prompt_arg.index("Be concise.") < prompt_arg.index("Hello")
+        assert "Be very concise." in prompt_arg
+        assert prompt_arg.index("Be very concise.") < prompt_arg.index("System prompt test")
 
 
 class TestChatResponseFormat:
@@ -308,17 +326,16 @@ class TestChatResponseFormat:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
-        object.__setattr__(g, '_coordinator', coord)
+        g.coordinator = coord
         self._coord = coord
+        self.client = _make_client()
         yield
-        object.__setattr__(g, '_coordinator', None)
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        g.coordinator = None
+        _cleanup_auth()
 
     def test_adapter_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -330,7 +347,7 @@ class TestChatResponseFormat:
         assert resp.status_code == 200
 
     def test_json_object_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -342,7 +359,7 @@ class TestChatResponseFormat:
         assert resp.status_code == 200
 
     def test_json_object_finish_reason(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -354,7 +371,7 @@ class TestChatResponseFormat:
         assert resp.json()["choices"][0]["finish_reason"] == "stop"
 
     def test_json_schema_returns_200(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",
@@ -376,8 +393,9 @@ class TestChatResponseFormat:
         coord.generate.return_value = '{"name": "Alice", "age": 30}'
         original = g.coordinator
         g.coordinator = coord
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/chat/completions",
                 json={
                     "model": "distributed-llm",
@@ -404,26 +422,24 @@ class TestChatResponseFormat:
         finally:
             g.coordinator = original
 
-
 class TestChatPriority:
     """Priority scheduling via the priority parameter (0=critical, 1=high, 2=normal, 3=low)."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def _req(self, priority=None):
         body = {"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10}
         if priority is not None:
             body["priority"] = priority
-        return TestClient(app).post("/v1/chat/completions", json=body)
+        return self.client.post("/v1/chat/completions", json=body)
 
     def test_priority_critical(self):
         resp = self._req(priority=0)
@@ -455,17 +471,16 @@ class TestChatMaxTokens:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def _req(self, max_tokens):
-        return TestClient(app).post(
+        return self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": max_tokens},
         )
@@ -494,33 +509,32 @@ class TestChatMaxTokens:
 
 
 class TestChatHybridRouting:
-    """Hybrid model routing via coordinator._chat_router."""
+    """Hybrid model routing via coordinator._model_router."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
-        chat_router = MagicMock()
-        chat_router.list_hybrid_models.return_value = ["hybrid-model"]
-        chat_router.resolve.return_value = "target-model"
-        coord._chat_router = chat_router
+        model_router = MagicMock()
+        model_router.is_hybrid_model.side_effect = lambda m: m == "hybrid-model"
+        model_router.resolve.return_value = "target-model"
+        coord._model_router = model_router
         coord.list_models.return_value = ["test-model", "target-model"]
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_hybrid_model_routes_to_target(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "hybrid-model", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
         assert resp.status_code == 200
 
     def test_non_hybrid_model_uses_default(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
@@ -530,8 +544,9 @@ class TestChatHybridRouting:
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        client = _make_client()
         try:
-            resp = TestClient(app).post(
+            resp = client.post(
                 "/v1/chat/completions",
                 json={"model": "unknown-model", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
             )
@@ -545,17 +560,16 @@ class TestChatTemperatureBounds:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def _req(self, temperature):
-        return TestClient(app).post(
+        return self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "temperature": temperature, "max_tokens": 10},
         )
@@ -582,17 +596,16 @@ class TestChatTopPBounds:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def _req(self, top_p):
-        return TestClient(app).post(
+        return self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "top_p": top_p, "max_tokens": 10},
         )
@@ -619,38 +632,37 @@ class TestChatStopSequences:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_stop_list_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "stop": ["\n", "END"]},
         )
         assert resp.status_code == 200
 
     def test_single_stop_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "stop": ["END"]},
         )
         assert resp.status_code == 200
 
     def test_empty_stop_list_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "stop": []},
         )
         assert resp.status_code == 200
 
     def test_none_stop_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10},
         )
@@ -662,52 +674,51 @@ class TestChatLogprobs:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_logprobs_true_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "logprobs": True},
         )
         assert resp.status_code == 200
 
     def test_logprobs_false_accepted(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "logprobs": False},
         )
         assert resp.status_code == 200
 
     def test_top_logprobs_without_logprobs(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "top_logprobs": 5},
         )
         assert resp.status_code == 200
 
     def test_top_logprobs_with_logprobs(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "logprobs": True, "top_logprobs": 5},
         )
         assert resp.status_code == 200
 
     def test_top_logprobs_above_max_rejected(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "top_logprobs": 21},
         )
         assert resp.status_code == 422
 
     def test_top_logprobs_negative_rejected(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "top_logprobs": -1},
         )
@@ -719,20 +730,19 @@ class TestChatSeed:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def _req(self, overrides=None):
         body = {"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10}
         if overrides:
             body.update(overrides)
-        return TestClient(app).post("/v1/chat/completions", json=body)
+        return self.client.post("/v1/chat/completions", json=body)
 
     def test_seed_accepted(self):
         resp = self._req({"seed": 42})
@@ -756,8 +766,8 @@ class TestChatSeed:
 
     def test_seed_deterministic_same_output(self):
         body = {"model": "distributed-llm", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "seed": 42}
-        resp1 = TestClient(app).post("/v1/chat/completions", json=body)
-        resp2 = TestClient(app).post("/v1/chat/completions", json=body)
+        resp1 = self.client.post("/v1/chat/completions", json=body)
+        resp2 = self.client.post("/v1/chat/completions", json=body)
         assert resp1.json()["choices"][0]["message"]["content"] == resp2.json()["choices"][0]["message"]["content"]
 
 
@@ -766,31 +776,32 @@ class TestChatEmptyPrompt:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        disable_auth()
         coord = make_mock_coordinator()
         original = g.coordinator
         g.coordinator = coord
+        self.client = _make_client()
         yield
         g.coordinator = original
-        os.environ.pop("DISABLE_AUTH", None)
-        os.environ.pop("DISTLLM_DEV_MODE", None)
+        _cleanup_auth()
 
     def test_empty_string_content(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [{"role": "user", "content": ""}], "max_tokens": 10},
         )
         assert resp.status_code == 200
 
     def test_empty_messages_list_handled(self):
-        resp = TestClient(app).post(
+        # Empty messages are rejected at validation (min_length=1) —
+        # matches OpenAI-compatible behavior and test_input_validation.
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "messages": [], "max_tokens": 10},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
     def test_missing_messages_returns_422(self):
-        resp = TestClient(app).post(
+        resp = self.client.post(
             "/v1/chat/completions",
             json={"model": "distributed-llm", "max_tokens": 10},
         )

@@ -425,7 +425,7 @@ class ChatCompletionRequest(BaseModel):
     )
 
     model: str = Field(default="distributed-llm", description="Model identifier")
-    messages: list[ChatMessage] = Field(..., description="List of messages in the conversation")
+    messages: list[ChatMessage] = Field(..., min_length=1, description="List of messages in the conversation")
     temperature: float = Field(default=0.7, ge=0, le=2.0, description="Sampling temperature (0-2.0)")
     top_p: float = Field(default=0.9, ge=0, le=1.0, description="Nucleus sampling threshold (0-1)")
     top_k: int = Field(default=0, ge=0, description="Top-k sampling (0 = disabled)")
@@ -540,11 +540,10 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
     # Validate requested model against registry
     if hasattr(coord, 'list_models') and resolved_model not in ("distributed-llm", ""):
-        available = coord.list_models()
-        if resolved_model not in available:
+        if not isinstance(resolved_model, str) or resolved_model not in coord.list_models():
             raise HTTPException(
                 status_code=400,
-                detail=f"Model '{resolved_model}' not found. Available: {available}"
+                detail=f"Model '{resolved_model}' not found. Available: {coord.list_models()}"
             )
 
     # Switch adapter if requested (S-LoRA style: per-request routing)

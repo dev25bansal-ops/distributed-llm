@@ -7,7 +7,7 @@ import asyncio
 from loguru import logger
 import torch
 
-from distllm.backends.protocol import BackendAdapter
+from distllm.backends.protocol import BackendAdapter, BackendState
 from distllm.errors import ModelLoadError
 
 
@@ -58,10 +58,13 @@ class LlamacppNodeAdapter(BackendAdapter):
         self._llm = None
         self._tokenizer = None
         self._model = None
+        self.state = BackendState.UNINITIALIZED
 
     def load_model(self):
         """Initialize the llama.cpp model. Must be called before forward()."""
         from llama_cpp import Llama
+
+        self.state = BackendState.LOADING
 
         kwargs = dict(self._extra_kwargs)
         kwargs.setdefault("n_gpu_layers", self.n_gpu_layers)
@@ -86,8 +89,10 @@ class LlamacppNodeAdapter(BackendAdapter):
         except Exception as e:
             self._llm = None
             self._tokenizer = None
+            self.state = BackendState.ERROR
             logger.error(f"[llama.cpp] Failed to load model {self.model_path}: {e}")
             raise ModelLoadError(self.model_path, str(e)) from e
+        self.state = BackendState.READY
         logger.info(f"[llama.cpp] Model loaded: {self.model_path}")
 
     def forward(
@@ -107,6 +112,11 @@ class LlamacppNodeAdapter(BackendAdapter):
         Returns:
             (output_tensor, new_kv_cache) tuple.
         """
+        if self.state is not BackendState.READY:
+            raise RuntimeError(
+                "Cannot forward: model not loaded (state "
+                f"{self.state.value}). Call load_model() first."
+            )
         if input_ids is not None:
             return self._forward_input_ids(input_ids)
         if hidden_states is not None:
@@ -179,8 +189,11 @@ class LlamacppNodeAdapter(BackendAdapter):
         Returns:
             Generated text.
         """
-        if self._llm is None:
-            raise ModelLoadError("llamacpp", "llama.cpp not loaded. Call load_model() first.")
+        if self.state is not BackendState.READY:
+            raise RuntimeError(
+                "Cannot generate: model not loaded (state "
+                f"{self.state.value}). Call load_model() first."
+            )
 
         output = self._llm.create_completion(
             prompt=prompt,
@@ -228,6 +241,10 @@ class LlamacppNodeAdapter(BackendAdapter):
             except Exception:
                 pass
             logger.info("[llama.cpp] Engine shut down")
+        # Idempotent: a second shutdown (or shutdown before load) is a no-op
+        # except for the state transition.
+        if self.state is not BackendState.ERROR:
+            self.state = BackendState.SHUTDOWN
 
     @classmethod
     def display_name(cls) -> str:

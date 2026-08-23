@@ -14,14 +14,16 @@ import torch
 from distllm.dist import node_pb2_grpc
 from distllm.dist.node_client import (
     AsyncNodeClient,
+    ChannelPool,
     NodeClient,
-    _channel_pool,
+    channel_pool,
     create_async_node_client,
     create_node_client,
     forward_request,
     forward_request_async,
     request_layer_weights,
     request_layer_weights_stream,
+    reset_channel_pool,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,9 +34,9 @@ from distllm.dist.node_client import (
 @pytest.fixture(autouse=True)
 def _reset_channel_pool() -> None:
     """Clear the module-level channel pool for test isolation."""
-    _channel_pool.clear()
+    reset_channel_pool()
     yield
-    _channel_pool.clear()
+    reset_channel_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +111,12 @@ class TestNodeClient:
         channel = grpc.insecure_channel("localhost:50051")
         stub = node_pb2_grpc.NodeServiceStub(channel)
         target = "localhost:50051"
-        _channel_pool[target] = (channel, 2)
+        channel_pool.set(target, channel, 2)
         client = NodeClient(channel=channel, stub=stub, _target=target)
         client.close()
         # Pool entry should still exist but with decremented count
-        assert target in _channel_pool
-        assert _channel_pool[target][1] == 1
+        assert target in channel_pool
+        assert channel_pool.ref_count(target) == 1
         channel.close()
 
 
@@ -185,12 +187,12 @@ class TestCreateNodeClient:
             )
 
     def test_pool_not_modified_on_failure(self) -> None:
-        assert len(_channel_pool) == 0
+        assert len(channel_pool) == 0
         try:
             create_node_client("localhost", 1, timeout_s=0.05)
         except Exception:
             pass
-        assert len(_channel_pool) == 0
+        assert len(channel_pool) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -342,13 +344,13 @@ class TestForwardRequestAsync:
 class TestChannelPool:
     """Module-level gRPC channel pool invariants."""
 
-    def test_initial_state_is_empty_dict(self) -> None:
-        assert isinstance(_channel_pool, dict)
-        assert len(_channel_pool) == 0
+    def test_initial_state_is_empty(self) -> None:
+        assert isinstance(channel_pool, ChannelPool)
+        assert len(channel_pool) == 0
 
     def test_close_without_pool_entry_does_not_affect_pool(self) -> None:
         channel = grpc.insecure_channel("localhost:50051")
         stub = node_pb2_grpc.NodeServiceStub(channel)
         client = NodeClient(channel=channel, stub=stub)
         client.close()
-        assert len(_channel_pool) == 0
+        assert len(channel_pool) == 0

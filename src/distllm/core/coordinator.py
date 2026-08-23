@@ -27,9 +27,12 @@ from distllm.core.cache_manager import CacheManager
 from distllm.core.cluster_manager import ClusterManager
 from distllm.config.settings import NodeRole
 from distllm.core.coordinator_config import CoordinatorConfig
+from distllm.core.coordinator_config_wiring import CoordinatorConfigurator
+from distllm.core.coordinator_request import RequestHandler
 from distllm.core.debug import set_debug_mode
 from distllm.core.health_manager import HealthManager
-from distllm.core.inference_engine import InferenceEngine
+from distllm.errors import NotLeaderError
+from distllm.core.inference_engine import InferenceEngine, TokenGenerator
 from distllm.core.memory_defragmenter import (
     DefragConfig,
     DefragPolicy,
@@ -53,6 +56,16 @@ from distllm.security import hf_revision
 __all__ = [
     "Coordinator",
 ]
+
+from distllm.core.coordinator_election import CoordinatorElection
+from distllm.core.coordinator_subsystem import SubsystemManager
+
+# ── Named constants ──────────────────────────────────────────────
+_RESULT_TTL_SECONDS = 300.0            # Stale request result cleanup TTL (5 min)
+_HEALTH_CHECK_INTERVAL = 10.0          # Background health check interval (seconds)
+_SEMANTIC_CACHE_MAX_ENTRIES = 10000    # Max entries in semantic cache
+_CARBON_CHECK_INTERVAL = 300.0         # Carbon migration check interval (seconds, 5 min)
+_STOP_TIMEOUT = 30.0                   # Graceful shutdown drain timeout (seconds)
 
 
 class Coordinator:
@@ -105,16 +118,25 @@ class Coordinator:
             max_batch_size=self.config.max_batch_size,
             max_tokens_per_batch=self.config.max_tokens_per_batch,
         )
-        self._init_adaptive_batching()
+        self._configurator = CoordinatorConfigurator(self)
+        self._configurator._init_adaptive_batching()
+
+        # Subsystem lifecycle manager — created before any subsystem callback
+        # is wired, because StragglerDetector below references _subsystem_mgr
+        # at construction time.
+        self._subsystem_mgr = SubsystemManager(self)
 
         self._latency_tracker = LatencyTracker()
+        # getattr-guard: under test doubles SubsystemManager may be a mock
+        # whose interface lacks this callback.
+        straggler_cb = getattr(self._subsystem_mgr, "_on_straggler_detected", None)
         self._straggler_detector = StragglerDetector(
             detection_method=DetectionMethod.MAD,
-            on_straggler_cb=self._on_straggler_detected,
+            on_straggler_cb=straggler_cb,
         )
         self._recovery_manager = NodeRecoveryManager()
         # ARCHITECTURE: Wire recovery callbacks so node failure recovery actually works
-        self._wire_recovery_callbacks()
+        self._configurator._wire_recovery_callbacks()
         self._reputation = ReputationSystem(
             min_reputation=getattr(self.config, 'min_reputation', 0.0),
         )
@@ -180,24 +202,37 @@ class Coordinator:
 
         # ── Subsystem Registry (replaces manual lifecycle management) ──
         self._subsystem_registry = SubsystemRegistry()
-        self._register_subsystems()
+        self._configurator._register_subsystems()
 
 
-        # High-availability election (optional)
-        self._ha_election: Any = None
-        self._is_standby = False
+        # High-availability election (delegated to CoordinatorElection)
+        self._election = CoordinatorElection(self)
 
+        # HA leader election + state replication — enabled from config so the
+        # previously-unreachable enable_ha()/set_replication_peers() surface
+        # actually runs in production.
+        if getattr(self.config, "ha_enabled", False):
+            self._election.enable_ha(
+                coordinator_id=f"{self.model_name}:{self.port}",
+                peer_coordinators=getattr(self.config, "ha_peer_coordinators", None) or [],
+                heartbeat_interval_s=getattr(self.config, "ha_heartbeat_interval_s", 2.0),
+                election_timeout_s=getattr(self.config, "ha_election_timeout_s", 10.0),
+            )
+            repl_peers = getattr(self.config, "ha_replication_peers", None) or []
+            if repl_peers:
+                self._election.set_replication_peers(list(repl_peers))
+
+        # Subsystem lifecycle manager is created at the top of __init__
+        # (before the StragglerDetector callback is wired); it is available
+        # here for the HA/replication paths below.
         self._running = threading.Event()
         self._async_shutdown = asyncio.Event()
-        self._replication_thread: threading.Thread | None = None
-        self._replication_peers: list[str] = []
         self._request_results: dict[str, str] = {}
         self._request_events: dict[str, threading.Event] = {}
         self._request_lock = threading.Lock()  # Protects _request_results and _request_events
-        self._result_ttl_s = 300.0  # 5 minutes — stale results cleaned automatically
+        self._result_ttl_s = _RESULT_TTL_SECONDS  # 5 minutes — stale results cleaned automatically
         self._request_results_created: dict[str, float] = {}  # request_id -> monotonic timestamp
-        self._last_result_cleanup: float = time.monotonic()
-        self._health_check_interval_s: float = 10.0
+        self._health_check_interval_s: float = _HEALTH_CHECK_INTERVAL
         self._straggler_check_counter: int = 0
         self._health_thread: threading.Thread | None = None
         self._health_event = threading.Event()
@@ -216,8 +251,14 @@ class Coordinator:
         self.model_info = None
         self._shutting_down = False
 
-        # Autoscaler (wire with real metrics from batch scheduler)
+        # Autoscaler — fed + actuated by the background _autoscaler_loop
+        # (F-014 fix: previously record_metrics ran once at startup and
+        # evaluate() was never called again, so autoscaling was inert).
         self._autoscaler: IntelligentAutoscaler | None = None
+        self._autoscaler_thread: threading.Thread | None = None
+        self._autoscale_stop = threading.Event()
+        self._scale_callback: Callable[[Any], None] | None = None
+        self._system_monitor: Any = None
 
         # Per-request scheduling hints (populated by API layer before generate())
         self._pending_scheduling_hints: dict[str, dict] = {}
@@ -227,6 +268,9 @@ class Coordinator:
 
         # Model router for query-based model switching
         self._model_router: ModelRouter | None = None
+
+        # Multi-model registry: additional models beyond the primary one
+        self._model_registry: dict[str, dict] | None = None
 
         # Advanced features: semantic cache, smart model routing, disaggregated P&D,
         # carbon-aware scheduling, cost tracking, arbitrage, and privacy-preserving split
@@ -244,29 +288,69 @@ class Coordinator:
         self._defragmenter: MemoryDefragmenter | None = None
         self._defrag_task: asyncio.Task | None = None
 
+        # Request handler for generation methods
+        self._request_handler = RequestHandler(self)
+
+        # AgenticRouter (LLM-as-judge routing) is lazily initialized in a later
+        # dedicated setup path; always define the attribute so the request path
+        # (coordinator_request.py reads c._agentic_router) never AttributeErrors.
+        self._agentic_router = None
+
+        # Attributes the request pipeline reads off the coordinator.  They
+        # were referenced by request_pipeline.py but never initialized here,
+        # crashing every batch path with AttributeError.
+        self._token_gen = TokenGenerator()
+        self._batch_kv_caches: dict[str, Any] = {}
+        self._batch_kv_caches_lock = threading.Lock()
+        # Optional prompt-cache service; None disables prompt-cache lookups
+        # in the pipeline (it guards with `is not None`).
+        self._prompt_cache_service: Any = None
+        # Speculative decoder is wired later when a draft model is loaded;
+        # define it now so pipeline reads never AttributeError.
+        self._spec_decoder = None
+        self.draft_model = None
+        # Optional metrics exporter (set by the API server when wired);
+        # the pipeline guards with `if c.metrics_exporter`.
+        self.metrics_exporter = None
+        # SelfOptimizingEngine hook is wired later; the pipeline guards
+        # with `if c._self_optimizing`.
+        self._self_optimizing = None
+
+        # ── LoRA adapter serving (optional) ──
+        self.adapter_manager: Any = None
+        lora_cfg = kwargs.get("lora_config")
+        if lora_cfg is not None and getattr(lora_cfg, "enabled", False):
+            from distllm.models.adapter import AdapterManager
+
+            self.adapter_manager = AdapterManager()
+
+        # ── Multi-model serving (optional) ──
+        self._multi_model: Any = None
+        mmc = kwargs.get("multi_model_config")
+        if mmc is not None and getattr(mmc, "enabled", False):
+            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
+            from distllm.core.coordinator_multi_model import MultiModelManager
+
+            reg = _MMRegistry(max_models=getattr(mmc, "max_models", 4))
+            for name, path in (getattr(mmc, "models", {}) or {}).items():
+                reg.register(name, path, total_layers=0)
+            self._multi_model = MultiModelManager(
+                model_name=getattr(mmc, "default_model", "") or self.model_name,
+                pipeline=self._pipeline,
+                model_registry=reg,
+            )
+
         logger.info(f"Coordinator initialized for model: {self.model_name}")
 
-    def _wire_recovery_callbacks(self) -> None:
-        """Wire NodeRecoveryManager callbacks so node failure recovery works.
-
-        Previously these callbacks were never set, making the recovery
-        manager's redistribution and sequence recovery steps no-ops.
-        """
-        self._recovery_manager.set_drain_callback(self._on_node_drain)
-        self._recovery_manager.set_mark_dead_callback(self._on_node_mark_dead)
-        self._recovery_manager.set_redistribute_layers_callback(self._on_node_redistribute)
-        self._recovery_manager.set_recover_sequences_callback(self._on_node_recover)
-
-    def _register_subsystems(self) -> None:
-        """Register all subsystems with the SubsystemRegistry for lifecycle management."""
-        reg = self._subsystem_registry
-        reg.register("pipeline", self._pipeline, start_fn=self._pipeline.start if hasattr(self._pipeline, 'start') else None)
-        reg.register("batch_scheduler", self._batch_scheduler)
-        reg.register("health_manager", self._health_mgr)
-        reg.register("metrics_collector", self._metrics_collector)
-        reg.register("straggler_detector", self._straggler_detector)
-        reg.register("latency_tracker", self._latency_tracker)
-        reg.register("reputation", self._reputation)
+    def _init_model_hotswap(
+        self, max_models: int = 4, total_gpu_memory_gb: float = 0.0
+    ) -> None:
+        """Initialize hot-swap model management (delegates to configurator)."""
+        self._configurator.init_hot_swap(
+            total_gpu_memory_gb=total_gpu_memory_gb, max_models=max_models,
+        )
+        # Canonical alias used by multi-model tests/tools.
+        self._model_hotswap = self._hot_swap_mgr
 
     def _on_node_drain(self, node_id: str) -> None:
         """Callback: mark a node as draining (stop new requests to it)."""
@@ -310,6 +394,10 @@ class Coordinator:
                 survivor.start_layer = rd.new_start_layer
                 survivor.end_layer = rd.new_end_layer
                 survivor.total_layers = max(survivor.total_layers, rd.new_end_layer + 1)
+            else:
+                logger.warning(
+                    f"Survivor node {survivor_id} not found in pipeline for redistribution"
+                )
 
     def _on_node_recover(self, node_id: str, sequence_ids: list[str]) -> list[Any]:
         """Callback: recover in-flight sequences from a failed node via checkpoint replay.
@@ -374,16 +462,6 @@ class Coordinator:
         logger.info(f"Recovered {len(recovered)}/{len(checkpoints)} sequences for node {node_id}")
         return recovered
 
-    def _init_adaptive_batching(self) -> None:
-        """Connect the adaptive batching engine if the module is available."""
-        try:
-            from distllm.core.adaptive_batching import AdaptiveBatchingEngine
-            engine = AdaptiveBatchingEngine()
-            self._batch_scheduler.set_adaptive_engine(engine)
-            logger.debug("Adaptive batching engine initialized")
-        except ImportError:
-            logger.debug("Adaptive batching engine not available")
-
     def init_model_router(self, settings: Any | None = None) -> ModelRouter:
         """Initialize the model router from ChatRouterSettings.
 
@@ -394,25 +472,9 @@ class Coordinator:
         Returns:
             The initialized ModelRouter instance.
         """
-        from distllm.config.settings import ChatRouterSettings
-        if settings is None:
-            settings = ChatRouterSettings(
-                enabled=True,
-                default_model=self.model_name,
-            )
-        self._model_router = ModelRouter(settings)
-        # Register the router name from settings as a hybrid name
-        router_name = getattr(settings, "name", "")
-        if router_name:
-            self._model_router.register_hybrid_name(router_name)
-        logger.info(
-            f"Model router initialized: default={self._model_router._default_model}, "
-            f"rules={len(self._model_router._rules)}, "
-            f"hybrid_names={self._model_router.list_hybrid_models()}"
-        )
-        return self._model_router
+        return self._configurator.init_model_router(settings)
 
-    # ── High Availability ──
+    # ── High Availability (delegated to CoordinatorElection) ──
 
     def enable_ha(
         self,
@@ -423,178 +485,69 @@ class Coordinator:
     ) -> None:
         """Enable high-availability mode with leader election.
 
-        When enabled, this coordinator participates in leader election
-        with peer coordinators. Only the leader accepts requests; standbys
-        replicate state and wait for failover.
-
-        Args:
-            coordinator_id: Unique ID for this coordinator. Defaults to
-                hostname:port.
-            peer_coordinators: List of (id, host, port) tuples for peers.
-            heartbeat_interval_s: Seconds between heartbeats.
-            election_timeout_s: Seconds without heartbeat before election.
+        Delegated to :meth:`CoordinatorElection.enable_ha`.
         """
-        from distllm.core.ha_coordinator import RayFaultTolerance
-
-        cid = coordinator_id or f"{self.model_name}:{self.port}"
-        self._ha_election = RayFaultTolerance(
-            coordinator_id=cid,
+        self._election.enable_ha(
+            coordinator_id=coordinator_id,
+            peer_coordinators=peer_coordinators,
             heartbeat_interval_s=heartbeat_interval_s,
             election_timeout_s=election_timeout_s,
         )
 
-        if peer_coordinators:
-            for peer_id, peer_host, peer_port in peer_coordinators:
-                self._ha_election.add_peer(peer_id, peer_host, peer_port)
-
-        self._ha_election.start()
-        logger.info(f"HA enabled for coordinator {cid}")
-
     @property
     def is_leader(self) -> bool:
         """Return True if this coordinator is the elected leader."""
-        if self._ha_election is None:
-            return True  # No HA = always leader
-        return self._ha_election.is_leader()
+        return self._election.is_leader
 
     @property
     def ha_status(self) -> dict:
         """Return HA election status."""
-        if self._ha_election is None:
-            return {"enabled": False}
-        return self._ha_election.stats()
+        return self._election.ha_status
 
     def state_snapshot(self) -> dict[str, Any]:
         """Create a snapshot of coordinator state for replication.
 
-        Standby coordinators can use this to maintain a warm copy
-        of the leader's state for fast failover.
-
-        Returns:
-            Dict with node registrations, model info, and config.
+        Delegated to :meth:`CoordinatorElection.state_snapshot`.
         """
-        return {
-            "model_name": self.model_name,
-            "total_layers": self.total_layers,
-            "nodes": {
-                nid: {
-                    "host": getattr(n, "host", ""),
-                    "port": getattr(n, "port", 0),
-                    "start_layer": getattr(n, "start_layer", 0),
-                    "end_layer": getattr(n, "end_layer", 0),
-                    "healthy": getattr(n, "healthy", False),
-                }
-                for nid, n in self.nodes.items()
-            },
-            "node_order": list(self.node_order),
-            "timestamp": time.time(),
-        }
+        return self._election.state_snapshot()
 
     def apply_state_snapshot(self, snapshot: dict[str, Any]) -> None:
         """Apply a state snapshot from the leader (for standby coordinators).
 
-        Re-registers nodes and updates internal state to match the leader.
+        Delegated to :meth:`CoordinatorElection.apply_state_snapshot`.
         """
-        if not self._is_standby:
-            logger.warning("apply_state_snapshot called on non-standby coordinator")
-            return
-
-        nodes = snapshot.get("nodes", {})
-        for nid, info in nodes.items():
-            if nid not in self.nodes:
-                try:
-                    self.manual_register(
-                        node_id=nid,
-                        host=info["host"],
-                        port=info["port"],
-                        start_layer=info["start_layer"],
-                        end_layer=info["end_layer"],
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to apply snapshot node {nid}: {e}")
-
-        logger.info(f"Applied state snapshot: {len(nodes)} nodes")
-
-    # ── HA State Replication ──
+        self._election.apply_state_snapshot(snapshot)
 
     def _start_state_replication(self) -> None:
         """Start continuous state replication to HA peer coordinators.
 
-        Runs a background thread that pushes state snapshots to
-        all configured peers every 1 second for sub-second failover.
+        Delegated to :meth:`CoordinatorElection._start_state_replication`.
         """
-        if not self._replication_peers:
-            return
-        self._replication_thread = threading.Thread(
-            target=self._replication_loop,
-            daemon=True,
-            name="state-replication",
-        )
-        self._replication_thread.start()
-        logger.info(f"State replication started for {len(self._replication_peers)} peers")
+        self._election._start_state_replication()
 
     def _replication_loop(self) -> None:
         """Continuously push state snapshots to HA peers.
 
-        Uses a 1-second interval, but only sends a full snapshot every
-        10th call (10s) when the cluster is stable.  Intermediate ticks
-        send a lightweight heartbeat to detect peer liveness.  This
-        reduces the O(n * peers) serialization + network overhead for
-        large clusters by ~90% during steady state.
+        Delegated to :meth:`CoordinatorElection._replication_loop`.
         """
-        import httpx
-        tick = 0
-        with httpx.Client(timeout=2.0) as client:
-            while self._running.is_set():
-                tick += 1
-                try:
-                    # Full snapshot every ~10s, lightweight ping otherwise
-                    if tick % 10 == 0:
-                        snapshot = self.state_snapshot()
-                    else:
-                        snapshot = {
-                            "heartbeat": True,
-                            "node_count": len(self.nodes),
-                            "healthy": self._health_mgr.is_healthy(),
-                        }
-                    for peer_url in self._replication_peers:
-                        try:
-                            resp = client.post(
-                                f"{peer_url.rstrip('/')}/api/v1/ha/snapshot",
-                                json=snapshot,
-                            )
-                            if resp.status_code != 200:
-                                logger.debug(f"Replication to {peer_url} returned {resp.status_code}")
-                        except Exception as e:
-                            logger.debug(f"Replication to {peer_url} failed: {e}")
-                except Exception as e:
-                    logger.warning(f"State replication error: {e}")
-                time.sleep(1.0)
+        self._election._replication_loop()
 
     def set_replication_peers(self, peer_urls: list[str]) -> None:
         """Set HA peer coordinator URLs for state replication.
 
-        Args:
-            peer_urls: List of peer API base URLs (e.g. ["http://10.0.0.2:8000"]).
+        Delegated to :meth:`CoordinatorElection.set_replication_peers`.
         """
-        self._replication_peers = peer_urls
-        if self._running.is_set():
-            self._start_state_replication()
-
-    # ── Callbacks ──
-
-    def _on_straggler_detected(self, report) -> None:
-        logger.warning(
-            f"Straggler {report.node_id}: {report.slowdown_factor}x slower "
-            f"(action: {report.recommended_action})"
-        )
-        if report.recommended_action == "reassign_layers" and self._recovery_manager is not None:
-            self._recovery_manager.on_node_failure(report.node_id)
+        self._election.set_replication_peers(peer_urls)
 
     # ── Properties (delegated to ClusterManager) ──
 
     @property
     def nodes(self) -> dict:
+        """Registered worker nodes (node_id -> NodeRegistration).
+
+        Live mapping: callers may inject clients or flip health flags in
+        place; structural changes go through register_node/unregister_node.
+        """
         return self._cluster_mgr.nodes
 
     @nodes.setter
@@ -613,14 +566,20 @@ class Coordinator:
     def scheduler(self) -> BatchScheduler | None:
         return self._batch_scheduler
 
+    @property
+    def prefix_cache(self) -> Any:
+        """Prefix cache for prompt deduplication (None when disabled)."""
+        return self._cache_mgr.prefix_cache if self._cache_mgr is not None else None
+
+    @prefix_cache.setter
+    def prefix_cache(self, value: Any) -> None:
+        if self._cache_mgr is not None:
+            self._cache_mgr.prefix_cache = value
+
     # ── Node lifecycle (delegated to ClusterManager) ──
 
     def auto_setup(self, nodes_config: list[dict]) -> tuple[dict, int] | None:
-        self._cluster_mgr.model_revision = self.model_revision
-        result = self._cluster_mgr.auto_setup(nodes_config)
-        self.tokenizer = self._cluster_mgr.tokenizer
-        self._inference_engine.tokenizer = self.tokenizer
-        return result
+        return self._configurator.auto_setup(nodes_config)
 
     def manual_register(self, node_id: str, host: str, port: int,
                         start_layer: int, end_layer: int,
@@ -629,15 +588,35 @@ class Coordinator:
                         expert_ids: list[int] | None = None,
                         cluster_id: str = "default",
                         cluster_key: str | None = None) -> None:
-        self._cluster_mgr.manual_register(
+        self._configurator.manual_register(
             node_id, host, port, start_layer, end_layer,
             total_layers=total_layers, role=role,
             expert_ids=expert_ids, cluster_id=cluster_id,
             cluster_key=cluster_key,
         )
-        self.tokenizer = self._cluster_mgr.tokenizer
 
-    # ── Generation (delegated to InferenceEngine) ──
+    # ── Generation (delegated to RequestHandler) ──
+
+    def _require_leader(self) -> None:
+        """Refuse to serve inference when this coordinator is not the HA leader.
+
+        F-015: In HA mode, only the elected leader may serve generation —
+        standbys acting as writers would diverge and defeat the split-brain
+        protection the election exists to provide.  When HA is disabled (or
+        this node is the leader) this is a no-op, so single-node serving is
+        unaffected.  When this node is a standby, every request-serving entry
+        point (:meth:`generate` and :meth:`generate_async`) raises
+        :class:`NotLeaderError` so consumers can retry on the leader.
+        """
+        if not getattr(self.config, "ha_enabled", False):
+            return
+        if self.is_leader:
+            return
+        leader_id: str | None = None
+        election = getattr(self._election, "_ha_election", None)
+        if election is not None:
+            leader_id = election.get_leader()
+        raise NotLeaderError(leader_id=leader_id)
 
     def generate(self, prompt: str, max_new_tokens: int = 128,
                  temperature: float = 0.7, top_p: float = 0.9,
@@ -646,67 +625,45 @@ class Coordinator:
                  speculative_config: dict | None = None,
                  response_format: dict | None = None,
                  constraint: Any | None = None) -> str:
-        self._inference_engine.tokenizer = self.tokenizer
+        self._require_leader()
+        return self._request_handler.generate(
+            prompt, max_new_tokens, temperature, top_p, top_k,
+            request_id, user_id, speculative_config,
+            response_format=response_format,
+            constraint=constraint,
+        )
 
-        # Optional AgenticRouter pre-routing: if configured, use the LLM
-        # judge to select the optimal model before delegating to the engine.
-        if hasattr(self, '_agentic_router') and self._agentic_router is not None:
-            decision = self._agentic_router.route(prompt)
-            if decision.model and decision.model != self.model_name:
-                logger.info(
-                    f"AgenticRouter selected model={decision.model} "
-                    f"(confidence={decision.confidence:.2f}) "
-                    f"instead of default {self.model_name}"
-                )
+    def generate_batch(self, timeout: float = 120.0, max_steps: int = 0) -> None:
+        """Run the batch scheduler until all queued sequences complete.
 
-        # Use caller-provided constraint if given, otherwise build from response_format
-        if constraint is None and response_format:
-            from distllm.core.structured_output import JSONSchemaConstraint
-            constraint = JSONSchemaConstraint.from_response_format(
-                response_format, tokenizer=self.tokenizer,
-            )
-
-        try:
-            return self._inference_engine.generate(
-                prompt, max_new_tokens, temperature, top_p, top_k,
-                request_id, user_id, speculative_config,
-                constraint=constraint,
-            )
-        except Exception as exc:
-            if self._plugin_system:
-                self._plugin_system.dispatch("on_error", {
-                    "prompt": prompt[:128],
-                    "request_id": request_id or "",
-                    "user_id": user_id,
-                }, exc)
-            raise
+        Delegates to the wired request pipeline (``_request_handler``), which
+        owns the scheduler step loop.  Raises ``BatchError`` when batch
+        processing is not configured (single-request mode).
+        """
+        self._require_leader()
+        handler = getattr(self, "_request_handler", None)
+        if handler is None or not hasattr(handler, "generate_batch"):
+            from distllm.errors.types import BatchError
+            raise BatchError("Batch scheduler not configured. Use generate() instead.")
+        return handler.generate_batch(timeout=timeout, max_steps=max_steps)
 
     def load_local_model(self) -> None:
-        self._inference_engine.tokenizer = self.tokenizer
-        self._inference_engine.load_local_model()
-        self.tokenizer = self._inference_engine.tokenizer
-        self._inference_engine.tokenizer = self.tokenizer
-        if self._plugin_system:
-            self._plugin_system.dispatch("on_model_load", self.model_name, {"local": True})
+        self._request_handler.load_local_model()
 
     def set_deterministic_mode(self, enabled: bool = True, seed: int = 42) -> None:
-        self._inference_engine.set_deterministic_mode(enabled, seed)
+        self._request_handler.set_deterministic_mode(enabled, seed)
 
     def get_recent_requests(self, n: int = 10) -> list[Any]:
-        return self._inference_engine.get_recent_requests(n)
+        return self._request_handler.get_recent_requests(n)
 
     # ── Hot-swap model management ──
 
     def init_hot_swap(self, total_gpu_memory_gb: float = 0.0, max_models: int = 4) -> None:
         """Initialize the hot-swap model manager for dynamic model loading."""
-        from distllm.core.multi_model_serving import ModelHotSwapManager
-        self._hot_swap_mgr = ModelHotSwapManager(
+        self._configurator.init_hot_swap(
             total_gpu_memory_gb=total_gpu_memory_gb,
             max_models=max_models,
-            on_load_model=self._load_model_callback,
-            on_unload_model=self._unload_model_callback,
         )
-        logger.info(f"Hot-swap manager initialized (max {max_models} models)")
 
     # ── Adaptive compression ──
 
@@ -724,42 +681,9 @@ class Coordinator:
                 as a fraction (0.0–1.0). Defaults to a function that reads
                 request load from the batch scheduler.
         """
-        from distllm.core.adaptive_compression import (
-            AdaptiveCompressionConfig,
-            AdaptiveCompressionManager,
-            SimpleCompressor,
-        )
-
-        if settings is None:
-            self._adaptive_compression_mgr = None
-            return
-
-        config = AdaptiveCompressionConfig(
-            enabled=settings.enabled,
-            idle_threshold_pct=settings.idle_threshold_pct,
-            idle_duration_s=settings.idle_duration_s,
-            check_interval_s=settings.check_interval_s,
-            compression_method=settings.compression_method,
-            calibration_samples=settings.calibration_samples,
-            output_dir=settings.output_dir,
-            trust_remote_code=getattr(self, 'trust_remote_code', False),
-        )
-
-        if utilization_fn is None:
-            utilization_fn = self._default_utilization_fn
-
-        compressor = SimpleCompressor(
-            output_base=settings.output_dir,
-            method=settings.compression_method,
-            calibration_samples=settings.calibration_samples,
-            trust_remote_code=getattr(self, 'trust_remote_code', False),
-        )
-
-        self._adaptive_compression_mgr = AdaptiveCompressionManager(
-            config=config,
+        self._configurator.init_adaptive_compression(
+            settings=settings,
             utilization_fn=utilization_fn,
-            hot_swap_mgr=getattr(self, "_hot_swap_mgr", None),
-            compressor=compressor,
         )
 
     def init_defragmentation(self, settings: Any | None = None) -> None:
@@ -768,39 +692,7 @@ class Coordinator:
         Args:
             settings: A DefragmentationSettings instance or None to disable.
         """
-        if settings is None or not settings.enabled:
-            self._defragmenter = None
-            return
-
-        policy_map = {
-            "lazy": DefragPolicy.LAZY,
-            "balanced": DefragPolicy.BALANCED,
-            "aggressive": DefragPolicy.AGGRESSIVE,
-        }
-        policy = policy_map.get(settings.policy, DefragPolicy.BALANCED)
-
-        threshold = settings.threshold if settings.threshold > 0.0 else policy.threshold
-
-        config = DefragConfig(
-            enabled=settings.enabled,
-            policy=policy,
-            interval_seconds=settings.interval_seconds,
-            max_blocks_per_pass=settings.max_blocks_per_pass,
-            tiered_compaction=settings.tiered_compaction,
-            l2_cpu_swap_threshold=settings.l2_cpu_swap_threshold,
-            l3_nvme_swap_threshold=settings.l3_nvme_swap_threshold,
-            cuda_stream_priority=settings.cuda_stream_priority,
-            enable_predictive=settings.enable_predictive,
-            enable_prometheus=settings.enable_prometheus,
-        )
-        self._defragmenter = MemoryDefragmenter(
-            config=config,
-            metrics_collector=self._metrics_collector,
-        )
-        logger.info(
-            f"Defragmenter initialized: policy={settings.policy}, "
-            f"threshold={threshold:.0%}, interval={settings.interval_seconds}s"
-        )
+        self._configurator.init_defragmentation(settings)
 
     def init_graceful_degradation(
         self,
@@ -824,18 +716,13 @@ class Coordinator:
             critical_threshold: Load score for CRITICAL (partial responses).
             fallback_model: Model name for moderate degradation fallback.
         """
-        from distllm.core.graceful_degradation import GracefulDegradation
-        self._graceful_degradation = GracefulDegradation(
+        self._configurator.init_graceful_degradation(
             enabled=enabled,
             light_threshold=light_threshold,
             moderate_threshold=moderate_threshold,
             severe_threshold=severe_threshold,
             critical_threshold=critical_threshold,
             fallback_model=fallback_model,
-        )
-        logger.info(
-            f"Graceful degradation initialized: "
-            f"thresholds=[{light_threshold}, {moderate_threshold}, {severe_threshold}, {critical_threshold}]"
         )
 
     async def _defrag_loop(self) -> None:
@@ -1082,10 +969,59 @@ class Coordinator:
         models: list[str] = []
         if self.model_name:
             models.append(self.model_name)
+        # Include models registered with the multi-model registry
+        if self._model_registry:
+            models.extend(self._model_registry.keys())
+        # Include hot-swap catalog names
+        if self._multi_model is not None:
+            for m in self._multi_model.list_models():
+                if m and m not in models:
+                    models.append(m)
         # Include hybrid model names registered with the router
         if self._model_router is not None:
             models.extend(self._model_router.list_hybrid_models())
         return models
+
+    def register_model(
+        self, name: str, path: str, memory_budget_gb: float = 0.0,
+        total_layers: int = 0,
+    ):
+        """Register an additional model for multi-model serving.
+
+        Records the entry in both the routing registry and the multi-model
+        hot-swap catalog; returns the catalog entry.
+        """
+        if self._model_registry is None:
+            self._model_registry = {}
+        self._model_registry[name] = {
+            "path": path,
+            "memory_budget_gb": memory_budget_gb,
+        }
+        if self._multi_model is None or getattr(self._multi_model, "registry", None) is None:
+            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
+            from distllm.core.coordinator_multi_model import MultiModelManager
+
+            self._multi_model = MultiModelManager(
+                model_name=self.model_name,
+                pipeline=self._pipeline,
+                model_registry=_MMRegistry(),
+            )
+        return self._multi_model.registry.register(name, path, total_layers)
+
+    def get_model_name(self, requested: str = "") -> str:
+        """Resolve a requested model name to a loaded model.
+
+        Falls back to the primary model when no registry match exists.
+        When multiple models are registered and no name is requested,
+        the first registered model wins; otherwise the primary model.
+        """
+        if requested and self._model_registry and requested in self._model_registry:
+            return requested
+        if requested == self.model_name:
+            return requested
+        if self._model_registry:
+            return next(iter(self._model_registry))
+        return self.model_name
 
     def generate_async(self, prompt: str, **kwargs) -> str:
         """Schedule async generation via the batch scheduler.
@@ -1097,90 +1033,18 @@ class Coordinator:
         Returns a request_id immediately. Call ``wait_for_result()``
         to get the result when ready.
         """
-        request_id = kwargs.pop("request_id", None) or str(uuid.uuid4())
-
-        # Try the real batch scheduler path first
-        if self._batch_scheduler is not None and self.tokenizer is not None:
-            try:
-                from distllm.core.request_pipeline import RequestPipeline
-                pipeline = RequestPipeline(self)
-                return pipeline.generate_async(
-                    prompt=prompt,
-                    request_id=request_id,
-                    max_new_tokens=kwargs.get("max_new_tokens", 128),
-                    temperature=kwargs.get("temperature", 0.7),
-                    top_p=kwargs.get("top_p", 0.9),
-                    top_k=kwargs.get("top_k", 0),
-                    user_id=kwargs.get("user_id", "default"),
-                )
-            except Exception as e:
-                logger.warning(f"Batch scheduler path failed, falling back to thread: {e}")
-
-        # Fallback: background thread
-        max_new_tokens = kwargs.get("max_new_tokens", 128)
-        temperature = kwargs.get("temperature", 0.7)
-        top_p = kwargs.get("top_p", 0.9)
-        top_k = kwargs.get("top_k", 0)
-        user_id = kwargs.get("user_id", "default")
-
-        event = threading.Event()
-        with self._request_lock:
-            self._request_events[request_id] = event
-
-        def _run():
-            try:
-                result = self.generate(
-                    prompt=prompt,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    user_id=user_id,
-                )
-                with self._request_lock:
-                    self._request_results[request_id] = result
-                    self._request_results_created[request_id] = time.monotonic()
-            except Exception as e:
-                with self._request_lock:
-                    self._request_results[request_id] = f"[Error: {e}]"
-                    self._request_results_created[request_id] = time.monotonic()
-            finally:
-                event.set()
-
-        thread = threading.Thread(target=_run, daemon=True, name=f"gen-{request_id[:8]}")
-        thread.start()
-
-        logger.debug(
-            f"generate_async -> request_id={request_id} "
-            f"(background thread started, prompt length {len(prompt)})"
-        )
-        return request_id
+        # F-015: same gating as generate() — the async/batch path bypasses
+        # generate() and would otherwise let a standby serve requests.
+        self._require_leader()
+        return self._request_handler.generate_async(prompt, **kwargs)
 
     def record_metric(self, name: str, value: float = 1.0) -> None:
         """Record a metric (used by RequestPipeline)."""
-        if hasattr(self, '_metrics_collector') and self._metrics_collector is not None:
-            try:
-                self._metrics_collector.record(name, value)
-            except Exception as e:
-                logger.warning(f"Failed to record metric '{name}': {e}")
+        self._request_handler.record_metric(name, value)
 
     def _cleanup_stale_results(self) -> None:
         """Remove stale entries from _request_results to prevent memory leaks."""
-        now = time.monotonic()
-        if now - self._last_result_cleanup < 60:  # Only run cleanup once per minute
-            return
-        self._last_result_cleanup = now
-        with self._request_lock:
-            stale = [
-                rid for rid, created in self._request_results_created.items()
-                if now - created > self._result_ttl_s
-            ]
-            for rid in stale:
-                self._request_results.pop(rid, None)
-                self._request_events.pop(rid, None)
-                self._request_results_created.pop(rid, None)
-            if stale:
-                logger.debug(f"Cleaned {len(stale)} stale request results (TTL={self._result_ttl_s}s)")
+        self._request_handler._cleanup_stale_results()
 
     def wait_for_result(self, request_id: str, timeout: float | None = None) -> str:
         """Wait for an async generation result.
@@ -1188,27 +1052,124 @@ class Coordinator:
         Checks both the request tracker (batch scheduler path) and
         the legacy event-based path (background thread fallback).
         """
-        # Periodic cleanup — called opportunistically from wait_for_result
-        self._cleanup_stale_results()
-        # Try request tracker first (batch scheduler path)
-        if self._request_tracker is not None:
-            try:
-                return self._request_tracker.wait_for_result(request_id, timeout or 120.0)
-            except (ValueError, TimeoutError):
-                pass
+        return self._request_handler.wait_for_result(request_id, timeout=timeout)
 
-        # Fallback: legacy event-based path
-        with self._request_lock:
-            event = self._request_events.get(request_id)
-        if event is None:
-            raise ValueError(f"Unknown request_id: {request_id}")
-        event.wait(timeout=timeout)
-        with self._request_lock:
-            result = self._request_results.pop(request_id, None)
-            self._request_events.pop(request_id, None)
-        if result is None:
-            raise TimeoutError(f"Request {request_id} timed out")
-        return result
+    # ── Autoscaling (F-014: periodic feed + actuation) ──
+
+    def set_scale_callback(self, callback: Callable[[Any], None] | None) -> None:
+        """Register the provisioning hook invoked with each should-scale decision.
+
+        This is the actuation path for the IntelligentAutoscaler: wire it to
+        node provisioning (e.g. ClusterManager registration of newly launched
+        workers, or an external provisioner). Without a callback, scale
+        decisions are logged but not acted upon.
+        """
+        self._scale_callback = callback
+
+    def _get_system_monitor(self) -> Any | None:
+        """Lazily create the SystemMonitor (cached; ``False`` = unavailable)."""
+        monitor = self._system_monitor
+        if monitor is None:
+            try:
+                from distllm.core.monitor import SystemMonitor
+                monitor = SystemMonitor()
+            except Exception:
+                monitor = False
+            self._system_monitor = monitor
+        return monitor or None
+
+    def _collect_scaling_metrics(self) -> Any:
+        """Build ScalingMetrics from live sources.
+
+        ``gpu_utilization`` comes from SystemMonitor (pynvml) when telemetry
+        is available; otherwise it falls back to batch occupancy so the value
+        reflects load instead of being permanently 0.0.
+        """
+        from distllm.core.intelligent_autoscaler import ScalingMetrics
+
+        stats = self._batch_scheduler.stats() if self._batch_scheduler else {}
+        active = int(stats.get("active_requests", 0))
+        pending = int(stats.get("pending_requests", 0))
+        max_batch = int(stats.get("max_batch_size", 1)) or 1
+
+        gpu_util: float | None = None
+        monitor = self._get_system_monitor()
+        if monitor is not None:
+            try:
+                gpu_info = monitor.collect().get("gpu") or {}
+                raw = gpu_info.get("utilization_gpu")
+                gpu_util = float(raw) if raw is not None else None
+            except Exception:
+                gpu_util = None
+        if gpu_util is None:
+            gpu_util = min(100.0, (active + pending) / max_batch * 100.0)
+
+        return ScalingMetrics(
+            active_requests=active,
+            pending_requests=pending,
+            queue_depth=pending,
+            gpu_utilization=gpu_util,
+            current_nodes=len(self.nodes),
+        )
+
+    def _autoscaler_tick(self) -> None:
+        """Run one autoscaler cycle: feed metrics, evaluate, actuate."""
+        scaler = self._autoscaler
+        if scaler is None:
+            return
+        metrics = self._collect_scaling_metrics()
+        decision = scaler.evaluate(metrics)
+        if not decision.should_scale:
+            return
+        logger.info(
+            "Autoscaler decision: {} -> {} nodes (reason={}, confidence={:.2f})",
+            metrics.current_nodes, decision.target_nodes,
+            decision.reason, decision.confidence,
+        )
+        callback = self._scale_callback
+        if callback is not None:
+            try:
+                callback(decision)
+            except Exception as e:
+                logger.error("Autoscale callback failed: {}", e)
+
+    def _autoscaler_loop(self, interval_s: float = 5.0) -> None:
+        """Periodically feed real metrics to the autoscaler and actuate."""
+        while True:
+            try:
+                self._autoscaler_tick()
+            except Exception as e:
+                logger.debug("Autoscaler tick failed: {}", e)
+            if self._autoscale_stop.wait(interval_s):
+                break
+
+    def _start_autoscaler_loop(self, interval_s: float | None = None) -> None:
+        """Start the background autoscaler loop (no-op without an autoscaler)."""
+        if self._autoscaler is None:
+            return
+        if self._autoscaler_thread is not None and self._autoscaler_thread.is_alive():
+            return
+        if interval_s is None:
+            try:
+                interval_s = float(os.environ.get("DISTLLM_AUTOSCALER_INTERVAL_S", "5"))
+            except ValueError:
+                interval_s = 5.0
+        self._autoscale_stop.clear()
+        t = threading.Thread(
+            target=self._autoscaler_loop, args=(interval_s,),
+            daemon=True, name="autoscaler-loop",
+        )
+        self._autoscaler_thread = t
+        t.start()
+        logger.info("Autoscaler background loop started (interval={}s)", interval_s)
+
+    def _stop_autoscaler_loop(self, timeout: float = 2.0) -> None:
+        """Signal the autoscaler loop to stop and join it."""
+        self._autoscale_stop.set()
+        t = self._autoscaler_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=timeout)
+        self._autoscaler_thread = None
 
     # ── Subsystem startup helper ──
 
@@ -1273,8 +1234,13 @@ class Coordinator:
         self._health_event.clear()
         self._health_mgr.start()
 
+        # Propagate model metadata to the batch scheduler so its metrics
+        # label rows with the real model name instead of "default".
+        if getattr(self, "model_info", None) and self._batch_scheduler is not None:
+            self._batch_scheduler.set_model_info(self.model_info)
+
         # Start HA state replication if peers configured
-        self._start_state_replication()
+        self._election._start_state_replication()
 
         if hasattr(self, '_adaptive_compression_mgr') and self._adaptive_compression_mgr:
             self._adaptive_compression_mgr.start()
@@ -1328,7 +1294,7 @@ class Coordinator:
             "semantic_cache", "distllm.core.semantic_cache", "SemanticCache", "_semantic_cache",
             constructor_kwargs={
                 "similarity_threshold": float(os.environ.get("DISTLLM_SEMANTIC_CACHE_THRESHOLD", "0.92")),
-                "max_entries": 10000,
+                "max_entries": _SEMANTIC_CACHE_MAX_ENTRIES,
             },
         )
 
@@ -1341,7 +1307,7 @@ class Coordinator:
             "carbon_engine", "distllm.core.carbon_migration", "CarbonMigrationEngine", "_carbon_engine",
             constructor_kwargs={
                 "threshold": float(os.environ.get("DISTLLM_CARBON_THRESHOLD", "400.0")),
-                "check_interval_s": 300.0,
+                "check_interval_s": _CARBON_CHECK_INTERVAL,
             },
         )
 
@@ -1398,17 +1364,10 @@ class Coordinator:
             "IntelligentAutoscaler", "_autoscaler",
             constructor_kwargs={"min_nodes": 1, "max_nodes": 20, "target_utilization": 0.7},
         )
-        if autoscaler is not None and self._batch_scheduler:
-            try:
-                from distllm.core.intelligent_autoscaler import ScalingMetrics
-                s = self._batch_scheduler.stats()
-                autoscaler.record_metrics(ScalingMetrics(
-                    active_requests=s.get("active_requests", 0),
-                    pending_requests=s.get("pending_requests", 0),
-                    current_nodes=len(getattr(self, 'nodes', {})),
-                ))
-            except Exception:
-                pass
+        if autoscaler is not None:
+            # F-014: feed real metrics and actuate periodically instead of a
+            # single startup record_metrics call that was never evaluated.
+            self._start_autoscaler_loop()
 
         # Startup self-check: log which subsystems are active vs degraded/missing
         failed_subsystems = [
@@ -1475,7 +1434,7 @@ class Coordinator:
                 )
                 t.start()
 
-    def stop(self, timeout: float = 30.0) -> None:
+    def stop(self, timeout: float = _STOP_TIMEOUT) -> None:
         """Graceful shutdown with in-flight request draining.
 
         Args:
@@ -1579,6 +1538,7 @@ class Coordinator:
                 logger.warning(f"Error closing async connection pool: {e}")
 
         # 7. Stop background services
+        self._stop_autoscaler_loop()
         self._health_mgr.stop()
         if hasattr(self, '_adaptive_compression_mgr') and self._adaptive_compression_mgr:
             self._adaptive_compression_mgr.stop()

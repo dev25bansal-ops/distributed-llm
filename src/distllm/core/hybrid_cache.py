@@ -51,8 +51,16 @@ class ContiguousKVBuffer:
 
     def append(self, layer_idx: int, key: torch.Tensor, value: torch.Tensor) -> None:
         n = key.shape[-2]
+        if self.num_tokens + n > self.max_tokens:
+            raise ValueError(
+                f"ContiguousKVBuffer overflow: {self.num_tokens}+{n} "
+                f"> max_tokens={self.max_tokens}"
+            )
         self.keys[layer_idx, :, self.num_tokens:self.num_tokens + n, :] = key
         self.values[layer_idx, :, self.num_tokens:self.num_tokens + n, :] = value
+        # Each append advances the shared write position; HybridKVCache
+        # tracks per-sequence lengths authoritatively in _seq_lens.
+        self.num_tokens += n
 
     def get(self, layer_idx: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         return (

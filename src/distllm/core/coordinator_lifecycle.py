@@ -93,6 +93,15 @@ class RequestTracker:
         """
         event = self._events.get(request_id)
         if event is None:
+            # Completed before wait: surface the ready result/error.
+            with self._lock:
+                result = self._results.pop(request_id, None)
+                error = self._errors.pop(request_id, None)
+                self._logprobs.pop(request_id, None)
+            if error is not None:
+                raise RuntimeError(f"Request {request_id} failed: {error}") from error
+            if result is not None:
+                return result
             raise ValueError(f"Unknown request_id: {request_id}")
 
         event.wait(timeout=timeout)
@@ -145,13 +154,16 @@ class RequestTracker:
             return True
 
     def clear(self) -> None:
-        """Reset all state (results, events, flags)."""
+        """Reset all state, unblocking waiters with a cancellation result.
+
+        Each registered request gets a "[Error: Request cancelled]" result
+        and a SET event which the waiter consumes via wait_for_result
+        (that call also reclaims the entry).
+        """
         with self._lock:
-            self._results.clear()
-            # Signal all pending events so waiters unblock
-            for event in self._events.values():
-                event.set()
-            self._events.clear()
+            for rid in list(self._events.keys()):
+                self._results.setdefault(rid, "[Error: Request cancelled]")
+                self._events[rid].set()
             self._logprobs.clear()
             self._errors.clear()
             self._shutting_down = False
@@ -184,7 +196,8 @@ class RequestTracker:
                         self._results[seq_id] = "[Error: Sequence completed without output]"
                 except Exception as e:
                     self._results[seq_id] = f"[Error decoding output: {e}]"
-                event = self._events.pop(seq_id, None)
+                # SET, never pop: wait_for_result consumes the event.
+                event = self._events.get(seq_id)
                 if event:
                     event.set()
                 self._logprobs.pop(seq_id, None)
@@ -192,7 +205,7 @@ class RequestTracker:
             for seq in pending_seqs:
                 sid = getattr(seq, "request_id", str(seq))
                 self._results[sid] = "[Error: Request timed out waiting in scheduler queue]"
-                event = self._events.pop(sid, None)
+                event = self._events.get(sid)
                 if event:
                     event.set()
 

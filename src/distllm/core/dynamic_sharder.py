@@ -262,6 +262,7 @@ class DynamicSharder:
         with self._lock:
             self._active_migrations = list(plan.migrations)
 
+        failed = False
         for migration in plan.migrations:
             try:
                 self._migrate_layer(migration)
@@ -269,14 +270,21 @@ class DynamicSharder:
                     self._stats["migrations_completed"] += 1
                     self._stats["total_bytes_transferred"] += migration.bytes_transferred
             except Exception as e:
+                failed = True
                 migration.state = MigrationState.FAILED
                 migration.error = str(e)
                 with self._lock:
                     self._stats["migrations_failed"] += 1
                 logger.error(f"Migration failed for layer {migration.layer_id}: {e}")
 
-        # Update partition
+        # Install the new partition only if every migration succeeded; on any
+        # failure keep the old partition so routing never points at nodes that
+        # never received their layers (F-048).
         with self._lock:
+            if failed:
+                self._active_migrations = []
+                logger.error("Reshard aborted: keeping old partition (migration failure)")
+                return
             self._current_partition = dict(plan.new_partition)
             self._active_migrations = []
             self._stats["reshards"] += 1
@@ -300,14 +308,21 @@ class DynamicSharder:
 
         # Step 2: Transfer
         migration.state = MigrationState.TRANSFERRING
-        if self._on_transfer:
-            success = self._on_transfer(
-                migration.layer_id,
-                migration.source_node,
-                migration.target_node,
+        if self._on_transfer is None:
+            # Fail closed: without a real transfer callback no data moves, so
+            # the layer must NOT be reported as migrated and the new partition
+            # must not be installed (F-048).
+            raise RuntimeError(
+                "No on_layer_transfer callback configured; refusing to "
+                f"mark layer {migration.layer_id} as transferred"
             )
-            if not success:
-                raise RuntimeError(f"Transfer failed for layer {migration.layer_id}")
+        success = self._on_transfer(
+            migration.layer_id,
+            migration.source_node,
+            migration.target_node,
+        )
+        if not success:
+            raise RuntimeError(f"Transfer failed for layer {migration.layer_id}")
 
         # Step 3: Verify
         migration.state = MigrationState.VERIFYING

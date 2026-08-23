@@ -52,6 +52,13 @@ class TestRecoveryManagerCallbacks:
 
     def test_redistribute_callback_fired(self):
         mgr = NodeRecoveryManager()
+        # Redistribution planning needs a topology: without layer
+        # assignments there are no survivors to rebalance onto and the
+        # callback can never fire.
+        mgr.set_layer_assignments({
+            "node-1": (0, 11),
+            "node-2": (12, 21),
+        })
         cb = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
         mgr.set_redistribute_layers_callback(cb)
         mgr.on_node_failure("node-1")

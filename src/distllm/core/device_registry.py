@@ -19,7 +19,7 @@ from loguru import logger
 from distllm.constants import (
     Device,
     DeviceFamily,
-    DEVICE_TO_FAMILY,
+    DEVICE_FAMILY,
     INTEL_XPU_BANDWIDTH_GBPS,
     MPS_DEFAULT_MEMORY_BYTES,
     MPS_DEFAULT_GPU_CORES,
@@ -83,7 +83,7 @@ def detect_all_devices() -> list[DeviceInfo]:
                 cc = f"{props.major}.{props.minor}"
                 dev_info = DeviceInfo(
                     device_type=platform_type,
-                    device_family=DEVICE_TO_FAMILY.get(platform_type, DeviceFamily.UNKNOWN),
+                    device_family=DEVICE_FAMILY.get(platform_type, DeviceFamily.UNKNOWN),
                     device_id=i,
                     name=props.name,
                     total_memory_bytes=total,
@@ -265,7 +265,7 @@ def _estimate_fp32_tflops(props: Any) -> float:
 
 def get_device_family(device_type: str) -> DeviceFamily:
     """Map a device type string to its DeviceFamily."""
-    return DEVICE_TO_FAMILY.get(device_type, DeviceFamily.UNKNOWN)
+    return DEVICE_FAMILY.get(device_type, DeviceFamily.UNKNOWN)
 
 
 def get_backend_priority(device_family: DeviceFamily, backend_name: str) -> int:

@@ -22,7 +22,7 @@ from distllm.core.usage_meter import UsageMeter, create_usage_meter
 from loguru import logger
 
 
-_ENABLED = os.environ.get("DISTLLM_QUOTA_ENABLED", "0") == "1"
+_ENABLED = os.environ.get("DISTLLM_QUOTA_ENABLED", "1") == "1"
 
 # Module-level singleton (initialized on first use)
 _meter: UsageMeter | None = None
@@ -100,6 +100,7 @@ class QuotaMiddleware(BaseHTTPMiddleware):
             )
 
         start_time = time.monotonic()
+        response = None
         try:
             response = await call_next(request)
             return response
@@ -108,7 +109,7 @@ class QuotaMiddleware(BaseHTTPMiddleware):
             meter.release_quota(tenant_id)
 
             # Record usage for successful streaming endpoints
-            if response.status_code < 400:
+            if response is not None and response.status_code < 400:
                 self._record_usage(request, response, meter, tenant_id, key_id, elapsed_ms)
 
     def _should_track(self, path: str) -> bool:
@@ -140,7 +141,8 @@ class QuotaMiddleware(BaseHTTPMiddleware):
             # attempting a fragile async body read that can deadlock.
             body = getattr(request, "_json", None) or getattr(request.state, "parsed_body", None)
             prompt = ""
-            if body:
+            try:
+                if body:
                     if isinstance(body, dict):
                         prompt = body.get("prompt", "") or ""
                         messages = body.get("messages", [])
@@ -148,7 +150,7 @@ class QuotaMiddleware(BaseHTTPMiddleware):
                             prompt = " ".join(
                                 m.get("content", "") for m in messages if isinstance(m, dict)
                             )
-                input_tokens = _estimate_token_count(prompt)
+                    input_tokens = _estimate_token_count(prompt)
             except (ValueError, TypeError, AttributeError) as e:
                 logger.debug(f"Failed to estimate input tokens: {e}")
                 input_tokens = 0

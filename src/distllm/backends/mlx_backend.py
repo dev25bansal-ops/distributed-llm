@@ -102,19 +102,32 @@ class MLXNodeAdapter(BackendAdapter):
     def _forward_input_ids(
         self, input_ids: torch.Tensor, mx: Any,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass from token IDs through the full model."""
+        """Forward pass from token IDs through the full model.
+
+        The whole sequence is evaluated in a SINGLE model call so causal
+        attention covers prior context.  Scoring each token as an
+        isolated length-1 sequence (the previous behavior) drops all
+        attention to earlier tokens and yields wrong logits whenever
+        seq_len > 1.
+        """
         import numpy as np
-        ids_np = input_ids.cpu().numpy().tolist()[0]
-        logits_list = []
 
-        for token_id in ids_np:
-            logits = self._model(mx.array([token_id]).reshape(1, 1))
-            logits_list.append(logits)
+        ids_np = input_ids.detach().cpu().numpy()
+        if ids_np.ndim == 1:
+            ids_np = ids_np[np.newaxis, :]
 
-        # Stack and convert to torch
-        import mlx.core as mx
-        full_logits = mx.concatenate(logits_list, axis=1)
-        logits_tensor = torch.from_numpy(np.array(full_logits, dtype=np.float32))
+        per_row_logits = []
+        for row in range(ids_np.shape[0]):
+            mlx_input = mx.array(ids_np[row].tolist()).reshape(1, -1)
+            out = self._model(mlx_input)
+            # Newer mlx-lm versions return (logits, cache); accept both.
+            logits = out[0] if isinstance(out, tuple) else out
+            per_row_logits.append(torch.from_numpy(np.asarray(logits, dtype=np.float32)))
+
+        if len(per_row_logits) == 1:
+            logits_tensor = per_row_logits[0]
+        else:
+            logits_tensor = torch.cat(per_row_logits, dim=0)
         return logits_tensor, []
 
     def _forward_full_model(

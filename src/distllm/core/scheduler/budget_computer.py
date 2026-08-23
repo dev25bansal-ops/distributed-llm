@@ -81,6 +81,13 @@ class BudgetComputer:
             if s.status.value == "prefilling" and len(s.generated_tokens) > 0
         )
         total_decode_demand = active_decode_count + pending_decode_count
+        # Sequences already mid-flight (decoding or prefilling).  Budget
+        # relaxation may never shrink slots below this count — doing so
+        # silently drops live sequences from the iteration.
+        in_flight_count = sum(
+            1 for s in active_snapshot
+            if s.status.value in ("decoding", "prefilling") or len(s.generated_tokens) > 0
+        )
 
         # Guarantee decode slots: at least enough for all active decoders.
         # max_decode_tokens here represents *decode slots* (each decode = 1 token).
@@ -94,8 +101,9 @@ class BudgetComputer:
                 int(guaranteed_decode * (1.0 + pressure)),
             )
         elif pressure < 0.3:
-            # Relax decode slots when idle
-            adjusted_decode = max(1, int(base_decode_slots * 0.6))
+            # Relax decode slots when idle — but never below the in-flight
+            # count, or active sequences get dropped from the iteration.
+            adjusted_decode = max(in_flight_count, 1, int(base_decode_slots * 0.6))
         else:
             adjusted_decode = base_decode_slots
 
@@ -160,11 +168,17 @@ class BudgetComputer:
             if pool is not None:
                 free_blocks = getattr(pool, 'free_count', 0)
                 block_size = getattr(pool, 'block_size', 16)
-                # Convert free blocks to a token budget: each free block
-                # can hold block_size tokens.  Leave 10% headroom so we
-                # don't exhaust the pool between budget recalculations.
-                block_token_budget = int(free_blocks * block_size * 0.9)
-                budget = min(budget, block_token_budget)
+                # Only cap when both are real numbers — an incomplete/partial
+                # pool object (or None fields) must not collapse the budget
+                # to a degenerate value that stalls all scheduling.
+                if isinstance(free_blocks, (int, float)) and isinstance(
+                    block_size, (int, float)
+                ):
+                    # Each free block holds block_size tokens; leave 10%
+                    # headroom so we don't exhaust the pool between
+                    # budget recalculations.
+                    block_token_budget = int(free_blocks * block_size * 0.9)
+                    budget = min(budget, block_token_budget)
             else:
                 pool_util = getattr(
                     paged_attention_mgr, 'pool_utilization', 0.0

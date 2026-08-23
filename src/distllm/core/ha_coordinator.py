@@ -29,12 +29,40 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 from loguru import logger
+
+
+def _default_heartbeat_transport(
+    peer_id: str,
+    host: str,
+    port: int,
+    payload: dict[str, Any],
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """POST an election heartbeat to a peer coordinator's HA endpoint.
+
+    Returns the peer's response dict (its term / leader view). Raises on any
+    network or non-2xx error so the caller treats the peer as unreachable.
+    The peer coordinator must expose ``POST /api/v1/ha/heartbeat`` and route
+    it to :meth:`RayFaultTolerance.handle_heartbeat_request`.
+    """
+    import httpx
+
+    url = f"http://{host}:{port}/api/v1/ha/heartbeat"
+    headers: dict[str, str] = {}
+    secret = os.environ.get("DISTLLM_HA_SECRET")
+    if secret:
+        headers["X-HA-Secret"] = secret
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
 
 
 class CoordinatorState(enum.Enum):
@@ -68,6 +96,7 @@ class RayFaultTolerance:
         coordinator_id: str,
         heartbeat_interval_s: float = 2.0,
         election_timeout_s: float = 10.0,
+        heartbeat_transport: Callable[..., dict] | None = None,
     ) -> None:
         self._id = coordinator_id
         self._heartbeat_interval_s = heartbeat_interval_s
@@ -88,6 +117,12 @@ class RayFaultTolerance:
         # State replication
         self._replicated_state: dict[str, Any] = {}
         self._on_state_change: Callable[[dict], None] | None = None
+
+        # Heartbeat transport used to actively probe peer liveness. Defaults
+        # to an HTTP POST to each peer's ``/api/v1/ha/heartbeat`` endpoint.
+        # Without a working transport a peer is only considered alive while it
+        # has recently sent us an inbound heartbeat.
+        self._heartbeat_transport = heartbeat_transport or _default_heartbeat_transport
 
     @property
     def current_term(self) -> int:
@@ -126,6 +161,7 @@ class RayFaultTolerance:
                 "host": host,
                 "port": port,
                 "last_seen": time.monotonic(),
+                "online": True,
             }
             # Track initial cluster size for quorum computation
             self._initial_cluster_size = max(self._initial_cluster_size, len(self._peers) + 1)
@@ -134,6 +170,15 @@ class RayFaultTolerance:
         """Remove a peer coordinator."""
         with self._lock:
             self._peers.pop(peer_id, None)
+
+    def set_heartbeat_transport(self, transport: Callable[..., dict]) -> None:
+        """Override the transport used to probe peer liveness.
+
+        The transport is a callable ``(peer_id, host, port, payload) -> dict``
+        that raises on failure and returns the peer's heartbeat response dict
+        on success. Primarily used for tests and non-HTTP deployments.
+        """
+        self._heartbeat_transport = transport
 
     def get_state(self) -> CoordinatorState:
         """Return the current election state."""
@@ -180,9 +225,21 @@ class RayFaultTolerance:
             A response dict with this coordinator's state.
         """
         with self._lock:
-            # Update peer's last seen time
-            if sender_id in self._peers:
-                self._peers[sender_id]["last_seen"] = time.monotonic()
+            # Update the sender's last-seen time and (re)admit it. A peer
+            # marked offline after a transient timeout — or not yet registered
+            # — must re-enter the quorum on its next inbound heartbeat,
+            # otherwise a single network blip permanently removes it (B11).
+            peer_info = self._peers.get(sender_id)
+            if peer_info is None:
+                self._peers[sender_id] = {
+                    "host": "",
+                    "port": 0,
+                    "last_seen": time.monotonic(),
+                    "online": True,
+                }
+            else:
+                peer_info["last_seen"] = time.monotonic()
+                peer_info["online"] = True
 
             # Raft: if sender has higher term, update our term and become follower
             if term > self._current_term:
@@ -268,36 +325,97 @@ class RayFaultTolerance:
             except Exception as e:
                 logger.warning(f"HA election error: {e}")
 
+    def _probe_peer(self, peer_id: str, info: dict[str, Any]) -> bool:
+        """Send an outbound heartbeat to a peer and refresh its liveness.
+
+        The peer is only treated as alive when the transport succeeds. On
+        success its ``last_seen`` is refreshed (mirroring an inbound
+        heartbeat) and a higher term reported by the peer is adopted so a
+        low-term node cannot believe it is the leader.
+
+        Returns:
+            ``True`` if the peer responded, ``False`` otherwise.
+        """
+        if self._heartbeat_transport is None:
+            return False
+        try:
+            with self._lock:
+                payload = {
+                    "coordinator_id": self._id,
+                    "term": self._current_term,
+                    "state": dict(self._replicated_state),
+                }
+            resp = self._heartbeat_transport(peer_id, info["host"], info["port"], payload)
+            with self._lock:
+                if peer_id not in self._peers:
+                    return False
+                self._peers[peer_id]["last_seen"] = time.monotonic()
+                self._peers[peer_id]["online"] = True
+                if isinstance(resp, dict):
+                    peer_term = resp.get("term", 0)
+                    if peer_term > self._current_term:
+                        self._current_term = peer_term
+                        self._voted_for = None
+                        if self._state == CoordinatorState.LEADER:
+                            logger.info(
+                                f"{self._id}: Stepping down, {peer_id} reports term {peer_term}"
+                            )
+                        self._state = CoordinatorState.FOLLOWER
+            return True
+        except Exception as e:  # noqa: BLE001 - transport failures are expected
+            logger.debug(f"{self._id}: heartbeat probe to {peer_id} failed: {e}")
+            return False
+
     def _run_election_round(self) -> None:
         """Run one round of the election protocol.
 
         Implements a simple leader election:
-        1. Evict peers that haven't sent heartbeats within timeout
-        2. Among alive peers (including self), lowest ID becomes leader
-        3. If leader changes, log the transition and fire callbacks
-        4. Prevent split-brain by requiring quorum (majority alive)
+        1. Actively probe peers for liveness (outbound heartbeats)
+        2. Mark peers offline that haven't been heard from within timeout
+           (they are kept in membership and re-admitted on any heartbeat)
+        3. Among alive peers (including self), lowest ID becomes leader
+        4. Fail closed: never self-elect without a confirmed majority
         """
+        # Probe peers outside the lock — network I/O must not block election
+        # bookkeeping for concurrent callers.
+        with self._lock:
+            peers_snapshot = {pid: dict(info) for pid, info in self._peers.items()}
+        for pid, info in peers_snapshot.items():
+            self._probe_peer(pid, info)
+
         with self._lock:
             now = time.monotonic()
 
-            # Evict stale peers
-            stale = [
-                pid
-                for pid, info in self._peers.items()
-                if now - info["last_seen"] > self._election_timeout_s
-            ]
-            for pid in stale:
-                logger.info(f"{self._id}: Peer {pid} timed out, removing")
-                del self._peers[pid]
+            # Mark stale peers offline rather than evicting them (B11). A node
+            # that missed one election timeout must remain recoverable via its
+            # next inbound heartbeat or a successful outbound probe; deleting
+            # it here would let a transient network blip permanently remove it
+            # from the quorum.
+            for pid, info in self._peers.items():
+                if now - info["last_seen"] > self._election_timeout_s:
+                    if info.get("online", True):
+                        logger.info(f"{self._id}: Peer {pid} timed out, marking offline")
+                    info["online"] = False
 
-            # Count alive nodes (including self)
-            alive_ids = sorted([self._id] + list(self._peers.keys()))
+            # Count alive nodes (including self). Offline peers stay in
+            # membership but are excluded from the liveness quorum.
+            alive_ids = sorted(
+                [self._id]
+                + [
+                    pid
+                    for pid, info in self._peers.items()
+                    if info.get("online", True)
+                ]
+            )
             total_alive = len(alive_ids)
 
-            # Split-brain prevention: quorum based on initial cluster size
-            # This prevents two halves of a partition from both electing leaders
+            # Split-brain prevention: require a quorum of the *fixed* initial
+            # cluster membership. A coordinator must never self-elect without
+            # a confirmed majority — even if every peer has been evicted,
+            # ``_initial_cluster_size`` (and therefore the quorum) does not
+            # shrink, so a partitioned minority stays FOLLOWER.
             quorum = (self._initial_cluster_size // 2) + 1
-            if total_alive < quorum and len(self._peers) > 0:
+            if total_alive < quorum:
                 logger.warning(
                     f"{self._id}: No quorum ({total_alive} alive, need {quorum} "
                     f"of {self._initial_cluster_size} initial). "

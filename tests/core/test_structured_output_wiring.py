@@ -104,15 +104,16 @@ class TestSchemaConstrainedDecoder:
         mask = constraint.get_logits_mask(256)
         assert mask.shape == (256,)
 
-    def test_grammar_creates_constraint(self, tokenizer):
+    def test_grammar_raises_not_implemented(self, tokenizer):
+        """GBNF grammar constraints are intentionally unsupported: real
+        grammar compilation is not implemented, so the decoder fails loudly
+        rather than silently substituting a generic (non-grammar) constraint."""
         from distllm.core.constrained_decoder import SchemaConstrainedDecoder
-        constraint = SchemaConstrainedDecoder.from_response_format(
-            {"type": "grammar", "grammar": 'root ::= "hello"'},
-            tokenizer=tokenizer,
-        )
-        assert constraint is not None
-        mask = constraint.get_logits_mask(256)
-        assert mask.shape == (256,)
+        with pytest.raises(NotImplementedError):
+            SchemaConstrainedDecoder.from_response_format(
+                {"type": "grammar", "grammar": 'root ::= "hello"'},
+                tokenizer=tokenizer,
+            )
 
     def test_regex_creates_constraint(self, tokenizer):
         from distllm.core.constrained_decoder import SchemaConstrainedDecoder
@@ -367,6 +368,7 @@ class TestChatRouteStreamingPassthrough:
         mock_coord.tokenizer = _make_real_tokenizer()
         mock_coord.list_models = MagicMock(return_value=["test"])
         mock_coord._vlm_pipeline = None
+        mock_coord._model_router = None
 
         with _patch_coord(chat_mod, mock_coord):
             with patch.object(chat_mod, '_stream_response') as mock_stream:

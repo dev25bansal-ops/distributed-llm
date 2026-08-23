@@ -37,6 +37,11 @@ class LayerWeights:
     flops_per_token: int = 0
     flops_per_seq: int = 0
     kv_cache_bytes_per_token: int = 0
+    # Ground-truth model dims (F-051): populated by estimate_layer_weights so
+    # the learned-cost serving path can emit exact hidden/intermediate
+    # features instead of reverse-engineering them from weight bytes.
+    hidden_size: int = 0
+    intermediate_size: int = 0
 
     @property
     def total_memory_bytes(self) -> int:
@@ -232,6 +237,8 @@ class GPUProfiler:
                 flops_per_token=flops_per_token,
                 flops_per_seq=flops_per_token,
                 kv_cache_bytes_per_token=kv_per_token,
+                hidden_size=hidden_size,
+                intermediate_size=intermediate_size,
             ))
 
         lm_head_mem = vocab_size * hidden_size * dtype_bytes

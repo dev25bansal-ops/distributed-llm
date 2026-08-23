@@ -130,7 +130,21 @@ class UnifiedRouter:
             elif isinstance(p, dict):
                 d = p
             else:
-                d = p.__dict__
+                # Attributes may live on the instance or the class; getattr
+                # covers both (p.__dict__ alone misses class-level attrs).
+                d = {
+                    "provider": getattr(p, "provider", getattr(p, "provider_name", "")),
+                    "instance_type": getattr(p, "instance_type", ""),
+                    "region": getattr(p, "region", ""),
+                    "gpu_type": getattr(p, "gpu_type", ""),
+                    "gpu_count": getattr(p, "gpu_count", 1),
+                    "gpu_memory_gb": getattr(p, "gpu_memory_gb", 0.0),
+                    "on_demand_price": getattr(p, "on_demand_price", None),
+                    "price_per_hour": getattr(p, "price_per_hour", 0.0),
+                    "spot_price": getattr(p, "spot_price", 0.0),
+                    "carbon_intensity": getattr(p, "carbon_intensity", 0.0),
+                    "latency_ms": getattr(p, "latency_ms", 0.0),
+                }
             options.append(ComputeOption(
                 source=ComputeSource.CLOUD,
                 provider_name=d.get("provider", d.get("name", "")),

@@ -146,7 +146,8 @@ class TestExtractFromChatResponse:
         data = {"choices": [{"message": {"content": "hello"}, "index": 0}]}
         result = model._extract_tokens_from_chat_response(data)
         assert not result.ok
-        assert "no token IDs" in result.error.lower() or "empty" in result.error.lower()
+        # lowered haystack cannot contain the capitalized needle — lower both.
+        assert "no token ids" in result.error.lower() or "empty" in result.error.lower()
 
 
 # ── Pydantic validation ─────────────────────────────────────────────────

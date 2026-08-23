@@ -63,8 +63,11 @@ class CudaIPCManager:
             if not torch.cuda.is_available():
                 logger.error("CUDA not available for IPC import")
                 return None
-            import pickle
-            func, args = pickle.loads(ipc_handle)
+            # SAFETY (security policy TASK-001): do NOT pickle.loads untrusted
+            # handles — that is an RCE vector. Use a restricted loader that only
+            # yields the exact (reduction_func, args) tuple torch's storage
+            # reduction produces, and reject everything else.
+            func, args = self._restricted_loads(ipc_handle)
             storage = func(*args)
             tensor = torch.tensor([], dtype=dtype, device=self._device).set_(
                 storage, 0, shape, _compute_stride(shape, dtype)
@@ -74,6 +77,48 @@ class CudaIPCManager:
         except Exception as e:
             logger.error(f"Failed to import IPC tensor {key}: {e}")
             return None
+
+    @staticmethod
+    def _restricted_loads(ipc_handle: bytes):
+        """Restricted unpickle for storage-reduction handles.
+
+        Uses a RestrictedUnpickler whose ``find_class`` allows only the exact
+        torch storage-reduction callables that ``reduce_storage`` emits —
+        everything else raises, closing the pickle RCE vector while keeping
+        legitimate CUDA IPC working.
+        """
+        import pickle
+        import io
+
+        class _RestrictedUnpickler(pickle.Unpickler):
+            _SAFE_BUILTINS = {"bytes", "bytearray", "list", "tuple"}
+
+            def find_class(self, module, name):
+                allowed = (
+                    ("torch.multiprocessing.reduction", "_reconstruct_storage_with_fd"),
+                    ("torch.multiprocessing.reduction", "_reconstruct_storage"),
+                    ("torch.multiprocessing.reduction", "_get_shared_filename"),
+                    ("torch.multiprocessing.reduction", "_storage_from_file"),
+                    ("torch._C", "_warn_storage_resize"),
+                    ("torch", "UntypedStorage"),
+                )
+                if (module, name) in allowed:
+                    return super().find_class(module, name)
+                # Reject arbitrary classes/functions — the RCE vector.
+                raise pickle.UnpicklingError(
+                    f"forbidden global in IPC handle: {module}.{name}"
+                )
+
+        payload = _RestrictedUnpickler(io.BytesIO(ipc_handle)).load()
+
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            raise ValueError("IPC handle is not a storage-reduction tuple")
+        func, args = payload
+        if not callable(func):
+            raise ValueError("IPC handle func is not callable")
+        if not isinstance(args, (tuple, list)):
+            raise ValueError("IPC handle args malformed")
+        return func, args
 
     def close(self, key: str) -> None:
         self._handles.pop(key, None)

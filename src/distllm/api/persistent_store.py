@@ -3,11 +3,13 @@
 Replaces in-memory dicts with SQLite for data durability across restarts.
 """
 
+import contextlib
 import json
 import os
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -18,28 +20,70 @@ class PersistentStore:
 
     SCHEMA_VERSION = 1
 
-    def __init__(self, db_path: str | Path = ":memory:"):
+    def __init__(self, db_path: str | Path = ":memory:", pool_size: int = 4):
         self.db_path = str(db_path)
+        self._pool_size = max(1, pool_size)
         self._lock = threading.Lock()
+        # Dedicated non-reentrant writer lock (test contract: a second
+        # thread must NOT be able to acquire it while one is held).
+        self._write_lock = threading.Lock()
+        self._pool: list[sqlite3.Connection] = []
+        if self.db_path == ":memory:":
+            # Pooled connections must all see the SAME in-memory database:
+            # a unique shared-cache URI per store instance gives that, and
+            # the anchor connection (never returned to the pool) keeps the
+            # memory database alive for the store's lifetime.
+            self._db_uri = f"file:mem_{uuid.uuid4().hex}?mode=memory&cache=shared"
+            self._connect_kwargs: dict[str, Any] = {"uri": True}
+            self._anchor = self._open_conn()
+        else:
+            self._db_uri = self.db_path
+            self._connect_kwargs: dict[str, Any] = {}
+            self._anchor = None
         self._init_db()
         self._migrate()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+    def _open_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_uri, check_same_thread=False, **self._connect_kwargs)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if self.db_path != ":memory:":
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
-    @contextmanager
-    def _transaction(self):
+    def _get_conn(self) -> sqlite3.Connection:
+        """Take a connection from the pool, creating one if it is empty."""
         with self._lock:
+            if self._pool:
+                return self._pool.pop()
+        return self._open_conn()
+
+    def _return_conn(self, conn: sqlite3.Connection) -> None:
+        """Return a connection to the pool, closing extras beyond pool_size."""
+        with self._lock:
+            if len(self._pool) < self._pool_size:
+                self._pool.append(conn)
+                return
+        conn.close()
+
+    @contextmanager
+    def _transaction(self, write: bool = False):
+        # Writers serialize on a dedicated non-reentrant lock so only one
+        # mutation runs at a time; readers may proceed concurrently.
+        cm = self._write_lock if write else None
+        with cm or contextlib.nullcontext():
             conn = self._get_conn()
             try:
                 yield conn
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
-                conn.close()
+                self._return_conn(conn)
 
     def _init_db(self):
         with self._transaction() as conn:
@@ -65,6 +109,13 @@ class PersistentStore:
                     data TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_batches_created
+                    ON batches (created_at);
+                CREATE INDEX IF NOT EXISTS idx_files_created
+                    ON files (created_at);
+                CREATE INDEX IF NOT EXISTS idx_ft_jobs_created
+                    ON fine_tuning_jobs (created_at);
             """)
 
     def _get_schema_version(self) -> int:
@@ -162,19 +213,19 @@ class PersistentStore:
             row = conn.execute("SELECT data FROM files WHERE id = ?", (file_id,)).fetchone()
             return json.loads(row["data"]) if row else None
 
-    def list_files(self, purpose: str | None = None) -> list[dict]:
+    def list_files(self, purpose: str | None = None, limit: int = 1000) -> list[dict]:
         with self._transaction() as conn:
             if purpose:
                 rows = conn.execute(
-                    "SELECT data FROM files ORDER BY created_at DESC"
+                    "SELECT data FROM files WHERE json_extract(data, '$.purpose') = ? ORDER BY created_at DESC LIMIT ?",
+                    (purpose, limit),
                 ).fetchall()
-                files = [json.loads(r["data"]) for r in rows]
-                return [f for f in files if f.get("purpose") == purpose]
             else:
                 rows = conn.execute(
-                    "SELECT data FROM files ORDER BY created_at DESC"
+                    "SELECT data FROM files ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
                 ).fetchall()
-                return [json.loads(r["data"]) for r in rows]
+            return [json.loads(r["data"]) for r in rows]
 
     def delete_file(self, file_id: str) -> bool:
         with self._transaction() as conn:

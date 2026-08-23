@@ -150,9 +150,12 @@ class PreemptionManager:
         if len(self._preempted) >= self._max_preempted:
             return None
 
+        MAX_SCAN = 50  # bounded scan: O(MAX_SCAN) instead of O(n)
         victim_seq = None
         victim_pri = -1
-        for _rid, seq in active.items():
+        for _scan_idx, (_rid, seq) in enumerate(active.items()):
+            if _scan_idx >= MAX_SCAN:
+                break
             if seq.priority >= min_priority and (
                 victim_seq is None or seq.priority > victim_pri
             ):

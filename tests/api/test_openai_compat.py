@@ -187,9 +187,10 @@ class TestChatCompletionModels:
         assert delta.delta["content"] == "Hello"
         assert delta.message is None
 
-    def test_chat_with_empty_messages_allowed(self):
-        req = ChatCompletionRequest(messages=[])
-        assert req.messages == []
+    def test_chat_with_empty_messages_rejected(self):
+        # OpenAI-compatible contract: empty messages list is a 422.
+        with pytest.raises(ValidationError):
+            ChatCompletionRequest(messages=[])
 
     def test_chat_with_no_messages_raises(self):
         with pytest.raises(ValidationError):
@@ -270,9 +271,10 @@ class TestCompletionModels:
         )
         assert req.response_format["type"] == "json_schema"
 
-    def test_completion_empty_prompt_raises(self):
-        req = CompletionRequest(prompt="")
-        assert req.prompt == ""
+    def test_completion_empty_prompt_rejected(self):
+        # Empty prompt is rejected (min_length=1) — matches test_input_validation.
+        with pytest.raises(ValidationError):
+            CompletionRequest(prompt="")
 
 
 class TestEmbeddingModels:
@@ -355,6 +357,9 @@ class TestChatRouteHandler:
         coord = MagicMock()
         coord.generate.return_value = "Hello! I am a distributed LLM."
         coord._vlm_pipeline = None
+        # Route validates body.model against the coordinator's model list.
+        coord._model_router.resolve.return_value = "test-model"
+        coord.list_models.return_value = ["test-model"]
         return coord
 
     @pytest.mark.asyncio

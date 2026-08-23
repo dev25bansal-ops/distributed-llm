@@ -1,5 +1,15 @@
 """Property-based fuzz tests for serialization round-trips.
 
+DEPENDENCY NOTE: This entire file is skipped because the modules it imports
+have been removed from the codebase:
+  - distllm.communication.serializers  (removed)
+
+Functionality moved to:
+  - tensor_to_proto / kv_cache_to_proto  → distllm.dist.node_service
+
+To re-enable: refactor imports from distllm.dist.node_service and update
+proto type references.
+
 Covers: tensor serialization, KV cache proto, quantize/dequantize,
 edge cases (empty tensors, NaN, Inf, extreme dims, bf16).
 """
@@ -9,17 +19,21 @@ import torch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-try:
-    from distllm.communication.serializers import (
-        proto_to_tensor,
-        tensor_to_proto,
-        kv_cache_to_proto,
-        proto_to_kv_cache,
-        quantize_activation,
-        dequantize_activation,
-    )
-except ImportError:
-    pytest.skip("distllm.communication.serializers module removed", allow_module_level=True)
+pytest.importorskip(
+    "distllm.communication.serializers",
+    reason="distllm.communication.serializers module removed — functionality "
+           "moved to distllm.dist.node_service; re-enable once tests are "
+           "refactored to use the new location",
+)
+
+from distllm.communication.serializers import (  # noqa: E402
+    proto_to_tensor,
+    tensor_to_proto,
+    kv_cache_to_proto,
+    proto_to_kv_cache,
+    quantize_activation,
+    dequantize_activation,
+)
 from distllm.core.kv_cache import KVCache
 
 

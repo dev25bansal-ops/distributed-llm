@@ -6,6 +6,8 @@ Provides:
   - ``E2EEncryption`` — NaCl/libsodium-based end-to-end encryption for
     tensor bytes with per-session X25519 key exchange
   - ``SessionManager`` — manages per-node-pair encryption sessions
+  - Content moderation — ``ToxicityDetector``, ``PIIRedactor``,
+    ``JailbreakDetector``, ``TopicFilter``, ``ContentModerationPipeline``
 """
 
 from .utils import hf_revision, safe_urlopen, validate_http_url
@@ -21,6 +23,19 @@ from .watermark import (
     WatermarkConfig,
     run_cli,
 )
+from .content_moderation import (
+    ToxicityDetector,
+    PIIRedactor,
+    JailbreakDetector,
+    TopicFilter,
+    ContentModerationPipeline,
+    ToxicResult,
+    PIEEntity,
+    PIIResult,
+    JailbreakResult,
+    TopicFilterResult,
+    ModerationResult,
+)
 
 __all__ = [
     "hf_revision",
@@ -34,4 +49,15 @@ __all__ = [
     "ModelWatermark",
     "WatermarkConfig",
     "run_cli",
+    "ToxicityDetector",
+    "PIIRedactor",
+    "JailbreakDetector",
+    "TopicFilter",
+    "ContentModerationPipeline",
+    "ToxicResult",
+    "PIEEntity",
+    "PIIResult",
+    "JailbreakResult",
+    "TopicFilterResult",
+    "ModerationResult",
 ]

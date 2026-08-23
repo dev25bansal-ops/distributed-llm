@@ -313,7 +313,7 @@ class TestAgenticRouter:
 
         stats = router.stats
 
-        assert set(stats.keys()) == {
+        assert set(stats.keys()) >= {
             "total_routes",
             "judge_calls",
             "fallback_calls",

@@ -5,6 +5,7 @@ Covers: subscribe, unsubscribe, publish, replay, persistence, thread safety.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from unittest.mock import Mock

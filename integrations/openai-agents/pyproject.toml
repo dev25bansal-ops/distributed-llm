@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "distllm-openai-agents"
+version = "0.1.0"
+description = "OpenAI Agents SDK integration for DistLLM — route agents through a DistLLM cluster"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "DistLLM Contributors" },
+]
+keywords = ["distllm", "openai-agents", "agents", "llm", "distributed", "inference"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openai-agents>=0.1.0",
+    "openai>=1.0.0",
+    "distllm>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/distllm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

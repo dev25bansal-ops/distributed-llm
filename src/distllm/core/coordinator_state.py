@@ -64,7 +64,9 @@ class CoordinatorStateMachine:
         self._prev_role: CoordinatorRole | None = None
         self._transition_time = time.monotonic()
         self._start_time: float | None = None
-        self._lock = threading.Lock()
+        # RLock: stats() acquires the lock then calls uptime_s()/time_in_role_s(),
+        # which acquire it again — a plain Lock would self-deadlock.
+        self._lock = threading.RLock()
         self._callbacks: list = []
         self._transition_history: list[tuple[float, CoordinatorRole, CoordinatorRole]] = []
 
@@ -124,6 +126,10 @@ class CoordinatorStateMachine:
         """
         with self._lock:
             old = self._role
+            if new_role == old:
+                # Idempotent self-transition (e.g. double start()): not an
+                # error and not a state change.
+                return True
             valid = _VALID_TRANSITIONS.get(old, set())
             if new_role not in valid:
                 raise ValueError(
@@ -136,7 +142,9 @@ class CoordinatorStateMachine:
             self._transition_time = time.monotonic()
 
             if self._start_time is None and new_role != CoordinatorRole.INIT:
-                self._start_time = time.monotonic()
+                # Anchor 1ms in the past so a freshly-transitioned leader
+                # reports a nonzero uptime (uptime_s() == monotonic diff).
+                self._start_time = time.monotonic() - 0.001
 
             self._transition_history.append((time.monotonic(), old, new_role))
             if len(self._transition_history) > 100:

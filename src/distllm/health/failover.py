@@ -22,10 +22,14 @@ class FailoverEngine:
         failure_threshold: int = 3,
         degraded_latency_ms: float = 2000.0,
         recovery_threshold: int = 2,
+        offline_threshold: int | None = None,
     ):
         self._failure_threshold = failure_threshold
         self._degraded_latency_ms = degraded_latency_ms
         self._recovery_threshold = recovery_threshold
+        # Prolonged failure: a node is declared OFFLINE (dead) after this many
+        # consecutive failures, defaulting to 2x the UNHEALTHY threshold.
+        self._offline_threshold = offline_threshold or (2 * failure_threshold)
         self._callbacks: list[Callable[[str, NodeState, NodeState], None]] = []
 
     def on_state_change(
@@ -63,7 +67,9 @@ class FailoverEngine:
             record.consecutive_successes = 0
             record.consecutive_failures += 1
 
-            if record.consecutive_failures >= self._failure_threshold:
+            if record.consecutive_failures >= self._offline_threshold:
+                record.state = NodeState.OFFLINE
+            elif record.consecutive_failures >= self._failure_threshold:
                 record.state = NodeState.UNHEALTHY
             else:
                 record.state = NodeState.DEGRADED

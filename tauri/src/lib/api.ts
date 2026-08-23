@@ -481,3 +481,46 @@ export async function updateTrayStatus(
 export async function addRecentCluster(addr: string): Promise<void> {
   return invoke<void>("add_recent_cluster", { addr });
 }
+
+// ── Notifications ──────────────────────────────────────────────
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+
+export async function initNotifications(): Promise<boolean> {
+  let granted = await isPermissionGranted();
+  if (!granted) {
+    const permission = await requestPermission();
+    granted = permission === "granted";
+  }
+  return granted;
+}
+
+export function notify(title: string, body: string): void {
+  sendNotification({ title, body });
+}
+
+// ── Updater ────────────────────────────────────────────────────
+import { check } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
+
+export async function checkForUpdates(): Promise<Update | null> {
+  try {
+    const update = await check();
+    return update;
+  } catch {
+    return null;
+  }
+}
+
+export async function installUpdate(): Promise<void> {
+  const update = await check();
+  if (update?.available) {
+    await update.downloadAndInstall();
+  }
+}
+
+export interface UpdateCheckResult {
+  available: boolean;
+  version?: string;
+  body?: string;
+  date?: string;
+}

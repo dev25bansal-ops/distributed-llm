@@ -269,3 +269,108 @@ class MetricsPlugin(PluginBase):
 # ── AuthPlugin (re-exported from auth_plugin.py) ─────────────────────────
 
 from distllm.plugins.auth_plugin import AuthPlugin  # noqa: E402
+
+
+# ── ContentModerationPlugin ──────────────────────────────────────────────
+
+class ContentModerationPlugin(PluginBase):
+    """Content moderation of prompts and responses via the moderation pipeline.
+
+    Activated when ``DISTLLM_PLUGIN_CONTENT_MODERATION_ENABLED=1`` is set.
+    Configurable via environment variables:
+
+    * ``DISTLLM_PLUGIN_CONTENT_MODERATION_ACTION`` -- ``block``, ``sanitize``,
+      or ``flag`` (default: ``flag``).
+    * ``DISTLLM_PLUGIN_CONTENT_MODERATION_THRESHOLD`` -- toxicity threshold
+      (default: ``0.7``).
+
+    The ``on_request`` hook analyses the prompt text and may return
+    ``{"_reject": ...}`` when a BLOCK action is configured.  The
+    ``on_response`` hook labels flagged responses with moderation headers.
+    """
+
+    def name(self) -> str:
+        return "content-moderation"
+
+    def version(self) -> str:
+        return "1.0.0"
+
+    def on_init(self, context: dict[str, Any]) -> None:
+        self._enabled = os.environ.get(
+            "DISTLLM_PLUGIN_CONTENT_MODERATION_ENABLED", "0"
+        ) == "1"
+        if not self._enabled:
+            return
+
+        try:
+            from distllm.security.content_moderation.pipeline import ContentModerationPipeline
+            self._pipeline = ContentModerationPipeline()
+        except ImportError as exc:
+            logger.warning("ContentModerationPlugin: cannot import pipeline: {}", exc)
+            self._enabled = False
+            return
+
+        self._action = os.environ.get(
+            "DISTLLM_PLUGIN_CONTENT_MODERATION_ACTION", "flag"
+        ).lower()
+
+        logger.info(
+            "ContentModerationPlugin enabled (action={})", self._action
+        )
+
+    def on_request(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        if not self._enabled:
+            return None
+
+        prompt = context.get("prompt", "")
+        if not prompt:
+            return None
+
+        result = self._pipeline.process(prompt)
+        if result.passed:
+            return None
+
+        if self._action == "block":
+            detail = self._build_detail(result)
+            return {
+                "_reject": {
+                    "reason": f"Content moderation blocked: {detail}",
+                    "status": 451,
+                }
+            }
+
+        if self._action in ("sanitize", "flag"):
+            # Store the result so on_response can use it.
+            context["_moderation_result"] = result
+            if self._action == "sanitize":
+                context["prompt"] = result.redacted_text
+
+        return None
+
+    def on_response(self, request: dict[str, Any], response: dict[str, Any]) -> None:
+        if not self._enabled:
+            return
+
+        result = request.get("_moderation_result")
+        if result is None:
+            return
+
+        if self._action == "flag":
+            response["_moderation_flag"] = True
+            detail = self._build_detail(result)
+            response["_moderation_detail"] = detail
+
+    @staticmethod
+    def _build_detail(result: Any) -> str:
+        """Build a detail string from a moderation result."""
+        parts: list[str] = []
+        if getattr(result, "toxicity", None) and result.toxicity.toxic:
+            parts.append(f"toxicity={result.toxicity.score:.2f}")
+        if getattr(result, "jailbreak", None) and result.jailbreak.jailbreak_attempt:
+            parts.append(f"jailbreak={result.jailbreak.confidence:.2f}")
+        if getattr(result, "topic_filter", None) and not result.topic_filter.allowed:
+            parts.append(f"topics={','.join(result.topic_filter.violated_policies)}")
+        if getattr(result, "pii", None) and result.pii.entities_found:
+            pii_types = sorted(set(e.type for e in result.pii.entities_found))
+            parts.append(f"pii={','.join(pii_types)}")
+        return "; ".join(parts) if parts else "unknown"

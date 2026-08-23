@@ -40,7 +40,14 @@ def tensor_to_proto(tensor: torch.Tensor) -> node_pb2.TensorProto:
 
 
 def tensor_from_proto(proto: node_pb2.TensorProto, device: str = "cpu") -> torch.Tensor:
-    """Convert protobuf TensorProto back to a torch tensor."""
+    """Convert protobuf TensorProto back to a torch tensor.
+
+    Raises:
+        ValueError: If the payload size does not match the declared shape.
+            Rejecting here (before any reshape/allocation) keeps a malformed
+            or hostile proto from crashing with a cryptic torch error or
+            from triggering a huge allocation (declared shape >> payload).
+    """
     if not proto.shape:
         return torch.empty(0, device=device)
     dtype_map = {
@@ -52,11 +59,26 @@ def tensor_from_proto(proto: node_pb2.TensorProto, device: str = "cpu") -> torch
         "int64": torch.int64, "int32": torch.int32, "bool": torch.bool,
     }
     tdtype = dtype_map.get(proto.dtype, torch.float32)
+    declared_numel = 1
+    for dim in proto.shape:
+        declared_numel *= dim
     import numpy as np
     if proto.raw_data:
+        if len(proto.raw_data) != declared_numel * tdtype.itemsize:
+            raise ValueError(
+                f"TensorProto payload mismatch: {len(proto.raw_data)} bytes "
+                f"cannot fill shape {list(proto.shape)} of {tdtype} "
+                f"({declared_numel * tdtype.itemsize} bytes expected)"
+            )
         arr = np.frombuffer(proto.raw_data, dtype=np.uint8)
         tensor = torch.from_numpy(arr).view(tdtype).reshape(list(proto.shape)).clone()
     else:
+        if len(proto.data) != declared_numel:
+            raise ValueError(
+                f"TensorProto payload mismatch: {len(proto.data)} elements "
+                f"cannot fill shape {list(proto.shape)} "
+                f"({declared_numel} elements expected)"
+            )
         tensor = torch.tensor(list(proto.data), dtype=tdtype).reshape(list(proto.shape))
     return tensor.to(device)
 
@@ -111,9 +133,13 @@ class NodeServicer(node_pb2_grpc.NodeServiceServicer):
 
         Uses constant-time comparison via :func:`hmac.compare_digest` to prevent
         timing side-channel attacks against the cluster key.
+
+        Fails closed: a servicer without a configured ``cluster_key`` rejects
+        every RPC.  A worker that must accept traffic must be started with the
+        coordinator's cluster key.
         """
         if self._cluster_key is None:
-            return True
+            return False
         req_key = getattr(request, 'cluster_key', None)
         if not req_key:
             return False
@@ -422,7 +448,7 @@ class NodeServer:
         self._running = threading.Event()
         self._stopped = threading.Event()  # Only set in stop() — used by wait()
 
-    MAX_MSG_SIZE = 512 * 1024 * 1024  # 512 MB — accommodates weight transfers and large KV cache snapshots
+    MAX_MSG_SIZE = 512 * 1024 * 1024  # 512 MB — gRPC Cython int max on Windows (2GB fails to convert); accommodates large weight/KV transfers
     MAX_HIDDEN_DIM = 16384  # Sanity cap on hidden state dimensions
     MAX_BATCH_SIZE = 1024   # Sanity cap on batch dimension
 
@@ -468,6 +494,16 @@ class NodeServer:
             self._server.add_secure_port(f'0.0.0.0:{self._port}', creds)
         else:
             self._server.add_insecure_port(f'0.0.0.0:{self._port}')
+
+        # SECURITY: a keyless node servicer rejects every RPC (fail closed).
+        # Warn loudly so operators notice the misconfiguration instead of
+        # silently serving open (which previously allowed weight exfiltration).
+        if not self._cluster_key:
+            logger.warning(
+                f"Node {self._worker.node_id}: no cluster_key configured — "
+                f"the gRPC servicer will REJECT all RPCs (fail closed). "
+                f"Set a cluster key to enable node-to-node traffic."
+            )
 
         self._server.start()
         self._running.set()

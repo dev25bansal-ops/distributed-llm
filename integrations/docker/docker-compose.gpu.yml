@@ -1,0 +1,448 @@
+# DistLLM GPU Cluster — Production-grade Docker Compose
+# ======================================================
+#
+# Extends the base docker-compose.yml with full NVIDIA GPU support
+# across coordinator and worker services plus production observability.
+#
+# Usage:
+#   docker compose -f integrations/docker/docker-compose.gpu.yml up -d
+#   docker compose -f integrations/docker/docker-compose.gpu.yml up -d --scale worker=4
+#   docker compose -f integrations/docker/docker-compose.gpu.yml logs -f
+#   docker compose -f integrations/docker/docker-compose.gpu.yml down -v
+#
+# Scale workers individually:
+#   docker compose -f integrations/docker/docker-compose.gpu.yml up -d \
+#     --scale worker-1=1 --scale worker-2=1
+#
+# Select CUDA version:
+#   CUDA_VERSION=12.6 docker compose -f integrations/docker/docker-compose.gpu.yml build
+#
+# Grafana: http://localhost:3000  (admin / ${GRAFANA_PASSWORD})
+# Prometheus: http://localhost:9091
+# Coordinator API: http://localhost:8000
+# Coordinator gRPC: localhost:50050
+#
+# Prerequisites:
+#   - NVIDIA Container Toolkit (nvidia-container-toolkit, verified: nvidia-ctk --version)
+#     https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#   - Docker Compose v2.20+ (supports deploy.resources.devices syntax)
+#   - nvidia-smi working on host
+#   - Set GRAFANA_PASSWORD env var for Grafana admin access
+
+version: "3.8"
+
+# ── Shared defaults (anchors) ─────────────────────────────────────────────
+x-images:
+  distllm: &distllm-image
+    image: distllm:${DISTLLM_VERSION:-latest}
+    build:
+      context: ${PROJECT_ROOT:-../../}
+      dockerfile: Dockerfile
+      args:
+        CUDA_VERSION: ${CUDA_VERSION:-12.8.0}
+        TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST:-"8.0;8.6;8.9;9.0"}
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+x-gpu: &gpu-reservation
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: ${GPU_COUNT:-1}
+            capabilities: [gpu]
+
+x-logging: &logging-config
+  options:
+    max-size: "100m"
+    max-file: "5"
+  driver: json-file
+
+x-healthcheck-coordinator: &healthcheck-http
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 60s
+
+x-healthcheck-worker: &healthcheck-gpu
+  interval: 30s
+  timeout: 15s
+  retries: 3
+  start_period: 120s
+
+services:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DistLLM Coordinator (control plane + gRPC gateway)
+  # ═══════════════════════════════════════════════════════════════════════════
+  coordinator:
+    <<: *distllm-image
+    container_name: distllm-coordinator
+    command: >
+      distllm system coordinator
+        --host 0.0.0.0
+        --port 50050
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --total-layers ${TOTAL_LAYERS:-32}
+        --kv-cache-backend ${KV_CACHE_BACKEND:-redis}
+        --device cuda
+        --dtype ${DTYPE:-bfloat16}
+    ports:
+      - "${COORDINATOR_GRPC_PORT:-50050}:50050"   # gRPC worker coordinator
+      - "${COORDINATOR_API_PORT:-8000}:8000"       # REST API / health
+      - "${COORDINATOR_METRICS_PORT:-9090}:9090"   # Prometheus metrics
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - distllm-cache:/data/cache
+      - ${CONFIG_FILE:-./config.yaml}:/app/config.yaml:ro
+      - ./certs:/app/certs:ro
+      - /dev/shm:/dev/shm  # NCCL shared memory
+    environment:
+      # ── GPU / CUDA ──────────────────────────────────────────────
+      - NVIDIA_VISIBLE_DEVICES=${COORDINATOR_CUDA_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${COORDINATOR_CUDA_DEVICES:-0}
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
+
+      # ── NCCL tuning ─────────────────────────────────────────────
+      - NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+      - NCCL_ALGO=${NCCL_ALGO:-Ring}
+      - NCCL_PROTO=${NCCL_PROTO:-Simple}
+      - NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}
+      - NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}
+      - NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
+      - NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2}
+      - NCCL_BUFFSIZE=${NCCL_BUFFSIZE:-4194304}
+      - NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-2}
+
+      # ── DistLLM ─────────────────────────────────────────────────
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DISTLLM_LOG_FORMAT=${LOG_FORMAT:-json}
+      - DISTLLM_NODE_ID=coordinator
+      - DISTLLM_REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DISTLLM_REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - DISTLLM_TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - DISTLLM_PIPELINE_PARALLEL_SIZE=${PIPELINE_PARALLEL_SIZE:-1}
+      - DISTLLM_QUOTA_ENABLED=${QUOTA_ENABLED:-0}
+      - DISTLLM_TLS_ENABLED=${TLS_ENABLED:-0}
+      - DISTLLM_AUDIT_LOG=/var/log/distllm/audit.jsonl
+      - DISTLLM_OTEL_ENDPOINT=${OTEL_ENDPOINT:-}
+
+      # ── Memory / performance ────────────────────────────────────
+      - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      - TORCH_DISTRIBUTED_DEBUG=${TORCH_DISTRIBUTED_DEBUG:-OFF}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
+    env_file: ${ENV_FILE:-../../.env}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-http
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+    logging: *logging-config
+    labels:
+      - "com.distllm.component=coordinator"
+      - "com.distllm.model=${MODEL_NAME:-meta-llama/Llama-2-7b-hf}"
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=9090"
+      - "prometheus.io/path=/metrics"
+    <<: *gpu-reservation
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # GPU Workers (named services for pinned GPU assignment)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Each worker is explicitly named to allow per-GPU pinning via
+  # CUDA_VISIBLE_DEVICES. Scale with:
+  #   UP:  docker compose up -d --scale worker-1=1 --scale worker-2=N
+  #   DOWN: docker compose down --scale worker-2=0
+  # ───────────────────────────────────────────────────────────────────────────
+
+  worker-1:
+    <<: *distllm-image
+    container_name: distllm-worker-1
+    command: >
+      distllm system worker
+        --coordinator coordinator:50050
+        --port 50051
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --device cuda
+        --dtype ${DTYPE:-bfloat16}
+        --kv-cache-backend ${KV_CACHE_BACKEND:-redis}
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - /dev/shm:/dev/shm
+    environment:
+      # ── GPU / CUDA ──────────────────────────────────────────────
+      - NVIDIA_VISIBLE_DEVICES=${WORKER1_CUDA_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${WORKER1_CUDA_DEVICES:-0}
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+
+      # ── NCCL ────────────────────────────────────────────────────
+      - NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+      - NCCL_ALGO=${NCCL_ALGO:-Ring}
+      - NCCL_PROTO=${NCCL_PROTO:-Simple}
+      - NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}
+      - NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}
+      - NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
+      - NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2}
+      - NCCL_BUFFSIZE=${NCCL_BUFFSIZE:-4194304}
+      - NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-2}
+
+      # ── DistLLM ─────────────────────────────────────────────────
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DISTLLM_LOG_FORMAT=${LOG_FORMAT:-json}
+      - DISTLLM_NODE_ID=worker-1
+      - DISTLLM_REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DISTLLM_REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - DISTLLM_CLUSTER_KEY=${CLUSTER_KEY:-}
+      - DISTLLM_WORKER_GRPC_PORT=50051
+
+      # ── Memory / performance ────────────────────────────────────
+      - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
+      - CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
+    env_file: ${ENV_FILE:-../../.env}
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-gpu
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available(), 'GPU not available'; exit(0)"]
+    logging: *logging-config
+    labels:
+      - "com.distllm.component=worker"
+      - "com.distllm.worker-id=1"
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=9090"
+    <<: *gpu-reservation
+
+  worker-2:
+    <<: *distllm-image
+    container_name: distllm-worker-2
+    command: >
+      distllm system worker
+        --coordinator coordinator:50050
+        --port 50052
+        --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --device cuda
+        --dtype ${DTYPE:-bfloat16}
+        --kv-cache-backend ${KV_CACHE_BACKEND:-redis}
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - /dev/shm:/dev/shm
+    environment:
+      # ── GPU / CUDA ──────────────────────────────────────────────
+      - NVIDIA_VISIBLE_DEVICES=${WORKER2_CUDA_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${WORKER2_CUDA_DEVICES:-1}
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+
+      # ── NCCL ────────────────────────────────────────────────────
+      - NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+      - NCCL_ALGO=${NCCL_ALGO:-Ring}
+      - NCCL_PROTO=${NCCL_PROTO:-Simple}
+      - NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}
+      - NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}
+      - NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
+      - NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2}
+      - NCCL_BUFFSIZE=${NCCL_BUFFSIZE:-4194304}
+      - NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-2}
+
+      # ── DistLLM ─────────────────────────────────────────────────
+      - DISTLLM_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DISTLLM_LOG_FORMAT=${LOG_FORMAT:-json}
+      - DISTLLM_NODE_ID=worker-2
+      - DISTLLM_REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DISTLLM_REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - DISTLLM_CLUSTER_KEY=${CLUSTER_KEY:-}
+      - DISTLLM_WORKER_GRPC_PORT=50052
+
+      # ── Memory / performance ────────────────────────────────────
+      - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
+      - CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
+    env_file: ${ENV_FILE:-../../.env}
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-gpu
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available(), 'GPU not available'; exit(0)"]
+    logging: *logging-config
+    labels:
+      - "com.distllm.component=worker"
+      - "com.distllm.worker-id=2"
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=9090"
+    <<: *gpu-reservation
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Redis — KV cache backend, rate limiting, pub/sub coordination
+  # ═══════════════════════════════════════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    container_name: distllm-redis
+    command: >
+      redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --auto-aof-rewrite-percentage 100
+        --auto-aof-rewrite-min-size 64mb
+        --maxmemory ${REDIS_MAXMEMORY:-4gb}
+        --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+        --save 300 10
+        --save 60 10000
+        --lfu-log-factor 10
+        --lfu-decay-time 1
+        ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-}", "--no-auth-warning", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    logging: *logging-config
+    labels:
+      - "com.distllm.component=redis"
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:-8g}
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Prometheus — metrics collection and alerting
+  # ═══════════════════════════════════════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v2.53.0}
+    container_name: distllm-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}"
+      - "--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-50GB}"
+      - "--web.enable-lifecycle"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    ports:
+      - "${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging: *logging-config
+    labels:
+      - "com.distllm.component=monitoring"
+    deploy:
+      resources:
+        limits:
+          memory: ${PROMETHEUS_MEMORY_LIMIT:-2g}
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Grafana — dashboards with pre-provisioned Prometheus datasource
+  # ═══════════════════════════════════════════════════════════════════════════
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-11.1.0}
+    container_name: distllm-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # ── Security ────────────────────────────────────────────────
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD env var}
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+
+      # ── Server ──────────────────────────────────────────────────
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
+      - GF_SERVER_ENABLE_GZIP=true
+
+      # ── Logging ─────────────────────────────────────────────────
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=${GRAFANA_LOG_LEVEL:-info}
+
+      # ── Dashboards ──────────────────────────────────────────────
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/distllm-overview.json
+      - GF_EXPLORE_ENABLED=true
+    depends_on:
+      prometheus:
+        condition: service_started
+    logging: *logging-config
+    labels:
+      - "com.distllm.component=monitoring"
+    deploy:
+      resources:
+        limits:
+          memory: ${GRAFANA_MEMORY_LIMIT:-512m}
+    restart: unless-stopped
+    networks:
+      - distllm-net
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Named Volumes
+# ═══════════════════════════════════════════════════════════════════════════
+volumes:
+  model-cache:
+    name: distllm-model-cache
+    driver: local
+    driver_opts:
+      type: none
+      device: ${MODEL_CACHE_DIR:-../../.cache/models}
+      o: bind
+
+  distllm-cache:
+    name: distllm-cache
+    driver: local
+
+  redis-data:
+    name: distllm-redis-data
+    driver: local
+
+  prometheus-data:
+    name: distllm-prometheus-data
+    driver: local
+
+  grafana-data:
+    name: distllm-grafana-data
+    driver: local
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Network
+# ═══════════════════════════════════════════════════════════════════════════
+networks:
+  distllm-net:
+    name: distllm-gpu-net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.28.0.0/16}
+          gateway: ${DOCKER_GATEWAY:-172.28.0.1}
+    driver_opts:
+      com.docker.network.bridge.name: distllm-gpu
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"

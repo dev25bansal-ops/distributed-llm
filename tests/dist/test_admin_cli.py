@@ -386,7 +386,9 @@ class TestMainEntryPoint:
         """main exits with code 1 on connection failure."""
         old_argv = sys.argv
         try:
-            sys.argv = ["prog", "cluster", "status"]
+            # Port 9 (discard) is closed in practice — a dev server on the
+            # default :8000 would otherwise answer 404 and mask the path.
+            sys.argv = ["prog", "--url", "http://localhost:9", "cluster", "status"]
             with pytest.raises(SystemExit) as exc:
                 main()
             assert exc.value.code == 1

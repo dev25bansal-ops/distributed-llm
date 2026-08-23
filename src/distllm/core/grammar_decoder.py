@@ -143,10 +143,17 @@ class GBNFFSM:
         self._parser = GBNFParser()
         self._rules = self._parser.parse(grammar)
         self._generated = ""
-        self._target = self._extract_target()
+        root = self._rules.get("root", [])
+        # Every root alternative becomes a parallel literal target; the
+        # allowed byte set is their union at the shared position.
+        self._targets = [
+            "".join(self._token_literal(t) for t in alt) for alt in root
+        ] if root else []
+        self._target = self._targets[0] if self._targets else ""
         self._position = 0
         self._compiled = False
         self._dfa: dict[int, dict[int, int]] = {}
+        self._dead = False
 
     def _extract_target(self) -> str:
         """Extract the target string from the root rule."""
@@ -154,33 +161,42 @@ class GBNFFSM:
         if not root:
             return ""
         alt = root[0]
-        parts = []
-        for token in alt:
-            if token.startswith('"') and token.endswith('"'):
-                parts.append(token[1:-1])
-            elif token.startswith("["):
-                parts.append(token)
-            else:
-                resolved = self._resolve_rule(token)
-                if resolved:
-                    parts.append(resolved)
-        return "".join(parts)
+        return "".join(self._token_literal(t) for t in alt)
+
+    def _token_literal(self, token: str) -> str:
+        """Literal text a parsed alternative-token contributes ('' if none).
+
+        ``GBNFParser._parse_alternative`` stores string literals UNQUOTED
+        (``"hello"`` → ``hello``), keeps char classes bracketed, and emits
+        rule references as bare names.  The previous logic only recognized
+        still-quoted strings, so the extracted target was always empty and
+        every FSM query returned no allowed bytes.
+        """
+        if token in self._rules:
+            return self._resolve_rule(token)
+        if len(token) > 1 and token.startswith("[") and token.endswith("]"):
+            return token  # char class stays symbolic (as before)
+        if len(token) > 1 and token.startswith('"') and token.endswith('"'):
+            return token[1:-1]  # defensive: parser normally strips these
+        if len(token) > 1 and token.startswith("(") and token.endswith(")"):
+            return ""  # grouped alternatives unsupported in linear targets
+        if token in ("*", "+", "?", "|", "=", "->"):
+            return ""  # operators
+        return token  # unquoted literal
 
     def _resolve_rule(self, name: str) -> str:
         """Resolve a rule reference to its literal value."""
         if name not in self._rules:
             return ""
         alt = self._rules[name][0]
-        parts = []
-        for token in alt:
-            if token.startswith('"') and token.endswith('"'):
-                parts.append(token[1:-1])
-        return "".join(parts)
+        return "".join(self._token_literal(t) for t in alt)
 
     def compile_to_dfa(self) -> None:
         """Compile the grammar to a DFA for faster lookups."""
         self._compiled = True
         self._dfa = {}
+        if len(self._targets) != 1:
+            return  # multi-branch grammars use the live per-position path
         for i, ch in enumerate(self._target):
             if i not in self._dfa:
                 self._dfa[i] = {}
@@ -196,20 +212,33 @@ class GBNFFSM:
         Returns:
             Always returns 0.
         """
-        ch = chr(byte_value) if 0 <= byte_value < 256 else ""
-        self._generated += ch
-        if self._position < len(self._target) and ch == self._target[self._position]:
+        if self._dead:
+            return 0
+        if not 0 <= byte_value < 256:
+            # Not a byte at all: the grammar can never recover, so no
+            # further bytes are allowed (pinned by test_invalid_byte).
+            self._dead = True
+            return 0
+        ch = chr(byte_value)
+        if any(
+            t[self._position:self._position + 1] == ch for t in self._targets
+        ):
+            self._generated += ch
             self._position += 1
         return 0
 
     def get_allowed_bytes(self) -> set[int]:
         """Return the set of byte values allowed at the current position."""
-        if self._compiled and self._dfa:
+        if self._dead:
+            return set()
+        if self._compiled and self._dfa and len(self._targets) == 1:
             state = self._dfa.get(self._position, {})
             return set(state.keys())
-        if self._position < len(self._target):
-            return {ord(self._target[self._position])}
-        return set()
+        return {
+            ord(t[self._position])
+            for t in self._targets
+            if self._position < len(t)
+        }
 
     # ── Token-level masking interface (compatible with JSONSchemaConstraint) ──
 
@@ -243,7 +272,9 @@ class GBNFFSM:
         return mask
 
     def is_accepting(self) -> bool:
-        return self._position >= len(self._target)
+        return bool(self._targets) and any(
+            self._position >= len(t) for t in self._targets
+        )
 
     def can_end(self) -> bool:
         return self.is_accepting()
@@ -251,3 +282,4 @@ class GBNFFSM:
     def reset(self) -> None:
         self._generated = ""
         self._position = 0
+        self._dead = False

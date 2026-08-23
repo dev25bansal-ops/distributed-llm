@@ -2,7 +2,7 @@
 
 All config classes use pydantic BaseModel for validation and BaseSettings
 for environment variable support with env_prefix="DISTLLM_" and nested
-delimiter "__" (e.g., DISTLLM__MODEL__NAME).
+delimiter "__" (e.g., DISTLLM_MODEL__NAME).
 """
 
 import os
@@ -140,6 +140,17 @@ __all__ = [
     "TenantSettings",
     "DistLLMSettings",
 ]
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` on top of ``base`` (override wins)."""
+    result = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 class DistLLMSettings(BaseSettings):
@@ -338,8 +349,8 @@ class DistLLMSettings(BaseSettings):
         """Load settings with full precedence: CLI > env vars > YAML > defaults.
 
         Environment variables are handled automatically by pydantic-settings
-        using the ``DISTLLM__`` prefix and ``__`` nested delimiter
-        (e.g. ``DISTLLM__MODEL__NAME=my-model``).
+        using the ``DISTLLM_`` prefix and ``__`` nested delimiter
+        (e.g. ``DISTLLM_MODEL__NAME=my-model``).
 
         Args:
             config_path: Path to a YAML config file. ``None`` to skip YAML.
@@ -350,19 +361,30 @@ class DistLLMSettings(BaseSettings):
         """
         import yaml
 
-        data: dict[str, Any] = {}
+        yaml_data: dict[str, Any] = {}
 
         if config_path and os.path.exists(config_path):
             with open(config_path) as f:
-                data = yaml.safe_load(f) or {}
+                yaml_data = yaml.safe_load(f) or {}
 
-        # Construct with YAML as base — pydantic-settings applies env vars on
-        # top (env > YAML), so YAML cannot override env vars.
-        settings = cls(**data)
+        # SECURITY/CORRECTNESS: pydantic-settings precedence is
+        # ``init kwargs > env > dotenv > secrets > defaults``.  Passing YAML as
+        # init kwargs (``cls(**data)``) would let a checked-in config file
+        # silently override ``DISTLLM__*`` env vars — e.g. an operator's
+        # env-set secret could be clobbered by a committed YAML value.  We
+        # therefore read the environment-provided values directly and merge
+        # YAML underneath them, preserving ``CLI > env > YAML > defaults``.
+        from pydantic_settings import EnvSettingsSource
+
+        env_values: dict[str, Any] = EnvSettingsSource(cls)()
+
+        merged = _deep_merge(dict(yaml_data), dict(env_values))
+
+        settings = cls.model_validate(merged)
 
         if cli_overrides:
-            merged = cls._apply_cli_overrides(settings.model_dump(), cli_overrides)
-            settings = cls.model_validate(merged)
+            cli_merged = cls._apply_cli_overrides(settings.model_dump(), cli_overrides)
+            settings = cls.model_validate(cli_merged)
 
         return settings
 

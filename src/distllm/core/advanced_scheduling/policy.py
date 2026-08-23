@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -38,14 +40,32 @@ class SarathiPolicy:
     """Sarathi-Serve style adaptive scheduling policy.
 
     Dynamically adjusts the prefill/decode split based on decode
-    pipeline pressure.
+    pipeline pressure: high decode latency (pressure above
+    ``pressure_threshold``) throttles prefill tokens so running decodes
+    keep their slots; low pressure leaves the budget untouched.
     """
 
+    pressure_tracker: object | None = None
     pressure_threshold: float = 0.8
     prefill_scale_under_pressure: float = 0.5
 
     def compute_budget(self, base_budget: IterationBudget) -> IterationBudget:
-        return base_budget
+        if self.pressure_tracker is None:
+            return base_budget
+        pressure = self.pressure_tracker.pressure
+        if pressure <= self.pressure_threshold:
+            # Low/moderate pressure: leave headroom for prefill admission.
+            return base_budget
+        # Throttle curve: scale down toward prefill_scale_under_pressure
+        # as pressure rises past the threshold.
+        prefill_scale = max(
+            self.prefill_scale_under_pressure, min(1.0, 1.0 - pressure)
+        )
+        adjusted = copy.copy(base_budget)
+        adjusted.max_prefill_tokens = max(
+            1, int(base_budget.max_prefill_tokens * prefill_scale)
+        )
+        return adjusted
 
     def on_before_schedule(self, sequences: list[Sequence]) -> list[Sequence]:
         return sequences

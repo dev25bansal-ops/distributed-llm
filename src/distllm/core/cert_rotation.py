@@ -121,7 +121,10 @@ class CertificateRotator:
         if not info.is_valid:
             return True
         if info.not_after:
-            return info.not_after - datetime.utcnow() < self._renew_before
+            # not_after is timezone-aware (from not_valid_after_utc); comparing
+            # against naive datetime.utcnow() raised TypeError on modern
+            # cryptography, silently disabling auto-renewal.
+            return info.not_after - datetime.now(timezone.utc) < self._renew_before
         return False
 
     def generate_self_signed(self, hostname: str = "localhost", days: int = 365) -> bool:
@@ -159,8 +162,8 @@ class CertificateRotator:
                 .issuer_name(issuer)
                 .public_key(key.public_key())
                 .serial_number(x509.random_serial_number())
-                .not_valid_before(datetime.utcnow())
-                .not_valid_after(datetime.utcnow() + timedelta(days=days))
+                .not_valid_before(datetime.now(timezone.utc))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=days))
                 .add_extension(san, critical=False)
                 .sign(key, hashes.SHA256())
             )
@@ -244,12 +247,15 @@ class ApiKeyRotator:
         key_store: Any = None,
         grace_period_hours: float = 24.0,
         key_length: int = 48,
+        cleanup_interval_seconds: float = 60.0,
     ):
         self._key_store = key_store
         self._grace_period_s = grace_period_hours * 3600
         self._key_length = key_length
         self._rotated_keys: dict[str, tuple[str, float]] = {}  # key_id -> (old_hash, expire_at)
         self._lock = threading.Lock()
+        self._cleanup_interval_s = cleanup_interval_seconds
+        self._cleanup_thread: threading.Thread | None = None
 
     def rotate(self, key_id: str) -> str | None:
         """Rotate an API key, keeping the old one valid during grace period.
@@ -280,16 +286,78 @@ class ApiKeyRotator:
 
         # Generate new key
         new_key = secrets.token_urlsafe(self._key_length)
-        new_hash = hashlib.sha256(new_key.encode()).hexdigest()
 
+        # SECURITY FIX: list_keys() exposes only key_id/role/label, so the old
+        # key's HASH must come from the store directly; and the new key must be
+        # REGISTERED so it actually authenticates.  Previously the old hash was
+        # recorded as "" (never matching) and the new key was never added, so
+        # rotation was a no-op that kept the compromised key valid forever.
+        #
+        # The read-retire-add sequence runs under _lock so two concurrent
+        # rotates of the same key_id serialize: otherwise both would read the
+        # same old hash, both retire it, and each would add an unreired
+        # replacement — leaving an intermediate key valid forever.
         with self._lock:
-            # Store old key with expiry
-            self._rotated_keys[key_id] = (target.get("key", ""), time.time() + self._grace_period_s)
+            old_hash = self._key_store.get_latest_key_hash(key_id) or ""
+            retire_at = time.time() + self._grace_period_s
+
+            # Store old key (hash) with expiry — it stays valid for the grace
+            # period because its entry remains in the store.
+            self._rotated_keys[key_id] = (old_hash, retire_at)
+
+            # SECURITY: mark the OLD key as expiring at the end of the grace
+            # period, so the store's auth boundary stops accepting it once the
+            # grace elapses.  Previously nothing ever retired the old entry.
+            if old_hash:
+                self._key_store.retire_key_hash(old_hash, retire_at)
+
+            # Register the replacement key (same key_id, so the identity
+            # persists).  Added under the same lock, after the old key is
+            # marked, so it is never accidentally retired.
+            self._key_store.add_key(
+                new_key,
+                role=target.get("role", "admin"),
+                label=target.get("label", "") or key_id,
+                key_id=key_id,
+            )
+
+        # Ensure the cleanup thread actually retires old keys on schedule.
+        self._ensure_cleanup_thread()
 
         logger.info(
             f"API key '{key_id}' rotated (grace period: {self._grace_period_s / 3600:.1f}h)"
         )
         return new_key
+
+    def start(self) -> None:
+        """Start the background cleanup loop (also started lazily on rotate)."""
+        self._ensure_cleanup_thread()
+
+    def stop(self) -> None:
+        """Stop the background cleanup loop."""
+        if self._cleanup_thread is not None:
+            self._cleanup_thread.join(timeout=5)
+        self._cleanup_thread = None
+
+    def _ensure_cleanup_thread(self) -> None:
+        with self._lock:
+            if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._cleanup_loop,
+                daemon=True,
+                name="api-key-rotation-cleanup",
+            )
+            self._cleanup_thread = thread
+        thread.start()
+
+    def _cleanup_loop(self) -> None:
+        while True:
+            time.sleep(self._cleanup_interval_s)
+            try:
+                self.cleanup_expired()
+            except Exception as exc:  # noqa: BLE001 - background thread must not die
+                logger.warning(f"API key rotation cleanup failed: {exc}")
 
     def is_rotated_key_valid(self, key_hash: str) -> bool:
         """Check if a rotated (old) key is still within its grace period."""
@@ -305,12 +373,25 @@ class ApiKeyRotator:
 
     def cleanup_expired(self) -> int:
         """Remove expired rotated keys. Returns count removed."""
+        removed = 0
         with self._lock:
             now = time.time()
             expired = [kid for kid, (_, exp) in self._rotated_keys.items() if now >= exp]
             for kid in expired:
+                old_hash = self._rotated_keys[kid][0]
+                # Retire the OLD key from the store once its grace period ends.
+                if old_hash and self._key_store is not None:
+                    try:
+                        self._key_store.remove_key_hash(old_hash)
+                    except Exception as e:  # noqa: BLE001 - best-effort cleanup
+                        logger.warning(f"Failed to retire rotated key {kid}: {e}")
                 del self._rotated_keys[kid]
-            return len(expired)
+            removed += len(expired)
+        # Belt & braces: purge any store entry whose grace deadline has passed,
+        # even if it was never tracked in the in-memory ledger.
+        if self._key_store is not None:
+            removed += self._key_store.remove_expired()
+        return removed
 
     def stats(self) -> dict:
         """Return rotation statistics."""

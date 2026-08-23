@@ -49,14 +49,14 @@ class TestFullPipelineFlow:
     def test_generate_async_batch_scheduler_disabled(self, mock_coordinator):
         """generate_async raises BatchError when scheduler is None."""
         pipeline = RequestPipeline(mock_coordinator)
-        mock_coordinator._scheduler_svc.scheduler = None
+        mock_coordinator._batch_scheduler = None
 
         with pytest.raises(BatchError):
             pipeline.generate_async("hello")
 
     def test_generate_batch_empty_scheduler(self, mock_coordinator):
         pipeline = RequestPipeline(mock_coordinator)
-        mock_coordinator._scheduler_svc.scheduler = None
+        mock_coordinator._batch_scheduler = None
 
         with pytest.raises(BatchError):
             pipeline.generate_batch()

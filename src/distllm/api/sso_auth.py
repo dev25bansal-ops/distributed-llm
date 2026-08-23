@@ -229,9 +229,13 @@ class OIDCHandler:
         state = state or os.urandom(16).hex()
         import time
         self._state_store[state] = time.time() + self._nonce_ttl
-        # OIDC nonce for replay protection
+        # OIDC nonce for replay protection — store the VALUE so the callback
+        # can verify the id_token's ``nonce`` claim against it.
         nonce = os.urandom(16).hex()
-        self._nonce_store[state] = time.time() + self._nonce_ttl
+        self._nonce_store[state] = {
+            "nonce": nonce,
+            "expires": time.time() + self._nonce_ttl,
+        }
         params = urllib.parse.urlencode({
             "response_type": "code",
             "client_id": self._client_id,
@@ -251,14 +255,20 @@ class OIDCHandler:
         import time
         import secrets
 
-        if expected_state:
-            stored_expiry = self._state_store.pop(expected_state, None)
-            if stored_expiry is None:
-                logger.error("OAuth state not found — possible CSRF attack")
-                return None
-            if time.time() > stored_expiry:
-                logger.error("OAuth state expired")
-                return None
+        # SECURITY: state is mandatory for the authorization-code flow (OAuth2
+        # CSRF protection).  A callback without a state cannot be bound to a
+        # login the user actually initiated.
+        if not expected_state:
+            logger.error("OAuth state missing — refusing code exchange")
+            return None
+
+        stored_expiry = self._state_store.pop(expected_state, None)
+        if stored_expiry is None:
+            logger.error("OAuth state not found — possible CSRF attack")
+            return None
+        if time.time() > stored_expiry:
+            logger.error("OAuth state expired")
+            return None
         try:
             import httpx
 
@@ -282,17 +292,33 @@ class OIDCHandler:
             access_token = tokens.get("access_token", "")
             id_token = tokens.get("id_token", "")
 
-            # H-13: Verify ID token signature when JWKS is available
-            # SECURITY: Validation failure MUST reject, not continue
-            if id_token and self._discovered_jwks_url:
+            # H-13: Verify ID token signature.  SECURITY: this is MANDATORY —
+            # an id_token must always be cryptographically validated, and the
+            # exchange fails closed when validation cannot be performed (e.g.
+            # JWKS unavailable).  Previously the check was skipped when OIDC
+            # discovery had failed, letting forged/unsigned claims through.
+            if id_token:
                 try:
                     validated = self.validate_token(id_token)
-                    if validated is None:
-                        logger.error("OIDC ID token validation failed — rejecting authentication")
-                        return None
-                    logger.debug("OIDC ID token signature verified")
                 except Exception as e:
                     logger.error(f"OIDC ID token validation failed with exception: {e}")
+                    return None
+                if validated is None:
+                    logger.error(
+                        "OIDC ID token validation failed (signature/JWKS) — "
+                        "rejecting authentication"
+                    )
+                    return None
+                logger.debug("OIDC ID token signature verified")
+
+                # SECURITY: validate the OIDC nonce claim (replay protection).
+                stored_nonce = self._nonce_store.pop(expected_state, None)
+                if stored_nonce is None or time.time() > stored_nonce.get("expires", 0):
+                    logger.error("OIDC nonce missing or expired — possible replay attack")
+                    return None
+                token_nonce = (getattr(validated, "raw_attributes", {}) or {}).get("nonce")
+                if not token_nonce or token_nonce != stored_nonce.get("nonce"):
+                    logger.error("OIDC nonce mismatch — possible replay attack")
                     return None
 
             # Get user info

@@ -394,9 +394,10 @@ class TestGraduatedBackpressureTiers:
         assert "global_remaining" in info
         assert "tenant_remaining" in info
         assert "model_remaining" in info
-        assert info["global_limit"] == 150  # 100 * 1.5
-        assert info["tenant_limit"] == 75   # 50 * 1.5
-        assert info["model_limit"] == 37    # 25 * 1.5
+        # burst_multiplier=1.0 was passed explicitly -> no 1.5x headroom.
+        assert info["global_limit"] == 100
+        assert info["tenant_limit"] == 50   # burst_multiplier=1.0
+        assert info["model_limit"] == 25    # burst_multiplier=1.0
 
     def test_reset_tenant_restores_capacity(self):
         """After reset_tenant, that tenant can make requests again."""

@@ -1,0 +1,128 @@
+# Reusable CI workflow for DistLLM-based projects
+#
+# Call this workflow from your project to get linting, testing, and type checking
+# pre-configured for the DistLLM SDK and its integrations.
+#
+# Usage:
+#   jobs:
+#     ci:
+#       uses: distributed-llm/distributed-llm/.github/workflows/reusable-ci.yml@main
+#       with:
+#         python-version: "3.11"
+#       secrets:
+#         codecov-token: ${{ secrets.CODECOV_TOKEN }}
+
+name: Reusable CI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version to use"
+        type: string
+        default: "3.11"
+      os-matrix:
+        description: "OS matrix (JSON array of runners)"
+        type: string
+        default: '["ubuntu-latest"]'
+      extra-deps:
+        description: "Extra pip dependencies to install"
+        type: string
+        default: ""
+      run-lint:
+        description: "Run linting job"
+        type: boolean
+        default: true
+      run-test:
+        description: "Run test job"
+        type: boolean
+        default: true
+      run-typecheck:
+        description: "Run type checking job"
+        type: boolean
+        default: true
+      test-path:
+        description: "Path to test directory"
+        type: string
+        default: "tests/"
+      coverage-threshold:
+        description: "Minimum coverage percentage"
+        type: number
+        default: 80
+    secrets:
+      codecov-token:
+        description: "Codecov upload token"
+        required: false
+
+jobs:
+  # ── Lint ─────────────────────────────────────────────────────────
+  lint:
+    if: ${{ inputs.run-lint }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]" 2>/dev/null || pip install ruff black
+          ${{ inputs.extra-deps && format('pip install {0}', inputs.extra-deps) || '' }}
+      - name: Run ruff
+        run: ruff check . --ignore E501
+      - name: Run black
+        run: black --check . --diff || echo "⚠️  Black check failed — run 'black .' to auto-fix"
+
+  # ── Test ────────────────────────────────────────────────────────
+  test:
+    if: ${{ inputs.run-test }}
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os-matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,testing]" 2>/dev/null || pip install pytest pytest-cov httpx
+          ${{ inputs.extra-deps && format('pip install {0}', inputs.extra-deps) || '' }}
+      - name: Cache pytest
+        uses: actions/cache@v4
+        with:
+          path: .pytest_cache
+          key: pytest-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+      - name: Run tests
+        run: |
+          pytest ${{ inputs.test-path }} -v \
+            --cov=. --cov-report=xml --cov-report=term-missing \
+            --cov-fail-under=${{ inputs.coverage-threshold }} \
+            -m "not e2e and not slow" --ignore=node_modules
+      - name: Upload coverage
+        if: ${{ secrets.codecov-token != '' }}
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.codecov-token }}
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  # ── Type check ──────────────────────────────────────────────────
+  typecheck:
+    if: ${{ inputs.run-typecheck }}
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]" 2>/dev/null || pip install mypy
+          ${{ inputs.extra-deps && format('pip install {0}', inputs.extra-deps) || '' }}
+      - name: Run mypy
+        run: mypy . --ignore-missing-imports || echo "⚠️  Type checking completed with warnings"

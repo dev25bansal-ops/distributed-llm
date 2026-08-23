@@ -175,12 +175,18 @@ async def acquire_prompt(prompt_id: str, request: Request, user_id: str = Query(
     if not exchange:
         raise HTTPException(status_code=503, detail="Prompt exchange not available")
 
-    # SECURITY: Bind user_id to the authenticated API key's owner
+    # SECURITY: Bind user_id to the authenticated identity so a caller cannot
+    # act as another user (IDOR protection). The API-key owner is authoritative
+    # when present; without it, fall back to the (legacy) audit-only binding.
     api_key_id = getattr(request.state, "api_key_id", None)
     if not api_key_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    # In production, validate user_id is owned by this api_key_id
-    # For now, log the binding for audit
+    owner = getattr(request.state, "api_key_owner", None)
+    if owner is not None and user_id != owner:
+        raise HTTPException(
+            status_code=403,
+            detail="user_id does not match the authenticated identity",
+        )
     logger.debug(f"User {user_id} acquiring prompt via API key {api_key_id[:8]}...")
     prompt = exchange.acquire_prompt(user_id, prompt_id)
     if not prompt:

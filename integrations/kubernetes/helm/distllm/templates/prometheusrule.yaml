@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "distllm.fullname" . }}-alerts
+spec:
+  groups:
+  - name: distllm
+    rules:
+    - alert: DistLLMNodeDisconnected
+      expr: up{job="distllm"} == 0
+      for: 5m
+      labels: {severity: critical}
+      annotations: {summary: "Node down >5m"}
+    - alert: DistLLMHighLatency
+      expr: distllm_request_duration_seconds{quantile="0.95"} > 5
+      for: 2m
+      labels: {severity: warning}
+      annotations: {summary: "P95 latency >5s"}
+    - alert: DistLLMHighErrorRate
+      expr: rate(distllm_request_errors_total[5m]) > 0.05
+      for: 5m
+      labels: {severity: warning}
+      annotations: {summary: "Error rate >5%"}

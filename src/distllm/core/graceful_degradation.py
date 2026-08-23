@@ -83,7 +83,7 @@ class DegradationPlan:
                     truncated = encoded[:self.truncate_prompt]
                     result["prompt"] = tokenizer.decode(truncated)
             elif isinstance(prompt, str):
-                result["prompt"] = prompt[:self.truncate_prompt * 4]
+                result["prompt"] = prompt[:self.truncate_prompt]
         return result
 
 

@@ -60,6 +60,12 @@ class DifferentialPrivacy:
         The noise scale is computed from the privacy parameters
         (epsilon, delta) to provide (epsilon, delta)-differential privacy.
 
+        The tensor is L2-clipped to ``max_grad_norm`` *before* noise is added
+        (clip-then-noise).  This bounds the mechanism's sensitivity to
+        ``max_grad_norm``, which is what the Gaussian (ε, δ) guarantee
+        relies on.  Without the clip, a tensor with norm > max_grad_norm would
+        carry unbounded sensitivity and break the guarantee.
+
         Args:
             tensor: The tensor to add noise to.
 
@@ -70,8 +76,9 @@ class DifferentialPrivacy:
         if sigma <= 0:
             return tensor.clone()
 
-        noise = torch.randn_like(tensor) * sigma
-        return tensor + noise
+        clipped = self.clip_tensor(tensor)
+        noise = torch.randn_like(clipped) * sigma
+        return clipped + noise
 
     def add_noise_to_kv_cache(
         self, kv_cache: list[tuple[torch.Tensor, torch.Tensor]]

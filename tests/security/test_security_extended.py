@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import sys
 import time
-from unittest.mock import MagicMock
+import types
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 
 sys.path.insert(0, "src")
 
-from distllm.dist.node_service import NodeServicer, tensor_from_proto
 from distllm.dist import node_pb2
+from distllm.dist import node_service as node_service_module
+from distllm.dist.node_service import NodeServicer, tensor_from_proto
 
 
 # ── Proto Fuzzing ──────────────────────────────────────────────────
@@ -41,10 +43,11 @@ class TestProtoFuzzing:
             dtype="torch.float32",
             raw_data=b"\x00" * 100,
         )
-        # Should not crash (validation happens in NodeServicer)
-        result = tensor_from_proto(proto)
-        # Result will have wrong size but shouldn't crash
-        assert result is not None
+        # A payload far smaller than the declared shape is rejected with a
+        # clear error (never a cryptic torch reshape failure or a huge
+        # zero-allocation from attacker-declared shapes).
+        with pytest.raises(ValueError, match="payload mismatch"):
+            tensor_from_proto(proto)
 
     def test_mismatched_shape_and_data(self):
         """Mismatched shape/data should not crash."""
@@ -119,12 +122,16 @@ class TestClusterKeyForgery:
         req.cluster_key = None
         assert servicer._check_auth(req) is False
 
-    def test_no_key_required_accepts_all(self):
-        """No cluster key configured should accept all requests."""
+    def test_no_key_fails_closed(self):
+        """No cluster key configured -> every RPC is rejected (fail closed).
+
+        Previously a keyless servicer accepted everything, which let any LAN
+        attacker call TransferWeights and exfiltrate model weights.
+        """
         servicer = self._make_servicer(cluster_key=None)
         req = MagicMock()
         req.cluster_key = "anything"
-        assert servicer._check_auth(req) is True
+        assert servicer._check_auth(req) is False
 
     def test_timing_attack_resistance(self):
         """Auth check should use constant-time comparison."""
@@ -171,7 +178,8 @@ class TestInputValidation:
             torch.randn(1, 1, 32000),
             [],
         )
-        return NodeServicer(worker, cluster_key=None)
+        # Keyed servicer so auth passes and the input-validation logic runs.
+        return NodeServicer(worker, cluster_key="valid-key-123")
 
     def test_batch_size_limit(self):
         """Batch size exceeding MAX_BATCH_SIZE should be rejected."""
@@ -179,7 +187,7 @@ class TestInputValidation:
 
         # Create request with giant batch
         req = MagicMock()
-        req.cluster_key = None
+        req.cluster_key = "valid-key-123"
         req.input_ids = list(range(1024 * 131072 + 1))  # Over limit
         req.hidden_states = None
         req.attention_mask = None
@@ -197,7 +205,7 @@ class TestInputValidation:
         servicer = self._make_servicer()
 
         req = MagicMock()
-        req.cluster_key = None
+        req.cluster_key = "valid-key-123"
         req.input_ids = []
         req.hidden_states = None
         req.request_id = "test"
@@ -232,24 +240,31 @@ class TestRateLimiting:
     def _make_servicer(self):
         worker = MagicMock()
         worker.node_id = "test-node"
-        return NodeServicer(worker, cluster_key=None)
+        return NodeServicer(worker, cluster_key="valid-key-123")
 
     def test_profile_rate_limit(self):
         """Profile() should rate limit after burst."""
         servicer = self._make_servicer()
         context = MagicMock()
         req = MagicMock()
-        req.cluster_key = None
+        req.cluster_key = "valid-key-123"
         req.node_id = "test"
 
-        # Burst: should succeed up to limit
-        for _ in range(NodeServicer.PROFILE_RATE_LIMIT):
-            resp = servicer.Profile(req, context)
-            assert resp.gpu_name != "rate_limited"
+        # Freeze the limiter's clock: real Profile calls take tens of ms on
+        # GPU hosts, and the token bucket refills at PROFILE_RATE_LIMIT/s,
+        # so a wall-clock burst can outrun the limit.  A frozen clock makes
+        # the burst deterministic (no refill during the loop).
+        clock = {"t": time.monotonic()}
+        fake_time = types.SimpleNamespace(monotonic=lambda: clock["t"])
+        with patch.object(node_service_module, "time", fake_time):
+            # Burst: should succeed up to limit
+            for _ in range(NodeServicer.PROFILE_RATE_LIMIT):
+                resp = servicer.Profile(req, context)
+                assert resp.gpu_name != "rate_limited"
 
-        # Next request should be rate limited
-        resp = servicer.Profile(req, context)
-        assert resp.gpu_name == "rate_limited"
+            # Next request should be rate limited
+            resp = servicer.Profile(req, context)
+            assert resp.gpu_name == "rate_limited"
 
     def test_rate_limit_recovers(self):
         """Rate limit should recover after cooldown."""

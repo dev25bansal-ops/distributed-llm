@@ -213,7 +213,8 @@ class TestJSONSchemaFSM:
         """'{}' produces complete JSON."""
         f = self.fsm()
         self.run_bytes(f, "{}")
-        assert f._state == f.STATE_AFTER_VALUE
+        # Top-level completion is DONE (rejects trailing garbage like "{}x").
+        assert f._state == f.STATE_DONE
         assert f.is_accepting()
 
     def test_close_brace_empty_stack_becomes_done(self):
@@ -243,9 +244,9 @@ class TestJSONSchemaFSM:
         for ch in "val":
             f.transition(ord(ch))
         f.transition(0x22)  # " → AFTER_VALUE
-        f.transition(0x7D)  # } → pop stack → AFTER_VALUE
+        f.transition(0x7D)  # } → pop stack → DONE (top-level complete)
         assert f.is_accepting()
-        assert f._state == f.STATE_AFTER_VALUE
+        assert f._state == f.STATE_DONE
 
     def test_after_colon_allows_value_chars(self):
         """AFTER_COLON allows string, number, object, array, literals."""
@@ -304,8 +305,8 @@ class TestJSONSchemaFSM:
         # Hard to reach AFTER_VALUE from IN_NUMBER directly without the next char
         # Let's use AFTER_ARRAY_VALUE instead: after ']' in nested
         f2 = self.fsm()
-        self.run_bytes(f2, '{"a": 1}')
-        # after '}', state is AFTER_VALUE from stack pop
+        self.run_bytes(f2, '{"a": {"b": 1}')
+        # The inner '}' popped to the outer object's AFTER_VALUE.
         assert f2._state == f.STATE_AFTER_VALUE
         # AFTER_VALUE: comma, }, ], whitespace
         allowed = f2.get_allowed_bytes()
@@ -328,9 +329,9 @@ class TestJSONSchemaFSM:
         # Close inner }
         f.transition(0x7D)
         assert f._state == f.STATE_AFTER_VALUE
-        # Close outer }
+        # Close outer } -> top-level completion is DONE
         f.transition(0x7D)
-        assert f._state == f.STATE_AFTER_VALUE
+        assert f._state == f.STATE_DONE
         assert f.is_accepting()
 
     def test_deeply_nested_objects(self):
@@ -658,12 +659,14 @@ class TestJSONSchemaFSM:
     def test_allowed_bytes_after_value(self):
         """AFTER_VALUE allows comma, close brace/bracket, whitespace."""
         f = self.fsm()
-        self.run_bytes(f, '{"a": 1}')
-        # After '}', stack pops → AFTER_VALUE
+        self.run_bytes(f, '{"a": [1]')
+        f.transition(0x5D)  # ] closes inner array -> outer object continues
+        # Inner value done: comma / closers / whitespace all allowed
         allowed = f.get_allowed_bytes()
         assert 0x2C in allowed  # ,
         assert 0x7D in allowed  # }
-        assert 0x5D in allowed  # ]
+        # AFTER_ARRAY_VALUE also allows ']' (e.g. [[1], 2]) — generic state.
+        assert 0x5D in allowed
         for ws in [0x20, 0x09, 0x0A, 0x0D]:
             assert ws in allowed
 
@@ -1085,14 +1088,14 @@ class TestSchemaConstrainedDecoderFSM:
         assert not constraint.is_complete()
 
     def test_from_response_format_grammar(self):
-        """from_response_format with grammar returns a constraint."""
+        """grammar response_format fails closed (no silent JSON fallback)."""
         from distllm.core.constrained_decoder import SchemaConstrainedDecoder
         tok = self._make_tokenizer()
-        constraint = SchemaConstrainedDecoder.from_response_format(
-            {"type": "grammar", "grammar": 'root ::= [a-z]+'},
-            tokenizer=tok,
-        )
-        assert constraint is not None
+        with pytest.raises(NotImplementedError):
+            SchemaConstrainedDecoder.from_response_format(
+                {"type": "grammar", "grammar": 'root ::= [a-z]+'},
+                tokenizer=tok,
+            )
 
     def test_token_index_cache(self):
         """TokenIndex is cached across instances."""
@@ -1137,9 +1140,10 @@ class TestSchemaConstrainedDecoderFSM:
         ) is None
 
     def test_from_response_format_grammar_empty(self):
-        """from_response_format with empty grammar returns None."""
+        """Empty grammar also fails closed (no silent fallback)."""
         from distllm.core.constrained_decoder import SchemaConstrainedDecoder
         tok = self._make_tokenizer()
-        assert SchemaConstrainedDecoder.from_response_format(
-            {"type": "grammar", "grammar": ""}, tokenizer=tok
-        ) is None
+        with pytest.raises(NotImplementedError):
+            SchemaConstrainedDecoder.from_response_format(
+                {"type": "grammar", "grammar": ""}, tokenizer=tok
+            )

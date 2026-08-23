@@ -61,18 +61,36 @@ class SemanticGrouping:
         self._hash_to_group: dict[int, str] = {}
         self._group_signatures: dict[str, list[int]] = {}
         self._next_group_id: int = 0
+        # LSH index for O(1) candidate lookup instead of O(n) linear scan
+        self._lsh_index: dict[int, list[str]] = defaultdict(list)
+        self._num_bands = 16
+        self._rows_per_band = max(1, num_permutations // self._num_bands)
 
     def compute_signature(self, token_ids: list[int]) -> list[int]:
+        """Compute MinHash signature using fast pre-computed per-token hashes.
+
+        Pre-computes a single hash per token, then derives each permutation
+        via cheap XOR mixing instead of per-(tok, i) modular arithmetic.
+        This reduces the constant factor of the O(n * k) inner loop
+        significantly by eliminating the expensive ``% (2**31 - 1)``.
+        """
         if not token_ids:
             return [0] * self._num_perm
 
+        # Fast C-accelerated per-token hash, normalised to 31 bits
+        token_hashes = [hash(tok) & 0x7FFFFFFF for tok in token_ids]
+
         signature = []
+        MASK = 0x7FFFFFFF
+        PHI = 0x9E3779B9  # golden-ratio constant for permutation mixing
         for i in range(self._num_perm):
-            min_val = float('inf')
-            for tok in token_ids:
-                h = ((tok * 31337 + i * 7919) % (2**31 - 1))
-                min_val = min(min_val, h)
-            signature.append(int(min_val) if min_val != float('inf') else 0)
+            perm_seed = (PHI * i) & MASK
+            min_val = MASK
+            for h in token_hashes:
+                v = (h ^ perm_seed) & MASK
+                if v < min_val:
+                    min_val = v
+            signature.append(min_val)
 
         return signature
 
@@ -82,6 +100,12 @@ class SemanticGrouping:
         matches = sum(1 for a, b in zip(sig_a, sig_b, strict=False) if a == b)
         return matches / len(sig_a)
 
+    def _band_hash(self, signature: list[int], band_idx: int) -> int:
+        """Compute a single hash for one LSH band of the signature."""
+        start = band_idx * self._rows_per_band
+        end = min(start + self._rows_per_band, len(signature))
+        return hash(tuple(signature[start:end]))
+
     def find_or_create_group(self, token_ids: list[int]) -> str:
         signature = self.compute_signature(token_ids)
         h = hash(tuple(token_ids))
@@ -89,7 +113,29 @@ class SemanticGrouping:
         best_group = None
         best_score = 0.0
 
+        # ---- Fast path: LSH-based candidate lookup (O(bands) vs O(groups)) ----
+        candidates: set[str] = set()
+        for band_idx in range(self._num_bands):
+            band_key = self._band_hash(signature, band_idx)
+            for group_id in self._lsh_index.get(band_key, ()):
+                candidates.add(group_id)
+
+        if candidates:
+            for group_id in candidates:
+                score = self._get_group_similarity(group_id, signature)
+                if score > best_score:
+                    best_score = score
+                    best_group = group_id
+
+            if best_score >= self._threshold:
+                self._groups[best_group].append(h)
+                self._hash_to_group[h] = best_group
+                return best_group
+
+        # ---- Fallback: linear scan of groups not found by LSH ----
         for group_id, member_hashes in self._groups.items():
+            if group_id in candidates:
+                continue
             if not member_hashes:
                 continue
             score = self._get_group_similarity(group_id, signature)
@@ -102,11 +148,16 @@ class SemanticGrouping:
             self._hash_to_group[h] = best_group
             return best_group
 
+        # ---- Create new group ----
         group_id = f"semantic_{self._next_group_id}"
         self._next_group_id += 1
         self._groups[group_id].append(h)
         self._hash_to_group[h] = group_id
         self._group_signatures[group_id] = signature
+        # Index each band of the new group's signature in the LSH table
+        for band_idx in range(self._num_bands):
+            band_key = self._band_hash(signature, band_idx)
+            self._lsh_index[band_key].append(group_id)
         return group_id
 
     def _get_group_similarity(self, group_id: str, signature: list[int]) -> float:
@@ -125,6 +176,7 @@ class SemanticGrouping:
         self._groups.clear()
         self._hash_to_group.clear()
         self._group_signatures.clear()
+        self._lsh_index.clear()
         self._next_group_id = 0
 
 

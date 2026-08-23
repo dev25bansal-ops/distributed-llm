@@ -278,6 +278,9 @@ class NodeRecoveryManager:
 
         self._on_drain: Callable[[str], None] | None = None
         self._on_redistribute: Callable[[str, NodeRecoveryPlan], None] | None = None
+        # {node_id: (start_layer, end_layer)} — topology used to plan
+        # layer redistributions on node failure.
+        self._layer_assignments: dict[str, tuple[int, int]] = {}
         self._on_recover: Callable[[str, list[str]], list[Any]] | None = None
         self._on_mark_dead: Callable[[str], None] | None = None
 
@@ -342,6 +345,17 @@ class NodeRecoveryManager:
         self, cb: Callable[[str, NodeRecoveryPlan], None]
     ) -> None:
         self._on_redistribute = cb
+
+    def set_layer_assignments(
+        self, assignments: dict[str, tuple[int, int]]
+    ) -> None:
+        """Register the pipeline topology as ``{node_id: (start, end)}``.
+
+        Needed for layer-redistribution planning: without it a failed
+        node has no survivors to reassign layers to and the redistribute
+        callback can never fire.
+        """
+        self._layer_assignments = dict(assignments)
 
     def set_recover_sequences_callback(
         self, cb: Callable[[str, list[str]], list[Any]]
@@ -678,6 +692,17 @@ class NodeRecoveryManager:
 
         # Step 5: Layer redistribution (parallel across survivors)
         if self._on_redistribute and not self._dry_run:
+            # Plan redistributions from the registered topology (if any).
+            assignments = self._layer_assignments
+            if assignments and failed_node_id in assignments:
+                survivors = {
+                    nid: rng for nid, rng in assignments.items()
+                    if nid != failed_node_id
+                }
+                start_l, end_l = assignments[failed_node_id]
+                plan.redistributions = compute_redistributions(
+                    start_l, end_l, survivors,
+                )
             self._redistribute_parallel(failed_node_id, plan)
 
         # Step 6: Record metrics

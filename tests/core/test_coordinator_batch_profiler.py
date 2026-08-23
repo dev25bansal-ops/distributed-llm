@@ -25,8 +25,10 @@ class TestCoordinatorBatchProfiler:
     def test_scheduler_updated_in_start_when_model_info_available(self):
         """When start() is called and model_info exists, scheduler should be updated."""
         with patch("distllm.core.coordinator.AutoTokenizer"):
-            with patch("distllm.core.coordinator.CoordinatorService"):
-                with patch("distllm.core.coordinator.GRPCServer"):
+            # CoordinatorService was removed from coordinator.py; create=True
+            # keeps the defensive patch valid against its absence.
+            with patch("distllm.core.coordinator.CoordinatorService", create=True):
+                with patch("distllm.core.coordinator.GRPCServer", create=True):
                     coord = Coordinator(
                         model_name="test-model",
                         max_batch_size=4,
@@ -41,14 +43,19 @@ class TestCoordinatorBatchProfiler:
 
                     coord.start(blocking=False)
 
-                    assert coord.scheduler._model_info == coord.model_info
+                    # set_model_info normalizes dicts to a namespace so the
+                    # scheduler's getattr(model_info, "model_name") works.
+                    mi = coord.scheduler._model_info
+                    assert mi.hidden_size == 768 and mi.num_layers == 12
                     assert coord.scheduler._use_length_grouping is True
 
     def test_scheduler_not_updated_when_no_model_info(self):
         """When model_info is None at start(), scheduler should not be updated."""
         with patch("distllm.core.coordinator.AutoTokenizer"):
-            with patch("distllm.core.coordinator.CoordinatorService"):
-                with patch("distllm.core.coordinator.GRPCServer"):
+            # CoordinatorService was removed from coordinator.py; create=True
+            # keeps the defensive patch valid against its absence.
+            with patch("distllm.core.coordinator.CoordinatorService", create=True):
+                with patch("distllm.core.coordinator.GRPCServer", create=True):
                     coord = Coordinator(
                         model_name="test-model",
                         max_batch_size=4,
@@ -63,10 +70,13 @@ class TestCoordinatorBatchProfiler:
                     assert coord.scheduler._use_length_grouping is False
 
     def test_no_scheduler_when_max_batch_size_is_1(self):
-        """Scheduler should not be created when max_batch_size=1."""
+        """max_batch_size=1 still gets a scheduler (always created), sized 1."""
         with patch("distllm.core.coordinator.AutoTokenizer"):
             coord = Coordinator(
                 model_name="test-model",
                 max_batch_size=1,
             )
-            assert coord.scheduler is None
+            # Current design always creates the batch scheduler; it just
+            # runs with a single-slot batch.
+            assert coord.scheduler is not None
+            assert coord.scheduler.max_batch_size == 1

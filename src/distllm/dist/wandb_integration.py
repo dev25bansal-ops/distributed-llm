@@ -1,5 +1,12 @@
 """Weights & Biases integration for experiment tracking.
 
+.. deprecated::
+    Use ``distllm.integrations.wandb.WandBIntegration`` instead.
+    This module is kept for backward compatibility only and will be removed
+    in a future release.  The merged :class:`WandBIntegration` class
+    provides all features of this class plus GPU monitoring, latency
+    histograms, and explicit lifecycle management.
+
 Hooks into :class:`QuantizationAutoTuner` and :class:`PartitionOptimizer`
 to log experiments — model architectures, quantization plans, partition
 solutions, and performance metrics — to W&B runs for comparison and
@@ -7,7 +14,7 @@ analysis.
 
 Usage::
 
-    from distllm.dist.wandb_integration import WandbExperiment
+    from distllm.dist.wandb_integration import WandbExperiment  # DEPRECATED
 
     # Log a partition experiment:
     with WandbExperiment(
@@ -34,6 +41,7 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from typing import Any
 
 from loguru import logger
@@ -66,6 +74,12 @@ class WandbExperiment:
         group: str | None = None,
         run: Any = None,
     ):
+        warnings.warn(
+            "WandbExperiment is deprecated; use "
+            "distllm.integrations.wandb.WandBIntegration instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.project = project
         self.config = config or {}
         self.run_name = run_name

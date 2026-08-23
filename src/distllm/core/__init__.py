@@ -37,6 +37,12 @@ _register("distllm.core.usage_meter", "QuotaLimit", "TenantUsage", "UsageMeter",
 _register("distllm.core.webhook_manager", "WebhookDelivery", "WebhookEvent", "WebhookManager", "WebhookTarget")
 _register("distllm.core.event_bus", "EventBus", "MarketplaceEvent", "MarketplaceEventType")
 _register("distllm.core.memory_defragmenter", "DefragConfig", "DefragPolicy", "DefragResult", "FragmentInfo", "MemoryDefragmenter", "TieredCompactionLevel")
+_register("distllm.core.atlas_mesh",
+    "AtlasMesh", "Cluster", "ClusterGraph", "ContextualBanditRewardModel",
+    "ConstraintViolation", "LatencyCostReliabilityScorer",
+    "LPSolverRouter", "MeshStats", "Observation", "RoutingAssignment",
+    "RoutingRequest", "ScoringWeights",
+)
 _register("distllm.core.agentic_router", "AgenticRouter", "RouterJudge", "RoutingDecision")
 _register("distllm.core.autonomous_healer", "AutonomousHealer", "FailurePredictor", "GPUResetManager", "GPUHeartbeat", "GPUHealthState")
 _register("distllm.core.bargaining_engine", "SpotBidManager", "DQNAgent", "BudgetController", "MarketSnapshot", "SpotBid")
@@ -46,6 +52,48 @@ _register("distllm.core.prompt_library", "PromptRepository", "PromptVersion")
 _register("distllm.core.evaluation_harness", "EvalRunner", "EvaluationReport")
 _register("distllm.core.dp_inference", "DifferentialPrivacyInference", "PrivacyBudgetManager")
 _register("distllm.core.media_pipeline", "AudioPipeline", "MediaStreamRouter", "SpeechRecognizer", "TextToSpeech", "VoiceActivityDetector", "LLMResponder")
+_register("distllm.core.neural_partition_optimizer",
+    # Data classes
+    "LayerConfig", "HardwareSpec", "CostPrediction", "TrainingSample",
+    "PartitionProposal", "OptimizationStats",
+    # Classes
+    "NeuralCostModel", "BayesianOptimizationLoop", "NeuralPartitionOptimizer",
+)
+_register("distllm.core.voyager_multimodal",
+    # Enums
+    "ModalityType", "RouteType",
+    # Data classes
+    "MultiModalRequest", "RoutingPlan", "EncodedOutput", "VoyagerResponse",
+    # Core classes
+    "ModalityEncoder", "MultiModalRouter", "ParallelEncoderPipeline", "Voyager",
+)
+_register("distllm.core.aether_federated",
+    # Data classes
+    "LoRAConfig", "FederatedConfig", "AetherState",
+    # Core classes
+    "LoRAAdapterManager", "GradientAggregator", "FederatedTrainer", "Aether",
+)
+_register("distllm.core.kraken_chaos",
+    # Enums
+    "ResilienceLevel", "ScenarioCategory", "ScenarioSeverity",
+    # Data classes
+    "ResilienceReport", "ScenarioConfig", "ScenarioResult",
+    # Classes
+    "AutomatedChaosPipeline", "FaultScenarioLibrary", "Kraken", "ResilienceScore",
+)
+_register("distllm.core.aegis_compliance",
+    # Exceptions
+    "ComplianceError", "WatermarkError",
+    # Data classes
+    "AuditEntry",
+    # Core classes
+    "AuditTrail", "ModelWatermark", "ComplianceRule", "Aegis",
+    # Constants
+    "HIPAA_RULES", "SOC2_RULES",
+)
+_register("distllm.core.vectorstore",
+    "VectorDBInterface", "VectorDBFactory", "RAGPipeline",
+)
 
 
 def __getattr__(name: str):

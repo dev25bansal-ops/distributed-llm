@@ -313,14 +313,27 @@ class UsageMeter:
                 self._conn.commit()
             return removed
 
-    def check_quota(self, tenant_id: str) -> tuple[bool, str]:
+    def check_quota(
+        self, tenant_id: str, requested_tokens: int | None = None
+    ) -> tuple[bool, str]:
         """Check if *tenant_id* has remaining quota for a request.
+
+        When *requested_tokens* is provided and the tenant's quota sets a
+        ``max_tokens_per_request`` limit, an oversize request is blocked
+        before any other quota dimension is consulted.
 
         Returns ``(allowed, reason)``.
         """
         quota = self._quotas.get(tenant_id)
         if quota is None:
             return True, "no quota set"
+
+        if (
+            requested_tokens is not None
+            and quota.max_tokens_per_request > 0
+            and requested_tokens > quota.max_tokens_per_request
+        ):
+            return False, f"per-request token limit {quota.max_tokens_per_request} exceeded"
 
         tenant = self._tenants.get(tenant_id)
         if tenant is None:
@@ -373,12 +386,15 @@ class UsageMeter:
     def get_concurrent(self, tenant_id: str) -> int:
         return self._concurrent.get(tenant_id, 0)
 
-    def enforce_quota(self, tenant_id: str, raise_on_block: bool = True) -> tuple[bool, str]:
+    def enforce_quota(
+        self, tenant_id: str, raise_on_block: bool = True,
+        requested_tokens: int | None = None,
+    ) -> tuple[bool, str]:
         """Check quota and increment concurrent counter if allowed.
 
         Returns ``(allowed, reason)``.
         """
-        allowed, reason = self.check_quota(tenant_id)
+        allowed, reason = self.check_quota(tenant_id, requested_tokens=requested_tokens)
         if allowed:
             self.increment_concurrent(tenant_id)
         return allowed, reason
@@ -793,6 +809,38 @@ class UsageMeter:
                 )
         except Exception as e:
             logger.warning(f"Failed to load tenant usage from SQLite: {e}")
+
+        # Load persisted usage records back into memory.  Without this, a
+        # restart cleared every historical record from invoices / reports /
+        # CSV exports (they only iterated _in_memory_records), causing
+        # chronic underbilling.
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM usage_records ORDER BY timestamp ASC"
+            ).fetchall()
+            for row in rows:
+                self._in_memory_records.append(UsageRecord(
+                    record_id=row["record_id"],
+                    tenant_id=row["tenant_id"],
+                    key_id=row["key_id"] or "",
+                    model_name=row["model_name"] or "",
+                    input_tokens=row["input_tokens"] or 0,
+                    output_tokens=row["output_tokens"] or 0,
+                    total_tokens=row["total_tokens"] or 0,
+                    request_duration_ms=row["request_duration_ms"] or 0.0,
+                    timestamp=row["timestamp"] or 0.0,
+                    cost=row["cost"] or 0.0,
+                    endpoint=row["endpoint"] or "",
+                    status=UsageRecordStatus(row["status"]) if row["status"] else UsageRecordStatus.PENDING,
+                    labels=json.loads(row["labels"]) if row["labels"] else {},
+                    gpu_time_seconds=row["gpu_time_seconds"] or 0.0,
+                    gpu_type=row["gpu_type"] or "",
+                    cost_usd=row["cost_usd"] or 0.0,
+                    tokens_per_second=row["tokens_per_second"] or 0.0,
+                    ttft_ms=row["ttft_ms"] or 0.0,
+                ))
+        except Exception as e:
+            logger.warning(f"Failed to load usage records from SQLite: {e}")
 
     def get_gpu_usage_summary(self, tenant_id: str = "") -> dict[str, Any]:
         """Get GPU-time usage summary.

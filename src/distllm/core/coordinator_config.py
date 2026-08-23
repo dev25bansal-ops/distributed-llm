@@ -83,6 +83,24 @@ class CoordinatorConfig(BaseModel):
         ge=1,
         description="Number of redundant copies for fault-tolerant execution.",
     )
+    ha_enabled: bool = Field(
+        default=False,
+        description="Enable HA leader election + state replication across "
+                    "multiple coordinators.",
+    )
+    ha_peer_coordinators: list[tuple[str, str, int]] | None = Field(
+        default=None,
+        description="HA peers as (coordinator_id, host, port) tuples.",
+    )
+    ha_replication_peers: list[str] | None = Field(
+        default=None,
+        description="Peer API base URLs for HA state replication "
+                    "(e.g. ['http://10.0.0.2:8000']).",
+    )
+    ha_heartbeat_interval_s: float = Field(default=2.0, gt=0,
+        description="Seconds between coordinator election heartbeats.")
+    ha_election_timeout_s: float = Field(default=10.0, gt=0,
+        description="Seconds without a heartbeat before a peer is dead.")
     federation_config: Any = Field(
         default=None,
         description="FederationConfig for cross-cluster federation.",

@@ -28,7 +28,7 @@ class CompletionRequest(BaseModel):
         }
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
-    prompt: str = Field(..., max_length=131072, description="The prompt text to generate from")
+    prompt: str = Field(..., min_length=1, max_length=131072, description="The prompt text to generate from")
     max_tokens: int = Field(default=256, ge=0, le=8192, description="Maximum tokens to generate (0=return immediately, 1-8192)")
     temperature: float = Field(default=0.7, ge=0, le=2.0, description="Sampling temperature (0-2.0)")
     top_p: float = Field(default=0.9, ge=0, le=1.0, description="Nucleus sampling threshold (0-1)")

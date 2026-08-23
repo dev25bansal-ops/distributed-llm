@@ -166,6 +166,10 @@ class _BaseClient:
         adapter: str | None = None,
         logprobs: dict | None = None,
         include_usage: bool = False,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -184,6 +188,14 @@ class _BaseClient:
             payload["top_logprobs"] = logprobs.get("top_n", 1)
         if include_usage:
             payload["stream_options"] = {"include_usage": True}
+        if tools:
+            payload["tools"] = tools
+        if federation_strategy:
+            payload["federation_strategy"] = federation_strategy
+        if preferred_regions:
+            payload["preferred_regions"] = preferred_regions
+        if spillover_enabled is not None:
+            payload["spillover_enabled"] = spillover_enabled
         return payload
 
     # Shared API implementations
@@ -196,7 +208,7 @@ class _BaseClient:
 
     def _embeddings_sync(self, input: str | list[str], model: str = "distributed-llm", **kwargs) -> EmbeddingResponse:
         payload = {"model": model, "input": input, **kwargs}
-        data = self._request_sync("POST", "/v1/embeddings", json=payload)
+        data = self._request("POST", "/v1/embeddings", json=payload)
         objects = [EmbeddingObject(index=e["index"], embedding=e["embedding"]) for e in data.get("data", [])]
         return EmbeddingResponse(model=data.get("model", model), data=objects, usage=_parse_usage(data))
 
@@ -211,7 +223,7 @@ class _BaseClient:
         payload = {"input_file_id": input_file_id, "endpoint": endpoint}
         if metadata:
             payload["metadata"] = metadata
-        data = self._request_sync("POST", "/v1/batches", json=payload)
+        data = self._request("POST", "/v1/batches", json=payload)
         return self._parse_batch(data)
 
     async def _batch_get_async(self, batch_id: str | None = None) -> BatchJob | BatchList:
@@ -223,9 +235,9 @@ class _BaseClient:
 
     def _batch_get_sync(self, batch_id: str | None = None) -> BatchJob | BatchList:
         if batch_id:
-            data = self._request_sync("GET", f"/v1/batches/{batch_id}")
+            data = self._request("GET", f"/v1/batches/{batch_id}")
             return self._parse_batch(data)
-        data = self._request_sync("GET", "/v1/batches")
+        data = self._request("GET", "/v1/batches")
         return BatchList(data=[self._parse_batch(d) for d in data.get("data", [])])
 
     async def _batch_cancel_async(self, batch_id: str) -> BatchJob:
@@ -233,7 +245,7 @@ class _BaseClient:
         return self._parse_batch(data)
 
     def _batch_cancel_sync(self, batch_id: str) -> BatchJob:
-        data = self._request_sync("POST", f"/v1/batches/{batch_id}/cancel")
+        data = self._request("POST", f"/v1/batches/{batch_id}/cancel")
         return self._parse_batch(data)
 
     async def _moderations_async(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
@@ -242,7 +254,7 @@ class _BaseClient:
         return ModerationResponse(id=data.get("id", ""), model=data.get("model", model), results=results)
 
     def _moderations_sync(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
-        data = self._request_sync("POST", "/v1/moderations", json={"model": model, "input": input})
+        data = self._request("POST", "/v1/moderations", json={"model": model, "input": input})
         results = [ModerationResult(flagged=r["flagged"], categories=r.get("categories", {}), category_scores=r.get("category_scores", {})) for r in data.get("results", [])]
         return ModerationResponse(id=data.get("id", ""), model=data.get("model", model), results=results)
 
@@ -267,7 +279,7 @@ class _BaseClient:
             if language:
                 data_field["language"] = language
             data_field["temperature"] = temperature
-            data = self._request_sync("POST", "/v1/audio/transcriptions", data=data_field, files=files)
+            data = self._request("POST", "/v1/audio/transcriptions", data=data_field, files=files)
         if response_format == "json":
             return TranscriptionResponse(text=data.get("text", ""))
         return TranscriptionResponse(text=data.get("text", str(data)))
@@ -277,7 +289,7 @@ class _BaseClient:
         return SpeechResponse(content=resp.content, content_type=resp.headers.get("content-type", "audio/mpeg"))
 
     def _speech_sync(self, input: str, model: str = "tts-1", voice: str = "alloy", response_format: str = "mp3", speed: float = 1.0) -> SpeechResponse:
-        resp = self._request_raw_sync("POST", "/v1/audio/speech", json={"model": model, "input": input, "voice": voice, "response_format": response_format, "speed": speed})
+        resp = self._request_raw("POST", "/v1/audio/speech", json={"model": model, "input": input, "voice": voice, "response_format": response_format, "speed": speed})
         return SpeechResponse(content=resp.content, content_type=resp.headers.get("content-type", "audio/mpeg"))
 
     async def _images_generate_async(self, prompt: str, model: str = "distributed-llm", n: int = 1, size: str = "1024x1024", response_format: str = "url", quality: str = "standard", style: str | None = None) -> ImageGenerationResponse:
@@ -292,7 +304,7 @@ class _BaseClient:
         payload = {"model": model, "prompt": prompt, "n": n, "size": size, "response_format": response_format, "quality": quality}
         if style:
             payload["style"] = style
-        data = self._request_sync("POST", "/v1/images/generations", json=payload)
+        data = self._request("POST", "/v1/images/generations", json=payload)
         images = [ImageObject(url=img.get("url"), b64_json=img.get("b64_json"), revised_prompt=img.get("revised_prompt")) for img in data.get("data", [])]
         return ImageGenerationResponse(created=data.get("created", 0), data=images)
 
@@ -307,7 +319,7 @@ class _BaseClient:
         path = Path(file_path)
         with open(path, "rb") as f:
             files = {"file": (path.name, f)}
-            data = self._request_sync("POST", "/v1/files", data={"purpose": purpose}, files=files)
+            data = self._request("POST", "/v1/files", data={"purpose": purpose}, files=files)
         return FileInfo(id=data["id"], filename=data["filename"], purpose=data["purpose"], bytes=data["bytes"], created_at=data["created_at"])
 
     async def _files_list_async(self) -> list[FileInfo]:
@@ -315,7 +327,7 @@ class _BaseClient:
         return [FileInfo(id=f["id"], filename=f["filename"], purpose=f["purpose"], bytes=f["bytes"], created_at=f["created_at"]) for f in data.get("data", [])]
 
     def _files_list_sync(self) -> list[FileInfo]:
-        data = self._request_sync("GET", "/v1/files")
+        data = self._request("GET", "/v1/files")
         return [FileInfo(id=f["id"], filename=f["filename"], purpose=f["purpose"], bytes=f["bytes"], created_at=f["created_at"]) for f in data.get("data", [])]
 
     async def _files_delete_async(self, file_id: str) -> bool:
@@ -323,7 +335,7 @@ class _BaseClient:
         return data.get("deleted", False)
 
     def _files_delete_sync(self, file_id: str) -> bool:
-        data = self._request_sync("DELETE", f"/v1/files/{file_id}")
+        data = self._request("DELETE", f"/v1/files/{file_id}")
         return data.get("deleted", False)
 
     async def _fine_tuning_create_async(self, training_file: str, model: str = "distributed-llm", validation_file: str | None = None, hyperparameters: dict | None = None, suffix: str | None = None) -> FineTuningJob:
@@ -345,7 +357,7 @@ class _BaseClient:
             payload["hyperparameters"] = hyperparameters
         if suffix:
             payload["suffix"] = suffix
-        data = self._request_sync("POST", "/v1/fine_tuning/jobs", json=payload)
+        data = self._request("POST", "/v1/fine_tuning/jobs", json=payload)
         return self._parse_fine_tuning(data)
 
     async def _fine_tuning_list_async(self) -> list[FineTuningJob]:
@@ -353,7 +365,7 @@ class _BaseClient:
         return [self._parse_fine_tuning(j) for j in data.get("data", [])]
 
     def _fine_tuning_list_sync(self) -> list[FineTuningJob]:
-        data = self._request_sync("GET", "/v1/fine_tuning/jobs")
+        data = self._request("GET", "/v1/fine_tuning/jobs")
         return [self._parse_fine_tuning(j) for j in data.get("data", [])]
 
     async def _fine_tuning_cancel_async(self, job_id: str) -> FineTuningJob:
@@ -361,7 +373,7 @@ class _BaseClient:
         return self._parse_fine_tuning(data)
 
     def _fine_tuning_cancel_sync(self, job_id: str) -> FineTuningJob:
-        data = self._request_sync("POST", f"/v1/fine_tuning/jobs/{job_id}/cancel")
+        data = self._request("POST", f"/v1/fine_tuning/jobs/{job_id}/cancel")
         return self._parse_fine_tuning(data)
 
     @staticmethod
@@ -409,8 +421,12 @@ class DistLLMClient(_BaseClient):
         logprobs: dict | None = None,
         include_usage: bool = False,
         timeout: float | None = None,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
     ) -> ChatCompletionResponse:
-        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, stream, response_format, adapter, logprobs, include_usage)
+        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, stream, response_format, adapter, logprobs, include_usage, tools=tools, federation_strategy=federation_strategy, preferred_regions=preferred_regions, spillover_enabled=spillover_enabled)
         start = time.time()
         data = await self._request("POST", "/v1/chat/completions", json=payload, timeout=timeout)
         choices = [ChatChoice(index=c.get("index", 0), message=DataChatMessage(role=c["message"]["role"], content=c["message"]["content"]) if c.get("message") else None, finish_reason=c.get("finish_reason")) for c in data.get("choices", [])]
@@ -431,8 +447,12 @@ class DistLLMClient(_BaseClient):
         logprobs: dict | None = None,
         include_usage: bool = False,
         timeout: float | None = None,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
     ) -> AsyncIterator[str]:
-        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, True, response_format, adapter, logprobs, include_usage)
+        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, True, response_format, adapter, logprobs, include_usage, tools=tools, federation_strategy=federation_strategy, preferred_regions=preferred_regions, spillover_enabled=spillover_enabled)
         kw = {}
         if timeout:
             kw["timeout"] = timeout
@@ -454,6 +474,41 @@ class DistLLMClient(_BaseClient):
         resp = CompletionResponse(id=data["id"], model=data.get("model", model), choices=choices, created=data.get("created", 0), usage=_parse_usage(data), generation_time=elapsed)
         self._record_call("completions", elapsed, resp.usage)
         return resp
+
+    async def completions_stream(
+        self,
+        prompt: str,
+        model: str = "distributed-llm",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 256,
+        stop: list[str] | None = None,
+        timeout: float | None = None,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream text-completion deltas from ``/v1/completions`` (async)."""
+        from distllm_sdk.streaming import parse_sse_stream_async
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if stop:
+            payload["stop"] = stop
+        kw = {}
+        if timeout:
+            kw["timeout"] = timeout
+        async with self._client.stream("POST", "/v1/completions", json=payload, **kw) as response:
+            response.raise_for_status()
+            async for chunk in parse_sse_stream_async(response):
+                yield chunk
 
     async def list_models(self) -> ModelList:
         data = await self._request("GET", "/v1/models")
@@ -624,8 +679,12 @@ class DistLLMClientSync(_BaseClient):
         logprobs: dict | None = None,
         include_usage: bool = False,
         timeout: float | None = None,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
     ) -> ChatCompletionResponse:
-        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, stream, response_format, adapter, logprobs, include_usage)
+        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, stream, response_format, adapter, logprobs, include_usage, tools=tools, federation_strategy=federation_strategy, preferred_regions=preferred_regions, spillover_enabled=spillover_enabled)
         start = time.time()
         data = self._request("POST", "/v1/chat/completions", json=payload, timeout=timeout)
         choices = [ChatChoice(index=c.get("index", 0), message=DataChatMessage(role=c["message"]["role"], content=c["message"]["content"]) if c.get("message") else None, finish_reason=c.get("finish_reason")) for c in data.get("choices", [])]
@@ -646,14 +705,26 @@ class DistLLMClientSync(_BaseClient):
         logprobs: dict | None = None,
         include_usage: bool = False,
         timeout: float | None = None,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
     ) -> Iterator[str]:
-        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, True, response_format, adapter, logprobs, include_usage)
+        payload = self._build_chat_payload(messages, model, temperature, top_p, max_tokens, True, response_format, adapter, logprobs, include_usage, tools=tools, federation_strategy=federation_strategy, preferred_regions=preferred_regions, spillover_enabled=spillover_enabled)
         kw = {}
         if timeout:
             kw["timeout"] = timeout
         with self._client.stream("POST", "/v1/chat/completions", json=payload, **kw) as response:
             response.raise_for_status()
-            yield from parse_sse_stream_sync(response)
+            # Yield content STRINGS matching the async stream (F-036): the
+            # parser emits full SSE event dicts, but callers expect the same
+            # item type from both sync and async chat_completions_stream.
+            for event in parse_sse_stream_sync(response):
+                if "choices" in event and event["choices"]:
+                    delta = event["choices"][0].get("delta", {})
+                    content = delta.get("content")
+                    if content:
+                        yield content
 
     def completions(self, prompt: str, model: str = "distributed-llm", temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 256, timeout: float | None = None) -> CompletionResponse:
         payload = {"model": model, "prompt": prompt, "temperature": temperature, "top_p": top_p, "max_tokens": max_tokens}
@@ -664,6 +735,45 @@ class DistLLMClientSync(_BaseClient):
         resp = CompletionResponse(id=data["id"], model=data.get("model", model), choices=choices, created=data.get("created", 0), usage=_parse_usage(data), generation_time=elapsed)
         self._record_call("completions", elapsed, resp.usage)
         return resp
+
+    def completions_stream(
+        self,
+        prompt: str,
+        model: str = "distributed-llm",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 256,
+        stop: list[str] | None = None,
+        timeout: float | None = None,
+        tools: list[dict] | None = None,
+        federation_strategy: str | None = None,
+        preferred_regions: list[str] | None = None,
+        spillover_enabled: bool | None = None,
+    ) -> Iterator[str]:
+        """Stream text-completion deltas from ``/v1/completions``.
+
+        F-005: the framework adapters called ``completions_stream`` which did
+        not exist (only ``chat_completions_stream`` did). Streaming is implicit
+        here — no ``stream`` argument (the payload always sets ``stream=True``).
+        """
+        from distllm_sdk.streaming import parse_sse_stream_sync
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if stop:
+            payload["stop"] = stop
+        kw = {}
+        if timeout:
+            kw["timeout"] = timeout
+        with self._client.stream("POST", "/v1/completions", json=payload, **kw) as response:
+            response.raise_for_status()
+            yield from parse_sse_stream_sync(response)
 
     def list_models(self) -> ModelList:
         data = self._request("GET", "/v1/models")

@@ -1,0 +1,22 @@
+{
+  "_global_floor": 35.0,
+  "_sprint_step": 5.0,
+  "distllm/core": 85.0,
+  "distllm/core/coordinator_state": 85.0,
+  "distllm/core/coordinator": 85.0,
+  "distllm/core/di": 90.0,
+  "distllm/core/cache_manager": 85.0,
+  "distllm/core/differential_privacy": 85.0,
+  "distllm/core/ha_coordinator": 85.0,
+  "distllm/core/plugin_sandbox": 85.0,
+  "distllm/core/cost_dashboard": 85.0,
+  "distllm/core/autoscaler": 85.0,
+  "distllm/core/pipeline_orchestrator": 85.0,
+  "distllm/core/pipeline_composer": 85.0,
+  "distllm/core/pipeline_overlap": 85.0,
+  "distllm/core/request_pipeline": 85.0,
+  "distllm/dist/worker": 85.0,
+  "distllm/security": 85.0,
+  "distllm/dist": 75.0,
+  "distllm/api": 75.0
+}

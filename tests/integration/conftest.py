@@ -47,7 +47,13 @@ def _load_module(rel_path: str):
         raise ImportError(f"Could not load {filepath}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[dotted] = mod
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        # F-007: drop a partial module on exec failure so it can't poison later
+        # real imports (e.g. half-loaded distllm.config.settings).
+        sys.modules.pop(dotted, None)
+        raise
     return mod
 
 
@@ -132,17 +138,24 @@ def integration_coordinator_with_nodes(mock_tokenizer, mock_model_partitioner):
         mock_async_client.health_check.return_value = mock_health
         mock_async_client.forward_pass.return_value = mock_forward
 
-        reg = NodeRegistration(
+        # Register through the real pipeline API, then inject clients.
+        coord.manual_register(
             node_id=f"node-{i}",
             host="localhost",
             port=50051 + i,
             start_layer=i * 6,
             end_layer=(i + 1) * 6 - 1,
+            total_layers=12,
         )
-        reg.client = mock_client
-        reg.async_client = mock_async_client
-        reg.healthy = True
-        coord.nodes[f"node-{i}"] = reg
-        coord.node_order.append(f"node-{i}")
+        node = coord._pipeline.get_node(f"node-{i}")
+        node.client = mock_client
+        node.async_client = mock_async_client
 
     return coord
+
+@pytest.fixture
+def mock_tensor_serializer():
+    """Real proto round-trip pair from the pipeline serialization module."""
+    from distllm.dist.pipeline.serialization import to_proto_tensor as tensor_to_proto, from_proto_tensor as proto_to_tensor
+    return tensor_to_proto, proto_to_tensor
+

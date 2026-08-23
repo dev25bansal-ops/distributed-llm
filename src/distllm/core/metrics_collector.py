@@ -20,6 +20,11 @@ class MetricsCollector:
         self._latency_tracker = latency_tracker
         self._straggler_detector = straggler_detector
         self._recovery_manager = recovery_manager
+        self._counters: dict[str, float] = {}
+
+    def record(self, name: str, value: float = 1.0) -> None:
+        """Accumulate a named counter (RequestHandler.record_metric calls this)."""
+        self._counters[name] = self._counters.get(name, 0.0) + value
 
     def collect(self) -> dict[str, Any]:
         metrics: dict[str, Any] = {}
@@ -29,4 +34,6 @@ class MetricsCollector:
             metrics["straggler"] = self._straggler_detector.stats()
         if self._recovery_manager:
             metrics["recovery"] = self._recovery_manager.get_metrics()
+        if self._counters:
+            metrics["counters"] = dict(self._counters)
         return metrics

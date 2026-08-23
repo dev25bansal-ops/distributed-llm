@@ -27,33 +27,52 @@ class TestCertRotation:
     """Certificate rotation and expiry detection."""
 
     def test_cert_info_expiry_detection(self, cert_dir):
-        """Certificate info should correctly report days remaining."""
-        from distllm.core.cert_rotation import CertRotationManager
+        """Certificate info should correctly report missing-cert state."""
+        from distllm.core.cert_rotation import CertificateRotator
 
-        mgr = CertRotationManager(cert_dir=cert_dir, check_interval_days=30)
-        # Before any cert exists, check_certificate returns default info
-        info = mgr.check_certificate()
-        # Without cryptography, falls back to checking file existence
+        rotator = CertificateRotator(
+            cert_path=os.path.join(cert_dir, "cert.pem"),
+            key_path=os.path.join(cert_dir, "key.pem"),
+        )
+        # Before any cert exists, check_certificate reports invalid
+        info = rotator.check_certificate()
         assert info.days_remaining == 0
         assert not info.is_valid  # No cert file exists
 
     def test_needs_renewal_no_cert(self, cert_dir):
         """needs_renewal should return True when no cert exists."""
-        from distllm.core.cert_rotation import CertRotationManager
+        from distllm.core.cert_rotation import CertificateRotator
 
-        mgr = CertRotationManager(cert_dir=cert_dir, check_interval_days=30)
-        renew_before = timedelta(days=10)
-        needs = mgr.needs_renewal(renew_before=renew_before)
-        assert needs, "Should need renewal when no cert exists"
+        rotator = CertificateRotator(
+            cert_path=os.path.join(cert_dir, "cert.pem"),
+            key_path=os.path.join(cert_dir, "key.pem"),
+            renew_before_days=10,
+        )
+        assert rotator.needs_renewal(), "Should need renewal when no cert exists"
 
     def test_datetime_utcnow_replaced(self, cert_dir):
-        """Verify the fix for timezone-aware datetime comparison (C2 fix)."""
-        from distllm.core.cert_rotation import CertRotationManager
-        from datetime import datetime, timezone
+        """Verify the fix for timezone-aware datetime comparison (C2 fix).
 
-        now_utc = datetime.now(timezone.utc)
-        # This would have raised TypeError before the fix:
-        #   TypeError: can't subtract offset-naive and offset-aware datetimes
-        future = now_utc + timedelta(days=30)
-        days = (future - now_utc).days
-        assert days == 30
+        ``needs_renewal`` compares ``not_valid_after_utc`` (timezone-aware)
+        against ``datetime.now(timezone.utc)`` — a naive utcnow() here raised
+        TypeError on modern cryptography, silently disabling auto-renewal.
+        """
+        from distllm.core.cert_rotation import CertificateRotator
+
+        rotator = CertificateRotator(
+            cert_path=os.path.join(cert_dir, "cert.pem"),
+            key_path=os.path.join(cert_dir, "key.pem"),
+            renew_before_days=60,
+        )
+        assert rotator.generate_self_signed(hostname="localhost", days=30)
+        # 30-day cert vs 60-day renewal window -> needs renewal now.
+        # Must not raise TypeError from naive/aware datetime mixing.
+        assert rotator.needs_renewal() is True
+
+        long_lived = CertificateRotator(
+            cert_path=os.path.join(cert_dir, "cert2.pem"),
+            key_path=os.path.join(cert_dir, "key2.pem"),
+            renew_before_days=30,
+        )
+        assert long_lived.generate_self_signed(hostname="localhost", days=365)
+        assert long_lived.needs_renewal() is False

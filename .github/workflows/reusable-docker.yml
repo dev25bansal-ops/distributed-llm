@@ -1,0 +1,122 @@
+# Reusable Docker build and publish workflow for DistLLM projects
+#
+# Builds multi-architecture Docker images for DistLLM services,
+# runs vulnerability scanning, and generates SBOMs.
+#
+# Usage:
+#   jobs:
+#     docker:
+#       uses: distributed-llm/distributed-llm/.github/workflows/reusable-docker.yml@main
+#       with:
+#         image-name: my-org/my-service
+
+name: Reusable Docker Build
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Docker image name (without tag)"
+        type: string
+        required: true
+      dockerfile:
+        description: "Path to Dockerfile"
+        type: string
+        default: "Dockerfile"
+      context:
+        description: "Docker build context"
+        type: string
+        default: "."
+      push-to-registry:
+        description: "Push to container registry"
+        type: boolean
+        default: false
+      tags:
+        description: "Comma-separated image tags"
+        type: string
+        default: "latest"
+      cache-from:
+        description: "Build cache source"
+        type: string
+        default: "type=gha"
+      cache-to:
+        description: "Build cache destination"
+        type: string
+        default: "type=gha,mode=max"
+      cuda-versions:
+        description: "CUDA versions to build (JSON array)"
+        type: string
+        default: '["12.1"]'
+      run-trivy:
+        description: "Run Trivy vulnerability scan"
+        type: boolean
+        default: true
+      run-sbom:
+        description: "Generate CycloneDX SBOM"
+        type: boolean
+        default: true
+    secrets:
+      registry-username:
+        description: "Container registry username"
+        required: false
+      registry-password:
+        description: "Container registry password or token"
+        required: false
+
+jobs:
+  # ── Build ───────────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ${{ fromJSON(inputs.cuda-versions) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to registry
+        if: ${{ inputs.push-to-registry && secrets.registry-username != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.registry-username }}
+          password: ${{ secrets.registry-password }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: ${{ inputs.push-to-registry }}
+          tags: ${{ inputs.image-name }}:${{ matrix.cuda }}${{ format(', {0}:{1}', inputs.image-name, inputs.tags) }}
+          cache-from: ${{ inputs.cache-from }}
+          cache-to: ${{ inputs.cache-to }}
+          build-args: |
+            CUDA_VERSION=${{ matrix.cuda }}.0
+      - name: Run Trivy vulnerability scan
+        if: ${{ inputs.run-trivy }}
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ inputs.image-name }}:${{ matrix.cuda }}
+          format: sarif
+          output: trivy-${{ matrix.cuda }}.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - name: Upload Trivy results
+        if: ${{ inputs.run-trivy }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ matrix.cuda }}
+          path: trivy-${{ matrix.cuda }}.sarif
+      - name: Generate SBOM
+        if: ${{ inputs.run-sbom }}
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ inputs.image-name }}:${{ matrix.cuda }}
+          format: cyclonedx
+          output: sbom-${{ matrix.cuda }}.json
+      - name: Upload SBOM
+        if: ${{ inputs.run-sbom }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.cuda }}
+          path: sbom-${{ matrix.cuda }}.json

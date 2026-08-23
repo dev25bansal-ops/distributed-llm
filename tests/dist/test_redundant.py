@@ -78,18 +78,18 @@ class TestRedundantExecutor:
         assert len(results) == 1
         assert results[0][0] == "node-a"
 
-    def test_find_redundant_enabled_returns_only_primary(self):
-        """When enabled, the nodes property returns dicts and
-        getattr(dict, 'healthy', False) is always False, so redundant
-        nodes are never matched. Only the primary is returned."""
+    def test_find_redundant_enabled_finds_peers(self):
+        """When enabled, redundant peers covering the same layer range ARE
+        found (P0 fix: previously the nodes property returned dicts so peers
+        were never matched and redundancy was a no-op)."""
         pipeline = PipelineOrchestrator()
         pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
         pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
-        pipeline.register_node("node-c", "10.0.0.3", 50051, 0, 15)
+        pipeline.register_node("node-c", "10.0.0.3", 50051, 16, 31)
         executor = RedundantExecutor(pipeline, redundancy=2)
         results = executor._find_redundant_nodes("node-a")
-        assert len(results) == 1
-        assert results[0][0] == "node-a"
+        assert len(results) == 2
+        assert {r[0] for r in results} == {"node-a", "node-b"}
 
     def test_find_redundant_excludes_different_layer_range(self):
         """Nodes covering different layers are never included."""
@@ -103,25 +103,41 @@ class TestRedundantExecutor:
 
     # ── run_pipeline ────────────────────────────────────────────
 
-    def test_run_pipeline_standard_path_type_error(self):
-        """_run_standard passes draft_tokens as a 4th positional arg,
-        but PipelineOrchestrator.run_pipeline only accepts 3."""
+    def test_run_pipeline_standard_path_delegates(self, monkeypatch):
+        """P0 fix: standard path now delegates correctly (previously passed an
+        unsupported draft_tokens arg and raised TypeError)."""
         pipeline = PipelineOrchestrator()
         pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
         executor = RedundantExecutor(pipeline)
         input_ids = torch.zeros((1, 4), dtype=torch.long)
-        with pytest.raises(TypeError, match="takes 4 positional arguments but 5 were given"):
-            executor.run_pipeline(input_ids, {}, "req-1")
 
-    def test_run_pipeline_redundant_path_attribute_error(self):
-        """_run_redundant accesses _topology_lock which does not
-        exist on PipelineOrchestrator."""
+        def fake_forward(host, port, hidden_states, kv_cache, request_id, **kw):
+            return hidden_states + 1
+
+        monkeypatch.setattr("distllm.dist.node_client.forward_request", fake_forward)
+        out = executor.run_pipeline(input_ids, {}, "req-1")
+        assert torch.equal(out, input_ids + 1)
+
+    def test_run_pipeline_redundant_path_fans_out(self, monkeypatch):
+        """P0 fix: redundant path fans out to peers and returns the first
+        response (previously raised NotImplementedError via stub helpers)."""
         pipeline = PipelineOrchestrator()
         pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
         executor = RedundantExecutor(pipeline, redundancy=2)
         input_ids = torch.zeros((1, 4), dtype=torch.long)
-        with pytest.raises(AttributeError, match="no attribute '_topology_lock'"):
-            executor.run_pipeline(input_ids, {}, "req-1")
+        calls: list[tuple[str, int]] = []
+
+        def fake_forward(host, port, hidden_states, kv_cache, request_id, **kw):
+            calls.append((host, port))
+            return hidden_states + 1
+
+        monkeypatch.setattr("distllm.dist.node_client.forward_request", fake_forward)
+        out = executor.run_pipeline(input_ids, {}, "req-1")
+        assert out is not None
+        # Each stage fanned out to both redundant peers.
+        assert len(calls) >= 2
+        assert {c[0] for c in calls} == {"10.0.0.1", "10.0.0.2"}
 
     # ── get_node_groups ─────────────────────────────────────────
 
@@ -134,15 +150,15 @@ class TestRedundantExecutor:
         groups = executor.get_node_groups()
         assert groups == [["node-a", "node-b"]]
 
-    def test_get_node_groups_enabled_attribute_error(self):
-        """When enabled, get_node_groups accesses node.start_layer on
-        dicts returned by the nodes property."""
+    def test_get_node_groups_enabled_groups_peers(self):
+        """P0 fix: enabled mode groups redundant peers covering the same range."""
         pipeline = PipelineOrchestrator()
         pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
         pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
         executor = RedundantExecutor(pipeline, redundancy=2)
-        with pytest.raises(AttributeError, match="no attribute 'start_layer'"):
-            executor.get_node_groups()
+        groups = executor.get_node_groups()
+        assert len(groups) == 1
+        assert set(groups[0]) == {"node-a", "node-b"}
 
 
 class TestStateReplicationEngine:
@@ -302,21 +318,18 @@ class TestStateReplicationEngine:
         engine.register_standby("node-a", "node-a-standby")
         assert engine.promote_standby("node-a") == "node-a-standby"
 
-    def test_promote_standby_with_kv_cache_attribute_error(self):
-        """Restoring KV cache fails because nodes property returns
-        dicts, which have no writable 'kv_cache' attribute."""
+    def test_promote_standby_restores_kv_cache(self):
+        """P0 fix: promotion restores the replicated KV cache onto the standby
+        node (previously raised AttributeError on the nodes-property dicts)."""
         pipeline = PipelineOrchestrator()
         pipeline.register_node("node-a-standby", "10.0.0.2", 50051, 0, 15)
         engine = StateReplicationEngine(pipeline)
         engine.register_standby("node-a", "node-a-standby")
-        engine.replicate_state(
-            "node-a",
-            [(torch.tensor([1.0]), torch.tensor([2.0]))],
-            None,
-            "req-1",
-        )
-        with pytest.raises(AttributeError, match="no attribute 'kv_cache'"):
-            engine.promote_standby("node-a")
+        kv = [(torch.tensor([1.0]), torch.tensor([2.0]))]
+        engine.replicate_state("node-a", kv, None, "req-1")
+        promoted = engine.promote_standby("node-a")
+        assert promoted == "node-a-standby"
+        assert pipeline._nodes["node-a-standby"].kv_cache is not None
 
     # ── get_replication_lag ─────────────────────────────────────
 

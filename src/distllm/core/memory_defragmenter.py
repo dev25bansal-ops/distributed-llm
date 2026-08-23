@@ -314,6 +314,29 @@ class MemoryDefragmenter:
                 if mgr_lock is not None:
                     mgr_lock.release()
 
+    def _defragment_impl_locked(
+        self,
+        mgr: Any,
+        tier: TieredCompactionLevel | None = None,
+    ) -> DefragResult:
+        """Run ``_defragment_impl`` under both ``_lock`` and ``mgr._lock``.
+
+        Mirrors the lock acquisition in the synchronous ``defragment()``
+        (self first, then mgr) so a defrag task running in an executor
+        thread cannot race with a concurrent synchronous defrag or with
+        ``allocate_sequence()``/``free_sequence()`` on the manager.
+        Intended for the executor-worker path used by the async variants.
+        """
+        with self._lock:
+            mgr_lock = getattr(mgr, '_lock', None)
+            if mgr_lock is not None:
+                mgr_lock.acquire()
+            try:
+                return self._defragment_impl(mgr, tier)
+            finally:
+                if mgr_lock is not None:
+                    mgr_lock.release()
+
     @staticmethod
     def _resolve_blocks(mgr: Any) -> tuple[list[Any], dict[str, Any]]:
         """Get blocks and seq_blocks from mgr via protocol or fallback."""
@@ -533,12 +556,14 @@ class MemoryDefragmenter:
     async def defragment_async(self, paged_attention_mgr: Any) -> DefragResult:
         """Async variant that yields the event loop during compaction.
 
-        Thread-safe: uses asyncio.Lock for cooperative concurrency.
+        Thread-safe: uses asyncio.Lock for cooperative concurrency and
+        re-acquires the same threading locks as the synchronous path
+        inside the executor worker (self first, then the manager's lock).
         """
         async with self._async_lock:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
-                None, self._defragment_impl, paged_attention_mgr, None,
+                None, self._defragment_impl_locked, paged_attention_mgr, None,
             )
 
     async def defragment_with_tier_async(
@@ -550,7 +575,7 @@ class MemoryDefragmenter:
         async with self._async_lock:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
-                None, self._defragment_impl, paged_attention_mgr, tier,
+                None, self._defragment_impl_locked, paged_attention_mgr, tier,
             )
 
     # ── Predictive Defragmentation ──
