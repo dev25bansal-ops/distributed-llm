@@ -12,6 +12,7 @@ import SectionHeading from "../components/SectionHeading.astro";
       eyebrow="API Playground"
       title="Talk to your cluster"
       lead="Runs entirely in your browser against your own DistLLM server. Start the server, then send real requests."
+      level={1}
     />
 
     <div class="mx-auto mt-10 grid max-w-5xl gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
@@ -100,10 +101,10 @@ import SectionHeading from "../components/SectionHeading.astro";
                 class="rounded-md border border-line px-2 py-0.5 text-xs text-muted hover:text-ink disabled:opacity-40" disabled>
                 Copy
               </button>
-              <span data-pg="status" class="rounded-full bg-sunken px-2.5 py-0.5 font-mono text-xs text-muted">idle</span>
+              <span data-pg="status" aria-live="polite" class="rounded-full bg-sunken px-2.5 py-0.5 font-mono text-xs text-muted">idle</span>
             </span>
           </div>
-          <div data-pg="output"
+          <div data-pg="output" aria-live="polite"
             class="min-h-[220px] whitespace-pre-wrap p-5 font-mono text-sm leading-relaxed text-ink">
             Send a request to see the response here.
           </div>

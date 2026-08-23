@@ -1,0 +1,161 @@
+---
+title: Federated Training
+description: Private LoRA fine-tuning across pooled devices — FedProx, differential privacy, and RDP budget accounting.
+group: Architecture
+order: 5
+---
+
+DistLLM is best known for pooling devices for *inference*. The same cluster
+can also fine-tune: every node trains a LoRA adapter on data that never
+leaves the device, and only gradient updates travel between peers. The
+engine behind this is `FederatedFineTuner`
+([`src/distllm/core/federated_finetuner.py`](https://github.com/distributed-llm/distributed-llm/blob/master/src/distllm/core/federated_finetuner.py)).
+
+## How a round works
+
+Each federated round runs the same five steps on every node:
+
+1. **Stale-gradient pruning** — contributions left over from earlier rounds
+   are dropped before anything is averaged, so a peer that went silent (or a
+   late/out-of-order gossip message consumed earlier) cannot leak into this
+   round's update.
+2. **Local training** — the node trains on its private data for
+   `local_steps` steps and produces LoRA gradients.
+3. **Differential privacy** — gradients are clipped to a total L2 norm and
+   Gaussian noise is added *before* anything leaves the device.
+4. **Gossip exchange** — gradients are broadcast to peers tagged with the
+   current round number; incoming messages are accepted only if their round
+   matches the round in progress.
+5. **Average and apply** — local and peer gradients are merged with the
+   configured algorithm and applied to the local adapter at `learning_rate`.
+
+The round-version guard works in both directions: stale submissions are
+pruned at the start of a round, rejected on receipt when their message round
+does not match, and skipped again defensively inside the averager. Messages
+from legacy peers without a round field are treated as current-round.
+
+## Aggregation algorithms
+
+| Algorithm | When to use | How |
+|-----------|-------------|-----|
+| **FedAvg** | Default | Plain average of local + peer gradients |
+| **FedProx** | Heterogeneous data / uneven participation | Adds a proximal term `mu * (w_local - w_global)` to each gradient |
+
+FedProx penalizes local models for drifting too far from the shared global
+model (Li et al., 2020). Pass `algorithm="fedprox"`, `fedprox_mu`, and the
+global parameters; after each round call `set_global_model(params)` with the
+aggregated weights. If a parameter's local weight cannot be snapshotted, its
+gradient passes through unchanged rather than being mixed with a mismatched
+weight tensor.
+
+## Differential privacy
+
+Two mechanisms run before a gradient ever leaves a node:
+
+- **Clipping** — the total norm across all parameter tensors is computed;
+  if it exceeds `dp_max_grad_norm` every tensor is scaled down proportionally.
+  This bounds each node's influence (sensitivity).
+- **Gaussian noise** — calibrated noise with
+  `sigma = dp_max_grad_norm * dp_noise_multiplier` is added per tensor.
+
+Set `dp_noise_multiplier` to a negative value to auto-derive sigma from your
+privacy target instead:
+
+```
+sigma = max_grad_norm * sqrt(2 * ln(1.25 / delta)) / epsilon
+```
+
+Setting `dp_epsilon=float("inf")` disables DP entirely (deterministic mode,
+useful for tests). The tuner tracks how many times clipping fired in
+`stats["dp_clips"]`.
+
+## Privacy budget accounting
+
+Rounds compose: every round spends privacy. DistLLM accounts for this with
+an RDP (Rényi Differential Privacy) accountant
+(`distllm.core.dp_inference.accounting.RDPAccounting`), which composes the
+per-round Gaussian-mechanism queries via Renyi divergence — tighter than
+naively summing epsilon bounds (Mironov, 2017).
+
+```python
+from distllm.core.dp_inference.accounting import RDPAccounting
+
+accountant = RDPAccounting()
+sigma = dp_max_grad_norm * dp_noise_multiplier
+
+for round_idx in range(num_rounds):
+    metrics = tuner.train_round(local_train_fn)
+    accountant.add_query(sigma)                     # one Gaussian query per round
+    spent = accountant.get_privacy_spent(dp_delta)  # {"epsilon": ..., "delta": ...}
+    print(f"round {metrics['round']}: eps so far {spent['epsilon']}")
+```
+
+When cumulative epsilon crosses your budget, stop training — or raise sigma
+and accept a slower model.
+
+## Minimal runnable example
+
+Two nodes exchanging gradients through direct function calls (the same
+callbacks gossip would fill in a real deployment):
+
+```python
+import torch
+from distllm.core.federated_finetuner import FederatedFineTuner
+
+weights = [torch.zeros(8, 8), torch.zeros(8)]
+
+def lora_adapter():                 # current local LoRA params
+    return weights
+
+def apply_gradients(grads, lr):     # apply merged grads to the adapter
+    with torch.no_grad():
+        for w, g in zip(weights, grads):
+            w -= lr * g
+
+tuner = FederatedFineTuner(
+    node_id="laptop-a",
+    lora_adapter=lora_adapter,
+    apply_gradients=apply_gradients,
+    gossip_broadcast=lambda peer_id, msg: send(peer_id, msg),   # your transport
+    gossip_receive=lambda timeout=30.0: recv(timeout),          # your transport
+    local_steps=10,
+    num_rounds=4,
+    learning_rate=0.3,
+    dp_epsilon=8.0,
+    dp_delta=1e-5,
+    dp_max_grad_norm=1.0,
+    dp_noise_multiplier=1.0,
+)
+
+for _ in range(4):
+    print(tuner.train_round(lambda steps: [w - target for w in weights]))
+```
+
+A complete working demo — two in-process nodes printing epsilon spend per
+round — ships in the repo:
+
+```bash
+python examples/federated_training_demo.py
+```
+
+## Cluster-scale orchestration
+
+For multi-node clusters, `FederatedMergeCoordinator`
+(`src/distllm/dist/federated_merge.py`) sits above the per-node tuners:
+nodes register with their dataset size, rounds collect adapter submissions
+until `min_nodes_per_round` is met, merges are weighted by dataset size
+(capped by `max_dataset_size` so no single node dominates), submissions are
+verified against node public keys, and merged adapters are checkpointed with
+version lineage for rollback.
+
+## Honest limits
+
+- Gradient updates ride DistLLM's authenticated P2P gossip, but they are not
+  yet hidden by secure aggregation — peers see each other's (noised)
+  individual gradients, not only sums.
+- DP here protects training contributors; it is separate from inference-time
+  DP, whose generation path currently fails closed rather than emit
+  unprotected output.
+- Epsilon values from the accountant are upper bounds under the Gaussian
+  mechanism assumptions; treat them as a budgeting tool, not a guarantee
+  against all side channels.

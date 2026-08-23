@@ -59,6 +59,200 @@ const jsonLdArray = jsonLd ? (Array.isArray(jsonLd) ? jsonLd : [jsonLd]) : [];
       Skip to content
     </a>
     <slot />
+
+    <!-- Global site search (Ctrl/Cmd+K), backed by the Pagefind build index -->
+    <div id="site-search" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-label="Site search">
+      <div class="absolute inset-0 bg-bg/85 backdrop-blur-sm" data-search-backdrop></div>
+      <div
+        class="relative mx-auto mt-[8vh] flex max-h-[75vh] w-[min(92vw,40rem)] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card"
+      >
+        <div class="flex items-center gap-3 border-b border-line px-4">
+          <svg class="h-4 w-4 shrink-0 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.35-4.35M17 11a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z" />
+          </svg>
+          <input
+            id="site-search-input"
+            type="search"
+            placeholder="Search docs, blog, changelog, glossary…"
+            aria-label="Search the site"
+            autocomplete="off"
+            class="w-full bg-transparent py-4 text-sm placeholder:text-faint sm:text-base"
+          />
+          <kbd class="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">esc</kbd>
+        </div>
+        <div id="site-search-filters" class="flex flex-wrap gap-1.5 border-b border-line px-4 py-2" role="group" aria-label="Filter results by section">
+          <button type="button" data-search-section="" aria-pressed="true" class="rounded-md bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700">All</button>
+          <button type="button" data-search-section="Docs" aria-pressed="false" class="rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Docs</button>
+          <button type="button" data-search-section="Blog" aria-pressed="false" class="rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Blog</button>
+          <button type="button" data-search-section="Changelog" aria-pressed="false" class="rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Changelog</button>
+          <button type="button" data-search-section="Glossary" aria-pressed="false" class="rounded-md px-2.5 py-1 text-xs font-medium text-muted hover:text-ink">Glossary</button>
+        </div>
+        <div id="site-search-results" class="min-h-[4rem] overflow-y-auto p-2"></div>
+        <p id="site-search-status" class="sr-only" aria-live="polite"></p>
+      </div>
+    </div>
+
+    <script>
+      (() => {
+        const modal = document.getElementById("site-search");
+        if (!modal) return;
+        const input = document.getElementById("site-search-input") as HTMLInputElement | null;
+        const resultsEl = document.getElementById("site-search-results")!;
+        const statusEl = document.getElementById("site-search-status")!;
+        const filtersEl = document.getElementById("site-search-filters")!;
+
+        let pagefind: any = null;
+        let isOpen = false;
+        let activeSection = "";
+        let searchSeq = 0;
+        let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+        let lastFocused: HTMLElement | null = null;
+
+        const HINT =
+          '<p class="p-6 text-center text-sm text-faint">Type to search across the whole site.</p>';
+        resultsEl.innerHTML = HINT;
+
+        const loadPagefind = async () => {
+          if (pagefind) return pagefind;
+          const specifier = "/pagefind/pagefind.js"; // runtime-resolved build asset
+          const pf: any = await import(/* @vite-ignore */ specifier);
+          await pf.options({ excerptLength: 12 });
+          pagefind = pf;
+          return pf;
+        };
+
+        const renderResults = (results: any[]) => {
+          if (results.length === 0) {
+            resultsEl.innerHTML = '<p class="p-6 text-center text-sm text-faint">No results.</p>';
+            statusEl.textContent = "No results.";
+            return;
+          }
+          resultsEl.innerHTML = "";
+          for (const r of results.slice(0, 12)) {
+            const meta = r.meta ?? {};
+            const a = document.createElement("a");
+            a.href = r.url;
+            a.className = "block rounded-lg px-3 py-2 hover:bg-sunken focus:bg-sunken";
+            const titleEl = document.createElement("span");
+            titleEl.className = "block text-sm font-medium";
+            titleEl.textContent = meta.title ?? "Untitled"; // textContent: no XSS via titles
+            const excerptEl = document.createElement("span");
+            excerptEl.className = "mt-0.5 block text-xs leading-relaxed text-muted";
+            excerptEl.innerHTML = r.excerpt; // build-generated markup from our own index
+            a.appendChild(titleEl);
+            a.appendChild(excerptEl);
+            a.addEventListener("click", () => close());
+            resultsEl.appendChild(a);
+          }
+          statusEl.textContent = `${results.length} result${results.length === 1 ? "" : "s"}.`;
+        };
+
+        const runSearch = async () => {
+          if (!input) return;
+          const q = input.value.trim();
+          const seq = ++searchSeq;
+          if (q.length === 0) {
+            resultsEl.innerHTML = HINT;
+            statusEl.textContent = "";
+            return;
+          }
+          try {
+            const pf = await loadPagefind();
+            const res = await pf.search(
+              q,
+              activeSection ? { filters: { section: [activeSection] } } : {},
+            );
+            if (seq !== searchSeq) return;
+            const data = await Promise.all(res.results.slice(0, 12).map((r: any) => r.data()));
+            if (seq !== searchSeq) return;
+            renderResults(data);
+          } catch {
+            resultsEl.innerHTML =
+              '<p class="p-6 text-center text-sm text-faint">Search index not available in this environment.</p>';
+            statusEl.textContent = "";
+          }
+        };
+
+        const setActiveChip = () => {
+          filtersEl.querySelectorAll<HTMLButtonElement>("[data-search-section]").forEach((b) => {
+            const active = (b.dataset.searchSection ?? "") === activeSection;
+            b.setAttribute("aria-pressed", String(active));
+            b.classList.toggle("bg-brand-50", active);
+            b.classList.toggle("text-brand-700", active);
+            b.classList.toggle("text-muted", !active);
+          });
+        };
+
+        const open = () => {
+          if (isOpen) return;
+          isOpen = true;
+          lastFocused = document.activeElement as HTMLElement | null;
+          modal.classList.remove("hidden");
+          document.body.style.overflow = "hidden";
+          input?.focus();
+          void runSearch();
+        };
+
+        const close = () => {
+          if (!isOpen) return;
+          isOpen = false;
+          modal.classList.add("hidden");
+          document.body.style.overflow = "";
+          if (input) input.value = "";
+          activeSection = "";
+          setActiveChip();
+          resultsEl.innerHTML = HINT;
+          statusEl.textContent = "";
+          lastFocused?.focus();
+          lastFocused = null;
+        };
+
+        // Triggers: Ctrl/Cmd+K anywhere, Esc closes, [data-search-open] buttons.
+        document.addEventListener("keydown", (e) => {
+          if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+            e.preventDefault();
+            isOpen ? close() : open();
+          } else if (e.key === "Escape" && isOpen) {
+            close();
+          }
+        });
+        document.querySelectorAll("[data-search-open]").forEach((el) =>
+          el.addEventListener("click", () => open()),
+        );
+        modal.querySelector("[data-search-backdrop]")?.addEventListener("click", close);
+
+        input?.addEventListener("input", () => {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => void runSearch(), 100);
+        });
+
+        filtersEl.addEventListener("click", (e) => {
+          const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-search-section]");
+          if (!btn) return;
+          activeSection = btn.dataset.searchSection ?? "";
+          setActiveChip();
+          void runSearch();
+        });
+
+        // Minimal focus trap while the dialog is open.
+        modal.addEventListener("keydown", (e) => {
+          if (e.key !== "Tab") return;
+          const focusable = Array.from(
+            modal.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input, [tabindex]:not([tabindex="-1"])'),
+          ).filter((el) => el.offsetParent !== null);
+          if (focusable.length === 0) return;
+          const first = focusable[0]!;
+          const last = focusable[focusable.length - 1]!;
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        });
+      })();
+    </script>
     <script>
       // Delegated copy-to-clipboard for every [data-copy] button.
       document.addEventListener("click", async (e) => {

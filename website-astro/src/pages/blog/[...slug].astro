@@ -24,7 +24,7 @@ const { Content } = await render(post);
     </div>
     <h1 class="mt-4 text-4xl">{post.data.title}</h1>
     <p class="mt-3 text-lg text-muted">{post.data.description}</p>
-    <div class="prose-doc mt-8">
+    <div class="prose-doc mt-8" data-pagefind-body data-pagefind-filter="section: Blog">
       <Content />
     </div>
   </article>

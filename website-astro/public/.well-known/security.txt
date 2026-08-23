@@ -1,0 +1,5 @@
+Canonical: https://distllm.dev/.well-known/security.txt
+Contact: mailto:security@distllm.dev
+Expires: 2027-08-24T00:00:00Z
+Preferred-Languages: en
+Policy: https://distllm.dev/security/

@@ -25,7 +25,7 @@
   --color-sunken: #111814;
   --color-ink: #e6f2ea;
   --color-muted: #9db3a6;
-  --color-faint: #66816f;
+  --color-faint: #75907f;
   --color-line: #1e2b23;
 
   /* ── Brand: terminal emerald (dark-tuned scale) ────── */
@@ -79,6 +79,13 @@
     font-weight: 700;
   }
   ::selection { background: var(--color-brand-200); }
+
+  /* Keyboard focus ring — visible only for keyboard navigation (:focus-visible),
+     never for mouse clicks. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-400);
+    outline-offset: 2px;
+  }
 }
 
 @utility text-gradient {
