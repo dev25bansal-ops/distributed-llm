@@ -43,6 +43,10 @@ def completion_command(
 ) -> None:
     """Generate shell autocomplete scripts for distllm CLI.
 
+    For one-step installation in your current shell, prefer::
+
+        distllm --install-completion
+
     Usage:
         distllm completion bash >> ~/.bashrc
         distllm completion zsh >> ~/.zshrc
@@ -117,7 +121,7 @@ Register-ArgumentCompleter -Native -CommandName distllm -ScriptBlock {
 #   system     — daemons, diagnostics, logs, notifications
 #
 
-cluster_app = typer.Typer(help="Manage cluster: start, join, status, scale, drain, deploy")
+cluster_app = typer.Typer(help="Manage cluster: start, join, status, list-nodes, scale, drain, deploy")
 model_app = typer.Typer(help="Manage models: list, load, info, compress, adapters")
 benchmark_app = typer.Typer(help="Run benchmarks, compare results, profile inference")
 config_app = typer.Typer(help="Configuration, setup, webhooks, quotas, backups")
@@ -494,7 +498,7 @@ def cluster_status(
     host: str = typer.Option("localhost", "--host", help="API server host"),
     port: int = typer.Option(8000, "--port", "-p", help="API server port"),
 ):
-    """Show cluster status and node health."""
+    """Show cluster status and node health (reads /v1/health)."""
     from distllm.cli.cluster import _cluster_status
     _cluster_status(host, port)
 
@@ -596,9 +600,9 @@ def cluster_leave(
 @cluster_app.command("list-nodes")
 def cluster_list_nodes(
     coordinator_host: str = typer.Option("localhost", "--coordinator", "-c", help="Coordinator hostname"),
-    coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
+    coordinator_port: int = typer.Option(8000, "--port", "-p", help="Coordinator REST API port (admin endpoints; default 8000)"),
 ):
-    """List registered worker nodes in the cluster."""
+    """List registered worker nodes in the cluster (reads /admin/v1/nodes)."""
     from distllm.cli.cluster import _cluster_list_nodes
     _cluster_list_nodes(coordinator_host, coordinator_port)
 

@@ -153,6 +153,18 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _note_validation_context(exc: "ValidationError", config_path: str) -> None:
+    """Attach the config file path to a ValidationError for better tracebacks.
+
+    Uses ``Exception.add_note`` (Python 3.11+); silently skips on older
+    interpreters where notes are unavailable.
+    """
+    note = f"while validating config file '{config_path}'"
+    add_note = getattr(exc, "add_note", None)
+    if callable(add_note):
+        add_note(note)
+
+
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
@@ -364,8 +376,15 @@ class DistLLMSettings(BaseSettings):
         yaml_data: dict[str, Any] = {}
 
         if config_path and os.path.exists(config_path):
-            with open(config_path) as f:
-                yaml_data = yaml.safe_load(f) or {}
+            try:
+                with open(config_path) as f:
+                    yaml_data = yaml.safe_load(f) or {}
+            except yaml.YAMLError as e:
+                # Surface which file failed to parse — raw YAMLError messages
+                # do not carry the config path.
+                raise ValueError(
+                    f"Invalid YAML in config file '{config_path}': {e}"
+                ) from e
 
         # SECURITY/CORRECTNESS: pydantic-settings precedence is
         # ``init kwargs > env > dotenv > secrets > defaults``.  Passing YAML as
@@ -380,7 +399,15 @@ class DistLLMSettings(BaseSettings):
 
         merged = _deep_merge(dict(yaml_data), dict(env_values))
 
-        settings = cls.model_validate(merged)
+        try:
+            settings = cls.model_validate(merged)
+        except ValidationError as e:
+            # Preserve the ValidationError type for callers, but attach the
+            # config file path as a note (Python 3.11+) so tracebacks show
+            # which file the bad value came from.
+            if config_path:
+                _note_validation_context(e, config_path)
+            raise
 
         if cli_overrides:
             cli_merged = cls._apply_cli_overrides(settings.model_dump(), cli_overrides)
@@ -446,6 +473,7 @@ class DistLLMSettings(BaseSettings):
                 return cls.from_yaml(config_path=config_path, cli_overrides=cli_overrides)
             return cls()
         except ValidationError as e:
+            source = f" (config file: {config_path})" if config_path else ""
             errors = []
             for error in e.errors():
                 field = ".".join(str(loc) for loc in error["loc"])
@@ -456,8 +484,12 @@ class DistLLMSettings(BaseSettings):
                 else:
                     errors.append(f"  - {field}: {msg}")
 
-            print("\n❌ Config validation failed:")
+            print(f"\n❌ Config validation failed{source}:")
             for err in errors:
                 print(err)
             print()
+            raise SystemExit(1) from e
+        except ValueError as e:
+            # Malformed YAML — from_yaml already embeds the file path.
+            print(f"\n❌ Config validation failed: {e}")
             raise SystemExit(1) from e

@@ -19,49 +19,70 @@ def _get_client(host: str, port: int) -> httpx.Client:
     return httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0)
 
 
+def _admin_headers() -> dict[str, str]:
+    """Authorization headers for admin-only endpoints.
+
+    The ``/admin/v1/*`` routes require an admin-role API key; operators set
+    it via ``DISTLLM_API_KEY`` (or the legacy ``API_KEY`` env var).
+    """
+    api_key = os.environ.get("DISTLLM_API_KEY") or os.environ.get("API_KEY")
+    if api_key:
+        return {"Authorization": f"Bearer {api_key}"}
+    return {}
+
+
+def _connect_error(host: str, port: int) -> None:
+    """Print a friendly message when the coordinator cannot be reached."""
+    console.print(
+        f"[red]Error:[/red] Could not connect to coordinator at {host}:{port}. "
+        f"Is it running? Start it with [bold]distllm cluster start --model <model>[/bold] "
+        f"(REST API on port {port}) or check --host/--port."
+    )
+
+
+def _fmt_gib(value) -> str:
+    """Format a byte count as GiB, tolerating missing/non-numeric values."""
+    try:
+        return f"{int(value) / (1024 ** 3):.1f}GB"
+    except (TypeError, ValueError):
+        return "?"
+
+
 def _cluster_status(host: str, port: int):
-    """Show cluster status and node health."""
+    """Show cluster status and node health (GET /v1/health)."""
     try:
         with _get_client(host, port) as client:
-            resp = client.get("/v1/cluster/status")
+            resp = client.get("/v1/health")
             resp.raise_for_status()
             data = resp.json()
 
-        nodes = data.get("nodes", [])
-        if not nodes:
-            console.print("[yellow]No nodes in cluster[/yellow]")
-            return
-
-        table = Table(title="Cluster Nodes")
-        table.add_column("Node ID", style="cyan")
-        table.add_column("Status", style="green")
-        table.add_column("GPU", style="dim")
-        table.add_column("Memory", style="dim")
-        table.add_column("Requests", style="dim")
-        table.add_column("Layers", style="dim")
-
-        for node in nodes:
-            table.add_row(
-                node.get("id", ""),
-                node.get("status", "unknown"),
-                node.get("gpu_name", ""),
-                node.get("memory_used", ""),
-                str(node.get("active_requests", 0)),
-                f"{node.get('start_layer', '?')}-{node.get('end_layer', '?')}",
-            )
-
+        table = Table(title="Cluster Status")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Status", str(data.get("status", "unknown")))
+        table.add_row("Model", str(data.get("model", "")))
+        table.add_row("Nodes", str(data.get("nodes", 0)))
         console.print(table)
 
-        # Summary
-        summary = data.get("summary", {})
-        if summary:
-            console.print(f"\n[bold]Total nodes:[/bold] {summary.get('total_nodes', 0)}")
-            console.print(f"[bold]Healthy:[/bold] {summary.get('healthy_nodes', 0)}")
-            console.print(f"[bold]Total GPU memory:[/bold] {summary.get('total_gpu_memory', '')}")
+        node_health = data.get("node_health") or {}
+        if node_health:
+            nodes_table = Table(title="Node Health")
+            nodes_table.add_column("Node ID", style="cyan")
+            nodes_table.add_column("Healthy", style="green")
+            for node_id, info in node_health.items():
+                healthy = info.get("healthy", False) if isinstance(info, dict) else bool(info)
+                nodes_table.add_row(str(node_id), "yes" if healthy else "no")
+            console.print(nodes_table)
     except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
+        _connect_error(host, port)
+    except httpx.TransportError as e:
+        console.print(f"[red]Error:[/red] Could not reach coordinator at {host}:{port} ({type(e).__name__})")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        if e.response.status_code == 503:
+            console.print("[yellow]Coordinator reachable but no model is loaded.[/yellow]")
+            console.print("Start one with: distllm system api --model <model>")
+        else:
+            console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
 
 
 def _cluster_scale(host: str, port: int, nodes: int, gpu_type: str | None = None):
@@ -373,33 +394,60 @@ def _cluster_leave(node_id: str, coordinator_host: str, coordinator_port: int):
 
 
 def _cluster_list_nodes(coordinator_host: str, coordinator_port: int):
-    """List registered worker nodes."""
+    """List registered worker nodes (GET /admin/v1/nodes)."""
     try:
-        with httpx.Client(base_url=f"http://{coordinator_host}:{coordinator_port}") as client:
-            resp = client.get("/v1/cluster/status")
+        with _get_client(coordinator_host, coordinator_port) as client:
+            resp = client.get("/admin/v1/nodes", headers=_admin_headers())
+            if resp.status_code in (401, 403):
+                console.print(
+                    "[red]Unauthorized:[/red] /admin/v1/nodes requires an admin API key. "
+                    "Set the [bold]DISTLLM_API_KEY[/bold] environment variable and retry."
+                )
+                return
             resp.raise_for_status()
             data = resp.json()
 
         nodes = data.get("nodes", [])
         if not nodes:
             console.print("[yellow]No nodes registered[/yellow]")
+            console.print("Workers join with: distllm cluster join --coordinator <host>:<port>")
             return
 
-        table = Table(title=f"Cluster Nodes ({len(nodes)} total)")
+        table = Table(title=f"Cluster Nodes ({data.get('total_nodes', len(nodes))} total)")
         table.add_column("Node ID", style="cyan")
-        table.add_column("Status", style="green")
-        table.add_column("GPU", style="dim")
+        table.add_column("Endpoint", style="white")
+        table.add_column("State", style="green")
         table.add_column("Layers", style="blue")
+        table.add_column("GPU", style="dim")
         table.add_column("VRAM Free", style="magenta")
 
         for node in nodes:
+            state = "draining" if node.get("draining") else node.get("state") or (
+                "healthy" if node.get("healthy") else "unhealthy"
+            )
+            endpoint = f"{node.get('host', '?')}:{node.get('port', '?')}"
+            gpu = node.get("gpu_name") or "unknown"
             table.add_row(
                 node.get("node_id", "?"),
-                "healthy" if node.get("healthy") else "unhealthy",
-                node.get("gpu_name", "unknown"),
+                endpoint,
+                state,
                 f"{node.get('start_layer', '?')}-{node.get('end_layer', '?')}",
-                f"{node.get('gpu_memory_free', 0) // (1024**3)}GB",
+                gpu,
+                _fmt_gib(node.get("gpu_memory_free", 0)),
             )
         console.print(table)
+
+        summary = (
+            f"[bold]{data.get('total_nodes', len(nodes))}[/bold] nodes · "
+            f"[green]{data.get('healthy_count', '?')} healthy[/green] · "
+            f"[yellow]{data.get('draining_count', 0)} draining[/yellow]"
+        )
+        console.print(summary)
     except httpx.ConnectError:
-        console.print(f"[red]Could not connect to coordinator at {coordinator_host}:{coordinator_port}[/red]")
+        _connect_error(coordinator_host, coordinator_port)
+    except httpx.TransportError as e:
+        console.print(
+            f"[red]Error:[/red] Could not reach coordinator at "
+            f"{coordinator_host}:{coordinator_port} ({type(e).__name__}). "
+            "Note: this command talks to the REST API port (default 8000), not the gRPC port."
+        )

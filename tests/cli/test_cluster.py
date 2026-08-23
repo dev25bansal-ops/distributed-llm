@@ -16,11 +16,10 @@ class TestClusterStatus:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "nodes": [
-                {"id": "node_0", "status": "healthy", "gpu_name": "A100",
-                 "memory_used": "10GB", "active_requests": 2, "start_layer": 0, "end_layer": 3},
-            ],
-            "summary": {"total_nodes": 1, "healthy_nodes": 1, "total_gpu_memory": "80GB"},
+            "status": "healthy",
+            "model": "test-model",
+            "nodes": 1,
+            "node_health": {"node_0": {"healthy": True}},
         }
         mock_resp.raise_for_status = MagicMock()
 
@@ -34,7 +33,7 @@ class TestClusterStatus:
             from distllm.cli.cluster import _cluster_status
             _cluster_status("localhost", 8000)
 
-            mock_client.get.assert_called_once_with("/v1/cluster/status")
+            mock_client.get.assert_called_once_with("/v1/health")
 
     def test_status_no_nodes(self):
         mock_resp = MagicMock()
@@ -111,9 +110,19 @@ class TestClusterListNodes:
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
             "nodes": [
-                {"id": "node_0", "host": "10.0.0.1", "port": 50051, "status": "healthy"},
-                {"id": "node_1", "host": "10.0.0.2", "port": 50052, "status": "healthy"},
-            ]
+                {"node_id": "node_0", "host": "10.0.0.1", "port": 50051,
+                 "healthy": True, "state": "healthy", "draining": False,
+                 "start_layer": 0, "end_layer": 15, "gpu_name": "A100",
+                 "gpu_memory_free": 68 * 1024**3},
+                {"node_id": "node_1", "host": "10.0.0.2", "port": 50052,
+                 "healthy": True, "state": "healthy", "draining": False,
+                 "start_layer": 16, "end_layer": 31, "gpu_name": "RTX 4090",
+                 "gpu_memory_free": 20 * 1024**3},
+            ],
+            "total_nodes": 2,
+            "healthy_count": 2,
+            "draining_count": 0,
+            "total_layers": 32,
         }
         mock_resp.raise_for_status = MagicMock()
 
@@ -126,3 +135,5 @@ class TestClusterListNodes:
 
             from distllm.cli.cluster import _cluster_list_nodes
             _cluster_list_nodes("localhost", 8000)
+
+            mock_client.get.assert_called_once_with("/admin/v1/nodes", headers={})

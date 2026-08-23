@@ -44,17 +44,19 @@ class TestDefaults:
         assert t.enabled is False
 
     def test_cache_settings_nested(self):
+        # CacheSettings uses flat prefix_* fields (nested submodel was flattened).
         c = CacheSettings()
-        assert c.prefix.enabled is True
+        assert c.prefix_enabled is True
+        assert c.prefix_max_entries >= 1
 
     def test_distllm_settings_defaults(self):
         s = DistLLMSettings()
         assert s.model.dtype == "float16"
 
-    def test_summary(self):
+    def test_model_dump_contains_model_section(self):
         s = DistLLMSettings()
-        summary = s.summary()
-        assert "model" in summary
+        dumped = s.model_dump()
+        assert "model" in dumped
 
 
 class TestValidValues:
