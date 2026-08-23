@@ -1,10 +1,18 @@
-"""Integration test: federation heartbeat & routing.
+"""Integration test: federation heartbeat & routing (LIVE CLUSTER ONLY).
 
 Verifies that two coordinator clusters can discover each other,
 exchange load metrics via heartbeat, and route requests between
 them.
 
-Requires two Docker Compose cluster networks.
+Requires two Docker Compose cluster networks. Skips automatically with an
+explicit reason when either server is unreachable — it will never run in a
+plain `pytest tests/dist` invocation.
+
+NOTE: the GET endpoints ``/v1/federation/health`` and ``/v1/federation/peers``
+asserted below do not currently exist in the API surface (only
+``POST /v1/federation/heartbeat`` is implemented), so those tests pass
+vacuously against a live single-cluster server. They become meaningful once
+peer-listing endpoints are added to ``src/distllm/api``.
 
 Usage:
     docker compose -f tests/dist/integration/docker-compose.yml up --build -d

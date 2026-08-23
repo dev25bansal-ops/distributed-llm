@@ -1,9 +1,12 @@
-"""Integration test: auto-scaling behaviour.
+"""Integration test: auto-scaling behaviour (LIVE CLUSTER ONLY).
 
 Sends a sustained burst of requests and verifies that the autoscaler
 provisions additional workers when load exceeds the threshold.
 
-Requires Docker Compose cluster with AutoScaler enabled.
+Requires Docker Compose cluster with AutoScaler enabled. Skips
+automatically when the server is unreachable — never runs uninvited in
+plain CI (autoscaler unit logic lives in ``tests/dist/test_autoscaler.py``;
+the burst-load path needs real worker processes to scale).
 
 Usage:
     docker compose -f tests/dist/integration/docker-compose.yml up --build -d

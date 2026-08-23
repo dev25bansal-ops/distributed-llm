@@ -1,4 +1,4 @@
-"""Integration test: node failure & recovery.
+"""Integration test: node failure & recovery (LIVE DOCKER ONLY).
 
 Kills a worker mid-request and verifies the coordinator detects the
 failure, redistributes layers, and serves recovered responses with
@@ -6,10 +6,15 @@ the ``x-distllm-recovered`` header.
 
 Requires Docker Compose cluster to be running.
 Uses Docker SDK (docker-py) to kill/restart containers.
+Skips automatically when no server is reachable or the Docker SDK /
+``RUN_CHAOS_TESTS=1`` gate is absent — never runs uninvited in plain CI.
+
+In-process failure/recovery logic (without Docker) is covered by
+``tests/dist/test_recovery.py`` and ``tests/dist/test_recovery_drill.py``.
 
 Usage:
     docker compose -f tests/dist/integration/docker-compose.yml up --build -d
-    python -m pytest tests/dist/integration/test_recovery_scenario.py -v
+    RUN_CHAOS_TESTS=1 python -m pytest tests/dist/integration/test_recovery_scenario.py -v
 """
 
 from __future__ import annotations
