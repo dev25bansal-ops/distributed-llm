@@ -170,11 +170,13 @@ class TestNodeRegistrarManualRegister:
         registrar.manual_register("node-0", "10.0.0.1", 50051, 0, 7)
         nodes = pipeline.nodes
         assert "node-0" in nodes
-        assert nodes["node-0"]["host"] == "10.0.0.1"
-        assert nodes["node-0"]["port"] == 50051
-        assert nodes["node-0"]["start_layer"] == 0
-        assert nodes["node-0"]["end_layer"] == 7
-        assert nodes["node-0"]["healthy"] is True
+        # ``nodes`` maps node_id -> PipelineNode dataclass (attribute access).
+        node = nodes["node-0"]
+        assert node.host == "10.0.0.1"
+        assert node.port == 50051
+        assert node.start_layer == 0
+        assert node.end_layer == 7
+        assert node.is_healthy is True
 
     def test_register_negative_layers(self) -> None:
         """Negative layer indices are accepted by the pipeline."""

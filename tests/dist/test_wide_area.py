@@ -581,8 +581,9 @@ class TestWideAreaPipelineNodeManagement:
         pipeline.register_node("n0", "10.0.0.1", 5001, 0, 5)
         assert "n0" in pipeline.nodes
         node_info = pipeline.nodes["n0"]
-        assert node_info["host"] == "10.0.0.1"
-        assert node_info["port"] == 5001
+        # PipelineNode dataclass — attribute access.
+        assert node_info.host == "10.0.0.1"
+        assert node_info.port == 5001
 
     def test_register_multiple_nodes(self) -> None:
         pipeline = WideAreaPipeline()

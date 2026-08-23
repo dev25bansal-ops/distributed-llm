@@ -862,17 +862,25 @@ class PipelineReconfigurator:
 
         # Rebuild orchestrator to match target topology
         try:
+            # Snapshot connection info before clearing — unregister_node
+            # below removes the PipelineNode objects, and they carry
+            # attributes (host/port), not dict keys.
+            connection_snapshot = {
+                nid: self._orchestrator.nodes.get(nid)
+                for nid in list(self._orchestrator.node_order)
+            }
+
             # Clear and re-register
             for nid in list(self._orchestrator.node_order):
                 self._orchestrator.unregister_node(nid)
 
             for assignment in target.assignments:
-                node_info = self._orchestrator.nodes.get(assignment.node_id)
-                if node_info:
+                node_info = connection_snapshot.get(assignment.node_id)
+                if node_info is not None:
                     self._orchestrator.register_node(
                         assignment.node_id,
-                        node_info["host"],
-                        node_info["port"],
+                        node_info.host,
+                        node_info.port,
                         assignment.start_layer,
                         assignment.end_layer,
                     )
