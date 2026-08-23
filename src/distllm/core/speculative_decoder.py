@@ -467,12 +467,20 @@ class SpeculativeDecoder(SpecDecoderBase):
         draft_tokens: Any,
         target_logits: torch.Tensor,
         tokenizer: Any | None = None,
+        draft_logits: torch.Tensor | None = None,
+        temperature: float | None = None,
     ) -> tuple[int, list[int], int]:
         """Verify ONE sequence's draft tokens against target logits.
 
         Returns ``(accepted_count, accepted_token_ids, next_token)``.
         """
-        results = self.verify_batch([draft_tokens], [target_logits], tokenizer=tokenizer)
+        results = self.verify_batch(
+            [draft_tokens],
+            [target_logits],
+            tokenizer=tokenizer,
+            draft_logits_list=[draft_logits] if draft_logits is not None else None,
+            temperature=temperature,
+        )
         return results[0]
 
     def get_active_method(self, draft_model: Any) -> str | None:
