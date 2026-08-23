@@ -89,3 +89,15 @@ website-astro/.astro/
 og_*.txt
 .vercel
 website.zip
+# analysis artifacts + churny runtime data
+website_diff.txt
+website_diff_utf8.txt
+*.analyses.json
+.usage_records.jsonl
+vdeploy*.txt
+summary*.txt
+extract*.txt
+secrets_scan.txt
+bigfiles.txt
+test_strategy_output.json
+tmp-*.tar.gz
