@@ -10,6 +10,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 
 from ..api_state import g
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(tags=["embedding"])
@@ -139,8 +144,11 @@ def _encode_base64(values: list[float]) -> bytes:
     summary="Create embeddings",
     description="Generate vector embeddings for input text(s). Uses a dedicated embedding model when available, otherwise falls back to extracting hidden states from the generation model. Supports L2 normalization, dimension truncation, and float or base64 encoding formats.",
     response_description="List of embedding vectors with token usage",
+    response_model=EmbeddingResponse,
     responses={
-        503: {"description": "No model loaded, tokenizer not available, or embedding generation requires a local model"},
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+        503: ERR_ENTRY("No model loaded, tokenizer not available, or embedding generation requires a local model (--local)", type_="service_unavailable", code="503"),
     },
 )
 async def create_embeddings(request: EmbeddingRequest):
@@ -245,8 +253,11 @@ async def create_embeddings(request: EmbeddingRequest):
     summary="Rerank documents",
     description="Score and reorder documents by relevance to a query using a cross-encoder model. Returns documents sorted by relevance score descending, with top_n filtering for efficient RAG pipelines.",
     response_description="Ranked list of documents with relevance scores",
+    response_model=RerankResponse,
     responses={
-        503: {"description": "No model loaded or reranking model not configured"},
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+        503: ERR_ENTRY("No model loaded or cross-encoder reranking model not configured (embedding.rerank_model)", type_="service_unavailable", code="503"),
     },
 )
 async def create_rerank(request: RerankRequest):
@@ -307,8 +318,11 @@ async def create_rerank(request: RerankRequest):
     summary="Hybrid rerank with RRF",
     description="Combine embedding-based similarity scores with cross-encoder reranking scores using Reciprocal Rank Fusion (RRF). Provides improved ranking quality in RAG pipelines by leveraging both bi-encoder and cross-encoder signals.",
     response_description="Fused ranked list of documents with RRF scores",
+    response_model=RerankResponse,
     responses={
-        503: {"description": "No model loaded or embedding/reranker models not configured"},
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+        503: ERR_ENTRY("No model loaded or embedding/reranker models not configured", type_="service_unavailable", code="503"),
     },
 )
 async def create_hybrid_rerank(request: HybridRerankRequest):

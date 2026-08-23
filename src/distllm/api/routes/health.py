@@ -4,15 +4,19 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..api_state import g
 from distllm.api.auth_deps import require_role
-from distllm.api.errors import error_response_from_request
+from distllm.api.errors import error_response_from_request, error_openapi_entry
 from distllm.api import server as _server_state
 
 
 router = APIRouter(tags=["system"])
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 class ModelInfo(BaseModel):
@@ -36,11 +40,49 @@ class ParamUpdateRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=0, description="New top-k sampling value")
 
 
+# ── Docs-only response schemas ────────────────────────────────────────────────
+# Referenced from ``responses={...}`` to document probe payloads in Swagger UI
+# without enforcing them at runtime (handlers return heterogeneous dicts that
+# may carry extra monitor keys). ``extra="allow"`` keeps those keys visible.
+
+
+class HealthStatusResponse(BaseModel):
+    """Health check payload."""
+    model_config = ConfigDict(extra="allow")
+    status: str = Field(default="healthy", description='"healthy" when a coordinator is loaded')
+    model: str = Field(default="", description="Name of the loaded model")
+    nodes: int = Field(default=0, description="Number of connected worker nodes")
+    node_health: dict = Field(default_factory=dict, description="Per-node health details")
+
+
+class ReadinessResponse(BaseModel):
+    """Successful readiness payload."""
+    status: str = Field(default="ready", description='"ready" when the service accepts traffic')
+
+
+class LivenessResponse(BaseModel):
+    """Liveness probe payload."""
+    status: str = Field(default="alive", description='"alive" while the process is responsive')
+    uptime_seconds: float = Field(default=0.0, description="Seconds since server start")
+
+
+class PluginReadinessResponse(BaseModel):
+    """Plugin-based readiness payload (adds diagnostic reasons on failure)."""
+    model_config = ConfigDict(extra="allow")
+    status: str = Field(default="ready", description='"ready" or "not_ready"')
+    reasons: list[str] = Field(default_factory=list, description="Present on 503: why the service is not ready")
+
+
 @router.get(
     "/v1/models",
     summary="List available models",
-    description="Return all registered and available models with metadata including model ID and creation timestamp. Returns an empty list if no coordinator is loaded.",
+    description="Return all registered and available models with metadata including model ID and creation timestamp. Returns an empty list if no coordinator is loaded. Requires API-key authentication.",
     response_description="List of model identifiers and metadata",
+    response_model=ModelList,
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+    },
 )
 async def list_models():
     """List available models."""
@@ -62,10 +104,11 @@ async def list_models():
 @router.get(
     "/v1/health",
     summary="Health check (OpenAI-compatible)",
-    description="OpenAI-compatible health check endpoint. Returns the current health status of the service, including model name, connected nodes, per-node health, and optional monitor metrics. Returns 503 if no model is loaded.",
+    description="OpenAI-compatible health check endpoint. Returns the current health status of the service, including model name, connected nodes, per-node health, and optional monitor metrics. Returns 503 if no model is loaded. Unauthenticated (safe for load balancers).",
     response_description="Health status with node and model information",
     responses={
-        503: {"description": "No model loaded or coordinator not initialized"},
+        200: {"model": HealthStatusResponse},
+        503: ERR_ENTRY("No model loaded or coordinator not initialized", type_="health_error", code="503"),
     },
 )
 @router.get(
@@ -120,7 +163,8 @@ async def liveness_check_v1():
     description="Kubernetes readiness probe. Returns 200 only when the service can accept traffic (model loaded, not shutting down, healthy nodes available). Designed for container orchestration health checks.",
     response_description="Readiness status with 'ready' or 503 error",
     responses={
-        503: {"description": "No model loaded, service shutting down, or no healthy nodes"},
+        200: {"model": ReadinessResponse},
+        503: ERR_ENTRY("No model loaded, service shutting down, or no healthy nodes available", type_="health_error", code="503"),
     },
 )
 async def readiness_check(request: Request):
@@ -150,6 +194,7 @@ async def readiness_check(request: Request):
     summary="Kubernetes liveness probe",
     description="Kubernetes liveness probe. Returns 200 with uptime in seconds if the process is alive and not deadlocked. Designed for container orchestration health checks.",
     response_description="Liveness status with uptime",
+    responses={200: {"model": LivenessResponse}},
 )
 async def liveness_check():
     """Kubernetes liveness probe.
@@ -166,6 +211,7 @@ async def liveness_check():
                 "Kubernetes restarts the pod only when this endpoint fails. Falls back to a basic "
                 "alive response if the HealthPlugin is not enabled.",
     response_description="Liveness status",
+    responses={200: {"model": LivenessResponse}},
 )
 async def healthz():
     """Plugin-based liveness probe (/healthz).
@@ -188,7 +234,15 @@ async def healthz():
                 "within limits, and circuit breaker not open. Returns 503 with reasons otherwise.",
     response_description="Readiness status with diagnostic details",
     responses={
-        503: {"description": "Service not ready — see response body for reasons"},
+        200: {"model": PluginReadinessResponse},
+        503: {
+            "description": "Service not ready — body lists the failing checks",
+            "content": {
+                "application/json": {
+                    "example": {"status": "not_ready", "reasons": ["no_coordinator"]},
+                },
+            },
+        },
     },
 )
 async def readyz():
@@ -267,8 +321,24 @@ async def warmup_model(model_id: str, request: Request):
 @router.get(
     "/metrics",
     summary="Prometheus metrics",
-    description="Expose Prometheus-compatible metrics including service status, coordinator state, scheduler stats, prefix cache performance, GPU utilization, and system health. Returns plaintext in Prometheus exposition format.",
+    description="Expose Prometheus-compatible metrics including service status, coordinator state, scheduler stats, prefix cache performance, GPU utilization, and system health. Returns plaintext in Prometheus exposition format. Unauthenticated (safe for Prometheus scrapers).",
     response_description="Prometheus-formatted metrics text",
+    responses={
+        200: {
+            "description": "Prometheus text exposition format (version=0.0.4)",
+            "content": {
+                "text/plain": {
+                    "schema": {"type": "string"},
+                    "example": (
+                        "# TYPE distllm_service_up gauge\n"
+                        "distllm_service_up 1\n"
+                        "# TYPE distllm_active_requests gauge\n"
+                        "distllm_active_requests 3\n"
+                    ),
+                },
+            },
+        },
+    },
 )
 async def metrics():
     """Prometheus-compatible metrics endpoint."""

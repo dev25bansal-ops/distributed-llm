@@ -17,6 +17,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..api_state import g
 from ..streaming import _get_client_id, _stream_response
 from distllm.core.structured_output import StructuredOutputEngine, JSONSchemaConstraint
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 # Module-level structured output engine for post-hoc validation
 _so_engine = StructuredOutputEngine()
@@ -473,10 +478,45 @@ class ChatCompletionResponse(BaseModel):
     "/v1/chat/completions",
     summary="Create chat completion",
     description="Generate a model response for a chat conversation. Supports multi-modal inputs (text+images), tool/function calling, streaming via SSE, LoRA adapter routing, structured output via response_format, and priority-based scheduling. OpenAI-compatible request/response format.",
-    response_description="Chat completion response with generated message and usage statistics",
+    response_description="Chat completion (JSON) or an SSE `text/event-stream` when stream=true",
+    response_model=ChatCompletionResponse,
     responses={
-        400: {"description": "Model not found, adapter not found, or invalid request"},
-        503: {"description": "No model loaded or tokenizer not available"},
+        200: {
+            "description": "Chat completion (JSON) or SSE chunk stream",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "chatcmpl-1a2b3c4d5e6f",
+                        "object": "chat.completion",
+                        "created": 1756000000,
+                        "model": "distributed-llm",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "Distributed inference splits model layers across machines."},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21},
+                        "generation_time": 0.142,
+                    },
+                },
+                "text/event-stream": {
+                    "schema": {"type": "string", "format": "binary"},
+                    "example": (
+                        'data: {"id":"chatcmpl-1a2b3c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}\n\n'
+                        'data: {"id":"chatcmpl-1a2b3c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ),
+                },
+            },
+        },
+        400: ERR_ENTRY("Model not found, adapter not found, or invalid request", type_="invalid_request_error", code="400"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (e.g. non-admin using X-Model-Router bypass)", type_="auth_error", code="forbidden"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+        503: ERR_ENTRY("No model loaded or tokenizer not available", type_="service_unavailable", code="503"),
+        504: ERR_ENTRY("Request exceeded the 300s inference timeout", type_="timeout_error", code="504"),
     },
 )
 async def chat_completions(request: Request, body: ChatCompletionRequest):
@@ -850,9 +890,13 @@ class ChatCompletionResponseV2(ChatCompletionResponse):
                 "``system_fingerprint`` and uses ``chat.completion.v2`` as the "
                 "object type.",
     response_description="v2 chat completion response with system_fingerprint",
+    response_model=ChatCompletionResponseV2,
     responses={
-        400: {"description": "Model not found, adapter not found, or invalid request"},
-        503: {"description": "No model loaded or tokenizer not available"},
+        400: ERR_ENTRY("Model not found, adapter not found, or invalid request", type_="invalid_request_error", code="400"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+        503: ERR_ENTRY("No model loaded or tokenizer not available", type_="service_unavailable", code="503"),
+        504: ERR_ENTRY("Request exceeded the 300s inference timeout", type_="timeout_error", code="504"),
     },
 )
 async def chat_completions_v2(request: Request, body: ChatCompletionRequest):

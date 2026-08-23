@@ -16,7 +16,7 @@ from typing import Any, Callable
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -49,7 +49,7 @@ from distllm.constants import HSTS_MAX_AGE
 # Re-export route routers
 from distllm.api.api_state import g as _g
 from distllm.api.auth_deps import require_role
-from distllm.api.errors import error_response, error_response_from_request
+from distllm.api.errors import error_response, error_response_from_request, error_openapi_entry
 from distllm.api.routes import (
     chat_router,
     chat_v2_router,
@@ -248,6 +248,19 @@ app = FastAPI(
         {"name": "embedding", "description": "Text embedding and document reranking"},
         {"name": "system", "description": "Health checks, metrics, and cluster status"},
         {"name": "gossip", "description": "P2P gossip protocol for distributed KV cache discovery between nodes"},
+        {"name": "models", "description": "Model registry: load, unload, inspect, warm up"},
+        {"name": "auth", "description": "API-key and SSO token issuance/refresh/revoke"},
+        {"name": "admin", "description": "Cluster administration (admin role required): nodes, config, logs"},
+        {"name": "batch", "description": "Offline batch inference jobs with status polling and result streaming"},
+        {"name": "evaluation", "description": "Benchmark evaluation runs and stored reports"},
+        {"name": "federated", "description": "Federated fine-tuning rounds across participating nodes"},
+        {"name": "leaderboard", "description": "Community benchmark leaderboard: submit, verify, vote, comment"},
+        {"name": "marketplace", "description": "Compute marketplace: listings, jobs, provider earnings"},
+        {"name": "monitoring", "description": "Metrics history, trends, thresholds, topology, waterfall traces"},
+        {"name": "prompts", "description": "Prompt library: templates, versioning, sharing, forking"},
+        {"name": "router", "description": "Model routing rules and hybrid-routing capabilities"},
+        {"name": "tools", "description": "Registered tool/function handlers callable by the model"},
+        {"name": "webrtc", "description": "WebRTC session negotiation for low-latency edge clients"},
     ],
 )
 
@@ -262,10 +275,71 @@ app.add_middleware(
     max_age=CORS_MAX_AGE,  # Cache preflight for 10 minutes
 )
 
+# ── OpenAPI security scheme ───────────────────────────────────────────────────
+#
+# Auth is enforced globally by AuthMiddleware (Bearer API key) rather than via
+# per-route dependencies, so FastAPI cannot infer it. We post-process the
+# schema to declare the scheme once and mark every authenticated operation so
+# Swagger UI shows its "Authorize" button and lock icons per route.
+#
+# Paths listed here are exactly the AuthMiddleware exemptions — keep in sync
+# with middleware.py.
+_UNAUTHENTICATED_PATHS = frozenset({
+    "/health",
+    "/v1/health",
+    "/v1/health/readiness",
+    "/v1/health/liveness",
+    "/ready",
+    "/live",
+    "/healthz",
+    "/readyz",
+    "/metrics",
+})
+
+
+def custom_openapi() -> dict:
+    """Build the OpenAPI schema with an ``ApiKeyAuth`` security scheme."""
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    from fastapi.openapi.utils import get_openapi
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=app.openapi_tags,
+    )
+    schema.setdefault("components", {})["securitySchemes"] = {
+        "ApiKeyAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "description": (
+                "DistLLM API key sent as `Authorization: Bearer <key>`. "
+                "Create keys with `distllm config keys`."
+            ),
+        },
+    }
+    for path, methods in schema.get("paths", {}).items():
+        if path in _UNAUTHENTICATED_PATHS:
+            continue
+        for method, op in methods.items():
+            if isinstance(op, dict) and method in ("get", "post", "put", "patch", "delete"):
+                op.setdefault("security", [{"ApiKeyAuth": []}])
+
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
+
 # Security headers middleware
+# Version identifiers mirror the canonical APIVersion registry in
+# api_versioning.py (date-based YYYY-MM strings).
 _API_VERSIONS: dict[str, str] = {
-    "v1": "2024-01-01",
-    "v2": "2025-03-01",
+    "v1": "2026-01",
+    "v2": "2026-07",
 }
 _API_VERSION_HEADER = "X-API-Version"
 _API_SUNSET_HEADER = "Sunset"
@@ -386,6 +460,13 @@ class ChangelogResponse(BaseModel):
     version: str = ""
     date: str = ""
     changes: list[ChangelogEntry] = []
+
+
+class RotateClusterKeyResponse(BaseModel):
+    """Successful cluster-key rotation response."""
+    status: str = "ok"
+    new_key: str = Field(default="", description="The new cluster key — distribute to all nodes immediately")
+    detail: str = ""
 
 
 def _error_response(
@@ -1346,7 +1427,25 @@ async def federation_heartbeat(request: Request) -> dict:
     summary="Rotate cluster key",
     description="Rotate the cluster authentication key. The new key is applied immediately "
                 "and must be distributed to all nodes. Supports a grace period during which "
-                "both the old and new key are accepted.",
+                "both the old and new key are accepted. Rate-limited to one rotation per 60 seconds.",
+    response_description="The new cluster key and grace-period details",
+    response_model=RotateClusterKeyResponse,
+    responses={
+        401: error_openapi_entry("Missing or invalid API key", type_="auth_error", code="authentication_error"),
+        403: error_openapi_entry("Admin role required", type_="auth_error", code="forbidden"),
+        429: {
+            "description": "Rotation rate-limited (max once per 60s)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "rate_limited",
+                        "detail": "Key rotation rate limited. Retry in 42s.",
+                        "retry_after_s": 42,
+                    },
+                },
+            },
+        },
+    },
     dependencies=[Depends(require_role("admin"))],
 )
 async def rotate_cluster_key(request: Request) -> dict:

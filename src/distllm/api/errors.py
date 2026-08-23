@@ -254,3 +254,34 @@ def error_response_from_request(
     """Build a standardized error response, injecting request_id from request.state."""
     request_id = getattr(request.state, "request_id", None) if request is not None else None
     return error_response(status_code, error, message, type, request_id, code=code, exc=exc)
+
+
+def error_openapi_entry(
+    description: str,
+    *,
+    message: str = "",
+    type_: str = "invalid_request_error",
+    code: str = str(ErrorCode.INVALID_REQUEST),
+) -> dict:
+    """Build an OpenAPI response entry showing the standard error envelope.
+
+    Used in route ``responses={...}`` dicts so Swagger UI renders a concrete
+    example of the wire format every error path returns::
+
+        {"error": {"message": "...", "type": "...", "param": null, "code": "..."}}
+    """
+    return {
+        "description": description,
+        "content": {
+            "application/json": {
+                "example": {
+                    "error": {
+                        "message": message or description,
+                        "type": type_,
+                        "param": None,
+                        "code": code,
+                    },
+                },
+            },
+        },
+    }

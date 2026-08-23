@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from ..api_state import g
 from ..streaming import _get_client_id, _stream_response
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(tags=["completion"])
@@ -59,9 +64,36 @@ class CompletionResponse(BaseModel):
     "/v1/completions",
     summary="Create text completion",
     description="Generate text completions from a prompt. Supports streaming, structured output via response_format, and priority scheduling. OpenAI-compatible request/response format.",
-    response_description="Text completion response with generated text and usage statistics",
+    response_description="Text completion (JSON) or an SSE `text/event-stream` when stream=true",
+    response_model=CompletionResponse,
     responses={
-        503: {"description": "No model loaded"},
+        200: {
+            "description": "Text completion (JSON) or SSE chunk stream",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "cmpl-1a2b3c4d5e6f",
+                        "object": "text_completion",
+                        "created": 1756000000,
+                        "model": "distributed-llm",
+                        "choices": [{"index": 0, "text": " there was a small cluster of machines.", "finish_reason": "stop"}],
+                        "generation_time": 0.098,
+                    },
+                },
+                "text/event-stream": {
+                    "schema": {"type": "string", "format": "binary"},
+                    "example": (
+                        'data: {"id":"cmpl-1a2b3c","object":"text_completion.chunk","choices":[{"index":0,"delta":{"text":"Hello"},"finish_reason":null}]}\n\n'
+                        'data: {"id":"cmpl-1a2b3c","object":"text_completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ),
+                },
+            },
+        },
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
+        503: ERR_ENTRY("No model loaded", type_="service_unavailable", code="503"),
+        504: ERR_ENTRY("Request exceeded the 300s inference timeout", type_="timeout_error", code="504"),
     },
 )
 async def completions(request: Request, body: CompletionRequest):

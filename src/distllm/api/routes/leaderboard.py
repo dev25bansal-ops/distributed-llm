@@ -148,6 +148,7 @@ async def list_leaderboard(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
+    """List benchmark submissions with optional model/hardware/metric filters and paging."""
     _ensure_loaded()
     items = list(_store.values())
 
@@ -186,6 +187,7 @@ async def list_leaderboard(
 
 @router.get("/v1/leaderboard/{entry_id}")
 async def get_leaderboard_entry(entry_id: str):
+    """Fetch a single benchmark submission by its entry ID."""
     _ensure_loaded()
     entry = _store.get(entry_id)
     if entry is None:
@@ -195,6 +197,7 @@ async def get_leaderboard_entry(entry_id: str):
 
 @router.post("/v1/leaderboard/submit")
 async def submit_benchmark(submission: BenchmarkSubmission):
+    """Submit a benchmark result for a model/hardware/framework combination."""
     _ensure_loaded()
     entry_id = str(uuid.uuid4())
     entry = {
@@ -216,6 +219,7 @@ async def submit_benchmark(submission: BenchmarkSubmission):
 
 @router.get("/v1/leaderboard/summary")
 async def leaderboard_summary():
+    """Return aggregated throughput/latency/memory averages grouped by model and hardware."""
     _ensure_loaded()
     groups: dict[tuple[str, str], list[dict]] = {}
     for entry in _store.values():
@@ -257,6 +261,7 @@ async def leaderboard_summary():
 
 @router.get("/v1/leaderboard/top")
 async def leaderboard_top():
+    """Return the highest-throughput submission for each model/hardware pair, sorted overall."""
     _ensure_loaded()
     groups: dict[tuple[str, str], list[dict]] = {}
     for entry in _store.values():
