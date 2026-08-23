@@ -54,6 +54,19 @@ pip install distllm[examples]
 python examples/crewai_example.py
 ```
 
+### 5. Federated Training Demo (no server needed)
+
+Two in-process `FederatedFineTuner` nodes exchange differentially-private
+LoRA gradients and print the cumulative RDP epsilon spend per round.
+Runs fully offline — no API server, no model download, only PyTorch.
+
+```bash
+pip install torch
+python examples/federated_training_demo.py
+```
+
+See the [Federated Training docs](/docs/federated-training) for details.
+
 ## Configuration
 
 All examples connect to the OpenAI-compatible API at `http://localhost:8000/v1`.
