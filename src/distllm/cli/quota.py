@@ -1,14 +1,15 @@
-"""CLI commands for usage metering and quota management."""
+"""CLI commands for usage metering and quota management.
+
+Functions are imported by :mod:`distllm.cli.main` which registers them
+as Typer commands on the ``config quota`` sub-group.
+"""
 
 import json
 import os
 import time
 
-import typer
 from rich.console import Console
 from rich.table import Table
-
-quota_app = typer.Typer(help="Manage usage quotas and billing")
 
 
 def _get_meter():
@@ -17,16 +18,15 @@ def _get_meter():
     return UsageMeter(storage_path=db)
 
 
-@quota_app.command("set")
 def quota_set(
-    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
-    max_tokens_per_day: int = typer.Option(0, "--tokens-per-day", help="Max tokens per day"),
-    max_requests_per_minute: int = typer.Option(0, "--rpm", help="Max requests per minute"),
-    max_tokens_per_request: int = typer.Option(0, "--tokens-per-request", help="Max tokens per request"),
-    max_concurrent: int = typer.Option(0, "--concurrent", help="Max concurrent requests"),
-    cost_budget: float = typer.Option(0.0, "--budget", "-b", help="Monthly cost budget"),
-    overage: bool = typer.Option(False, "--overage", help="Allow overage"),
-):
+    tenant_id: str,
+    max_tokens_per_day: int = 0,
+    max_requests_per_minute: int = 0,
+    max_tokens_per_request: int = 0,
+    max_concurrent: int = 0,
+    cost_budget: float = 0.0,
+    overage: bool = False,
+) -> None:
     """Set usage quota for a tenant."""
     from distllm.core.usage_meter import QuotaLimit
 
@@ -45,10 +45,9 @@ def quota_set(
     console.print(f"[green]Quota set for tenant:[/] {tenant_id}")
 
 
-@quota_app.command("show")
 def quota_show(
-    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
-):
+    tenant_id: str,
+) -> None:
     """Show current quota and usage for a tenant."""
     console = Console()
     meter = _get_meter()
@@ -83,8 +82,7 @@ def quota_show(
     console.print(table)
 
 
-@quota_app.command("list")
-def quota_list():
+def quota_list() -> None:
     """List all tenants with usage data."""
     console = Console()
     meter = _get_meter()
@@ -115,10 +113,9 @@ def quota_list():
     console.print(table)
 
 
-@quota_app.command("invoice")
 def quota_invoice(
-    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
-):
+    tenant_id: str,
+) -> None:
     """Generate an invoice for a tenant's current billing period."""
     console = Console()
     meter = _get_meter()
@@ -138,12 +135,11 @@ def quota_invoice(
     ))
 
 
-@quota_app.command("report")
 def quota_report(
-    tenant_id: str = typer.Argument("", help="Tenant ID (omit for all)"),
-    days: int = typer.Option(30, "--days", "-d", help="Report period in days"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
-):
+    tenant_id: str = "",
+    days: int = 30,
+    json_output: bool = False,
+) -> None:
     """Generate a detailed usage report with per-model breakdown."""
     console = Console()
     meter = _get_meter()
@@ -188,12 +184,11 @@ def quota_report(
         console.print(mt)
 
 
-@quota_app.command("export")
 def quota_export(
-    filepath: str = typer.Argument(..., help="Output CSV file path"),
-    tenant_id: str = typer.Option("", "--tenant", "-t", help="Filter by tenant"),
-    days: int = typer.Option(30, "--days", "-d", help="Export period in days"),
-):
+    filepath: str,
+    tenant_id: str = "",
+    days: int = 30,
+) -> None:
     """Export usage records as CSV."""
     console = Console()
     meter = _get_meter()
@@ -207,10 +202,9 @@ def quota_export(
     console.print(f"[green]Exported usage to:[/] {result}")
 
 
-@quota_app.command("import")
 def quota_import(
-    filepath: str = typer.Argument(..., help="JSON file with quota definitions"),
-):
+    filepath: str,
+) -> None:
     """Bulk import quotas from a JSON file.
 
     File format: ``{"quotas": [{"tenant_id": "...", "max_tokens_per_day": 100000, ...}]}``
@@ -223,7 +217,7 @@ def quota_import(
             data = json.load(f)
     except Exception as e:
         console.print(f"[red]Failed to load file:[/] {e}")
-        raise typer.Exit(1)
+        return
 
     quotas = data if isinstance(data, list) else data.get("quotas", data.get("keys", []))
     if isinstance(quotas, dict):

@@ -653,44 +653,49 @@ class BatchScheduler:
     def _schedule_with_budget(self, budget: IterationBudget) -> ScheduledBatch | None:
         """Build batch respecting iteration-level budget.
 
-        Budget computation priority:
-        1. Pluggable SchedulingPolicy (if set via set_scheduling_policy)
-        2. Sarathi-Serve adaptive pressure (default when _adapt_prefill_budget=True)
-        3. Passthrough (base budget unchanged)
-
-        Then: chunked prefill, pending sequence promotion, batch construction.
+        Steps: prefetch → evict + snapshot → build active batch →
+        promote pending → group by length → build tensors → return.
         """
-        # Update batch size from adaptive engine before scheduling
         self.update_batch_size_from_adaptive()
-
-        # Apply budget policy: pluggable > Sarathi-Serve > passthrough
         budget = self._budget_computer.apply_budget_policy(
             budget, self._scheduling_policy, self.active, self._lock, self._wan_policy,
         )
-
-        # Starvation check: warn if any request has been pending too long
         self._check_starvation()
-
-        # Policy-driven preemption: free resources if conditions are met
         self.preempt_if_needed()
 
-        # Block prefetching: prefetch KV blocks for active sequences
-        # that will be scheduled next. This reduces TTFT by 20-40% by
-        # overlapping block restoration with scheduling overhead.
-        if self._paged_attention_mgr is not None:
-            try:
-                prefetcher = getattr(self._paged_attention_mgr, '_prefetch_scheduler', None)
-                if prefetcher is not None:
-                    with self._lock:
-                        active_ids = list(self.active.keys())
-                    # We don't know the exact stage yet, so use stage 0 as default
-                    prefetcher.prefetch_for_stage(active_ids, stage_idx=0)
-            except Exception:
-                pass
+        # Step 1: Prefetch KV blocks, evict completed, snapshot active
+        with self._lock:
+            active_ids = list(self.active.keys())
+        active_items = self._prefetch_and_snapshot(active_ids)
 
-        # 1. Evict completed sequences AND snapshot active state atomically
-        # PERFORMANCE: Single lock acquisition for eviction + snapshot to
-        # minimize time holding self._lock, which blocks concurrent add() calls.
+        # Step 2: Build batch from active decodes + chunked prefill
+        batch_seqs, remain_p, remain_t, decode_added = self._build_active_batch(
+            budget, active_items)
+
+        # Step 3: Promote pending sequences into the batch
+        if batch_seqs is not None:
+            result = self._promote_pending(budget, batch_seqs, remain_p, remain_t, decode_added)
+            if result is None:
+                return None
+            batch_seqs, remain_p, remain_t = result
+
+        if not batch_seqs:
+            return None
+
+        # Step 4: Length-aware grouping
+        batch_seqs = self._apply_length_grouping(batch_seqs)
+
+        # Step 5: Build tensors and return
+        return self._build_scheduled_batch(batch_seqs, budget)
+
+    # ── Extracted helper methods ──────────────────────────────────────
+
+    def _prefetch_and_snapshot(self, active_ids: list[str]) -> list[tuple]:
+        """Prefetch KV blocks, evict completed sequences, and snapshot active set.
+
+        Single lock acquisition for eviction + snapshot to minimize time
+        holding self._lock, which blocks concurrent add() calls.
+        """
         with self._lock:
             done_ids = [rid for rid, s in self.active.items() if s.is_complete]
             for rid in done_ids:
@@ -699,33 +704,42 @@ class BatchScheduler:
                 self._chunked_prefill.pop(rid, None)
                 self._latency_tracker.complete(rid)
                 self.free_paged_blocks(rid)
-            # Snapshot active set atomically with eviction
             active_items = list(self.active.items())
 
-        # 2. Start with active non-complete sequences (all decode, some prefill)
-        # NOTE: Batch construction is done OUTSIDE the lock to not block add()
+        if self._paged_attention_mgr is not None:
+            try:
+                prefetcher = getattr(self._paged_attention_mgr, '_prefetch_scheduler', None)
+                if prefetcher is not None:
+                    prefetcher.prefetch_for_stage(active_ids, stage_idx=0)
+            except Exception:
+                pass
+        return active_items
+
+    def _build_active_batch(
+        self, budget: IterationBudget, active_items: list[tuple],
+    ) -> tuple[list, int, int, int]:
+        """Build batch from active decodes + chunked prefill sequences.
+
+        Returns: (batch_seqs, remaining_prefill, remaining_total, decode_added)
+        """
         batch_seqs: list[Sequence] = []
-        remaining_prefill_budget = budget.max_prefill_tokens
-        remaining_total_budget = budget.max_total_tokens
-        decode_seqs_added = 0
-        # 2a. Add active sequences - decode first (always prioritized)
-        # Sort by latency urgency so SLO-critical sequences run first
+        remain_p = budget.max_prefill_tokens
+        remain_t = budget.max_total_tokens
+        decode_added = 0
+
         urgency = self._latency_tracker.get_requests_sorted_by_deadline()
         urgent_ids = {rid for rid, _ in urgency}
         active_items.sort(key=lambda item: (0 if item[0] in urgent_ids else 1, item[0]))
 
-        seen_ids = set()
         for rid, seq in active_items:
-            if decode_seqs_added >= budget.decode_slots:
+            if decode_added >= budget.decode_slots:
                 break
             if seq.status in (SequenceStatus.DECODING, SequenceStatus.PREFILLING) or len(seq.generated_tokens) > 0:
-                if self._check_decode_budget(budget, decode_seqs_added, remaining_total_budget):
+                if self._check_decode_budget(budget, decode_added, remain_t):
                     batch_seqs.append(seq)
-                    seen_ids.add(rid)
-                    decode_seqs_added += 1
-                    remaining_total_budget -= 1
+                    decode_added += 1
+                    remain_t -= 1
 
-        # 2b. Add chunked prefill sequences (already partially prefilled)
         if self._enable_chunked_prefill:
             for _rid, seq in active_items:
                 if seq.request_id in self._chunked_prefill:
@@ -733,138 +747,114 @@ class BatchScheduler:
                     if cinfo.is_complete:
                         continue
                     chunk = min(cinfo.remaining, budget.max_prefill_tokens)
-                    chunk = min(chunk, remaining_prefill_budget)
-
+                    chunk = min(chunk, remain_p)
                     if seq not in batch_seqs:
                         batch_seqs.append(seq)
-                    remaining_prefill_budget -= chunk
-                    remaining_total_budget -= chunk
-                    if remaining_prefill_budget <= 0:
+                    remain_p -= chunk
+                    remain_t -= chunk
+                    if remain_p <= 0:
                         break
 
-        # 3. Promote pending sequences respecting budget.
-        # Only pop what we need: at most (remaining_batch_slots * 2 + 10) items
-        # to avoid O(n log n) on the entire heap.
-        with self._lock:
-            new_active_ids = set()
-            remaining_batch_slots = budget.max_batch_size - len(batch_seqs)
-            max_to_examine = max(remaining_batch_slots * 2, 10)
+        return batch_seqs, remain_p, remain_t, decode_added
 
+    def _promote_pending(
+        self, budget: IterationBudget,
+        batch_seqs: list[Sequence],
+        remain_p: int, remain_t: int, decode_added: int,
+    ) -> tuple[list, int, int] | None:
+        """Promote pending heap sequences into the batch under lock."""
+        with self._lock:
+            remain_slots = budget.max_batch_size - len(batch_seqs)
+            max_examine = max(remain_slots * 2, 10)
             batch_avg_remaining = 0
             if self._use_length_grouping and batch_seqs:
-                batch_remaining = [s.max_new_tokens - len(s.generated_tokens) for s in batch_seqs]
-                batch_avg_remaining = sum(batch_remaining) / len(batch_remaining) if batch_remaining else 0
+                br = [s.max_new_tokens - len(s.generated_tokens) for s in batch_seqs]
+                batch_avg_remaining = sum(br) / len(br) if br else 0
+            rejected: list[tuple] = []
 
-            examined = 0
-            accepted = 0
-            rejected_original: list[tuple] = []
-
-            while self._pending_heap and examined < max_to_examine:
+            while self._pending_heap and len(batch_seqs) + len(rejected) < max_examine:
                 pri, cnt, candidate = heapq.heappop(self._pending_heap)
-                examined += 1
-
-                # Skip items already active (known race condition)
                 if candidate.request_id in self.active:
                     continue
-
-                # Apply latency-based priority boosting + aging
                 effective_pri = self._latency_tracker.get_latency_boost(candidate.request_id, pri)
                 aging = self._aging_boost(candidate)
                 if aging > 0:
                     effective_pri = max(0, effective_pri - aging)
                 if self._use_length_grouping and batch_avg_remaining > 0:
-                    length_diff = abs((candidate.max_new_tokens - len(candidate.generated_tokens)) - batch_avg_remaining)
-                    length_score = length_diff / (batch_avg_remaining + 1)
-                    effective_pri += min(length_score * 0.1, 0.5)
-
-                # Cost-aware priority adjustment: prefer cheap nodes for low-priority
+                    ld = abs((candidate.max_new_tokens - len(candidate.generated_tokens)) - batch_avg_remaining)
+                    effective_pri += min((ld / (batch_avg_remaining + 1)) * 0.1, 0.5)
                 if self._cost_adjuster is not None:
-                    est_tokens = candidate.total_len
-                    effective_pri, _est_cost = self._cost_adjuster.adjust_priority(
-                        base_priority=effective_pri,
-                        estimated_tokens=est_tokens,
-                    )
-
-                # Check budget constraints
-                if remaining_batch_slots <= 0:
-                    rejected_original.append((pri, cnt, candidate))
-                    continue
-                if remaining_prefill_budget <= 0 and remaining_total_budget <= 0:
-                    rejected_original.append((pri, cnt, candidate))
-                    continue
+                    effective_pri, _ = self._cost_adjuster.adjust_priority(
+                        base_priority=effective_pri, estimated_tokens=candidate.total_len)
 
                 c_tokens = candidate.total_len
-                if c_tokens > remaining_total_budget:
-                    rejected_original.append((pri, cnt, candidate))
+                if remain_slots <= 0 or (remain_p <= 0 and remain_t <= 0) or c_tokens > remain_t:
+                    rejected.append((pri, cnt, candidate))
                     continue
 
+                chunk = c_tokens
                 if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens > 0:
                     chunk = budget.max_prefill_tokens
-                else:
-                    chunk = c_tokens
 
-                rem_decode_est = decode_seqs_added * budget.prefill_slack_ratio
-                if remaining_total_budget - chunk < rem_decode_est:
+                if remain_t - chunk < decode_added * budget.prefill_slack_ratio:
                     if c_tokens > budget.max_prefill_tokens:
-                        chunk = min(chunk, int(remaining_total_budget * (1 - budget.prefill_slack_ratio)))
-                    elif chunk > remaining_total_budget:
-                        rejected_original.append((pri, cnt, candidate))
+                        chunk = min(chunk, int(remain_t * (1 - budget.prefill_slack_ratio)))
+                    else:
+                        rejected.append((pri, cnt, candidate))
                         continue
 
-                if chunk > remaining_prefill_budget and remaining_total_budget - chunk < 0:
-                    rejected_original.append((pri, cnt, candidate))
+                if chunk > remain_p and remain_t - chunk < 0:
+                    rejected.append((pri, cnt, candidate))
                     continue
 
+                blocks_ok = True
                 if self._paged_attention_mgr is not None:
-                    blocks_needed = self.paged_kv_block_count(self._total_tokens + chunk)
-                    pa_pool = getattr(self._paged_attention_mgr, 'pool', None)
-                    if pa_pool is not None:
-                        total_blocks = getattr(pa_pool, 'total_blocks', blocks_needed + 1)
-                        if blocks_needed > total_blocks * 0.9:
-                            rejected_original.append((pri, cnt, candidate))
-                            continue
+                    needed = self.paged_kv_block_count(self._total_tokens + chunk)
+                    pool = getattr(self._paged_attention_mgr, 'pool', None)
+                    if pool is not None:
+                        total = getattr(pool, 'total_blocks', needed + 1)
+                        blocks_ok = needed <= total * 0.9
+                if not blocks_ok:
+                    rejected.append((pri, cnt, candidate))
+                    continue
 
-                accepted += 1
                 candidate.status = SequenceStatus.PREFILLING
                 batch_seqs.append(candidate)
                 self.active[candidate.request_id] = candidate
-                new_active_ids.add(candidate.request_id)
                 self._total_tokens += c_tokens
-                remaining_prefill_budget -= chunk
-                remaining_total_budget -= chunk
-                remaining_batch_slots -= 1
-
-                # Allocate PagedAttention blocks for this sequence
+                remain_p -= chunk
+                remain_t -= chunk
+                remain_slots -= 1
                 self.allocate_paged_blocks(candidate)
-
                 if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens > 0:
-                    chunk_size = budget.max_prefill_tokens
                     self._chunked_prefill[candidate.request_id] = ChunkedPrefillInfo(
-                        seq_id=candidate.request_id,
-                        total_prompt_tokens=c_tokens,
-                        chunk_size=chunk_size,
-                        chunks_remaining=math.ceil(c_tokens / chunk_size),
-                    )
+                        seq_id=candidate.request_id, total_prompt_tokens=c_tokens,
+                        chunk_size=budget.max_prefill_tokens,
+                        chunks_remaining=math.ceil(c_tokens / budget.max_prefill_tokens))
 
-            # Push back rejected items with their original (pre-boost) priority
-            for pri, cnt, candidate in rejected_original:
+            for pri, cnt, candidate in rejected:
                 heapq.heappush(self._pending_heap, (pri, cnt, candidate))
+            self._pending_index = None
+
         if not batch_seqs:
             return None
+        return batch_seqs, remain_p, remain_t
 
-        # 3b. Length-aware grouping: group by total length for efficient attention.
-        # Uses log-scale bucketing so sequences of similar length are processed
-        # together, reducing ragged attention overhead.
+    def _apply_length_grouping(self, batch_seqs: list[Sequence]) -> list[Sequence]:
+        """Group sequences by length for efficient ragged attention."""
         if self._use_length_grouping and len(batch_seqs) > 1:
             bucketed = group_by_length(batch_seqs, num_buckets=min(4, len(batch_seqs)))
-            batch_seqs = []
+            result = []
             for bucket_idx in sorted(bucketed.keys()):
                 bucket = bucketed[bucket_idx]
                 if bucket:
                     bucket.sort(key=lambda s: s.total_len)
-                    batch_seqs.extend(bucket)
+                    result.extend(bucket)
+            return result
+        return batch_seqs
 
-        # 4. Build batch tensors with priority-weighted token allocation.
+    def _build_scheduled_batch(self, batch_seqs: list[Sequence], budget: IterationBudget) -> ScheduledBatch:
+        """Build final ScheduledBatch from sequences."""
         request_ids: list[str] = []
         seq_lengths: list[int] = []
         seq_starts: list[int] = []
@@ -879,19 +869,13 @@ class BatchScheduler:
 
         import torch
         input_ids = torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0)
-
-        # 5. Build batch tags (per-iteration values, not cumulative)
         batch_tags = self._build_batch_tags(batch_seqs, iter_prefill_tokens, iter_decode_tokens)
 
         return ScheduledBatch(
-            sequences=batch_seqs,
-            input_ids=input_ids,
-            seq_starts=seq_starts,
-            seq_lengths=seq_lengths,
-            position_offsets=position_offsets,
-            is_prefill=is_prefill_list,
-            request_ids=request_ids,
-            batch_tags=batch_tags,
+            sequences=batch_seqs, input_ids=input_ids,
+            seq_starts=seq_starts, seq_lengths=seq_lengths,
+            position_offsets=position_offsets, is_prefill=is_prefill_list,
+            request_ids=request_ids, batch_tags=batch_tags,
             adapter_ids=[seq.adapter_id for seq in batch_seqs],
         )
 
@@ -1142,13 +1126,18 @@ class BatchScheduler:
             seq.priority = new_priority
             self._pending_heap[idx] = (new_priority, _cnt, seq)
 
-            # Bubble up or down -- O(log n) instead of O(n) heapify
+            # Bubble up or down -- O(log n) instead of O(n) heapify.
+            # For a min-heap, _siftdown moves toward root (smaller index)
+            # when priority is lowered (higher importance); _siftup moves
+            # toward leaves when priority is raised (lower importance).
             if new_priority < _pri:
-                heapq._siftup(self._pending_heap, idx)
-            else:
                 heapq._siftdown(self._pending_heap, 0, idx)
+            else:
+                heapq._siftup(self._pending_heap, idx)
 
-            self._pending_index[request_id] = idx
+            # Invalidate the index cache — after sifting, the element's
+            # heap position has changed and stored idx is stale.
+            self._pending_index = None
             return True
 
     def preempt_lowest(self, min_priority: int = 3, kv_cache_state: dict | None = None) -> Sequence | None:

@@ -1,0 +1,33 @@
+---
+title: Performance Tuning
+description: Environment variables and settings that move the throughput needle.
+group: Reference
+order: 2
+---
+
+## Key environment variables
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `DISTLLM_RATE_LIMIT_REQUESTS` | `1000` | Per-IP request limit per 60 s window (0 = off) |
+| `DISTLLM_PIPELINE_TLS` | off | TLS for worker gRPC channels |
+| `DISTLLM_QUIC_CA` | unset | Enables QUIC transport with CA verification |
+| `DISTLLM_GOSSIP_HMAC_KEY` | unset | Authenticated gossip between coordinators |
+| `HF_HOME` | platform default | Model weight cache location |
+
+## Speculative decoding
+
+Enable a draft model for 1.3–2.1× speedups on supported pairs:
+
+```bash
+distllm system api --model meta-llama/Llama-3.1-8B \
+  --draft-model TinyStories-1M
+```
+
+Acceptance rate is tracked per session; the dynamic controller adjusts draft
+length toward the target acceptance rate automatically.
+
+## Batch tuning
+
+`max_batch_size` and `max_tokens_per_batch` trade latency for throughput.
+Start at defaults, then raise until TTFT approaches your SLA ceiling.

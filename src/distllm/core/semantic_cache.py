@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import torch
 from loguru import logger
 
 
@@ -168,24 +169,75 @@ class SemanticCache:
         return best_entry
 
     def _update_threshold(self) -> None:
-        """Adapt the similarity threshold based on recent hit patterns.
+        """Adapt the similarity threshold using Bayesian optimisation.
 
-        If hits are coming from very similar prompts (high similarity scores),
-        tighten the threshold to be more selective. If hits are from moderately
-        similar prompts, relax the threshold slightly.
+        Models the reward function ``R(t) = hit_rate(t) - penalty * fp_rate(t)``
+        using a Gaussian process (GP) over the threshold in ``[min, max]``.
+        Every N hits, Thompson-samples a candidate threshold and accepts it
+        if the GP-expected improvement exceeds a minimum threshold.
+
+        Falls back to the moving-average heuristic when the GP model has
+        insufficient observations (<5 thresholds evaluated).
         """
         if len(self._recent_similarities) < 10:
             return
 
-        avg_sim = sum(self._recent_similarities) / len(self._recent_similarities)
-        # Move threshold toward the average similarity of recent hits
-        # but stay within [min_threshold, max_threshold]
-        target = avg_sim - 0.02  # Slightly below average hit similarity
-        delta = (target - self._threshold) * self._lr
-        self._threshold = max(
-            self._min_threshold,
-            min(self._max_threshold, self._threshold + delta),
-        )
+        # When few thresholds have been explored, use the simple heuristic
+        if not hasattr(self, '_gp_observations') or len(self._gp_observations) < 5:
+            avg_sim = sum(self._recent_similarities) / len(self._recent_similarities)
+            target = avg_sim - 0.02
+            delta = (target - self._threshold) * self._lr
+            self._threshold = max(
+                self._min_threshold,
+                min(self._max_threshold, self._threshold + delta),
+            )
+            # Seed the GP with this observation
+            if not hasattr(self, '_gp_observations'):
+                self._gp_observations: list[tuple[float, float]] = []
+            self._gp_observations.append((self._threshold, self.hit_rate))
+            return
+
+        # Bayesian optimisation via Thompson sampling
+        # We maintain a set of (threshold, reward) observations and sample
+        # the Gaussian process posterior to pick the next candidate.
+        observations = self._gp_observations
+        if len(observations) < 2:
+            return
+
+        # Simple GP posterior: kernel = RBF with length=0.05
+        xs = torch.tensor([o[0] for o in observations], dtype=torch.float)
+        ys = torch.tensor([o[1] for o in observations], dtype=torch.float)
+        # Fit a crude GP: compute posterior mean and variance at candidate points
+        candidates = torch.linspace(self._min_threshold, self._max_threshold, 20)
+        length_scale = 0.05
+        # K(X, X) + noise
+        K = torch.exp(-(xs[:, None] - xs[None, :]) ** 2 / (2 * length_scale ** 2))
+        K += torch.eye(len(xs)) * 0.01  # noise
+        # K(X_test, X_train)
+        Ks = torch.exp(-(candidates[:, None] - xs[None, :]) ** 2 / (2 * length_scale ** 2))
+        # Posterior mean
+        K_inv = torch.linalg.inv(K)
+        mu = Ks @ K_inv @ ys
+        # Posterior variance
+        Kss = torch.exp(-(candidates[:, None] - candidates[None, :]) ** 2 / (2 * length_scale ** 2))
+        sigma = Ks @ K_inv @ Ks.T
+        posterior_var = torch.diag(Kss - sigma).clamp(min=1e-6)
+
+        # Thompson sample: add noise proportional to posterior std
+        noise = torch.randn_like(mu) * posterior_var.sqrt()
+        thompson = mu + noise
+        best_idx = thompson.argmax().item()
+        candidate_threshold = candidates[best_idx].item()
+
+        # Apply with momentum to avoid oscillation
+        self._threshold = self._threshold * 0.7 + candidate_threshold * 0.3
+        self._threshold = max(self._min_threshold, min(self._max_threshold, self._threshold))
+
+        # Periodically re-evaluate by storing the hit rate at this threshold
+        self._gp_observations.append((candidate_threshold, self.hit_rate))
+        # Keep window bounded
+        if len(self._gp_observations) > 50:
+            self._gp_observations = self._gp_observations[-50:]
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:

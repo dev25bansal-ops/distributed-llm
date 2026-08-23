@@ -31,8 +31,8 @@ class NodeSettings(BaseModel):
     node_id: str
     host: str = "localhost"
     port: int = 50051
-    start_layer: int = 0
-    end_layer: int = 3
+    start_layer: int = Field(default=0, ge=0, description="First layer index in this node's pipeline partition.")
+    end_layer: int = Field(default=3, ge=0, description="Last layer index in this node's pipeline partition.")
     device: str = "cuda"
     role: NodeRole = NodeRole.AUTO
 
@@ -74,6 +74,7 @@ class HybridParallelSettings(BaseModel):
     ep_enabled: bool = True
     force_tp_world_size: int = 0
     force_pp_stages: int = 0
+    shard_across_nodes: bool = False  # FSDP-style weight sharding across nodes
 
 
 class ZeroCopySettings(BaseModel):
@@ -85,9 +86,10 @@ class ZeroCopySettings(BaseModel):
 
 
 class PartitioningSettings(BaseModel):
-    """Layer partitioning strategy configuration (legacy)."""
+    """Layer partitioning strategy configuration."""
     strategy: str = "gpu_aware"  # "equal" | "gpu_aware"
     safety_margin: float = 0.1  # leave 10% VRAM free
+    shard_across_nodes: bool = False  # FSDP-style weight sharding across nodes
 
     def to_auto_partition_config(self):
         """Convert to dict (legacy AutoPartitionConfig)."""

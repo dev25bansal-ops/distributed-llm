@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Fonts ─────────────────────────────────────────── */
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces Variable", Georgia, serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  /* ── Type scale — Major Third (1.25) ───────────────── */
+  --text-xs: 0.8rem;
+  --text-sm: 0.9rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.563rem;
+  --text-3xl: 1.953rem;
+  --text-4xl: 2.441rem;
+  --text-5xl: 3.052rem;
+  --text-6xl: 3.815rem;
+  --text-7xl: 4.768rem;
+
+  /* ── Neutrals — terminal dark, green-tinted ────────── */
+  --color-bg: #060907;
+  --color-surface: #0c110e;
+  --color-sunken: #111814;
+  --color-ink: #e6f2ea;
+  --color-muted: #9db3a6;
+  --color-faint: #66816f;
+  --color-line: #1e2b23;
+
+  /* ── Brand: terminal emerald (dark-tuned scale) ────── */
+  --color-brand-50: #081310;
+  --color-brand-100: #0e231a;
+  --color-brand-200: #163427;
+  --color-brand-300: #1d4a38;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #34d399;
+  --color-brand-700: #6ee7b7;
+  --color-brand-800: #a7f3d0;
+  --color-brand-900: #d1fae5;
+
+  /* ── Accent: cyan ──────────────────────────────────── */
+  --color-accent-100: #082026;
+  --color-accent-300: #155e75;
+  --color-accent-500: #22d3ee;
+  --color-accent-600: #67e8f9;
+
+  /* ── Pop: amber ────────────────────────────────────── */
+  --color-pop-100: #2a2107;
+  --color-pop-400: #fbbf24;
+  --color-pop-500: #fbbf24;
+
+  /* ── Signature gradient ────────────────────────────── */
+  --gradient-brand: linear-gradient(135deg, #10b981 0%, #22d3ee 55%, #a78bfa 100%);
+
+  /* ── Radii / shadows ───────────────────────────────── */
+  --radius-card: 1rem;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -12px rgb(0 0 0 / 0.6);
+
+  /* ── Animations ────────────────────────────────────── */
+  --animate-fade-up: fade-up 0.6s ease-out both;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@layer base {
+  html { scroll-behavior: smooth; }
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    letter-spacing: -0.011em;
+  }
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.03em;
+    font-weight: 700;
+  }
+  ::selection { background: var(--color-brand-200); }
+}
+
+@utility text-gradient {
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility container-site {
+  @apply mx-auto max-w-6xl px-4 sm:px-6;
+}

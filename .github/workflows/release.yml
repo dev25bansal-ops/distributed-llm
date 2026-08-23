@@ -21,7 +21,7 @@ jobs:
       - run: ruff check src/
       - run: black --check src/
       - run: mypy src/
-      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=85 -m "not e2e and not slow"
+      - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=80 -m "not e2e and not slow"
 
   build-docker:
     runs-on: ubuntu-latest

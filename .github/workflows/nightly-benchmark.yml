@@ -1,0 +1,106 @@
+# Nightly Benchmark Pipeline
+#
+# Runs a comprehensive benchmark suite every night on the main branch
+# to detect performance regressions across all key metrics.
+# Compares against the last known baseline and posts a report.
+#
+# Runs on a self-hosted runner with GPU (or schedules on push).
+
+name: Nightly Benchmark
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # 06:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to benchmark (default: TinyStories-1M)"
+        required: false
+        default: "roneneldan/TinyStories-1M"
+      tokens:
+        description: "Max tokens per benchmark run"
+        required: false
+        default: "512"
+
+env:
+  PYTHON_VERSION: "3.10"
+  BENCHMARK_MODEL: ${{ github.event.inputs.model || 'roneneldan/TinyStories-1M' }}
+  MAX_TOKENS: ${{ github.event.inputs.tokens || '512' }}
+
+jobs:
+  # ── Throughput benchmarks ──────────────────────────────────────
+  throughput:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,self-hosted]"
+
+      - name: Run throughput benchmarks
+        run: |
+          python -m benchmarks.run \
+            --model ${{ env.BENCHMARK_MODEL }} \
+            --max-tokens ${{ env.MAX_TOKENS }} \
+            --output benchmarks/results/throughput_$(date +%Y%m%d).json
+
+      - name: Compare with baseline
+        id: compare
+        run: |
+          python -m benchmarks.regression_check \
+            --current benchmarks/results/throughput_$(date +%Y%m%d).json \
+            --baseline benchmarks/baseline.json \
+            --tolerance 0.15 \
+            --output benchmarks/results/regression_$(date +%Y%m%d).md
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: benchmarks/results/
+
+      - name: Post regression report
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmarks/results/regression_${{ github.run_id }}.md', 'utf8');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Benchmark Regression Detected',
+              body: report,
+              labels: ['benchmark', 'regression'],
+            });
+
+  # ─── Pipeline micro-benchmarks ─────────────────────────────────
+  pipeline:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,self-hosted]"
+
+      - name: Run pipeline throughput benchmarks
+        run: |
+          python -m benchmarks.cluster_benchmark \
+            --models tiny \
+            --clusters 1 2 \
+            --format json \
+            --output benchmarks/results/pipeline_$(date +%Y%m%d).json
+
+      - name: Upload pipeline results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-results-${{ github.run_id }}
+          path: benchmarks/results/

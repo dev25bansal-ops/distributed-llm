@@ -1,0 +1,67 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+---
+
+<PageLayout
+  title="Community"
+  description="Join the DistLLM community — contribute code, write guides, and help pool the world's idle GPUs."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Community"
+      title="Built in the open"
+      lead="DistLLM is Apache-2.0 open source. Contributors, writers, and testers all welcome."
+    />
+
+    <div class="mt-12 grid gap-6 md:grid-cols-3">
+      <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <h2 class="text-xl">Contribute code</h2>
+        <p class="mt-2 text-sm text-muted">
+          Good first issues are labeled on GitHub — backends, partitioners, docs, and tests all count.
+          The security-critical paths require an adversarial review before merge.
+        </p>
+        <a
+          href="https://github.com/distributed-llm/distributed-llm/blob/main/CONTRIBUTING.md"
+          target="_blank" rel="noopener noreferrer"
+          class="mt-4 inline-block text-sm font-medium text-brand-700 hover:underline"
+        >
+          Contributing guide →
+        </a>
+      </div>
+      <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <h2 class="text-xl">Write &amp; teach</h2>
+        <p class="mt-2 text-sm text-muted">
+          Guides for pooling unusual hardware, benchmarking your cluster, or running DistLLM
+          in a classroom make great blog posts — PRs to this site welcome.
+        </p>
+        <a href="/learn/" class="mt-4 inline-block text-sm font-medium text-brand-700 hover:underline">
+          Learning hub →
+        </a>
+      </div>
+      <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <h2 class="text-xl">Report &amp; test</h2>
+        <p class="mt-2 text-sm text-muted">
+          Bug reports with repro steps and benchmark numbers from real clusters are the most
+          valuable contributions of all.
+        </p>
+        <a
+          href="https://github.com/distributed-llm/distributed-llm/issues"
+          target="_blank" rel="noopener noreferrer"
+          class="mt-4 inline-block text-sm font-medium text-brand-700 hover:underline"
+        >
+          Issue tracker →
+        </a>
+      </div>
+    </div>
+
+    <div class="mt-12 rounded-2xl bg-[#131a16] p-8 text-center">
+      <h3 class="text-xl font-semibold text-white">Star the project</h3>
+      <p class="mx-auto mt-2 max-w-md text-sm text-white/70">
+        Stars help other people find DistLLM — if it runs a model your machines couldn't
+        handle alone, that's worth one click.
+      </p>
+      <p class="mt-4 font-mono text-sm text-white/50">github.com/distributed-llm/distributed-llm</p>
+    </div>
+  </section>
+</PageLayout>

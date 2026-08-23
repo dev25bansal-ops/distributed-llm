@@ -1,71 +1,88 @@
-from distllm.core.grammar_decoder import GBNFParser, GBNFFSM, LiteralNode, AltNode, SeqNode
+"""Tests for GBNF grammar parser and FSM.
 
-# 1. Parser test
-grammar = 'root ::= "hello"'
-parser = GBNFParser(grammar)
-rules = parser.parse()
-node = rules['root']
-print(f'Parser: root = {type(node).__name__}')
-assert isinstance(node, LiteralNode)
-assert node.value == 'hello'
+Converted from script-style standalone test to proper pytest format.
+"""
 
-# 2. Alternation
-grammar2 = 'root ::= "yes" | "no"'
-parser2 = GBNFParser(grammar2)
-rules2 = parser2.parse()
-print(f'Parser alt: root = {type(rules2["root"]).__name__}')
+from __future__ import annotations
 
-# 3. Basic FSM - literal
-fsm = GBNFFSM('root ::= "hello"')
-allowed = fsm.get_allowed_bytes()
-print(f'FSM literal first: {[chr(b) for b in sorted(allowed)]}')
-assert 0x68 in allowed  # 'h'
-
-# 4. Track literal transitions
-fsm.transition(0x68)  # h
-all2 = fsm.get_allowed_bytes()
-print(f'After h: {[chr(b) for b in sorted(all2)]}')
-assert 0x65 in all2  # 'e'
-assert not fsm.is_accepting()
-
-fsm.transition(0x65)  # e
-fsm.transition(0x6C)  # l
-fsm.transition(0x6C)  # l
-fsm.transition(0x6F)  # o
-print(f'After hello, accepting={fsm.is_accepting()}')
-assert fsm.is_accepting()
-
-# 5. Char class
-fsm2 = GBNFFSM('root ::= [0-9]+')
-all3 = fsm2.get_allowed_bytes()
-assert 0x30 in all3
-assert 0x39 in all3
-print(f'CharClass: digits 0-9 allowed: {0x30 in all3 and 0x39 in all3}')
-
-fsm2.transition(0x35)  # 5
-all4 = fsm2.get_allowed_bytes()
-assert 0x30 in all4
-print(f'After 5, digits still allowed: {0x30 in all4}')
-
-# 6. Alternation
-fsm3 = GBNFFSM('root ::= "yes" | "no"')
-all5 = fsm3.get_allowed_bytes()
-assert 0x79 in all5  # y
-assert 0x6E in all5  # n
-print(f'Alternation: y={0x79 in all5} n={0x6E in all5}')
-
-# 7. With constrained decoder
-from distllm.core.constrained_decoder import SchemaConstrainedDecoder, ConstrainedConstraint, TokenIndex
-class FakeTokenizer:
-    vocab_size = 100
-    eos_token_id = 1
-    def get_vocab(self):
-        return {chr(i): i for i in range(32, 96)} | {f't{i}': i for i in range(96, 100)}
-tok = FakeTokenizer()
-decoder = SchemaConstrainedDecoder(tok)
-constraint = decoder.grammar('root ::= [a-zA-Z]+')
 import torch
-mask = constraint.get_logits_mask(100)
-print(f'Grammar mask: {mask.sum().item()} allowed / 100 total')
 
-print('\nALL GBNF TESTS PASSED')
+from distllm.core.grammar_decoder import (
+    GBNFFSM,
+    GBNFParser,
+    LiteralNode,
+    SeqNode,
+    AltNode,
+)
+
+
+class TestGBNFParser:
+    """GBNF grammar parsing."""
+
+    def test_parse_literal(self):
+        grammar = 'root ::= "hello"'
+        parser = GBNFParser(grammar)
+        rules = parser.parse()
+        node = rules["root"]
+        assert isinstance(node, LiteralNode)
+        assert node.value == "hello"
+
+    def test_parse_alternation(self):
+        grammar = 'root ::= "yes" | "no"'
+        parser = GBNFParser(grammar)
+        rules = parser.parse()
+        assert isinstance(rules["root"], (AltNode, SeqNode, LiteralNode))
+
+
+class TestGBNFFSM:
+    """GBNF finite state machine."""
+
+    def test_literal_first_byte(self):
+        fsm = GBNFFSM('root ::= "hello"')
+        allowed = fsm.get_allowed_bytes()
+        assert 0x68 in allowed  # 'h'
+
+    def test_literal_transitions(self):
+        fsm = GBNFFSM('root ::= "hello"')
+        fsm.transition(0x68)  # h
+        allowed = fsm.get_allowed_bytes()
+        assert 0x65 in allowed  # 'e'
+        assert not fsm.is_accepting()
+
+        fsm.transition(0x65)  # e
+        fsm.transition(0x6C)  # l
+        fsm.transition(0x6C)  # l
+        fsm.transition(0x6F)  # o
+        assert fsm.is_accepting()
+
+    def test_char_class_digits(self):
+        fsm = GBNFFSM('root ::= [0-9]+')
+        allowed = fsm.get_allowed_bytes()
+        assert 0x30 in allowed  # 0
+        assert 0x39 in allowed  # 9
+
+        fsm.transition(0x35)  # 5
+        allowed = fsm.get_allowed_bytes()
+        assert 0x30 in allowed  # digits still allowed after digit
+
+    def test_alternation(self):
+        fsm = GBNFFSM('root ::= "yes" | "no"')
+        allowed = fsm.get_allowed_bytes()
+        assert 0x79 in allowed  # y
+        assert 0x6E in allowed  # n
+
+    def test_grammar_constrained_decoder(self):
+        from distllm.core.constrained_decoder import SchemaConstrainedDecoder
+
+        class FakeTokenizer:
+            vocab_size = 100
+            eos_token_id = 1
+
+            def get_vocab(self):
+                return {chr(i): i for i in range(32, 96)} | {f"t{i}": i for i in range(96, 100)}
+
+        tok = FakeTokenizer()
+        decoder = SchemaConstrainedDecoder(tok)
+        constraint = decoder.grammar('root ::= [a-zA-Z]+')
+        mask = constraint.get_logits_mask(100)
+        assert mask.sum().item() > 0, "grammar should allow some tokens"

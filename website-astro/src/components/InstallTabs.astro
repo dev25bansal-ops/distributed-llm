@@ -1,0 +1,61 @@
+---
+interface Props {
+  tabs: { label: string; code: string }[];
+}
+const { tabs } = Astro.props;
+---
+
+<div class="mx-auto max-w-2xl" data-install-tabs>
+  <div class="flex justify-center gap-1 rounded-xl bg-sunken p-1" role="tablist" aria-label="Install method">
+    {tabs.map((tab, i) => (
+      <button
+        role="tab"
+        aria-selected={i === 0 ? "true" : "false"}
+        data-tab-btn={i}
+        class:list={[
+          "flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+          i === 0 ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink",
+        ]}
+      >
+        {tab.label}
+      </button>
+    ))}
+  </div>
+
+  {tabs.map((tab, i) => (
+    <div
+      role="tabpanel"
+      data-tab-panel={i}
+      class="relative mt-3 rounded-xl bg-[#131a16] p-4 text-left"
+      hidden={i !== 0}
+    >
+      <pre class="overflow-x-auto font-mono text-sm leading-relaxed text-[#d5f5e3]"><code>{tab.code}</code></pre>
+      <button
+        class="absolute top-2 right-2 rounded-md border border-white/15 px-2 py-1 text-xs text-white/70 hover:text-white"
+        data-copy={tab.code}
+      >
+        Copy
+      </button>
+    </div>
+  ))}
+</div>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-install-tabs]").forEach((root) => {
+    const btns = root.querySelectorAll<HTMLButtonElement>("[data-tab-btn]");
+    const panels = root.querySelectorAll<HTMLElement>("[data-tab-panel]");
+    btns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = btn.dataset.tabBtn;
+        btns.forEach((b) => {
+          b.setAttribute("aria-selected", b === btn ? "true" : "false");
+          b.classList.toggle("bg-surface", b === btn);
+          b.classList.toggle("shadow-sm", b === btn);
+          b.classList.toggle("text-ink", b === btn);
+          b.classList.toggle("text-muted", b !== btn);
+        });
+        panels.forEach((p) => ((p.hidden = p.dataset.tabPanel !== idx)));
+      });
+    });
+  });
+</script>

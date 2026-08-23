@@ -19,7 +19,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,8 +102,9 @@ class CertificateRotator:
             info.not_before = cert.not_valid_before_utc
             info.not_after = cert.not_valid_after_utc
             info.serial_number = format(cert.serial_number, "x")
-            info.days_remaining = (cert.not_valid_after_utc - datetime.utcnow()).days
-            info.is_valid = cert.not_valid_after_utc > datetime.utcnow()
+            now_utc = datetime.now(timezone.utc)
+            info.days_remaining = (cert.not_valid_after_utc - now_utc).days
+            info.is_valid = cert.not_valid_after_utc > now_utc
 
         except ImportError:
             logger.warning("cryptography package not installed — cannot parse certificate")

@@ -1,0 +1,19 @@
+---
+// DistLLM logo mark: three pooled nodes linked into a pipeline.
+interface Props { class?: string }
+const { class: className = "h-7 w-7" } = Astro.props;
+---
+
+<svg class={className} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+  <defs>
+    <linearGradient id="dl-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4f46e5"></stop>
+      <stop offset="0.5" stop-color="#7c3aed"></stop>
+      <stop offset="1" stop-color="#06b6d4"></stop>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="12" height="12" rx="3.5" fill="url(#dl-grad)"></rect>
+  <rect x="18" y="18" width="12" height="12" rx="3.5" fill="url(#dl-grad)" opacity="0.85"></rect>
+  <rect x="18" y="2" width="12" height="12" rx="6" fill="url(#dl-grad)" opacity="0.55"></rect>
+  <path d="M8 14v4a4 4 0 0 0 4 4h6" stroke="url(#dl-grad)" stroke-width="2.5" stroke-linecap="round"></path>
+</svg>

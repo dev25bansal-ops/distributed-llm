@@ -1,0 +1,251 @@
+---
+import { DOCS_NAV, getDocNeighbors } from "../config/docs-nav";
+import PageLayout from "./PageLayout.astro";
+
+interface Props {
+  frontmatter: {
+    title: string;
+    description: string;
+    group: string;
+  };
+  slug: string;
+  toc?: { depth: number; slug: string; text: string }[];
+}
+
+const { frontmatter, slug, toc = [] } = Astro.props;
+const { prev, next } = getDocNeighbors(slug);
+---
+
+<PageLayout title={frontmatter.title} description={frontmatter.description}>
+  <div class="container-site grid gap-10 py-10 lg:grid-cols-[240px_minmax(0,1fr)_200px]">
+    <!-- Sidebar -->
+    <aside class="hidden lg:block">
+      <nav class="sticky top-24 space-y-6" aria-label="Docs">
+        <!-- Pagefind search -->
+        <div class="relative">
+          <input
+            type="search"
+            placeholder="Search docs…"
+            aria-label="Search documentation"
+            data-pagefind-filter="docs"
+            class="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm placeholder:text-faint focus:border-brand-400 focus:outline-none"
+          />
+        </div>
+        <div>
+          <h3 class="text-xs font-semibold tracking-wider text-faint uppercase">Browse</h3>
+          <ul class="mt-2 space-y-1 border-l border-line">
+            {DOCS_NAV.map((group) => (
+              <li>
+                <a
+                  href={`/docs/${group.items[0].slug}/`}
+                  class:list={[
+                    "-ml-px block border-l-2 py-1.5 pl-3 text-sm transition-colors",
+                    group.items.some((i) => i.slug === slug)
+                      ? "border-brand-500 font-semibold text-brand-700"
+                      : "border-transparent text-muted hover:border-line hover:text-ink",
+                  ]}
+                >
+                  {group.group}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+        {DOCS_NAV.map((group) =>
+          group.items.some((i) => i.slug === slug) ? (
+            <div>
+              <h3 class="text-xs font-semibold tracking-wider text-faint uppercase">{group.group}</h3>
+              <ul class="mt-2 space-y-1 border-l border-line">
+                {group.items.map((item) => (
+                  <li>
+                    <a
+                      href={`/docs/${item.slug}/`}
+                      aria-current={item.slug === slug ? "page" : undefined}
+                      class:list={[
+                        "-ml-px block border-l-2 py-1.5 pl-3 text-sm transition-colors",
+                        item.slug === slug
+                          ? "border-brand-500 font-semibold text-brand-700"
+                          : "border-transparent text-muted hover:border-line hover:text-ink",
+                      ]}
+                    >
+                      {item.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null
+        )}
+      </nav>
+    </aside>
+
+    <!-- Content -->
+    <article class="min-w-0">
+      <p class="text-xs font-semibold tracking-wider text-brand-600 uppercase">{frontmatter.group}</p>
+      <h1 class="mt-2 text-4xl">{frontmatter.title}</h1>
+      <p class="mt-3 text-lg text-muted">{frontmatter.description}</p>
+      <div class="prose-doc mt-8" data-pagefind-body>
+        <slot />
+      </div>
+      <nav class="mt-14 flex items-center justify-between gap-4 border-t border-line pt-6" aria-label="Docs pagination">
+        {prev ? (
+          <a href={`/docs/${prev.slug}/`} class="text-sm text-muted hover:text-brand-700">← {prev.label}</a>
+        ) : <span />}
+        {next ? (
+          <a href={`/docs/${next.slug}/`} class="text-sm text-muted hover:text-brand-700">{next.label} →</a>
+        ) : <span />}
+      </nav>
+    </article>
+
+    <!-- On this page -->
+    <aside class="hidden xl:block">
+      <p class="text-xs font-semibold tracking-wider text-faint uppercase">On this page</p>
+      {toc.length > 0 ? (
+        <nav class="mt-3 space-y-1.5" aria-label="On this page">
+          {toc.map((h) => (
+            <a
+              href={`#${h.slug}`}
+              data-toc-link={h.slug}
+              class:list={[
+                "block text-sm leading-snug transition-colors",
+                h.depth === 2 ? "text-muted hover:text-ink" : "pl-4 text-faint hover:text-ink",
+              ]}
+            >
+              {h.text}
+            </a>
+          ))}
+        </nav>
+      ) : (
+        <p class="mt-3 text-sm text-faint">—</p>
+      )}
+    </aside>
+  </div>
+
+  <script>
+    // Pagefind search (index generated at build time by `pagefind --site dist`).
+    const input = document.querySelector<HTMLInputElement>('input[data-pagefind-filter="docs"]');
+    if (input) {
+      let pagefind: any = null;
+      let panel: HTMLDivElement | null = null;
+
+      const closePanel = () => { panel?.remove(); panel = null; };
+
+      const renderResults = (results: any[]) => {
+        if (!panel) return;
+        if (results.length === 0) {
+          panel.innerHTML = '<p class="p-3 text-sm text-faint">No results.</p>';
+          return;
+        }
+        panel.innerHTML = "";
+        for (const r of results.slice(0, 8)) {
+          const meta = r.meta ?? {};
+          const a = document.createElement("a");
+          a.href = r.url;
+          a.className = "block rounded-lg px-3 py-2 hover:bg-sunken";
+          const titleEl = document.createElement("span");
+          titleEl.className = "block text-sm font-medium";
+          titleEl.textContent = meta.title ?? "Untitled"; // textContent: no XSS via titles
+          const excerptEl = document.createElement("span");
+          excerptEl.className = "block text-xs text-faint";
+          excerptEl.innerHTML = r.excerpt; // build-generated markup from our own index
+          a.appendChild(titleEl);
+          a.appendChild(excerptEl);
+          a.addEventListener("click", closePanel);
+          panel.appendChild(a);
+        }
+      };
+
+      input.addEventListener("focus", async () => {
+        try {
+          const pfSpecifier = "/pagefind/pagefind.js"; // runtime-resolved build asset
+          pagefind = pagefind ?? (await import(/* @vite-ignore */ pfSpecifier));
+          await pagefind.options({ excerptLength: 12 });
+        } catch {
+          return; // index not built yet (dev mode without postbuild)
+        }
+      });
+
+      input.addEventListener("input", async () => {
+        const q = input.value.trim();
+        if (!pagefind || q.length === 0) { closePanel(); return; }
+        if (!panel) {
+          panel = document.createElement("div");
+          panel.className =
+            "absolute top-full left-0 z-30 mt-1 max-h-[70vh] w-full overflow-y-auto rounded-xl border border-line bg-surface p-2 shadow-card";
+          input.parentElement!.appendChild(panel);
+        }
+        const search = await pagefind.search(q);
+        const results = await Promise.all(search.results.slice(0, 8).map((r: any) => r.data()));
+        renderResults(results);
+      });
+
+      document.addEventListener("click", (e) => {
+        if (!(e.target as HTMLElement).closest(".relative")) closePanel();
+      });
+    }
+
+    // Scroll-spy: highlight the TOC entry for the heading nearest the viewport.
+    const links = document.querySelectorAll<HTMLAnchorElement>("[data-toc-link]");
+    if (links.length > 0) {
+      const byId = new Map<string, HTMLAnchorElement>();
+      links.forEach((l) => byId.set(l.dataset.tocLink!, l));
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            const link = byId.get(entry.target.id);
+            if (!link) continue;
+            if (entry.isIntersecting) {
+              links.forEach((l) => l.classList.remove("text-brand-700", "font-semibold"));
+              link.classList.add("text-brand-700", "font-semibold");
+            }
+          }
+        },
+        { rootMargin: "-80px 0px -70% 0px" },
+      );
+      document.querySelectorAll("h2[id], h3[id]").forEach((h) => observer.observe(h));
+    }
+  </script>
+</PageLayout>
+
+<style>
+  @reference "../styles/global.css";
+  .prose-doc :global(h2) {
+    @apply mt-12 scroll-mt-24 text-3xl;
+  }
+  .prose-doc :global(h3) {
+    @apply mt-8 scroll-mt-24 text-xl;
+  }
+  .prose-doc :global(p) {
+    @apply my-4 leading-relaxed text-muted;
+  }
+  .prose-doc :global(ul), .prose-doc :global(ol) {
+    @apply my-4 list-disc space-y-1.5 pl-6 text-muted;
+  }
+  .prose-doc :global(ol) { list-style: decimal; }
+  .prose-doc :global(a) {
+    @apply font-medium text-brand-700 underline decoration-brand-300 underline-offset-2 hover:text-brand-800;
+  }
+  .prose-doc :global(code) {
+    @apply rounded-md bg-sunken px-1.5 py-0.5 font-mono text-[0.85em] text-brand-800;
+  }
+  .prose-doc :global(pre) {
+    @apply my-5 overflow-x-auto rounded-xl border border-line bg-[#080d0a] p-4 font-mono text-sm leading-relaxed text-[#d5f5e3];
+  }
+  .prose-doc :global(pre code) {
+    @apply bg-transparent p-0 text-inherit;
+  }
+  .prose-doc :global(table) {
+    @apply my-6 w-full border-collapse text-left text-sm;
+    display: block;
+    overflow-x: auto;
+  }
+  .prose-doc :global(th) {
+    @apply border-b-2 border-line px-3 py-2 font-semibold;
+  }
+  .prose-doc :global(td) {
+    @apply border-b border-line px-3 py-2 align-top text-muted;
+  }
+  .prose-doc :global(blockquote) {
+    @apply my-5 rounded-r-xl border-l-4 border-brand-400 bg-brand-50 px-4 py-3 text-muted;
+  }
+</style>

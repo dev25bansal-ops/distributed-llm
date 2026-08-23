@@ -1,0 +1,29 @@
+---
+title: Architecture
+description: How DistLLM pools devices into one logical accelerator.
+group: Architecture
+order: 1
+---
+
+## Components
+
+| Component | Role |
+|-----------|------|
+| **Coordinator** | Accepts OpenAI-compatible requests, schedules batches, tracks node health |
+| **Worker nodes** | Hold a contiguous range of model layers, serve ForwardPass gRPC calls |
+| **Inference engine** | Token-by-token generation driving the pipeline |
+| **Batch scheduler** | Continuous batching with PagedAttention KV blocks |
+
+## Request flow
+
+1. A client POSTs to `/v1/chat/completions` on the coordinator.
+2. The tokenizer encodes the prompt; the batch scheduler admits it.
+3. Activations flow through each worker's layer stage in order (pipeline).
+4. The final stage samples the next token and streams it back as an SSE chunk.
+5. Repeat until EOS or `max_tokens`.
+
+## Health & recovery
+
+Workers heartbeat to the coordinator. After repeated failures a node is marked
+OFFLINE, its layers are reassignable, and on return it replays from the last
+checkpoint — no manual intervention required.

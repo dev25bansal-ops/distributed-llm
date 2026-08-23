@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-worker
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  serviceName: {{ include "distllm-operator.fullname" . }}-worker-headless
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+        app.kubernetes.io/component: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      volumes:
+        - name: cache-storage
+          emptyDir: {}
+      containers:
+        - name: worker
+          image: "{{ .Values.controller.defaultWorkerImage }}"
+          ports:
+            - containerPort: {{ .Values.network.workerGrpcPort }}
+              name: grpc
+            - containerPort: {{ .Values.network.metricsPort }}
+              name: metrics
+          volumeMounts:
+            - name: cache-storage
+              mountPath: /var/cache/distllm
+          env:
+            - name: DISTLLM_COORDINATOR_HOST
+              value: {{ include "distllm-operator.fullname" . }}-coordinator
+            - name: DISTLLM_COORDINATOR_PORT
+              value: "{{ .Values.network.coordinatorGrpcPort }}"
+            - name: DISTLLM_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources: {{- toYaml .Values.defaultResources.worker | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.network.workerGrpcPort }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.network.workerGrpcPort }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep {{ .Values.controller.workerGracePeriodSeconds }}"]
+      terminationGracePeriodSeconds: {{ add .Values.controller.workerGracePeriodSeconds 10 }}
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-worker-headless
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    app.kubernetes.io/component: worker
+  ports:
+    - port: {{ .Values.network.workerGrpcPort }}
+      name: grpc
+  clusterIP: None

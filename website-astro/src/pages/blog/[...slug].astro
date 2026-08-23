@@ -1,0 +1,31 @@
+---
+import { getCollection, render } from "astro:content";
+import PageLayout from "../../layouts/PageLayout.astro";
+import { formatDate } from "../../lib/format";
+
+export async function getStaticPaths() {
+  const posts = await getCollection("blog", ({ data }) => !data.draft && !data.linkOut);
+  return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+---
+
+<PageLayout title={post.data.title} description={post.data.description} ogType="article">
+  <article class="container-site max-w-3xl py-14">
+    <div class="flex items-center gap-3 text-xs text-faint">
+      <time datetime={post.data.pubDate.toISOString()}>{formatDate(post.data.pubDate)}</time>
+      <span>·</span>
+      <span>{post.data.author}</span>
+      {post.data.tags.map((t) => (
+        <span class="rounded-full bg-brand-50 px-2 py-0.5 font-medium text-brand-700">{t}</span>
+      ))}
+    </div>
+    <h1 class="mt-4 text-4xl">{post.data.title}</h1>
+    <p class="mt-3 text-lg text-muted">{post.data.description}</p>
+    <div class="prose-doc mt-8">
+      <Content />
+    </div>
+  </article>
+</PageLayout>

@@ -966,8 +966,12 @@ class DistributedSpeculativeDecoder:
                     total=len(draft_token_ids),
                 )
 
+        # Track stats: proposed = draft tokens only, accepted = generated
+        # minus prompt (includes bonused correction token).  Cap to prevent
+        # acceptance rate > 1.0 when non-draft tokens inflate accepted.
         self._stats["total_proposed"] += actual_draft_tokens
-        self._stats["accepted"] += generated.shape[1] - prompt_len
+        accepted_delta = generated.shape[1] - prompt_len
+        self._stats["accepted"] += min(accepted_delta, actual_draft_tokens)
 
         return generated
 
@@ -1075,20 +1079,15 @@ class DistributedSpeculativeDecoder:
                     [draft_token_ids], dtype=torch.long, device=self._device,
                 )
 
-                # Launch next draft fetch BEFORE verifying
-                next_remaining = target_len - generated.shape[1] - len(draft_token_ids)
-                if next_remaining > 0:
-                    next_tokens = (
-                        torch.cat([generated, draft_tokens], dim=1)[0].tolist()
-                    )
-                    draft_task = asyncio.create_task(
-                        draft_model.agenerate_tokens(
-                            prompt_tokens=next_tokens,
-                            num_tokens=min(self._current_candidates, next_remaining),
-                            temperature=self._temperature,
-                            top_k=self._top_k,
-                        )
-                    )
+                # Verify current batch first, then launch next draft based
+                # on the ACTUAL accepted prefix.  Previously the next draft
+                # was pre-launched before verification (to overlap latency),
+                # but this caused distribution mismatch on partial rejection:
+                # the pre-launched draft was conditioned on a prefix longer
+                # than what was actually accepted (CWE-682, incorrect
+                # calculation).  Drafts are now launched post-verification
+                # for correctness; future optimization can use a cancellation
+                # mechanism for stale pre-launches.
 
                 # Verify current batch
                 full_input = torch.cat([generated, draft_tokens], dim=1)
@@ -1143,8 +1142,12 @@ class DistributedSpeculativeDecoder:
                     )
                 )
 
+        # Track stats: proposed = draft tokens only, accepted = generated
+        # minus prompt (includes bonused correction token).  Cap to prevent
+        # acceptance rate > 1.0 when non-draft tokens inflate accepted.
         self._stats["total_proposed"] += actual_draft_tokens
-        self._stats["accepted"] += generated.shape[1] - prompt_len
+        accepted_delta = generated.shape[1] - prompt_len
+        self._stats["accepted"] += min(accepted_delta, actual_draft_tokens)
 
         return generated
 
@@ -1197,9 +1200,9 @@ class DistributedSpeculativeDecoder:
 
             if torch.rand(1).item() >= acceptance_prob:
                 return i
-
-            if p <= 0:
-                return i
+            # Note: no separate ``if p <= 0`` check needed here —
+            # when p <= 0, acceptance_prob = 0, so the check above
+            # always returns i (rejected).
 
         return num_draft
 
@@ -1309,6 +1312,171 @@ class DistributedSpeculativeDecoder:
         """Close both sync and async clients."""
         if self._draft is not None:
             await self._draft.aclose()
+        if hasattr(self, "_draft_model_cache"):
+            for model in self._draft_model_cache.values():
+                await model.aclose()
+
+    # ── Multi-draft parallel query & voting ─────────────────────────
+
+    async def _query_all_drafts(
+        self,
+        prompt_tokens: list[int],
+        num_tokens: int,
+    ) -> list[DraftTokenResult]:
+        """Query ALL registered fleet drafts in parallel via ``asyncio.gather``.
+
+        Creates (or reuses cached) ``RemoteDraftModel`` instances for every
+        healthy endpoint in the fleet and fans out ``agenerate_tokens`` calls
+        concurrently.  Results are recorded in the fleet's health tracker.
+
+        Args:
+            prompt_tokens: Full prompt as a list of token IDs.
+            num_tokens: Number of draft tokens to request from each model.
+
+        Returns:
+            List of ``DraftTokenResult`` objects, one per queried draft.
+            Failed calls are included with a non-empty ``error`` field.
+        """
+        import asyncio
+
+        if self._fleet is None:
+            raise RuntimeError("No draft_fleet configured for multi-draft query")
+
+        # Lazily-initialised cache: endpoint_url -> RemoteDraftModel
+        if not hasattr(self, "_draft_model_cache"):
+            self._draft_model_cache: dict[str, RemoteDraftModel] = {}
+
+        specs = self._fleet.get_all_specs()
+        healthy_urls = set(self._fleet.healthy_endpoints)
+
+        models: list[RemoteDraftModel] = []
+        coros: list[Any] = []
+
+        for spec in specs:
+            url = spec.endpoint_url
+            if url not in healthy_urls:
+                continue
+            if url not in self._draft_model_cache:
+                self._draft_model_cache[url] = RemoteDraftModel(
+                    RemoteDraftConfig(
+                        endpoint_url=url,
+                        model_name=spec.model_name,
+                        api_key=spec.api_key,
+                        timeout_seconds=spec.timeout_seconds,
+                        max_retries=spec.max_retries,
+                        verify_ssl=spec.verify_ssl,
+                    )
+                )
+            model = self._draft_model_cache[url]
+            models.append(model)
+            coros.append(
+                model.agenerate_tokens(
+                    prompt_tokens=prompt_tokens,
+                    num_tokens=num_tokens,
+                    temperature=self._temperature,
+                    top_k=self._top_k,
+                )
+            )
+
+        if not coros:
+            logger.warning("No healthy draft endpoints available for multi-draft query")
+            return []
+
+        gathered = await asyncio.gather(*coros, return_exceptions=True)
+
+        results: list[DraftTokenResult] = []
+        for model, result in zip(models, gathered):
+            url = model._config.endpoint_url
+            if isinstance(result, Exception):
+                logger.warning("Multi-draft query failed for {}: {}", url, result)
+                results.append(DraftTokenResult(token_ids=[], logprobs=[], error=str(result)))
+                self._fleet.record_error(url, str(result))
+            elif not result.ok:
+                results.append(result)
+                self._fleet.record_error(url, result.error)
+            else:
+                results.append(result)
+                self._fleet.record_success(
+                    url, latency_s=0.0,
+                    tokens_generated=len(result.token_ids),
+                )
+
+        return results
+
+    @staticmethod
+    def draft_voting(results: list[DraftTokenResult]) -> DraftTokenResult:
+        """Combine multiple draft results via majority voting.
+
+        Strategy:
+
+        1. **First token** -- majority vote across all non-error drafts.
+           Ties are broken by choosing the smallest token ID.
+        2. **Subsequent tokens** -- longest common prefix among drafts
+           that agreed on the winning first token.
+
+        Args:
+            results: List of ``DraftTokenResult`` from parallel draft queries.
+
+        Returns:
+            A single merged ``DraftTokenResult``.  If no drafts produced
+            valid output, returns an error result.
+        """
+        valid = [r for r in results if r.ok]
+        if not valid:
+            return DraftTokenResult(
+                token_ids=[], logprobs=[],
+                error="no valid draft results for voting",
+            )
+
+        # ── First-token majority voting ──────────────────────────────
+        first_token_counts: dict[int, int] = {}
+        for r in valid:
+            if r.token_ids:
+                first_token_counts[r.token_ids[0]] = (
+                    first_token_counts.get(r.token_ids[0], 0) + 1
+                )
+
+        if not first_token_counts:
+            return DraftTokenResult(
+                token_ids=[], logprobs=[],
+                error="no first tokens to vote on",
+            )
+
+        max_count = max(first_token_counts.values())
+        # Tie-break: pick the smallest token ID among those with max count
+        winners = sorted(tok for tok, cnt in first_token_counts.items() if cnt == max_count)
+        winning_first = winners[0]
+
+        # ── Longest common prefix among aligned drafts ───────────────
+        aligned = [
+            r.token_ids for r in valid
+            if r.token_ids and r.token_ids[0] == winning_first
+        ]
+
+        if not aligned:
+            return DraftTokenResult(
+                token_ids=[winning_first],
+                logprobs=[],
+            )
+
+        min_len = min(len(t) for t in aligned)
+        prefix_len = 0
+        for i in range(min_len):
+            if all(t[i] == aligned[0][i] for t in aligned):
+                prefix_len = i + 1
+            else:
+                break
+
+        merged_ids = aligned[0][:prefix_len]
+
+        # Best-effort logprobs from the longest aligned draft
+        best_logprobs: list[float] = []
+        for r in valid:
+            if r.token_ids[:prefix_len] == merged_ids and len(r.logprobs) >= prefix_len:
+                best_logprobs = r.logprobs[:prefix_len]
+                break
+
+        return DraftTokenResult(token_ids=merged_ids, logprobs=best_logprobs)
 
     # ── Auto-selection integration ──────────────────────────────────
 

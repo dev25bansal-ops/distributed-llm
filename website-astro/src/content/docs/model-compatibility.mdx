@@ -1,0 +1,26 @@
+---
+title: Model Compatibility
+description: Which models work, and VRAM requirements per quantization.
+group: Reference
+order: 1
+---
+
+## Supported families
+
+Any Hugging Face causal-LM with a standard `AutoModelForCausalLM` head works:
+Llama 1/2/3, Mistral, Qwen 1.5/2/2.5, Phi-2/3, Gemma, TinyStories, GPT-2, and
+most fine-tunes of these.
+
+## VRAM guidance (float16 weights)
+
+| Model | Weights | KV cache (4k ctx) | Recommended |
+|-------|---------|-------------------|-------------|
+| ≤1B | ~2 GB | ~0.5 GB | Any GPU or CPU |
+| 3B | ~6 GB | ~1 GB | 8 GB GPU |
+| 7–8B | ~14 GB | ~2 GB | 16 GB GPU or 2-node split |
+| 13B | ~26 GB | ~3 GB | 2× 16 GB pooled |
+| 70B | ~140 GB | ~12 GB | 5–6× 24 GB pooled |
+
+INT8 halves weight memory; INT4 quarters it. Quantized KV caches reduce
+context memory further — the bulk-dequantization path keeps long-context
+generation fast.

@@ -1,0 +1,56 @@
+---
+import { getCollection } from "astro:content";
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import { DOCS_NAV } from "../../config/docs-nav";
+
+const entries = await getCollection("docs");
+const byGroup = new Map<string, { slug: string; title: string; description: string; icon?: string }[]>();
+for (const entry of entries) {
+  const group = entry.data.group;
+  if (!byGroup.has(group)) byGroup.set(group, []);
+  byGroup.get(group)!.push({
+    slug: entry.id,
+    title: entry.data.title,
+    description: entry.data.description,
+    icon: entry.data.icon,
+  });
+}
+const groups = DOCS_NAV.map((g) => ({
+  ...g,
+  pages: (byGroup.get(g.group) ?? []).sort(
+    (a, b) => (entries.find((e) => e.id === a.slug)?.data.order ?? 99) -
+               (entries.find((e) => e.id === b.slug)?.data.order ?? 99)
+  ),
+}));
+---
+
+<DocsLayout
+  frontmatter={{
+    title: "Documentation",
+    description: "Install, configure, and scale DistLLM — from a single laptop to a pooled cluster.",
+    group: "Docs",
+  }}
+  slug=""
+>
+  <p class="text-muted">
+    Everything you need to run DistLLM: installation, configuration, the
+    OpenAI-compatible API, multi-node deployment, and the security model.
+  </p>
+
+  {groups.map((group) => (
+    <section class="mt-10">
+      <h2 class="text-2xl">{group.group}</h2>
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+        {group.pages.map((page) => (
+          <a
+            href={`/docs/${page.slug}/`}
+            class="group rounded-xl border border-line bg-surface p-5 transition-all hover:border-brand-300 hover:shadow-card"
+          >
+            <h3 class="font-semibold text-ink group-hover:text-brand-700">{page.title}</h3>
+            <p class="mt-1 text-sm text-muted">{page.description}</p>
+          </a>
+        ))}
+      </div>
+    </section>
+  ))}
+</DocsLayout>

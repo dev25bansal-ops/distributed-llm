@@ -1,0 +1,57 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+---
+
+<PageLayout
+  title="Security"
+  description="DistLLM's security model: fail-closed authentication, transport encryption, and cluster isolation."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Security"
+      title="Fail closed. Always authenticated."
+      lead="Every route requires a valid credential by design — there is no dev-mode bypass to accidentally ship."
+    />
+
+    <div class="mx-auto mt-12 max-w-3xl space-y-8">
+      <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <h2 class="text-xl">Authentication</h2>
+        <ul class="mt-4 space-y-2 text-muted">
+          <li>• API keys stored salted-PBKDF2 hashed; raw keys never logged (fingerprint only)</li>
+          <li>• Role-based access control: admin, inference-only, read-only</li>
+          <li>• JWT and SSO support for team deployments</li>
+          <li>• Rate limiting on failed auth attempts (token bucket per client IP)</li>
+        </ul>
+      </div>
+
+      <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <h2 class="text-xl">Transport &amp; cluster</h2>
+        <ul class="mt-4 space-y-2 text-muted">
+          <li>• TLS for the HTTP API and mTLS with rotating certificates for worker gRPC</li>
+          <li>• QUIC transport validates server certificates against a configured CA</li>
+          <li>• Workers authenticate with shared cluster keys; DHT writes require time-bound HMAC tokens</li>
+          <li>• Gossip protocol messages are HMAC-authenticated with key rotation</li>
+          <li>• E2E tensor encryption (X25519 + XSalsa20-Poly1305) with per-message keys</li>
+        </ul>
+      </div>
+
+      <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <h2 class="text-xl">Privacy-preserving training</h2>
+        <p class="mt-3 text-muted">
+          Federated fine-tuning keeps raw data on-device; only round-tagged gradient
+          updates travel. Differential privacy clips gradients to a norm bound and adds
+          calibrated Gaussian noise so individual examples cannot be recovered from an update.
+        </p>
+      </div>
+
+      <div class="rounded-2xl border-l-4 border-brand-500 bg-brand-50 p-6">
+        <h2 class="text-lg font-semibold text-brand-900">Responsible disclosure</h2>
+        <p class="mt-2 text-sm text-brand-800">
+          Found a vulnerability? Please report it privately via GitHub Security Advisories
+          rather than opening a public issue. We commit to acknowledging reports within 72 hours.
+        </p>
+      </div>
+    </div>
+  </section>
+</PageLayout>

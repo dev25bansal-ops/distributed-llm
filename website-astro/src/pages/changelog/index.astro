@@ -1,0 +1,58 @@
+---
+import { getCollection } from "astro:content";
+import PageLayout from "../../layouts/PageLayout.astro";
+import SectionHeading from "../../components/SectionHeading.astro";
+import { formatDate } from "../../lib/format";
+
+const entries = (await getCollection("changelog")).sort(
+  (a, b) => b.data.releaseDate.valueOf() - a.data.releaseDate.valueOf(),
+);
+---
+
+<PageLayout
+  title="Changelog"
+  description="Every DistLLM release — features, fixes, and migration notes."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Changelog"
+      title="Release history"
+      lead="What shipped, what changed, and how to migrate."
+    />
+    <div class="mx-auto mt-12 max-w-3xl">
+      <ol class="relative space-y-10 border-l-2 border-line pl-8">
+        {entries.map((entry) => (
+          <li class="relative">
+            <span class="absolute -left-[41px] top-1 h-5 w-5 rounded-full border-[3px] border-bg bg-brand-500" aria-hidden="true" />
+            <div class="flex flex-wrap items-center gap-3">
+              <h2 class="font-display text-2xl font-bold">v{entry.data.version}</h2>
+              {entry.data.breaking && (
+                <span class="rounded-full bg-pop-100 px-2.5 py-0.5 text-xs font-semibold text-pop-500">
+                  Breaking changes
+                </span>
+              )}
+              <time class="text-sm text-faint" datetime={entry.data.releaseDate.toISOString()}>
+                {formatDate(entry.data.releaseDate)}
+              </time>
+            </div>
+            {entry.data.highlights.length > 0 && (
+              <ul class="mt-3 space-y-1.5">
+                {entry.data.highlights.map((h) => (
+                  <li class="flex items-start gap-2 text-sm text-muted">
+                    <span class="mt-0.5 text-brand-600">✓</span> {h}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div class="prose-doc mt-4">
+              <Fragment set:html={entry.body} />
+            </div>
+            <a href={`/changelog/${entry.id}/`} class="mt-3 inline-block text-sm font-medium text-brand-700 hover:underline">
+              Full release notes →
+            </a>
+          </li>
+        ))}
+      </ol>
+    </div>
+  </section>
+</PageLayout>

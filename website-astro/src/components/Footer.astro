@@ -1,0 +1,46 @@
+---
+import { FOOTER_COLUMNS, SITE } from "../config/site";
+import Logo from "./Logo.astro";
+
+const year = new Date().getFullYear();
+---
+
+<footer class="border-t border-line bg-sunken">
+  <div class="container-site grid gap-10 py-14 sm:grid-cols-2 lg:grid-cols-4">
+    <div>
+      <a href="/" class="flex items-center gap-2 font-display text-lg font-bold">
+        <Logo class="h-6 w-6" />
+        DistLLM
+      </a>
+      <p class="mt-3 max-w-xs text-sm text-muted">
+        Open-source distributed LLM inference. Pool the GPUs you already own to run models no single machine can handle.
+      </p>
+      <p class="mt-4 text-sm text-faint">Apache-2.0 License</p>
+    </div>
+    {FOOTER_COLUMNS.map((col) => (
+      <nav aria-label={col.heading}>
+        <h3 class="text-sm font-semibold tracking-wide text-ink uppercase">{col.heading}</h3>
+        <ul class="mt-3 space-y-2">
+          {col.links.map((link) => (
+            <li>
+              <a
+                href={link.href}
+                class="text-sm text-muted transition-colors hover:text-brand-700"
+                {...("external" in link && link.external
+                  ? { target: "_blank", rel: "noopener noreferrer" }
+                  : {})}
+              >
+                {link.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    ))}
+  </div>
+  <div class="border-t border-line">
+    <p class="container-site py-5 text-center text-sm text-faint">
+      © {year} DistLLM. Apache-2.0 License.
+    </p>
+  </div>
+</footer>

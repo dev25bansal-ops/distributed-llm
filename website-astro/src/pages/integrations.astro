@@ -1,0 +1,50 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+import { DEPLOY_PLATFORMS, FRAMEWORK_INTEGRATIONS } from "../data/integrations";
+---
+
+<PageLayout
+  title="Integrations"
+  description="Deploy DistLLM anywhere and connect it to LangChain, LlamaIndex, CrewAI, Dify, LiteLLM, Open WebUI, and more."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Integrations"
+      title="Deploy anywhere. Connect everything."
+      lead="The engine is one pip package; the API is the OpenAI wire format. Everything else plugs in."
+    />
+
+    <h2 class="mt-14 text-2xl">Deploy platforms</h2>
+    <div class="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      {DEPLOY_PLATFORMS.map((p) => (
+        <a href={p.href} class="rounded-xl border border-line bg-surface p-5 transition-all hover:border-brand-300 hover:shadow-card">
+          <h3 class="font-semibold">{p.name}</h3>
+          <p class="mt-2 text-sm text-muted">{p.desc}</p>
+        </a>
+      ))}
+    </div>
+
+    <h2 class="mt-14 text-2xl">Framework integrations</h2>
+    <div class="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      {FRAMEWORK_INTEGRATIONS.map((f) => (
+        <div class="rounded-xl border border-line bg-surface p-5 shadow-sm">
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">{f.name}</h3>
+            {"pkg" in f && f.pkg && (
+              <code class="rounded bg-sunken px-1.5 py-0.5 font-mono text-xs text-brand-800">{f.pkg}</code>
+            )}
+          </div>
+          <p class="mt-2 text-sm text-muted">
+            {"desc" in f && f.desc ? f.desc : f.note}
+          </p>
+        </div>
+      ))}
+    </div>
+
+    <div class="mt-12 rounded-2xl bg-[#131a16] p-8 text-center">
+      <h3 class="text-xl font-semibold text-white">Built something on DistLLM?</h3>
+      <p class="mt-2 text-sm text-white/70">Open a PR to add your integration to this page.</p>
+    </div>
+  </section>
+</PageLayout>

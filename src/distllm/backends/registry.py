@@ -359,27 +359,39 @@ def _module_available(name: str) -> bool:
 
 
 def _check_health(adapter_class: type) -> bool:
-    """Probe backend health without a full ``__init__``.
+    """Probe backend health.
 
-    Creates a bare instance via ``object.__new__`` (skipping
-    ``__init__``) and calls the default ``health_check()`` method.
-    Backends that override ``health_check()`` and rely on instance
-    state should guard against uninitialised attributes.
-
-    Returns ``True`` on any error so a broken probe does not block
-    backend selection.
+    Uses a classmethod-style check: calls ``probe_health()`` on the
+    class if defined, otherwise falls back to a simple instance-based
+    health check.  Returns ``False`` on any error so a broken probe
+    does not silently pass as healthy (fail-closed).
     """
     try:
-        probe = object.__new__(adapter_class)
-        return probe.health_check()
-    except Exception:
+        # If the class defines a ``probe_health`` classmethod, prefer it
+        # (no __init__ needed).
+        if hasattr(adapter_class, "probe_health"):
+            probe_fn = getattr(adapter_class, "probe_health")
+            if callable(probe_fn):
+                result = probe_fn()
+                return bool(result)
+        # Fallback for subclasses that only override ``health_check``:
+        # try a lightweight instance and call it.
+        from distllm.backends.protocol import BackendAdapter as _BA
+        if adapter_class.health_check is not _BA.health_check:
+            probe = object.__new__(adapter_class)
+            return bool(probe.health_check())
         return True
+    except Exception:
+        return False
 
 
 def _get_load(adapter_class: type) -> float:
     """Return the current load of an adapter, falling back to ``0.0``."""
     try:
-        probe = object.__new__(adapter_class)
-        return probe.current_load()
+        from distllm.backends.protocol import BackendAdapter as _BA
+        if adapter_class.current_load is not _BA.current_load:
+            probe = object.__new__(adapter_class)
+            return float(probe.current_load())
+        return 0.0
     except Exception:
         return 0.0

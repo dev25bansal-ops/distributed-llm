@@ -160,8 +160,30 @@ class ClusterMetrics:
 
 
 # ---------------------------------------------------------------------------
-# Analytical estimator (roofline model)
+# Analytical estimator (memory-bandwidth-bound model)
 # ---------------------------------------------------------------------------
+
+
+def _estimate_memory_bandwidth(gpu_name: str = "RTX 4090") -> float:
+    """Return real-world GPU memory bandwidth in GB/s."""
+    table = {
+        "h100": 3352.0,
+        "a100": 2039.0,
+        "rtx 4090": 1008.0,
+        "rtx 4080": 716.0,
+        "rtx 4070": 504.0,
+        "rtx 4060": 272.0,
+        "rtx 3090": 936.0,
+        "rtx 3080": 760.0,
+        "rtx 3070": 448.0,
+        "a6000": 768.0,
+        "v100": 900.0,
+    }
+    gpu_lower = gpu_name.lower()
+    for key, bw in table.items():
+        if key in gpu_lower:
+            return bw
+    return 1000.0  # Fallback
 
 def _estimate_distributed_throughput(
     model: ModelSpec,
@@ -176,66 +198,49 @@ def _estimate_distributed_throughput(
       - Communication overhead (activation sizes / interconnect bandwidth)
       - Pipeline bubble inefficiency
     """
-    # --- compute-limited throughput (single GPU baseline) ---
-    single_tok_s = model.single_gpu_tok_s
+    # --- memory-bandwidth-bound decode ---
+    # For LLM inference, decode is memory-bandwidth-bound:
+    #   tok/s = mem_bw_bytes / bytes_per_token
+    # where bytes_per_token = weight_bytes + kv_cache_bytes
+
+    # Assume RTX 4090-class memory bandwidth (1008 GB/s)
+    mem_bw_gbps = _estimate_memory_bandwidth("RTX 4090")
+    mem_bw_bytes = mem_bw_gbps * 1e9
+
+    # Weight reads per token (FP16: 2 bytes per param)
+    weight_bytes = model.param_count_b * 1e9 * 2
+
+    # KV cache reads per token (2 * num_layers * hidden_dim * 2 bytes)
+    kv_bytes = 2 * model.num_layers * model.hidden_dim * 2
+
+    total_bytes_per_tok = weight_bytes + kv_bytes
 
     if cluster.nodes == 1:
-        return single_tok_s
+        # Use measured single-GPU throughput as baseline
+        return model.single_gpu_tok_s
 
-    # Parameter bytes per layer (FP16: 2 bytes per param)
-    params_per_layer = (model.param_count_b * 1e9) / model.num_layers
-    p_bytes_per_layer = params_per_layer * 2  # FP16
+    # --- per-node memory bandwidth (pipeline sharded) ---
+    # Each node processes its fraction of layers
+    layer_fraction = (model.num_layers / cluster.nodes) / model.num_layers
+    per_node_bytes = total_bytes_per_tok * layer_fraction
 
-    # Hidden activation bytes per token per layer
-    act_bytes_per_tok = model.hidden_dim * 4  # FP32 activations
+    # Memory-bound throughput per node
+    mem_bound_tok_s = mem_bw_bytes / per_node_bytes
 
     # --- communication overhead ---
-    # Each pipeline stage sends hidden states of shape [batch, hidden_dim]
-    # over the interconnect for every generated token.
-    comm_bytes_per_step = model.hidden_dim * 4  # FP32 activations
+    comm_bytes = model.hidden_dim * 4  # FP32 activation per step
+    net_bw = cluster.interconnect_gbps * 1e9 / 8 * 0.95  # bytes/sec
+    comm_time = comm_bytes / net_bw if net_bw > 0 else 0.0
 
-    # Effective comm bandwidth after protocol overhead (~95% efficiency)
-    net_bw = cluster.interconnect_gbps * 1e9 / 8  # bytes/sec
-    net_eff = net_bw * 0.95
+    # Total time per token = compute + communication
+    compute_time = 1.0 / mem_bound_tok_s
+    total_time = compute_time + comm_time
+    effective_tok_s = 1.0 / total_time
 
-    # Time to send one activation vector
-    if net_eff > 0:
-        comm_time_per_step = comm_bytes_per_step / net_eff
-    else:
-        comm_time_per_step = 0.0
-
-    # --- pipeline bubble inefficiency ---
-    # In a pipeline-parallel system with N stages, the ideal throughput
-    # scales by N but bubble overhead reduces efficiency.
-    # Bubble ratio ~ (N-1) / (2 * microbatches) for steady state.
+    # --- 1F1B pipeline bubble ratio ---
     microbatches = max(4, prompt_len // 128)
-    bubble_ratio = (cluster.nodes - 1) / (2 * microbatches)
-    pipeline_efficiency = 1.0 / (1.0 + bubble_ratio)
-
-    # --- compute per node in distributed mode ---
-    # Each node handles (total layers / nodes) layers
-    layers_per_node = model.num_layers / cluster.nodes
-    compute_fraction = layers_per_node / model.num_layers  # = 1/nodes
-
-    # Ideal per-node compute throughput (params processed per second)
-    node_compute_tok_s = single_tok_s * (1.0 / compute_fraction)
-
-    # --- communication overhead as fraction of compute ---
-    # Time per step = max(compute_time, comm_time)
-    compute_time_per_step = 1.0 / single_tok_s  # seconds per token on single GPU
-    per_node_time = (
-        1.0 / node_compute_tok_s  # compute for this node's layers
-        + comm_time_per_step       # communication wait
-    )
-    effective_tok_s = 1.0 / per_node_time if per_node_time > 0 else 0.0
-
-    # Apply pipeline efficiency
-    effective_tok_s *= pipeline_efficiency
-
-    # --- warmup overhead for short sequences ---
-    # For small generation lengths, fixed overheads dominate
-    warmup_penalty = 1.0 - 0.02 * cluster.nodes
-    effective_tok_s *= max(0.85, warmup_penalty)
+    br = (cluster.nodes - 1) / (microbatches + cluster.nodes - 1)
+    effective_tok_s *= (1.0 - br)
 
     return effective_tok_s
 

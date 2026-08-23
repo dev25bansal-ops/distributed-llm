@@ -1,0 +1,122 @@
+---
+// Interactive installer: pick OS + model size → generates exact commands.
+---
+
+<div class="mx-auto max-w-3xl" data-inst-customizer>
+  <div class="rounded-2xl border border-line bg-surface p-6 shadow-card">
+    <div class="grid gap-4 sm:grid-cols-2">
+      <label class="block">
+        <span class="text-xs font-semibold tracking-wide text-faint uppercase">Your machine</span>
+        <select data-ic="os" class="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm">
+          <option value="linux">Linux</option>
+          <option value="windows">Windows</option>
+          <option value="macos">macOS (Apple Silicon)</option>
+        </select>
+      </label>
+      <label class="block">
+        <span class="text-xs font-semibold tracking-wide text-faint uppercase">Model to serve</span>
+        <select data-ic="model" class="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm">
+          <option value="TinyStories-1M">TinyStories-1M — anything, even CPU</option>
+          <option value="SmolLM-135M">SmolLM-135M — small GPU or CPU</option>
+          <option value="Llama-3.2-3B">Llama-3.2-3B — 8 GB GPU</option>
+          <option value="Mistral-7B">Mistral-7B — pooled GPUs recommended</option>
+          <option value="meta-llama/Llama-3.1-70B">Llama-3.1-70B — multi-machine pool</option>
+        </select>
+      </label>
+    </div>
+
+    <fieldset class="mt-4">
+      <legend class="text-xs font-semibold tracking-wide text-faint uppercase">Extras</legend>
+      <div class="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-ic="extra" value="cli" checked class="accent-brand-600" /> CLI
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-ic="extra" value="self-hosted" checked class="accent-brand-600" /> Local inference (torch)
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-ic="extra" value="observability" class="accent-brand-600" /> Prometheus metrics
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-ic="extra" value="security" class="accent-brand-600" /> E2E encryption
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="mt-5 space-y-3">
+      <div class="relative overflow-hidden rounded-xl border border-line bg-[#080d0a] p-4">
+        <p class="mb-2 font-mono text-xs text-white/50">1 · install</p>
+        <pre class="overflow-x-auto font-mono text-xs leading-relaxed text-[#d5f5e3]"><code data-ic="install-cmd"></code></pre>
+        <button class="absolute top-2 right-2 rounded-md border border-white/15 px-2 py-1 text-xs text-white/70 hover:text-white"
+          data-ic-copy="install-cmd">Copy</button>
+      </div>
+      <div class="relative overflow-hidden rounded-xl border border-line bg-[#080d0a] p-4">
+        <p class="mb-2 font-mono text-xs text-white/50">2 · serve</p>
+        <pre class="overflow-x-auto font-mono text-xs leading-relaxed text-[#d5f5e3]"><code data-ic="serve-cmd"></code></pre>
+        <button class="absolute top-2 right-2 rounded-md border border-white/15 px-2 py-1 text-xs text-white/70 hover:text-white"
+          data-ic-copy="serve-cmd">Copy</button>
+      </div>
+    </div>
+
+    <p class="mt-4 text-xs text-faint">
+      Serving a 7B+ model on one machine? Add workers on other devices with
+      <code class="font-mono">distllm-node --coordinator-host &lt;this-ip&gt;</code> — see the
+      <a href="/docs/multi-node/" class="text-brand-700 hover:underline">multi-node guide</a>.
+    </p>
+  </div>
+</div>
+
+<script>
+  const root = document.querySelector<HTMLElement>("[data-inst-customizer]");
+  if (root) {
+    const os = root.querySelector<HTMLSelectElement>('[data-ic="os"]')!;
+    const model = root.querySelector<HTMLSelectElement>('[data-ic="model"]')!;
+    const extras = root.querySelectorAll<HTMLInputElement>('[data-ic="extra"]');
+    const installOut = root.querySelector<HTMLElement>('[data-ic="install-cmd"]')!;
+    const serveOut = root.querySelector<HTMLElement>('[data-ic="serve-cmd"]')!;
+
+    const render = () => {
+      const chosen = Array.from(extras)
+        .filter((c) => c.checked)
+        .map((c) => c.value);
+      const extrasStr = chosen.length > 0 ? `[${chosen.join(",")}]` : "";
+
+      let installCmd: string;
+      if (os.value === "windows") {
+        installCmd =
+          `pip install torch --index-url https://download.pytorch.org/whl/cpu\n` +
+          `pip install "distributed-llm${extrasStr}"`;
+      } else {
+        installCmd = `pip install "distributed-llm${extrasStr}"`;
+      }
+
+      const isBig = model.value.includes("70B");
+      const servePrefix = os.value === "windows" ? "set API_KEY=your-key && " : "API_KEY=your-key ";
+      const serveCmd = isBig
+        ? `${servePrefix}distllm system api --model ${model.value} --host 0.0.0.0\n` +
+          `# 70B needs a pool: start workers on other machines with\n` +
+          `# distllm-node --coordinator-host <this-ip> --start-layer ...`
+        : os.value === "windows"
+          ? `${servePrefix}distllm system api --model ${model.value} --local --port 8000`
+          : `${servePrefix}distllm system api --model ${model.value} --local --host 0.0.0.0`;
+
+      installOut.textContent = installCmd;
+      serveOut.textContent = serveCmd;
+    };
+
+    [os, model, ...extras].forEach((el) => el.addEventListener("change", render));
+    render();
+
+    root.querySelectorAll<HTMLElement>("[data-ic-copy]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const target = btn.dataset.icCopy;
+        const code = root.querySelector(`[data-ic="${target}"]`)?.textContent ?? "";
+        navigator.clipboard.writeText(code).then(() => {
+          const original = btn.textContent;
+          btn.textContent = "Copied!";
+          setTimeout(() => (btn.textContent = original), 1500);
+        });
+      });
+    });
+  }
+</script>

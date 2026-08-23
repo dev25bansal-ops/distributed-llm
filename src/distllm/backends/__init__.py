@@ -40,15 +40,21 @@ from .registry import (
     select_backend,
 )
 
-# ── Built-in backends (register eagerly) ───────────────────────────────
-from .pytorch_backend import PyTorchNodeAdapter
-from .vllm_backend import VLLMNodeAdapter
-from .llamacpp_backend import LlamacppNodeAdapter
-from .exllama_backend import ExLlamaV2NodeAdapter
-from .onnx_backend import ONNXNodeAdapter
-from .tensorrt_backend import TensorRTLLMAdapter
-
-# ── Configuration ──────────────────────────────────────────────────────
+# ── Built-in backends (lazy imports — some trigger circular chains) ────
+# Deferred to _register_builtins() to avoid the import cycle:
+#   backends.pytorch_backend → models.partitioner → dist.fsdp → dist.worker
+#   → models.partitioner (circular)
+# We define placeholders here for __all__ and import lazily in _register_builtins.
+PyTorchNodeAdapter = None
+VLLMNodeAdapter = None
+LlamacppNodeAdapter = None
+ExLlamaV2NodeAdapter = None
+ONNXNodeAdapter = None
+TensorRTLLMAdapter = None
+TritonNodeAdapter = None
+NimNodeAdapter = None
+MLXNodeAdapter = None
+WebGPUNodeAdapter = None
 from .config import BackendConfig
 
 __all__ = [
@@ -68,6 +74,10 @@ __all__ = [
     "ExLlamaV2NodeAdapter",
     "ONNXNodeAdapter",
     "TensorRTLLMAdapter",
+    "TritonNodeAdapter",
+    "NimNodeAdapter",
+    "MLXNodeAdapter",
+    "WebGPUNodeAdapter",
     # Config
     "BackendConfig",
 ]
@@ -75,22 +85,37 @@ __all__ = [
 # ── Auto-register built-in backends ────────────────────────────────────
 
 def _register_builtins() -> None:
-    builtins = [
-        (PyTorchNodeAdapter, "pytorch"),
-        (VLLMNodeAdapter, "vllm"),
-        (LlamacppNodeAdapter, "llamacpp"),
-        (ExLlamaV2NodeAdapter, "exllama"),
-        (ONNXNodeAdapter, "onnx"),
-        (TensorRTLLMAdapter, "tensorrt"),
+    """Register all built-in backends with lazy imports.
+
+    Import is deferred inside the loop to break the circular chain:
+    pytorch_backend → models.partitioner → dist.fsdp → dist.worker → models.partitioner
+    """
+    _BACKEND_MODULES = [
+        ("pytorch_backend", "PyTorchNodeAdapter", "pytorch"),
+        ("vllm_backend", "VLLMNodeAdapter", "vllm"),
+        ("llamacpp_backend", "LlamacppNodeAdapter", "llamacpp"),
+        ("exllama_backend", "ExLlamaV2NodeAdapter", "exllama"),
+        ("onnx_backend", "ONNXNodeAdapter", "onnx"),
+        ("tensorrt_backend", "TensorRTLLMAdapter", "tensorrt"),
+        ("triton_backend", "TritonNodeAdapter", "triton"),
+        ("nim_backend", "NimNodeAdapter", "nim"),
+        ("mlx_backend", "MLXNodeAdapter", "mlx"),
+        ("webgpu_backend", "WebGPUNodeAdapter", "webgpu"),
     ]
-    for adapter_cls, name in builtins:
+    import importlib
+    for mod_name, cls_name, reg_name in _BACKEND_MODULES:
         try:
-            BackendRegistry.register(adapter_cls, name=name, force=False)
+            mod = importlib.import_module(f".{mod_name}", __package__)
+            adapter_cls = getattr(mod, cls_name, None)
+            if adapter_cls is None:
+                logger.warning(f"Backend {mod_name} has no class {cls_name}")
+                continue
+            # Store on this module for direct access
+            globals()[cls_name] = adapter_cls
+            BackendRegistry.register(adapter_cls, name=reg_name, force=False)
         except KeyError:
-            pass  # already registered (e.g. by a third-party plugin)
+            pass
         except Exception as exc:
-            logger.warning(
-                f"Failed to register built-in backend '{name}': {exc}"
-            )
+            logger.debug(f"Backend '{reg_name}' not available: {exc}")
 
 _register_builtins()

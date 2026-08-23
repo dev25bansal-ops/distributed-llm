@@ -1,0 +1,40 @@
+---
+title: Multi-Node Setup
+description: A complete two-machine walkthrough.
+group: Architecture
+order: 4
+---
+
+## Coordinator machine (laptop 1)
+
+```bash
+# Allow API + gRPC through the firewall (Windows, admin):
+netsh advfirewall firewall add rule name="DistLLM API" dir=in action=allow protocol=TCP localport=8000
+netsh advfirewall firewall add rule name="DistLLM gRPC" dir=in action=allow protocol=TCP localport=50051
+
+# Start bound to the LAN:
+set API_KEY=share-this-key
+distllm system api --model meta-llama/Llama-3.1-8B --host 0.0.0.0 --port 8000
+```
+
+## Worker machine (laptop 2)
+
+```bash
+pip install "distributed-llm[cli,self-hosted]"
+
+distllm-node --node-id laptop-2 \
+  --model meta-llama/Llama-3.1-8B \
+  --start-layer 20 --end-layer 32 --total-layers 32 \
+  --coordinator-host <laptop1-ip> --coordinator-port 50051 \
+  --port 55052
+```
+
+The worker registers itself via `POST /admin/v1/nodes/register` and appears in
+the coordinator's node list with its layer assignment.
+
+## Verify
+
+```bash
+curl -H "Authorization: Bearer share-this-key" \
+  http://<coordinator-ip>:8000/admin/v1/nodes
+```

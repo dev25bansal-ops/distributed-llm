@@ -1,0 +1,73 @@
+---
+// Animated SVG: tokens flowing through pooled nodes into one endpoint.
+interface Props { class?: string }
+const { class: className = "" } = Astro.props;
+---
+
+<div class:list={["relative overflow-hidden rounded-2xl border border-line bg-surface p-6 shadow-card", className]} data-arch-diagram>
+  <svg viewBox="0 0 560 260" class="w-full" role="img" aria-label="Diagram: three devices each holding model layers, tokens flowing left to right into a response">
+    <defs>
+      <linearGradient id="ad-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#4f46e5"></stop>
+        <stop offset="0.5" stop-color="#7c3aed"></stop>
+        <stop offset="1" stop-color="#06b6d4"></stop>
+      </linearGradient>
+      <!-- flowing dash animation -->
+      <style>
+        .ad-flow { stroke-dasharray: 6 10; animation: ad-dash 1.2s linear infinite; }
+        .ad-flow2 { stroke-dasharray: 6 10; animation: ad-dash 1.2s linear infinite; animation-delay: 0.4s; }
+        .ad-flow3 { stroke-dasharray: 6 10; animation: ad-dash 1.2s linear infinite; animation-delay: 0.8s; }
+        @keyframes ad-dash { to { stroke-dashoffset: -32; } }
+        @media (prefers-reduced-motion: reduce) {
+          .ad-flow, .ad-flow2, .ad-flow3 { animation: none; }
+        }
+      </style>
+    </defs>
+
+    <!-- Prompt in -->
+    <rect x="10" y="105" width="86" height="50" rx="10" fill="#111814" stroke="#1e2b23"></rect>
+    <text x="53" y="126" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#e6f2ea">prompt</text>
+    <text x="53" y="142" text-anchor="middle" font-family="Inter, sans-serif" font-size="9" fill="#66816f">POST /v1/chat</text>
+
+    <!-- Node A -->
+    <rect x="170" y="30" width="120" height="52" rx="12" fill="#0e231a" stroke="#34d399"></rect>
+    <text x="230" y="51" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" font-weight="600" fill="#d1fae5">Laptop · CPU</text>
+    <text x="230" y="68" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6ee7b7">layers 0–10</text>
+
+    <!-- Node B -->
+    <rect x="170" y="104" width="120" height="52" rx="12" fill="#0e231a" stroke="#34d399"></rect>
+    <text x="230" y="125" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" font-weight="600" fill="#d1fae5">Desktop · RTX</text>
+    <text x="230" y="142" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6ee7b7">layers 11–24</text>
+
+    <!-- Node C -->
+    <rect x="170" y="178" width="120" height="52" rx="12" fill="#082026" stroke="#22d3ee"></rect>
+    <text x="230" y="199" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" font-weight="600" fill="#a5f3fc">Mini-PC · iGPU</text>
+    <text x="230" y="216" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#67e8f9">layers 25–31</text>
+
+    <!-- flows prompt -> nodes -->
+    <path d="M96 118 C 130 100, 130 56, 168 56" class="ad-flow" fill="none" stroke="#10b981" stroke-width="2"></path>
+    <path d="M98 130 L 168 130" class="ad-flow2" fill="none" stroke="#10b981" stroke-width="2"></path>
+    <path d="M96 142 C 130 160, 130 204, 168 204" class="ad-flow3" fill="none" stroke="#10b981" stroke-width="2"></path>
+
+    <!-- flows nodes -> response -->
+    <path d="M290 56 C 340 70, 350 108, 392 122" class="ad-flow" fill="none" stroke="#22d3ee" stroke-width="2"></path>
+    <path d="M292 130 L 390 130" class="ad-flow2" fill="none" stroke="#22d3ee" stroke-width="2"></path>
+    <path d="M290 204 C 340 190, 350 152, 392 138" class="ad-flow3" fill="none" stroke="#22d3ee" stroke-width="2"></path>
+
+    <!-- Response -->
+    <rect x="394" y="98" width="156" height="64" rx="14" fill="url(#ad-grad)"></rect>
+    <text x="472" y="124" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="700" fill="#ffffff">One endpoint</text>
+    <text x="472" y="141" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#d1fae5">OpenAI-compatible</text>
+
+    <!-- token dots riding the middle flow -->
+    <circle r="3.5" fill="#34d399">
+      <animateMotion dur="2s" repeatCount="indefinite" path="M98 130 L 390 130"></animateMotion>
+    </circle>
+    <circle r="3.5" fill="#22d3ee">
+      <animateMotion dur="2s" begin="0.7s" repeatCount="indefinite" path="M98 130 L 390 130"></animateMotion>
+    </circle>
+
+    <!-- caption -->
+    <text x="280" y="252" text-anchor="middle" font-family="Inter, sans-serif" font-size="10" fill="#66816f">32 layers split by capability — streamed as one model</text>
+  </svg>
+</div>

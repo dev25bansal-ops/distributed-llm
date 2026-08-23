@@ -1,0 +1,30 @@
+---
+title: Security
+description: Authentication, transport security, and the fail-closed model.
+group: Reference
+order: 3
+---
+
+## Authentication (always required)
+
+- API keys are salted-PBKDF2 hashed; raw keys are never logged (fingerprint only).
+- Role-based access: admin / inference-only / read-only, enforced per route.
+- JWT and SSO supported for team deployments.
+- No dev bypass exists — auth fails closed by design.
+
+## Transport
+
+- Enable `DISTLLM_TLS_ENABLED=true` in production; plaintext HTTP warns loudly at startup.
+- Worker gRPC channels support mTLS with rotating certificates (old keys retired under lock).
+- QUIC transport validates the server certificate against a configured CA.
+
+## Cluster membership
+
+Workers authenticate to the coordinator with shared cluster keys. DHT STORE
+operations require time-bound HMAC capability tokens. Gossip messages carry
+HMAC authentication with key rotation.
+
+## Reporting
+
+See the project SECURITY policy on GitHub for responsible disclosure
+instructions.

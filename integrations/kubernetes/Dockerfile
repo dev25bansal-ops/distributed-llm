@@ -13,7 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-RUN pip install gunicorn uvicorn[standard] redis grpcio --no-cache-dir
+RUN pip install \
+    gunicorn==22.0.0 \
+    uvicorn[standard]==0.27.1 \
+    redis==5.0.8 \
+    grpcio==1.64.1 \
+    --no-cache-dir
+
+RUN groupadd -r distllm && useradd -r -g distllm -m distllm && \
+    chown -R distllm:distllm /app
+USER distllm
 
 EXPOSE 8000 50051 9090
 

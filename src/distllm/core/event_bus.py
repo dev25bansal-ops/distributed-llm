@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import inspect
 import json
 import threading
 import time
@@ -143,13 +144,18 @@ class EventBus:
             event_type: Event name (e.g. "job.matched") or "*" for all.
             handler: Callable that receives a MarketplaceEvent.
         """
-        if asyncio.iscoroutinefunction(handler):
+        try:
+            is_coro = inspect.iscoroutinefunction(handler)
+        except (AttributeError, TypeError):
+            is_coro = False
+        if is_coro:
             with self._lock:
                 self._async_subscribers[event_type].append(handler)
         else:
             with self._lock:
                 self._sync_subscribers[event_type].append(handler)
-        logger.debug(f"Subscribed to '{event_type}': {handler.__qualname__}")
+        handler_name = getattr(handler, '__qualname__', str(handler))
+        logger.debug(f"Subscribed to '{event_type}': {handler_name}")
 
     def unsubscribe(
         self,
@@ -158,7 +164,11 @@ class EventBus:
     ) -> bool:
         """Remove a handler from an event type. Returns True if removed."""
         with self._lock:
-            if asyncio.iscoroutinefunction(handler):
+            try:
+                is_coro = asyncio.iscoroutinefunction(handler)
+            except (AttributeError, TypeError):
+                is_coro = False
+            if is_coro:
                 handlers = self._async_subscribers.get(event_type, [])
                 if handler in handlers:
                     handlers.remove(handler)

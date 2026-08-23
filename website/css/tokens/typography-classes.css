@@ -1,0 +1,431 @@
+/**
+ * DistLLM Typography — Semantic Classes
+ * =======================================
+ * Apply typography tokens to elements.
+ * Import after typography.css (tokens).
+ *
+ * These classes are composable: combine a size class
+ * with a weight or tracking class as needed.
+ */
+
+/* ──────────────────────────────────────────────
+   BASE BODY STYLES
+   ────────────────────────────────────────────── */
+
+body {
+  font-family: var(--style-body-font);
+  font-size: var(--style-body-size);
+  font-weight: var(--style-body-weight);
+  line-height: var(--style-body-leading);
+  letter-spacing: var(--style-body-tracking);
+  font-feature-settings: var(--style-body-features);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ──────────────────────────────────────────────
+   DISPLAY / HERO
+   ────────────────────────────────────────────── */
+
+.text-display {
+  font-family: var(--style-display-font);
+  font-size: var(--style-display-size);
+  font-weight: var(--style-display-weight);
+  line-height: var(--style-display-leading);
+  letter-spacing: var(--style-display-tracking);
+  font-variation-settings: var(--style-display-variation);
+  font-optical-sizing: auto;
+}
+
+/* Fluid display: scales from 3rem to 6xl across viewports */
+.text-display-fluid {
+  font-family: var(--style-display-font);
+  font-size: clamp(3rem, 1rem + 7vw, var(--style-display-size));
+  font-weight: var(--style-display-weight);
+  line-height: var(--style-display-leading);
+  letter-spacing: var(--style-display-tracking);
+  font-variation-settings: var(--style-display-variation);
+  font-optical-sizing: auto;
+}
+
+/* ──────────────────────────────────────────────
+   HEADINGS
+   ────────────────────────────────────────────── */
+
+h1, .text-h1 {
+  font-family: var(--style-h1-font);
+  font-size: var(--style-h1-size);
+  font-weight: var(--style-h1-weight);
+  line-height: var(--style-h1-leading);
+  letter-spacing: var(--style-h1-tracking);
+  font-variation-settings: var(--style-h1-variation);
+  font-optical-sizing: auto;
+  margin-top: var(--heading-margin-top);
+  margin-bottom: var(--heading-margin-bot);
+}
+
+h2, .text-h2 {
+  font-family: var(--style-h2-font);
+  font-size: var(--style-h2-size);
+  font-weight: var(--style-h2-weight);
+  line-height: var(--style-h2-leading);
+  letter-spacing: var(--style-h2-tracking);
+  font-variation-settings: var(--style-h2-variation);
+  font-optical-sizing: auto;
+  margin-top: var(--heading-margin-top);
+  margin-bottom: var(--heading-margin-bot);
+}
+
+h3, .text-h3 {
+  font-family: var(--style-h3-font);
+  font-size: var(--style-h3-size);
+  font-weight: var(--style-h3-weight);
+  line-height: var(--style-h3-leading);
+  letter-spacing: var(--style-h3-tracking);
+  font-variation-settings: var(--style-h3-variation);
+  font-optical-sizing: auto;
+  margin-top: var(--heading-margin-top);
+  margin-bottom: var(--heading-margin-bot);
+}
+
+h4, .text-h4 {
+  font-family: var(--style-h4-font);
+  font-size: var(--style-h4-size);
+  font-weight: var(--style-h4-weight);
+  line-height: var(--style-h4-leading);
+  letter-spacing: var(--style-h4-tracking);
+  font-variation-settings: var(--style-h4-variation);
+  font-optical-sizing: auto;
+  margin-top: var(--heading-margin-top);
+  margin-bottom: var(--heading-margin-bot);
+}
+
+h5, .text-h5 {
+  font-family: var(--style-h5-font);
+  font-size: var(--style-h5-size);
+  font-weight: var(--style-h5-weight);
+  line-height: var(--style-h5-leading);
+  letter-spacing: var(--style-h5-tracking);
+  font-variation-settings: var(--style-h5-variation);
+  font-optical-sizing: auto;
+  margin-top: var(--heading-margin-top);
+  margin-bottom: var(--heading-margin-bot);
+}
+
+h6, .text-h6 {
+  font-family: var(--style-h6-font);
+  font-size: var(--style-h6-size);
+  font-weight: var(--style-h6-weight);
+  line-height: var(--style-h6-leading);
+  letter-spacing: var(--style-h6-tracking);
+  font-variation-settings: var(--style-h6-variation);
+  font-optical-sizing: auto;
+  margin-top: var(--heading-margin-top);
+  margin-bottom: var(--heading-margin-bot);
+}
+
+/* First heading in a section — no top margin */
+h1:first-child,
+h2:first-child,
+h3:first-child,
+h4:first-child,
+h5:first-child,
+h6:first-child {
+  margin-top: 0;
+}
+
+/* ──────────────────────────────────────────────
+   BODY TEXT VARIANTS
+   ────────────────────────────────────────────── */
+
+.text-lead {
+  font-family: var(--style-lead-font);
+  font-size: var(--style-lead-size);
+  font-weight: var(--style-lead-weight);
+  line-height: var(--style-lead-leading);
+  letter-spacing: var(--style-lead-tracking);
+}
+
+.text-body {
+  font-family: var(--style-body-font);
+  font-size: var(--style-body-size);
+  font-weight: var(--style-body-weight);
+  line-height: var(--style-body-leading);
+  letter-spacing: var(--style-body-tracking);
+}
+
+p {
+  margin-bottom: var(--paragraph-margin);
+}
+
+p:last-child {
+  margin-bottom: 0;
+}
+
+/* ──────────────────────────────────────────────
+   CAPTION / SMALL / OVERLINE
+   ────────────────────────────────────────────── */
+
+.text-caption,
+small,
+figcaption {
+  font-family: var(--style-caption-font);
+  font-size: var(--style-caption-size);
+  font-weight: var(--style-caption-weight);
+  line-height: var(--style-caption-leading);
+  letter-spacing: var(--style-caption-tracking);
+  color: var(--text-secondary);
+}
+
+.text-overline,
+.overline {
+  font-family: var(--style-overline-font);
+  font-size: var(--style-overline-size);
+  font-weight: var(--style-overline-weight);
+  line-height: var(--style-overline-leading);
+  letter-spacing: var(--style-overline-tracking);
+  text-transform: uppercase;
+  color: var(--text-tertiary, var(--dim));
+}
+
+/* ──────────────────────────────────────────────
+   CODE
+   ────────────────────────────────────────────── */
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--style-code-font);
+  font-size: var(--style-code-size);
+  font-weight: var(--style-code-weight);
+  line-height: var(--style-code-leading);
+  letter-spacing: var(--style-code-tracking);
+  font-feature-settings: var(--style-code-features);
+}
+
+pre {
+  font-size: var(--mono-base);
+  tab-size: 2;
+  overflow-x: auto;
+}
+
+pre code {
+  font-size: inherit;
+}
+
+/* Inline code */
+:not(pre) > code {
+  font-size: 0.875em;
+  padding: 0.15em 0.4em;
+  background: var(--green-bg, rgba(0, 230, 118, 0.06));
+  border: 1px solid var(--green-bd, rgba(0, 230, 118, 0.18));
+  border-radius: 4px;
+}
+
+/* Keyboard shortcuts */
+kbd {
+  font-size: var(--mono-sm);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+/* ──────────────────────────────────────────────
+   BLOCKQUOTE
+   ────────────────────────────────────────────── */
+
+blockquote {
+  font-family: var(--style-quote-font);
+  font-size: var(--style-quote-size);
+  font-weight: var(--style-quote-weight);
+  line-height: var(--style-quote-leading);
+  letter-spacing: var(--style-quote-tracking);
+  font-variation-settings: var(--style-quote-variation);
+  font-style: italic;
+  font-optical-sizing: auto;
+  padding-left: 1.5em;
+  border-left: 3px solid var(--green, #00e676);
+  margin: 1.5em 0;
+  color: var(--text-secondary);
+}
+
+blockquote cite {
+  display: block;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-style: normal;
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caption);
+  margin-top: 0.75em;
+  color: var(--dim);
+}
+
+/* ──────────────────────────────────────────────
+   UI: NAVIGATION, BUTTONS, LABELS
+   ────────────────────────────────────────────── */
+
+.text-nav {
+  font-family: var(--style-nav-font);
+  font-size: var(--style-nav-size);
+  font-weight: var(--style-nav-weight);
+  line-height: var(--style-nav-leading);
+  letter-spacing: var(--style-nav-tracking);
+}
+
+.text-btn {
+  font-family: var(--style-btn-font);
+  font-size: var(--style-btn-size);
+  font-weight: var(--style-btn-weight);
+  line-height: var(--style-btn-leading);
+  letter-spacing: var(--style-btn-tracking);
+}
+
+.text-label {
+  font-family: var(--style-label-font);
+  font-size: var(--style-label-size);
+  font-weight: var(--style-label-weight);
+  line-height: var(--style-label-leading);
+  letter-spacing: var(--style-label-tracking);
+  text-transform: uppercase;
+}
+
+/* ──────────────────────────────────────────────
+   LISTS
+   ────────────────────────────────────────────── */
+
+ul, ol {
+  padding-left: 1.5em;
+}
+
+li {
+  margin-bottom: var(--list-gap);
+}
+
+li:last-child {
+  margin-bottom: 0;
+}
+
+li::marker {
+  color: var(--green, #00e676);
+}
+
+/* ──────────────────────────────────────────────
+   LINKS
+   ────────────────────────────────────────────── */
+
+a {
+  font-weight: var(--weight-link);
+  text-decoration: underline;
+  text-decoration-color: rgba(0, 230, 118, 0.3);
+  text-underline-offset: var(--link-underline-offset);
+  text-decoration-thickness: var(--link-underline-thickness);
+  transition: text-decoration-color 0.2s ease, color 0.2s ease;
+}
+
+a:hover {
+  text-decoration-color: var(--green, #00e676);
+}
+
+/* ──────────────────────────────────────────────
+   TABLE
+   ────────────────────────────────────────────── */
+
+th {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-label);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  line-height: var(--leading-label);
+  text-align: left;
+  padding: 0.75em 1em;
+  border-bottom: 2px solid var(--border);
+  color: var(--text-secondary);
+}
+
+td {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-table);
+  letter-spacing: var(--tracking-caption);
+  padding: 0.75em 1em;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ──────────────────────────────────────────────
+   SIZE UTILITY CLASSES
+   ────────────────────────────────────────────── */
+
+.text-xs    { font-size: var(--text-xs); }
+.text-sm    { font-size: var(--text-sm); }
+.text-base  { font-size: var(--text-base); }
+.text-md    { font-size: var(--text-md); }
+.text-lg    { font-size: var(--text-lg); }
+.text-xl    { font-size: var(--text-xl); }
+.text-2xl   { font-size: var(--text-2xl); }
+.text-3xl   { font-size: var(--text-3xl); }
+.text-4xl   { font-size: var(--text-4xl); }
+.text-5xl   { font-size: var(--text-5xl); }
+.text-6xl   { font-size: var(--text-6xl); }
+
+/* ──────────────────────────────────────────────
+   WEIGHT UTILITY CLASSES
+   ────────────────────────────────────────────── */
+
+.font-light      { font-weight: var(--weight-light); }
+.font-regular    { font-weight: var(--weight-regular); }
+.font-book       { font-weight: var(--weight-book); }
+.font-medium     { font-weight: var(--weight-medium); }
+.font-semibold   { font-weight: var(--weight-semibold); }
+.font-bold       { font-weight: var(--weight-bold); }
+.font-extrabold  { font-weight: var(--weight-extrabold); }
+.font-black      { font-weight: var(--weight-black); }
+
+/* ──────────────────────────────────────────────
+   TRACKING UTILITY CLASSES
+   ────────────────────────────────────────────── */
+
+.tracking-tighter  { letter-spacing: var(--tracking-tighter); }
+.tracking-tight    { letter-spacing: var(--tracking-tight); }
+.tracking-snug     { letter-spacing: var(--tracking-snug); }
+.tracking-normal   { letter-spacing: var(--tracking-normal); }
+.tracking-base     { letter-spacing: var(--tracking-base); }
+.tracking-wide     { letter-spacing: var(--tracking-wide); }
+.tracking-wider    { letter-spacing: var(--tracking-wider); }
+.tracking-widest   { letter-spacing: var(--tracking-widest); }
+
+/* ──────────────────────────────────────────────
+   FONT FAMILY UTILITY CLASSES
+   ────────────────────────────────────────────── */
+
+.font-display  { font-family: var(--font-display); }
+.font-heading  { font-family: var(--font-heading); }
+.font-body     { font-family: var(--font-body); }
+.font-mono     { font-family: var(--font-mono); }
+.font-label    { font-family: var(--font-label); }
+
+/* ──────────────────────────────────────────────
+   RESPONSIVE ADJUSTMENTS
+   ────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  :root {
+    --text-6xl:   3rem;
+    --text-5xl:   2.5rem;
+    --text-4xl:   2rem;
+    --text-3xl:   1.75rem;
+    --text-2xl:   1.5rem;
+    --text-xl:    1.25rem;
+  }
+}
+
+@media (min-width: 1440px) {
+  :root {
+    --text-6xl:   5.5rem;
+    --text-5xl:   4.25rem;
+  }
+}

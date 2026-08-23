@@ -1,0 +1,40 @@
+---
+title: Chat Completions
+description: The OpenAI-compatible chat endpoint and its parameters.
+group: API
+order: 1
+---
+
+## Endpoint
+
+```
+POST /v1/chat/completions
+Authorization: Bearer <api-key>
+```
+
+## Request parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | string | required | Model identifier |
+| `messages` | array | required | Conversation turns (`role` + `content`) |
+| `max_tokens` | int | 256 | Maximum generated tokens (0–8192) |
+| `temperature` | float | 0.7 | Sampling temperature (0–2.0) |
+| `top_p` | float | 0.9 | Nucleus sampling threshold |
+| `top_k` | int | 0 | Top-k sampling (0 = disabled) |
+| `stream` | bool | false | Server-Sent Events streaming |
+| `response_format` | object | null | `json_object` or `json_schema` constraint |
+| `tools` | array | null | Tool definitions for tool-calling |
+| `priority` | int | 2 | 0=critical … 3=low |
+
+## Streaming
+
+With `stream: true` the response is a sequence of `chat.completion.chunk`
+SSE events, each carrying a `delta.content` fragment, terminated by a
+`finish_reason: "stop"` chunk and a `data: [DONE]` line.
+
+## Tool calling
+
+Pass OpenAI-format tool definitions; if the model emits a tool call, the
+response carries `tool_calls` and `finish_reason: "tool_calls"` — the same
+contract as OpenAI.

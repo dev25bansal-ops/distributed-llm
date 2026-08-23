@@ -7,8 +7,10 @@ Integrates:
 - ReputationSystem for quality tracking
 """
 
+import os
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 
 from loguru import logger
 
@@ -63,6 +65,12 @@ class HealthManager:
         self._health_event = threading.Event()
         self._health_thread: threading.Thread | None = None
 
+        cpu_count = os.cpu_count() or 1
+        self._executor = ThreadPoolExecutor(
+            max_workers=min(32, cpu_count * 4),
+            thread_name_prefix="health-probe",
+        )
+
         self._setup_recovery_callbacks()
 
     def start(self) -> None:
@@ -81,6 +89,13 @@ class HealthManager:
         self._health_event.set()
         if self._health_thread and self._health_thread.is_alive():
             self._health_thread.join(timeout=3.0)
+        # Shut down the thread pool executor to release worker threads.
+        # Without this, worker threads remain alive until the process
+        # exits, causing a thread leak on restart.
+        try:
+            self._executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     @property
     def straggler_detector(self) -> StragglerDetector:
@@ -199,6 +214,31 @@ class HealthManager:
         self._recovery_manager.set_recover_sequences_callback(on_recover)
         self._recovery_manager.set_mark_dead_callback(on_mark_dead)
 
+    # --- Per-node health probe (runs in thread pool) ---
+
+    def _probe_single_node(self, node_id: str, node) -> None:
+        """Probe one node and update health store.  Runs in executor thread."""
+        try:
+            # Get or create health record
+            record = self._health_store.get(node_id)
+            if record is None:
+                record = HealthRecord(node_id=node_id)
+                self._health_store.set(node_id, record)
+
+            _t0 = time.monotonic()
+            alive = node.health_check()
+            latency_ms = (time.monotonic() - _t0) * 1000.0
+
+            if self._reputation:
+                self._reputation.record_health(node_id, alive)
+
+            # Use FailoverEngine state machine
+            new_state = self._failover.evaluate(record, alive, latency_ms)
+            self._health_store.update_state(node_id, new_state)
+
+        except Exception:
+            raise   # let the caller (as_completed) handle logging
+
     # --- Health probe loop ---
 
     def _health_probe_loop(self) -> None:
@@ -216,29 +256,28 @@ class HealthManager:
 
                 nodes_snapshot = self._pipeline.snapshot_nodes()
 
+                futures = {}
                 for node_id, node in nodes_snapshot.items():
                     if node is None or node.client is None:
                         continue
+                    future = self._executor.submit(
+                        self._probe_single_node, node_id, node
+                    )
+                    futures[future] = node_id
+
+                for future in as_completed(futures):
+                    node_id = futures[future]
                     try:
-                        # Get or create health record
-                        record = self._health_store.get(node_id)
-                        if record is None:
-                            record = HealthRecord(node_id=node_id)
-                            self._health_store.set(node_id, record)
-
-                        _t0 = time.monotonic()
-                        alive = node.health_check()
-                        latency_ms = (time.monotonic() - _t0) * 1000.0
-
-                        if self._reputation:
-                            self._reputation.record_health(node_id, alive)
-
-                        # Use FailoverEngine state machine
-                        new_state = self._failover.evaluate(record, alive, latency_ms)
-                        self._health_store.update_state(node_id, new_state)
-
+                        future.result(timeout=self._health_check_timeout_s)
+                    except TimeoutError:
+                        logger.error(
+                            f"Health check timed out for node {node_id}"
+                        )
+                        consecutive_errors += 1
                     except Exception as e:
-                        logger.error(f"Health check failed for node {node_id}: {e}")
+                        logger.error(
+                            f"Health check failed for node {node_id}: {e}"
+                        )
                         consecutive_errors += 1
 
                 consecutive_errors = 0

@@ -107,21 +107,41 @@ class RadixNode:
                 best_node = n
         return best_time, best_node
 
-    def evict_lru(self, max_entries: int) -> int:
+    def evict_lru(self, max_entries: int) -> tuple[int, int]:
         """Evict LRU leaf nodes until count <= max_entries.
 
         Returns:
-            Number of entries evicted.
+            (evicted_count, evicted_bytes) — number of entries evicted
+            and estimated bytes released, for accurate memory budget
+            tracking in the parent RadixTreeCache.
         """
         evicted = 0
+        evicted_bytes = 0
         while self._count_entries() > max_entries and self._count_entries() > 0:
             _, lru_leaf = self._find_lru_leaf()
             if lru_leaf is None:
                 break
+            if lru_leaf.kv_data is not None:
+                # Inline size estimate for budget tracking
+                _kd = lru_leaf.kv_data
+                if isinstance(_kd, dict):
+                    for _v in _kd.values():
+                        if isinstance(_v, (list, tuple)):
+                            for _t in _v:
+                                if hasattr(_t, "element_size") and hasattr(_t, "numel"):
+                                    evicted_bytes += _t.element_size() * _t.numel()
+                        elif hasattr(_v, "element_size") and hasattr(_v, "numel"):
+                            evicted_bytes += _v.element_size() * _v.numel()
+                elif isinstance(_kd, (list, tuple)):
+                    for _t in _kd:
+                        if hasattr(_t, "element_size") and hasattr(_t, "numel"):
+                            evicted_bytes += _t.element_size() * _t.numel()
+                elif hasattr(_kd, "element_size") and hasattr(_kd, "numel"):
+                    evicted_bytes += _kd.element_size() * _kd.numel()
             lru_leaf.kv_data = None
             lru_leaf.size = 0
             evicted += 1
-        return evicted
+        return evicted, evicted_bytes
 
     def _evict_path(self, token_ids: list[int]) -> bool:
         """Evict KV data at the given path. Returns True if entry was found and removed."""
@@ -253,7 +273,8 @@ class RadixTreeCache:
         """Evict LRU entries until within memory budget and entry count."""
         # Evict by entry count
         if self._max_entries > 0:
-            self._root.evict_lru(self._max_entries)
+            _cnt, evicted_bytes = self._root.evict_lru(self._max_entries)
+            self._total_memory_bytes = max(0, self._total_memory_bytes - evicted_bytes)
 
         # Evict by memory budget (find and remove LRU leaves)
         attempts = 0

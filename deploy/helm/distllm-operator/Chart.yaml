@@ -1,0 +1,19 @@
+apiVersion: v2
+name: distllm-operator
+description: Kubernetes operator for managing DistributedLLM clusters
+type: application
+version: 0.4.0
+appVersion: "0.4.0"
+kubeVersion: ">=1.28.0"
+home: https://github.com/distllm/distllm
+sources:
+  - https://github.com/distllm/distllm
+maintainers:
+  - name: DistLLM Team
+    email: team@distllm.dev
+icon: https://distllm.dev/icon.png
+keywords:
+  - llm
+  - inference
+  - distributed
+  - kubernetes-operator

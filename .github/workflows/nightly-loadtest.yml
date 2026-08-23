@@ -1,0 +1,88 @@
+# Nightly Load Test Pipeline
+#
+# Deploys a full DistLLM cluster (coordinator + 2 worker nodes),
+# runs Locust load tests against it, and gates on SLO compliance:
+#   - p95 latency < 5s
+#   - Error rate < 1%
+#   - Throughput > baseline
+#
+# Runs every night to catch regressions in serving path.
+
+name: Nightly Load Test
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # 08:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      users:
+        description: "Number of concurrent simulated users"
+        default: "20"
+      duration:
+        description: "Test duration in minutes"
+        default: "5"
+
+env:
+  COMPOSE_FILE: docker-compose.yml
+  LOCUST_USERS: ${{ github.event.inputs.users || '20' }}
+  LOCUST_DURATION: ${{ github.event.inputs.duration || '5' }}
+
+jobs:
+  loadtest:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cluster
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} build
+          docker compose -f ${{ env.COMPOSE_FILE }} up -d
+          # Wait for cluster to be ready
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && break
+            sleep 2
+          done
+
+      - name: Run load test
+        run: |
+          cd tests/load/locust
+          python run_scenarios.py \
+            --users ${{ env.LOCUST_USERS }} \
+            --duration ${{ env.LOCUST_DURATION }}m \
+            --output ../../../benchmarks/results/loadtest_$(date +%Y%m%d).json
+
+      - name: Check SLO compliance
+        id: slo
+        run: |
+          python tests/load/locust/slo_check.py \
+            --results benchmarks/results/loadtest_$(date +%Y%m%d).json \
+            --p95-threshold 5000 \
+            --error-rate-threshold 0.01 \
+            --output benchmarks/results/slo_$(date +%Y%m%d).md
+
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-results-${{ github.run_id }}
+          path: benchmarks/results/
+
+      - name: Cleanup cluster
+        if: always()
+        run: |
+          docker compose -f ${{ env.COMPOSE_FILE }} down -v
+
+      - name: Post SLO failure report
+        if: failure() && steps.slo.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmarks/results/slo_${{ github.run_id }}.md', 'utf8');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Load Test SLO Breach Detected',
+              body: report,
+              labels: ['load-test', 'slo-breach'],
+            });

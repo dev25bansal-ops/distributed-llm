@@ -227,8 +227,8 @@ class ApiKeyStore:
             if not key_str:
                 continue
             if role not in VALID_ROLES:
-                logger.warning(f"Invalid role '{role}' for key '{key_id}', defaulting to 'admin'")
-                role = "admin"
+                logger.error(f"Invalid role '{role}' for key '{key_id}' — valid roles: {VALID_ROLES}")
+                raise ValueError(f"Invalid API key role '{role}'. Must be one of {VALID_ROLES}")
 
             self._keys.append(StoredKey(
                 key=hashlib.sha256(key_str.encode()).hexdigest(),
@@ -245,8 +245,16 @@ class ApiKeyStore:
         Returns the raw key if it was auto-generated, or the API_KEY
         env var value if set. Returns None if keys were loaded from
         a file or JSON config.
+
+        .. warning::
+
+            This method exposes the auto-generated admin key in plaintext.
+            Callers must not log, persist, or transmit the returned value.
+            The auto-generated key persists in process memory for the
+            lifetime of the ApiKeyStore object.
         """
-        # Auto-generated key
+        # Auto-generated key — stored in plaintext in process memory.
+        # For production, set API_KEY explicitly via env var or config file.
         if hasattr(self, '_auto_generated_key'):
             return self._auto_generated_key
 

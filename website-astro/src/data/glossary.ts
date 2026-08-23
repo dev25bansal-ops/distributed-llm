@@ -1,0 +1,17 @@
+export const GLOSSARY = [
+  { term: "Pipeline Parallelism", category: "Core", def: "Splits model layers across devices; each device holds a contiguous stage and activations flow forward then backward through the chain." },
+  { term: "Tensor Parallelism", category: "Core", def: "Splits individual weight matrices across devices so one layer computes in parallel on several machines. Higher bandwidth demand than pipeline parallelism." },
+  { term: "KV Cache", category: "Performance", def: "Stored attention keys/values for previously generated tokens, so each new token needs only one incremental forward pass instead of re-encoding the context." },
+  { term: "PagedAttention", category: "Performance", def: "Stores the KV cache in fixed-size blocks rather than contiguous buffers, eliminating fragmentation and allowing dynamic sharing between sequences." },
+  { term: "Speculative Decoding", category: "Performance", def: "A small draft model proposes several tokens; the large target model verifies them in one forward pass. Accepted tokens cost one pass instead of many." },
+  { term: "Quantization", category: "Efficiency", def: "Representing weights (and optionally the KV cache) in fewer bits — INT8, FP8, INT4 — trading a little accuracy for major memory savings." },
+  { term: "GGUF", category: "Format", def: "A single-file quantized model format popularized by llama.cpp, commonly used for CPU and edge inference." },
+  { term: "LoRA", category: "Training", def: "Low-Rank Adaptation: fine-tune two small low-rank matrices per layer instead of full weights, making adapter training and swapping cheap." },
+  { term: "Federated Learning", category: "Training", def: "Each device trains locally and shares only gradient updates; raw data never leaves the device it lives on." },
+  { term: "FedProx", category: "Training", def: "A federated optimization that adds a proximal term keeping local updates close to the global model, improving stability on heterogeneous hardware." },
+  { term: "TTFT", category: "Metrics", def: "Time To First Token — from sending a request to receiving the first streamed token. The number users perceive as responsiveness." },
+  { term: "1F1B Scheduling", category: "Core", def: "One-forward-one-backward micro-batch schedule that keeps all pipeline stages busy while bounding activation memory." },
+  { term: "Straggler Detection", category: "Reliability", def: "Statistical monitoring (MAD/z-score) of per-stage latency that flags slow nodes so batches can be rerouted or rebalanced." },
+  { term: "Differential Privacy", category: "Privacy", def: "Adds calibrated noise to gradients so published updates cannot leak any individual training example." },
+  { term: "Auto-Discovery", category: "DistLLM", def: "Workers locate the coordinator by multicast or seed list and register their device profile without manual layer assignment." },
+];

@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import time
+import uuid
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
@@ -15,6 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..api_state import g
 from ..streaming import _get_client_id, _stream_response
+from distllm.core.structured_output import StructuredOutputEngine, JSONSchemaConstraint
+
+# Module-level structured output engine for post-hoc validation
+_so_engine = StructuredOutputEngine()
 
 
 class _ToolCallingEngine:
@@ -107,7 +112,7 @@ class _ToolCallingEngine:
                         except json.JSONDecodeError:
                             args = {"raw": args_str}
                         calls.append({
-                            "id": tc.get("id", f"call_{len(calls)}"),
+                            "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
                             "type": "function",
                             "function": {"name": name, "arguments": args},
                         })
@@ -134,7 +139,7 @@ class _ToolCallingEngine:
                         except json.JSONDecodeError:
                             args = {"raw": args}
                     calls.append({
-                        "id": f"call_{len(calls)}",
+                        "id": f"call_{uuid.uuid4().hex[:24]}",
                         "type": "function",
                         "function": {"name": name, "arguments": args},
                     })
@@ -155,37 +160,54 @@ class _ToolCallingEngine:
             return [c for c in calls if c.get("function", {}).get("name") == func_name]
         return calls
 
-    def execute_tool_calls(self, calls):
+    def execute_tool_calls(self, calls, timeout_s: float = 30.0):
         """Execute tool calls using registered handlers.
 
         For each call, looks up the function name in the registered tools
         registry. If a handler is found, calls it with the arguments.
         Otherwise returns a diagnostic message.
 
+        Each handler is executed with an overall *timeout_s* to prevent
+        a stuck handler from blocking the thread pool indefinitely.
+
         Returns:
             List of tool result dicts with tool_call_id, role, and content.
         """
+        import concurrent.futures as _cf
+
         results = []
         for call in calls:
             func = call.get("function", {})
             name = func.get("name", "")
             args = func.get("arguments", {})
-            tool_call_id = call.get("id", f"call_{len(results)}")
+            tool_call_id = call.get("id", f"call_{uuid.uuid4().hex[:24]}")
 
             handler = self._registered_tools.get(name)
             if handler:
                 try:
                     if isinstance(args, dict):
-                        result = handler(**args)
+                        invoke = lambda: handler(**args)
                     elif isinstance(args, str):
-                        import json
-                        result = handler(**json.loads(args))
+                        import json as _json
+                        parsed_args = _json.loads(args)
+                        invoke = lambda: handler(**parsed_args)
                     else:
-                        result = handler(args)
+                        invoke = lambda: handler(args)
+
+                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                        fut = _pool.submit(invoke)
+                        result = fut.result(timeout=timeout_s)
+
                     results.append({
                         "tool_call_id": tool_call_id,
                         "role": "tool",
                         "content": str(result),
+                    })
+                except _cf.TimeoutError:
+                    results.append({
+                        "tool_call_id": tool_call_id,
+                        "role": "tool",
+                        "content": f"Error executing tool '{name}': timed out after {timeout_s}s",
                     })
                 except Exception as e:
                     results.append({
@@ -216,7 +238,7 @@ class _ToolCallingEngine:
         if calls:
             assistant_msg["tool_calls"] = [
                 {
-                    "id": tc.get("id", f"call_{i}"),
+                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
                     "type": "function",
                     "function": {
                         "name": tc.get("function", {}).get("name", ""),
@@ -228,7 +250,7 @@ class _ToolCallingEngine:
         new_messages.append(assistant_msg)
         # Add individual tool result messages
         for i, tc in enumerate(calls):
-            tc_id = tc.get("id", f"call_{i}")
+            tc_id = tc.get("id", f"call_{uuid.uuid4().hex[:24]}")
             result_content = results[i].get("content", str(results)) if i < len(results) else str(results)
             new_messages.append({
                 "tool_call_id": tc_id,
@@ -473,6 +495,13 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     resolved_model = body.model
 
     if router_override == "bypass" and override_model:
+        # SECURITY: Model router bypass requires admin role
+        caller_role = getattr(request.state, "api_key_role", None)
+        if caller_role != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Model router bypass requires admin role"
+            )
         resolved_model = override_model
         logger.debug(f"Router bypass via header: model='{resolved_model}'")
         # Record bypass in routing metrics if available
@@ -595,14 +624,15 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             tool_choice=tool_choice_value,
         )
 
-    # Build schema constraint for structured output
-    schema = None
+    # Build structured output constraint to guide generation
+    constraint = None
     if body.response_format:
         fmt_type = body.response_format.get("type", "")
-        if fmt_type == "json_object":
-            schema = {}  # Simple JSON constraint
-        elif fmt_type == "json_schema" and "schema" in body.response_format:
-            schema = body.response_format["schema"]
+        if fmt_type in ("json_object", "json_schema"):
+            tokenizer = getattr(coord, 'tokenizer', None)
+            constraint = JSONSchemaConstraint.from_response_format(
+                body.response_format, tokenizer=tokenizer,
+            )
 
     if body.max_tokens == 0:
         return ChatCompletionResponse(
@@ -661,6 +691,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         body.top_p,
         user_id=effective_user_id,
         response_format=body.response_format,
+        constraint=constraint,
     )
 
     elapsed = time.time() - start_time
@@ -669,24 +700,19 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
     # Validate structured output if response_format specified
     if body.response_format and generated:
-        from distllm.core.structured_output import validate_structured_output
-        fmt_type = body.response_format.get("type", "")
-        validation_schema = None
-        if fmt_type == "json_schema" and "schema" in body.response_format:
-            validation_schema = body.response_format["schema"]
-        elif fmt_type == "json_object":
-            validation_schema = {}  # Just validate it's valid JSON
-
-        if validation_schema is not None:
-            validated = validate_structured_output(generated, validation_schema)
-            if validated is None:
-                # Output doesn't match schema — log warning
-                logger.warning(f"Structured output validation failed for response_format={fmt_type}")
+        validation = _so_engine.validate(generated, body.response_format)
+        if not validation.valid:
+            logger.warning(
+                f"Structured output validation failed for "
+                f"response_format={body.response_format.get('type', '')}: "
+                f"{validation.errors}"
+            )
 
     # Record request in replay buffer for debugging
     if hasattr(coord, '_replay_buffer'):
+        replay_id = getattr(request.state, 'request_id', None) or uuid.uuid4().hex
         coord._replay_buffer.store(
-            request_id=prompt[:32],
+            request_id=replay_id,
             prompt=prompt,
             params={
                 "max_new_tokens": body.max_tokens,
@@ -713,12 +739,13 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         tool_calls_list = tool_engine.enforce_tool_choice(tool_choice_value, tool_calls_list)
 
         if tool_calls_list:
+            finish_reason = "tool_calls"
             tool_results = await asyncio.to_thread(tool_engine.execute_tool_calls, tool_calls_list)
 
             # Build tool_call response
             assistant_tool_calls = [
                 {
-                    "id": tc.get("id", f"call_{i}"),
+                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
                     "type": "function",
                     "function": {
                         "name": tc.get("function", {}).get("name", ""),
@@ -757,7 +784,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
                 )
 
                 generated = final_result[len(final_prompt):] if final_result.startswith(final_prompt) else final_result
-                finish_reason = "tool_calls"
+                finish_reason = "stop"
 
     # Compute token counts
     if coord.tokenizer is None:

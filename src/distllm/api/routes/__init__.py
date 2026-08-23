@@ -17,6 +17,7 @@ from .scheduler import router as scheduler_router
 from .router_admin import router as router_admin_router
 from .defrag import router as defrag_router
 from .batch import router as batch_router
+from .eval import router as eval_router
 __all__ = [
     "chat_router",
     "chat_v2_router",
@@ -35,4 +36,5 @@ __all__ = [
     "router_admin_router",
     "defrag_router",
     "batch_router",
+    "eval_router",
 ]

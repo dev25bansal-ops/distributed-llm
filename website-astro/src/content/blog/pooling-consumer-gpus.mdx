@@ -1,0 +1,72 @@
+---
+title: "How DistLLM pools consumer GPUs into one 70B endpoint"
+description: "The partitioning, scheduling, and streaming machinery that lets a laptop, a desktop, and a mini-PC serve a model none of them could hold alone."
+pubDate: 2026-08-23
+tags: [engineering, deep-dive]
+---
+
+## The problem
+
+A 70B parameter model needs ~140 GB of memory in float16. The most common GPU
+in a gaming PC has 8–12 GB. The gap is not close — and yet the hardware to
+bridge it is already sitting in people's homes: a desktop with an RTX card,
+a laptop with a decent CPU, a mini-PC doing nothing under the TV.
+
+DistLLM's core idea is simple: **split the model's layers across those
+machines and treat the chain as one logical accelerator**. Everything
+interesting is in the details of making that fast enough to be useful.
+
+## Step one: score every device
+
+When a worker joins the cluster, it reports a device profile — available
+memory, compute capability, and network bandwidth back to the coordinator.
+The partitioner assigns each device a **contiguous range of layers**
+proportionally to what it can handle:
+
+- A machine with an RTX 3090 gets the deepest, widest slice.
+- A CPU-only laptop gets fewer layers — but it still participates.
+
+Contiguity matters. Pipeline parallelism flows activations forward through
+the chain; splitting layer 20 across two machines would mean constant
+cross-network chatter inside a single layer, which kills throughput.
+
+## Step two: keep every stage busy (1F1B)
+
+Naive pipeline parallelism wastes most of the cluster: while one stage runs,
+the others wait. DistLLM uses **one-forward-one-backward (1F1B)
+micro-batching** — each stage processes micro-batches alternately so all
+nodes compute concurrently, while activation memory stays bounded.
+
+A MAD-based straggler detector watches per-stage latencies. If one node
+drifts slow — thermal throttling, a background update — batches reroute and
+the rebalancer can migrate layer ranges at runtime without restarting.
+
+## Step three: don't re-read the whole context
+
+Autoregressive generation naively re-processes the entire prompt for every
+new token. DistLLM stores attention keys and values in a **PagedAttention KV
+cache** — fixed-size blocks instead of contiguous buffers — so generation
+costs one incremental pass per token, and memory doesn't fragment as
+sequences come and go. A defragmenter compacts blocks in the background,
+and quantized KV caches shrink long-context memory further.
+
+## Step four: cheat legally with speculative decoding
+
+Here's the trick that makes small hardware feel fast: a tiny draft model
+(1M–500M parameters) proposes several tokens at once. The big target model
+verifies them **in a single forward pass**. Accepted tokens cost one pass
+instead of N; rejected ones fall back to normal sampling. With a well-matched
+draft pair we measure 64–77% acceptance and 1.6–2.1× speedups.
+
+The draft model can even run on a *different* device than the target — your
+laptop drafts, the desktop verifies.
+
+## What it adds up to
+
+On a pool built from consumer parts — the exact hardware our benchmarks list
+— Llama-class 70B models serve at usable speeds over a home network. Not
+datacenter-fast. But private, free to run, and impossible on any single
+machine in the pool.
+
+Try it: `pip install "distributed-llm[cli,self-hosted]"`, then follow the
+[multi-node guide](/docs/multi-node/).

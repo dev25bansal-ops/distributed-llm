@@ -4,6 +4,7 @@ Centralizes magic numbers, dtype strings, and device names used across
 the codebase to avoid duplication and improve maintainability.
 """
 
+import os
 from enum import Enum
 
 
@@ -36,24 +37,15 @@ class DeviceFamily(str, Enum):
     UNKNOWN = "unknown"
 
 
-DEVICE_FAMILY_MAP: dict[str, DeviceFamily] = {
-    "cuda": DeviceFamily.NVIDIA,
-    "rocm": DeviceFamily.AMD,
-    "mps": DeviceFamily.APPLE,
-    "xpu": DeviceFamily.INTEL,
-    "cpu": DeviceFamily.CPU,
+PLATFORM_BACKEND_PRIORITY: dict[DeviceFamily, dict[str, int]] = {
+    DeviceFamily.NVIDIA: {"vllm": 10, "exllama": 8, "pytorch": 5, "llamacpp": 4, "onnx": 6},
+    DeviceFamily.AMD: {"llamacpp": 9, "pytorch": 7, "onnx": 6, "vllm": 5, "exllama": 0},
+    DeviceFamily.APPLE: {"llamacpp": 9, "pytorch": 8, "onnx": 2, "vllm": 0, "exllama": 0},
+    DeviceFamily.INTEL: {"onnx": 9, "pytorch": 7, "llamacpp": 6, "vllm": 0, "exllama": 0},
+    DeviceFamily.CPU: {"llamacpp": 9, "onnx": 6, "pytorch": 5, "vllm": 0, "exllama": 0},
 }
 
-
-PLATFORM_BACKEND_PRIORITY: dict[str, dict[str, int]] = {
-    "nvidia": {"vllm": 10, "exllama": 8, "pytorch": 5, "llamacpp": 4, "onnx": 6},
-    "amd": {"llamacpp": 9, "pytorch": 7, "onnx": 6, "vllm": 5, "exllama": 0},
-    "apple": {"llamacpp": 9, "pytorch": 8, "onnx": 2, "vllm": 0, "exllama": 0},
-    "intel": {"onnx": 9, "pytorch": 7, "llamacpp": 6, "vllm": 0, "exllama": 0},
-    "cpu": {"llamacpp": 9, "onnx": 6, "pytorch": 5, "vllm": 0, "exllama": 0},
-}
-
-DEVICE_TO_FAMILY: dict[str, DeviceFamily] = {
+DEVICE_FAMILY: dict[str, DeviceFamily] = {
     "cuda": DeviceFamily.NVIDIA,
     "rocm": DeviceFamily.AMD,
     "mps": DeviceFamily.APPLE,
@@ -116,7 +108,6 @@ MPS_DEFAULT_TFLOPS_FP16: float = 2.0
 
 def get_tensor_max_bytes() -> int:
     """Return TENSOR_MAX_TOTAL_BYTES, overridable via environment variable."""
-    import os
     env_val = os.environ.get("DISTLLM_MAX_TENSOR_BYTES")
     if env_val is not None:
         try:

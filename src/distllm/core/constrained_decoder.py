@@ -310,8 +310,9 @@ class JSONSchemaFSM:
     def _finish_value(self) -> None:
         """After a value completes, return to the appropriate parent state."""
         if not self._stack:
-            # Stack empty means we completed a top-level value
-            self._state = FSMState.AFTER_VALUE
+            # Stack empty means we completed a top-level value — must be DONE,
+            # not AFTER_VALUE, to reject trailing garbage like {"key": 5}}
+            self._state = FSMState.DONE
         elif self._stack[-1] == "object":
             self._state = FSMState.AFTER_VALUE
         else:

@@ -25,10 +25,10 @@ class CanarySettings(BaseModel):
     rollback_threshold: float = 0.05
     stages: list[RolloutStageModel] = Field(default_factory=lambda: [
         RolloutStageModel(weight_pct=5, analysis_duration_s=300),
+        RolloutStageModel(weight_pct=20, analysis_duration_s=600),
         RolloutStageModel(weight_pct=25, analysis_duration_s=600),
-        RolloutStageModel(weight_pct=50, analysis_duration_s=600),
-        RolloutStageModel(weight_pct=75, analysis_duration_s=300),
-        RolloutStageModel(weight_pct=100, analysis_duration_s=300),
+        RolloutStageModel(weight_pct=25, analysis_duration_s=300),
+        RolloutStageModel(weight_pct=25, analysis_duration_s=300),
     ])
 
     @field_validator("rollback_threshold")
@@ -43,9 +43,13 @@ class CanarySettings(BaseModel):
     def validate_stages(cls, v: list[RolloutStageModel]) -> list[RolloutStageModel]:
         if not v:
             raise ValueError("stages must not be empty")
+        total_weight = 0
         for stage in v:
             if not (0 < stage.weight_pct <= 100):
                 raise ValueError(f"stage weight_pct must be 0-100, got {stage.weight_pct}")
+            total_weight += stage.weight_pct
+        if total_weight != 100:
+            raise ValueError(f"stage weight_pct must sum to 100, got {total_weight}")
         return v
 
 

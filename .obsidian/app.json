@@ -1,0 +1,13 @@
+{
+  "alwaysUpdateLinks": true,
+  "attachmentFolderPath": "attachments",
+  "newFileLocation": "folder",
+  "newFileFolderPath": "docs/_map",
+  "showUnsupportedFiles": false,
+  "showLineNumber": true,
+  "spellcheck": true,
+  "tabSize": 2,
+  "useMarkdownLinks": true,
+  "showFrontmatter": true,
+  "promptDelete": false
+}

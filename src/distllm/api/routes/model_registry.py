@@ -3,10 +3,11 @@
 import threading
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..auth_deps import require_role
 
 router = APIRouter(tags=["models"])
 
@@ -210,6 +211,7 @@ async def reload_model_registry():
     "/api/models/load",
     summary="Load Model",
     description="Load a model onto the coordinator.",
+    dependencies=[Depends(require_role("model-admin"))],
 )
 async def load_model(body: LoadModelRequest):
     """Load a model via the coordinator."""
@@ -233,6 +235,7 @@ async def load_model(body: LoadModelRequest):
     "/api/models/unload",
     summary="Unload Model",
     description="Unload a model from the coordinator.",
+    dependencies=[Depends(require_role("model-admin"))],
 )
 async def unload_model(body: UnloadModelRequest):
     """Unload a model via the coordinator."""

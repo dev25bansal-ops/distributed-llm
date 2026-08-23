@@ -1,0 +1,127 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+import { THROUGHPUT, SPECULATIVE, SCALING, METHODOLOGY } from "../data/benchmarks";
+import BarChart from "../components/BarChart.astro";
+---
+
+<PageLayout
+  title="Benchmarks"
+  description="Reproducible throughput, latency, and scaling numbers for DistLLM on consumer hardware."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Benchmarks"
+      title="Measured, not promised"
+      lead="Every number below is produced by the built-in benchmark suite against consumer hardware — rerun it yourself."
+    />
+
+    <div class="mt-12 space-y-12">
+      <div>
+        <h2 class="text-2xl">Throughput at a glance</h2>
+        <div class="mt-4 grid gap-5 lg:grid-cols-2">
+          <BarChart
+            title="Tokens / second"
+            unitLabel="higher is better"
+            rows={THROUGHPUT.map((r) => ({
+              label: r.model,
+              sub: r.hardware,
+              value: parseFloat(r.tps),
+              display: r.tps,
+              max: Math.max(...THROUGHPUT.map((x) => parseFloat(x.tps))),
+            }))}
+          />
+          <BarChart
+            title="Time to first token"
+            unitLabel="lower is better"
+            rows={THROUGHPUT.map((r) => ({
+              label: r.model,
+              sub: r.hardware,
+              value: parseFloat(r.ttft),
+              display: r.ttft,
+              max: Math.max(...THROUGHPUT.map((x) => parseFloat(x.ttft))),
+              unitColor: "bg-gradient-to-r from-accent-500 to-violet-400",
+            }))}
+          />
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-2xl">Full results</h2>
+        <div class="mt-4 overflow-x-auto rounded-xl border border-line bg-surface">
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="border-b-2 border-line">
+                <th class="px-4 py-3 font-semibold">Model</th>
+                <th class="px-4 py-3 font-semibold">Hardware</th>
+                <th class="px-4 py-3 font-semibold">Tokens/s</th>
+                <th class="px-4 py-3 font-semibold">TTFT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {THROUGHPUT.map((r) => (
+                <tr class="border-b border-line last:border-0">
+                  <td class="px-4 py-2.5 font-mono">{r.model}</td>
+                  <td class="px-4 py-2.5 text-muted">{r.hardware}</td>
+                  <td class="px-4 py-2.5 font-semibold text-brand-700">{r.tps}</td>
+                  <td class="px-4 py-2.5 text-muted">{r.ttft}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-2xl">Speculative Decoding</h2>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          {SPECULATIVE.map((s) => (
+            <div class="rounded-xl border border-line bg-surface p-5 shadow-sm">
+              <p class="font-mono text-sm">{s.draft}</p>
+              <p class="mt-2 flex gap-6 text-sm">
+                <span>acceptance <strong class="text-brand-700">{s.acceptance}</strong></span>
+                <span>speedup <strong class="text-accent-600">{s.speedup}</strong></span>
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-2xl">Multi-Node Scaling</h2>
+        <div class="mt-4 overflow-x-auto rounded-xl border border-line bg-surface">
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="border-b-2 border-line">
+                <th class="px-4 py-3 font-semibold">Cluster</th>
+                <th class="px-4 py-3 font-semibold">Split</th>
+                <th class="px-4 py-3 font-semibold">Efficiency</th>
+              </tr>
+            </thead>
+            <tbody>
+              {SCALING.map((r) => (
+                <tr class="border-b border-line last:border-0">
+                  <td class="px-4 py-2.5">{r.nodes}</td>
+                  <td class="px-4 py-2.5 text-muted">{r.layers}</td>
+                  <td class="px-4 py-2.5 font-semibold text-brand-700">{r.efficiency}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-2xl">Methodology</h2>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {METHODOLOGY.map((m) => (
+            <div class="rounded-xl border border-line bg-surface p-5">
+              <h3 class="font-semibold">{m.title}</h3>
+              <p class="mt-2 text-sm leading-relaxed text-muted">{m.body}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  </section>
+</PageLayout>

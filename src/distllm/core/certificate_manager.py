@@ -357,14 +357,15 @@ class CertificateManager:
         key_path.write_bytes(key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
+            self._encryption_algorithm(),
         ))
 
-        # Restrict private key permissions (owner-only read/write)
+        # Restrict private key permissions (Unix) or warn on Windows
         try:
             os.chmod(str(key_path), 0o600)
         except OSError:
-            pass  # Windows doesn't support chmod in the same way
+            if os.name != "nt":
+                logger.warning(f"Could not set permissions on {key_path}")
 
         info = CertificateInfo(
             common_name=common_name,
@@ -378,3 +379,35 @@ class CertificateManager:
         )
         logger.info(f"Created self-signed certificate for {common_name}")
         return info
+
+    def _encryption_algorithm(self) -> serialization.KeySerializationEncryption:
+        """Return the encryption algorithm for private key serialization.
+
+        Uses NoEncryption on Unix where file permissions provide protection,
+        and on Windows requires KEY_ENCRYPTION_PASSPHRASE in the secret
+        manager or environment. Falls back to NoEncryption with a warning
+        if no passphrase is configured — the generated ephemeral key
+        pattern is removed because per-file ephemeral keys that are never
+        persisted make the private key file permanently unrecoverable on
+        process restart (CWE-654).
+        """
+        if os.name == "nt":
+            # Try SecretManager first, then environment variable fallback
+            passphrase: str | None = None
+            try:
+                from distllm.core.secret_manager import SecretManager
+                mgr = SecretManager()
+                passphrase = mgr.get_secret("KEY_ENCRYPTION_PASSPHRASE")
+            except Exception:
+                pass
+            if not passphrase:
+                import os as _os
+                passphrase = _os.environ.get("KEY_ENCRYPTION_PASSPHRASE")
+            if passphrase:
+                return serialization.BestAvailableEncryption(passphrase.encode())
+            logger.warning(
+                "Private key on Windows will be stored without encryption. "
+                "Set KEY_ENCRYPTION_PASSPHRASE in your secret manager or "
+                "environment for encrypted private key storage."
+            )
+        return serialization.NoEncryption()

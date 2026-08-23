@@ -134,23 +134,13 @@ class QuotaMiddleware(BaseHTTPMiddleware):
 
         content_type = request.headers.get("content-type", "")
         if "json" in content_type:
-            try:
-                body = getattr(request, "_json", None) or getattr(request.state, "parsed_body", None)
-                if body is None and hasattr(request, "body"):
-                    # C-06: Use asyncio.get_event_loop() instead of None
-                    try:
-                        loop = asyncio.get_event_loop()
-                        raw = loop.create_task(request.body())
-                    except RuntimeError:
-                        # No running loop — use run_coroutine_threadsafe with the main loop
-                        try:
-                            loop = asyncio.get_running_loop()
-                            raw = asyncio.run_coroutine_threadsafe(request.body(), loop)
-                        except RuntimeError:
-                            logger.debug("No event loop available for quota body read")
-                            raw = None
-                prompt = ""
-                if body:
+            # Use FastAPI's cached body — the route handler has already
+            # parsed it (middleware runs after route body parsing).  If
+            # _json is not available, skip token estimation rather than
+            # attempting a fragile async body read that can deadlock.
+            body = getattr(request, "_json", None) or getattr(request.state, "parsed_body", None)
+            prompt = ""
+            if body:
                     if isinstance(body, dict):
                         prompt = body.get("prompt", "") or ""
                         messages = body.get("messages", [])

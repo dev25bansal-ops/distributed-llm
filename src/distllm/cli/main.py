@@ -291,9 +291,11 @@ def system_schedule_viz(
     port: int = typer.Option(50050, help="Coordinator API port"),
     output: str | None = typer.Option(None, "--output", "-o", help="HTML output file path"),
     last_n: int = typer.Option(20, "--last", "-n", help="Number of recent iterations to show"),
-    api_key: str | None = typer.Option(None, "--api-key", help="API key for authentication"),
+    api_key: str | None = typer.Option(None, "--api-key", help="[DEPRECATED] Use API_KEY env var instead. API key for authentication"),
 ):
     """Visualize scheduling decisions as ASCII timeline or HTML."""
+    if api_key:
+        logger.warning("--api-key is deprecated. Set API_KEY env var instead.")
     import httpx
 
     from distllm.core.schedule_viz import ScheduleVisualizer
@@ -893,9 +895,11 @@ def verify_run(
     grpc_base_port: int = typer.Option(51050, "--grpc-port", help="Base port for gRPC workers"),
     output_json: str = typer.Option("", "--output-json", "-o", help="Path to write JSON report"),
     device: str = typer.Option("auto", "--device", help="Device (auto, cuda, cpu)"),
-    trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="Trust remote code in HuggingFace models"),
+    trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="[SECURITY RISK] Allow loading remote code from HuggingFace models (RCE vector)"),
 ):
     """Verify distributed inference accuracy against single-node reference."""
+    if trust_remote_code:
+        logger.warning("--trust-remote-code enabled: loading arbitrary code from HuggingFace repos (RCE risk)")
     from distllm.cli.verify import verify_run as _verify_run
     _verify_run(
         model=model, prompts=prompts, num_nodes=num_nodes, dtype=dtype,
@@ -911,6 +915,57 @@ def verify_list_backends():
     """List available inference backends."""
     from distllm.cli.verify import verify_list_backends as _verify_list_backends
     _verify_list_backends()
+
+
+# ── eval ─────────────────────────────────────────────────────────────────
+@benchmark_app.command("eval")
+def benchmark_eval(
+    model: str = typer.Argument(..., help="Model identifier to evaluate"),
+    benchmarks: str = typer.Option(
+        "mmlu,gsm8k",
+        "--benchmarks",
+        "-b",
+        help="Comma-separated benchmarks: mmlu, gsm8k, humaneval, mt_bench, arena",
+    ),
+    coordinator_url: str = typer.Option(
+        "",
+        "--url",
+        "-u",
+        help="Coordinator API URL (default: http://localhost:8000)",
+    ),
+    max_tokens: int = typer.Option(256, "--max-tokens", "-t", help="Max generation tokens"),
+    temperature: float = typer.Option(0.0, "--temperature", help="Sampling temperature"),
+    num_samples: int = typer.Option(20, "--samples", "-n", help="Samples per benchmark"),
+    model_b: str = typer.Option("", "--model-b", help="Second model for arena comparison"),
+    coordinator_url_b: str = typer.Option("", "--url-b", help="URL for model B"),
+    output_json: str = typer.Option("", "--json", "-j", help="Output JSON file path"),
+    host: str = typer.Option("localhost", "--host", help="Coordinator host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+    api_key: str = typer.Option("", "--api-key", help="API key"),
+):
+    """Run evaluation benchmarks (MMLU, GSM8K, HumanEval, MT-Bench, Arena).
+
+    Examples::
+
+        distllm benchmark eval my-model
+        distllm benchmark eval my-model --benchmarks mmlu,gsm8k,humaneval
+        distllm benchmark eval my-model --benchmarks arena --model-b other-model
+    """
+    from distllm.cli.eval import eval_run as _eval_run
+    _eval_run(
+        model=model,
+        benchmarks=benchmarks,
+        coordinator_url=coordinator_url,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        num_samples=num_samples,
+        model_b=model_b,
+        coordinator_url_b=coordinator_url_b,
+        output_json=output_json,
+        host=host,
+        port=port,
+        api_key=api_key,
+    )
 
 
 # --- config backup group ---
@@ -1218,8 +1273,14 @@ def system_api(
         logger.info("Debug mode enabled: tensor shape logging active")
 
     if no_auth:
-        os.environ["DISTLLM_NO_AUTH"] = "1"
-        logger.info("API authentication DISABLED (--no-auth)")
+        # SECURITY: --no-auth is intentionally not functional.
+        # Authentication is always required.  The env var is no longer
+        # checked by AuthMiddleware.  Keeping the flag with this warning
+        # prevents confusion for users who expect it to work.
+        logger.warning(
+            "SECURITY: --no-auth is deprecated and has no effect. "
+            "Authentication is always required. Use a valid API key."
+        )
 
     create_coordinator(model_name=model, dtype=dtype, local=local)
     logger.info(f"Starting API server on {host}:{port}")

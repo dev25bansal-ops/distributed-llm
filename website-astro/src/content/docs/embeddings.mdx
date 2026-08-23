@@ -1,0 +1,37 @@
+---
+title: Embeddings
+description: Generate embeddings via the OpenAI-compatible endpoint.
+group: API
+order: 2
+---
+
+## Endpoint
+
+```
+POST /v1/embeddings
+Authorization: Bearer <api-key>
+```
+
+```json
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "input": ["Distributed inference pools consumer GPUs", "Second document"]
+}
+```
+
+## Response
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.012, -0.034, ...]},
+    {"object": "embedding", "index": 1, "embedding": [0.008, 0.041, ...]}
+  ],
+  "usage": {"prompt_tokens": 14, "total_tokens": 14}
+}
+```
+
+`input` accepts a single string or an array. Embedding models load through the
+same registry as generative models — switch with the standard model-load admin
+endpoints.

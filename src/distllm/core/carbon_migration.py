@@ -7,6 +7,7 @@ shipping from cross_cluster.py for live migration.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -29,12 +30,72 @@ class MigrationEvent:
     duration_ms: float = 0.0
 
 
+class CarbonIntensityClient:
+    """Client for real-time carbon intensity data via electricityMap API.
+
+    Uses the https://api.electricitymap.org endpoint.  Set
+    ``DISTLLM_CARBON_API_KEY`` to your electricityMap API token.
+    """
+
+    def __init__(self, api_key: str | None = None):
+        self._api_key = api_key or os.environ.get("DISTLLM_CARBON_API_KEY", "")
+        self._base_url = "https://api.electricitymap.org/v3"
+        self._cache: dict[str, tuple[float, float]] = {}  # zone -> (gco2/kWh, timestamp)
+        self._cache_ttl: float = 600.0  # 10 min
+        self._lock = threading.Lock()
+
+    def get_intensity(self, zone: str) -> float:
+        """Get current carbon intensity for a zone (gCO2/kWh).
+
+        Uses cached data when available (< 10 min old).
+        Returns 0.0 on failure.
+        """
+        now = time.time()
+        with self._lock:
+            cached = self._cache.get(zone)
+            if cached and (now - cached[1]) < self._cache_ttl:
+                return cached[0]
+
+        if not self._api_key:
+            # Fallback to static regional data
+            from distllm.core.cross_cloud_router import _REGIONAL_CARBON_INTENSITY
+            val = _REGIONAL_CARBON_INTENSITY.get(zone, 0.0)
+            with self._lock:
+                self._cache[zone] = (val, now)
+            return val
+
+        try:
+            import httpx
+            resp = httpx.get(
+                f"{self._base_url}/carbon-intensity/latest",
+                params={"zone": zone},
+                headers={"auth-token": self._api_key},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                val = float(data.get("carbonIntensity", 0.0))
+                with self._lock:
+                    self._cache[zone] = (val, now)
+                return val
+        except Exception as e:
+            logger.debug(f"Carbon API request failed for {zone}: {e}")
+
+        return 0.0
+
+    def get_all_intensities(self, zones: list[str]) -> dict[str, float]:
+        """Fetch intensities for multiple zones."""
+        return {z: self.get_intensity(z) for z in zones}
+
+
 class CarbonMigrationEngine:
     """Monitors carbon intensity and triggers live migration to cleaner regions.
 
+    Uses the electricityMap API when configured, with static fallback.
+
     Usage::
 
-        engine = CarbonMigrationEngine(carbon_provider=provider, threshold=400)
+        engine = CarbonMigrationEngine(threshold=400)
         engine.set_active_region("us-east-1", ["req-1", "req-2"])
         engine.start(migration_callback=my_migrate_fn)
     """
@@ -45,11 +106,15 @@ class CarbonMigrationEngine:
         threshold: float = 400.0,
         check_interval_s: float = 300.0,
         migration_cooldown_s: float = 900.0,
+        min_savings_pct: float = 20.0,
     ):
+        if carbon_provider is None:
+            carbon_provider = CarbonIntensityClient()
         self._carbon_provider = carbon_provider
         self._threshold = threshold
         self._check_interval = check_interval_s
         self._cooldown = migration_cooldown_s
+        self._min_savings_pct = min_savings_pct / 100.0
         self._active_region: str = ""
         self._active_requests: list[str] = []
         self._migration_callback: Callable[[str, str, list[str]], bool] | None = None
@@ -109,16 +174,29 @@ class CarbonMigrationEngine:
         # Check cooldown
         if time.time() - self._last_migration < self._cooldown:
             return
-        # Get current carbon intensity
-        current = self._carbon_provider.get_intensity(self._active_region)
-        if current.gco2_per_kwh <= self._threshold:
+        # Get current carbon intensity via real-time API (with static fallback)
+        current_val = self._carbon_provider.get_intensity(self._active_region) if hasattr(self._carbon_provider, 'get_intensity') else 0.0
+        if isinstance(current_val, (int, float)):
+            current_gco2 = current_val
+        else:
+            current_gco2 = current_val.gco2_per_kwh if hasattr(current_val, 'gco2_per_kwh') else 0.0
+
+        if current_gco2 <= self._threshold:
             return
-        # Find a cleaner region
-        from distllm.core.cross_cloud_router import _REGIONAL_CARBON_INTENSITY
+
+        # Find a cleaner region using carbon provider + fallback
+        regions_to_check = getattr(self._carbon_provider, 'get_all_intensities', None)
+        if regions_to_check:
+            from distllm.core.cross_cloud_router import _REGIONAL_CARBON_INTENSITY
+            intensities = regions_to_check(list(_REGIONAL_CARBON_INTENSITY.keys()))
+        else:
+            from distllm.core.cross_cloud_router import _REGIONAL_CARBON_INTENSITY
+            intensities = dict(_REGIONAL_CARBON_INTENSITY)
+
         best_region = None
-        best_carbon = current.gco2_per_kwh
-        for region, carbon in _REGIONAL_CARBON_INTENSITY.items():
-            if carbon < best_carbon * 0.7:  # At least 30% cleaner
+        best_carbon = current_gco2
+        for region, carbon in intensities.items():
+            if carbon > 0 and carbon < best_carbon * (1.0 - self._min_savings_pct):
                 best_region = region
                 best_carbon = carbon
         if not best_region:
@@ -131,9 +209,9 @@ class CarbonMigrationEngine:
         event = MigrationEvent(
             from_region=self._active_region,
             to_region=best_region,
-            from_carbon=current.gco2_per_kwh,
+            from_carbon=current_gco2,
             to_carbon=best_carbon,
-            carbon_saved=current.gco2_per_kwh - best_carbon,
+            carbon_saved=current_gco2 - best_carbon,
             request_ids=list(self._active_requests),
         )
         if self._migration_callback:

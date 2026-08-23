@@ -1,9 +1,10 @@
 """GPU memory defragmentation API routes."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..api_state import g
+from ..auth_deps import require_role
 
 
 router = APIRouter(prefix="/v1/defrag", tags=["defrag"])
@@ -39,7 +40,8 @@ async def defrag_status():
 @router.post(
     "/run",
     summary="Trigger defragmentation pass",
-    description="Runs an immediate defragmentation on all KV cache backends.",
+    description="Runs an immediate defragmentation on all KV cache backends. Restricted to admin users.",
+    dependencies=[Depends(require_role("admin"))],
 )
 async def defrag_run():
     coord = g.coordinator

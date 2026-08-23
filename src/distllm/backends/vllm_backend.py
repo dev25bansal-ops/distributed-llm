@@ -8,6 +8,7 @@ FlashAttention, AWQ/GPTQ quantization, and CUDA graphs for free.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from typing import Any
 from loguru import logger
@@ -15,6 +16,70 @@ import torch
 
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError, NodeUnreachableError
+
+
+# ── Model name validation ────────────────────────────────────────────────
+# Allowlist-based validator to prevent path traversal and arbitrary
+# HuggingFace model loading (CWE-22, CWE-94).
+# In production, set DISTLLM_ALLOWED_MODELS to a comma-separated list of
+# model IDs or glob patterns (e.g. "meta-llama/*,mistralai/*").
+# When unset, only standard HuggingFace model IDs matching
+# ``org/name`` are accepted (no local paths, no ``..``, no ``/`` beyond
+# the org/name separator).
+
+import fnmatch
+import os as _os
+import re as _re
+
+_MODEL_NAME_PATTERN = _re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_./-]+$")
+"""Rejects local paths (absolute or relative) and bare names.
+Only ``org/name`` style identifiers are accepted.
+"""
+
+
+def _validate_model_name(model_name: str) -> None:
+    """Validate *model_name* against path-traversal and RCE vectors.
+
+    Raises ``ValueError`` with a descriptive message when the name is
+    rejected.
+    """
+    if not model_name or not isinstance(model_name, str):
+        raise ValueError(f"Invalid model name: {model_name!r}")
+
+    # Block path-traversal characters
+    if ".." in model_name:
+        raise ValueError(
+            f"Model name {model_name!r} contains '..' (path traversal) — rejected"
+        )
+    if model_name.startswith("/") or model_name.startswith("\\"):
+        raise ValueError(
+            f"Model name {model_name!r} starts with '/' — absolute path, rejected"
+        )
+    if model_name.startswith("~"):
+        raise ValueError(
+            f"Model name {model_name!r} starts with '~' — home-directory path, rejected"
+        )
+    # Windows-style paths
+    if _re.search(r"^[a-zA-Z]:[\\/]", model_name):
+        raise ValueError(
+            f"Model name {model_name!r} looks like a Windows path — rejected"
+        )
+
+    # Reject bare names that are not org/name format
+    if not _MODEL_NAME_PATTERN.match(model_name):
+        raise ValueError(
+            f"Model name {model_name!r} does not match expected 'org/name' format — rejected"
+        )
+
+    # Check against environment-configured allowlist
+    allowed_env = _os.environ.get("DISTLLM_ALLOWED_MODELS", "")
+    if allowed_env:
+        patterns = [p.strip() for p in allowed_env.split(",") if p.strip()]
+        if not any(fnmatch.fnmatch(model_name, p) for p in patterns):
+            raise ValueError(
+                f"Model name {model_name!r} is not in DISTLLM_ALLOWED_MODELS "
+                f"({allowed_env}) — rejected"
+            )
 
 
 class VLLMNodeAdapter(BackendAdapter):
@@ -43,6 +108,9 @@ class VLLMNodeAdapter(BackendAdapter):
         layer_end: int | None = None,
         trust_remote_code: bool | None = None,
     ):
+        # SECURITY: Validate model name before any loading attempt.
+        # See _validate_model_name for the full check.
+        _validate_model_name(model_name)
         self.model_name = model_name
         self.layer_start = layer_start
         self.layer_end = layer_end
@@ -314,7 +382,10 @@ class VLLMNodeAdapter(BackendAdapter):
             from vllm.lora.request import LoRARequest
             self._lora_adapter = LoRARequest(
                 adapter_name=adapter_name,
-                adapter_int_id=hash(adapter_name) & 0xFFFFFFFF,
+                adapter_int_id=int.from_bytes(
+                    hashlib.sha256(adapter_name.encode()).digest()[:4],
+                    "little", signed=False,
+                ),
                 adapter_local_path=adapter_path,
             )
             logger.info(f"[VLLM] LoRA adapter loaded: {adapter_name} from {adapter_path}")

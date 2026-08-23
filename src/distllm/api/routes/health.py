@@ -2,11 +2,12 @@
 
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from distllm.api.auth_deps import require_role
 from distllm.api.errors import error_response_from_request
 from distllm.api import server as _server_state
 
@@ -217,9 +218,10 @@ def _get_health_plugin():
     "/v1/models/{model_id}/warmup",
     summary="Warm up a model (CUDA graphs, caches)",
     description="Send dummy tokens through the model to warm CUDA graphs, kernel caches, and memory pools before production traffic arrives."
-                " This reduces first-token latency (TTFT) for subsequent requests.",
+                " This reduces first-token latency (TTFT) for subsequent requests. Restricted to model-admin or higher.",
     response_description="Warmup status",
     responses={503: {"description": "Model not loaded or coordinator not initialized"}},
+    dependencies=[Depends(require_role("model-admin"))],
 )
 async def warmup_model(model_id: str, request: Request):
     """Warm up a model by running a dummy forward pass."""
@@ -232,7 +234,11 @@ async def warmup_model(model_id: str, request: Request):
     dummy_prompt = "Hello"
     warmup_tokens = 16
     try:
-        result = coord.generate(dummy_prompt, max_new_tokens=warmup_tokens, temperature=0.0)
+        import asyncio
+        result = await asyncio.to_thread(
+            coord.generate, dummy_prompt,
+            max_new_tokens=warmup_tokens, temperature=0.0,
+        )
         return {"status": "ok", "model": model_id, "warmup_tokens": warmup_tokens, "length": len(result)}
     except Exception as e:
         return error_response_from_request(503, "Warmup Failed", str(e), "warmup_error", request)
@@ -327,6 +333,7 @@ async def metrics():
         404: {"description": "Request ID not found or already completed"},
         503: {"description": "Coordinator not initialized"},
     },
+    dependencies=[Depends(require_role("inference-only"))],
 )
 async def update_generation_params(request_id: str, params: ParamUpdateRequest):
     """Update generation parameters for an in-progress request.

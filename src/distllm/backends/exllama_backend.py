@@ -149,14 +149,20 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         settings = ExLlamaV2Sampler.Settings(
             temperature=0.0, top_k=1, top_p=0.0
         )
-        output = self._generator.generate_simple(
+        output_text = self._generator.generate_simple(
             prompt="",
             gen_settings=settings,
             num_tokens=1,
             seed=0,
             input_ids=[ids_list],
         )
-        return torch.tensor([[0]]), []
+        # Re-tokenize the generated text to recover the actual token ID
+        if output_text:
+            tokens = self._tokenizer.encode(output_text)
+            next_id = tokens[0] if tokens else 0
+        else:
+            next_id = 0
+        return torch.tensor([[next_id]]), []
 
     def _forward_hidden_states(
         self,

@@ -37,7 +37,11 @@ class CoordinatorSettings(BaseModel):
         for origin in v.split(","):
             origin = origin.strip()
             if origin == "*":
-                continue  # Wildcard handled separately in _get_cors_origins
+                raise ValueError(
+                    "Wildcard CORS origin '*' is not allowed. Specify explicit origins "
+                    "(e.g., http://localhost:3000) or set DISTLLM_CORS_ALLOW_ALL=1 at "
+                    "runtime only for development."
+                )
             if not (origin.startswith("http://") or origin.startswith("https://") or origin.startswith("chrome-extension://") or origin.startswith("moz-extension://")):
                 raise ValueError(
                     f"CORS origin '{origin}' must be a valid URL starting with http://, https://, "
@@ -86,10 +90,10 @@ class TLSSettings(BaseModel):
         description="If True, reject connections that don't present a valid "
                     "client certificate. Requires ca_cert_file to be set.",
     )
-    min_tls_version: str = Field(
-        default="TLSv1.2",
-        description="Minimum TLS version allowed (TLSv1.2 or TLSv1.3).",
-    )
+    # NOTE: gRPC's ssl_server_credentials / ssl_channel_credentials do not
+    # expose a TLS version parameter, so any min_tls_version field here would
+    # be silently ignored at runtime.  TLS version enforcement must happen at
+    # the system/network level (reverse proxy, firewalls).
 
 
 class RateLimitSettings(BaseModel):

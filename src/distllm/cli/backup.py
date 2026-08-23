@@ -1,18 +1,18 @@
-"""CLI commands for backup & restore."""
+"""CLI commands for backup & restore.
 
-import typer
+Functions are imported by :mod:`distllm.cli.main` which registers them
+as Typer commands on the ``config backup`` sub-group.
+"""
+
 from rich.console import Console
 from rich.table import Table
 
-backup_app = typer.Typer(help="Backup and restore cluster state")
 
-
-@backup_app.command("create")
 def backup_create(
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-    cluster_name: str = typer.Option("default", "--cluster", "-c", help="Cluster name"),
-    config_path: str = typer.Option("config.yaml", "--config", help="Config file path"),
-):
+    backup_dir: str = "./backups",
+    cluster_name: str = "default",
+    config_path: str = "config.yaml",
+) -> None:
     """Create a full backup of cluster state."""
     import yaml
     from distllm.core.backup_manager import BackupManager
@@ -40,10 +40,9 @@ def backup_create(
     console.print(f"  Type: {manifest.backup_type}")
 
 
-@backup_app.command("list")
 def backup_list(
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-):
+    backup_dir: str = "./backups",
+) -> None:
     """List available backups."""
     from distllm.core.backup_manager import BackupManager
 
@@ -78,12 +77,11 @@ def backup_list(
     console.print(table)
 
 
-@backup_app.command("restore")
 def backup_restore(
-    backup_id: str = typer.Argument(..., help="Backup ID to restore"),
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-    output: str = typer.Option("", "--output", "-o", help="Output file (default: stdout)"),
-):
+    backup_id: str,
+    backup_dir: str = "./backups",
+    output: str = "",
+) -> None:
     """Restore a backup to its original state."""
     from distllm.core.backup_manager import BackupManager
 
@@ -93,7 +91,7 @@ def backup_restore(
 
     if data is None:
         console.print(f"[red]Backup not found:[/] {backup_id}")
-        raise typer.Exit(1)
+        return
 
     import json
     output_str = json.dumps(data, indent=2, default=str)
@@ -105,11 +103,10 @@ def backup_restore(
         console.print(output_str)
 
 
-@backup_app.command("delete")
 def backup_delete(
-    backup_id: str = typer.Argument(..., help="Backup ID to delete"),
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-):
+    backup_id: str,
+    backup_dir: str = "./backups",
+) -> None:
     """Delete a backup."""
     from distllm.core.backup_manager import BackupManager
 

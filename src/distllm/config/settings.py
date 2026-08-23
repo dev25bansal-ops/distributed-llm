@@ -168,7 +168,7 @@ class DistLLMSettings(BaseSettings):
     quantization: QuantizationSettings = Field(default_factory=QuantizationSettings)
     speculative: SpeculativeSettings = Field(default_factory=SpeculativeSettings)
     partitioning: PartitioningSettings = Field(default_factory=PartitioningSettings)
-    auto_partition: dict = Field(default_factory=lambda: {"enabled": False, "strategy": "auto", "safety_margin": 0.1})
+    auto_partition: dict[str, bool | str | float] = Field(default_factory=lambda: {"enabled": False, "strategy": "auto", "safety_margin": 0.1})
     rebalancer: RebalancerSettings = Field(default_factory=RebalancerSettings)
     cache_persistence: CachePersistenceSettings = Field(default_factory=CachePersistenceSettings)
     priority: PrioritySettings = Field(default_factory=PrioritySettings)
@@ -224,6 +224,15 @@ class DistLLMSettings(BaseSettings):
         so the user can fix them in a single pass.
         """
         errors: list[str] = []
+
+        # 0. vLLM dtype consistency with model.dtype
+        if self.vllm.enabled:
+            if self.vllm.dtype not in ("auto", self.model.dtype):
+                errors.append(
+                    f"model.dtype is '{self.model.dtype}' but vllm.dtype is "
+                    f"'{self.vllm.dtype}'; these should be consistent when "
+                    "vllm is enabled, or set vllm.dtype='auto'"
+                )
 
         # 1. Chunked prefill requires a positive prefill token budget.
         if self.chunked_prefill.enabled and self.batching.max_tokens_per_batch < 1:

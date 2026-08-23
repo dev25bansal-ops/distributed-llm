@@ -14,6 +14,7 @@ from loguru import logger
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from distllm.config.settings import QuantizationSettings as QuantizationConfig
+from distllm.dist.fsdp import FSDPConfig, FSDPShard
 from distllm.errors import ModelLoadError
 from distllm.security import hf_revision
 
@@ -537,6 +538,61 @@ class ModelPartitioner:
             sig = inspect.signature(layer.forward)
             self._layer_params.append(set(sig.parameters.keys()))
 
+    # ── FSDP-style weight sharding ────────────────────────────────────────
+
+    def enable_fsdp(
+        self,
+        world_size: int = 1,
+        rank: int = 0,
+        cpu_offload: bool = False,
+        min_param_size: int = 1024,
+    ) -> None:
+        """Enable FSDP-style weight sharding across nodes.
+
+        Shards all model parameters across *world_size* ranks.  Each node
+        keeps only a 1/*world_size* chunk; the full weights are reconstructed
+        via an all-gather before the forward pass and freed afterward.
+
+        Call after ``load_full_model()`` or ``load_layer_subset()``.
+
+        Args:
+            world_size: Total number of sharding ranks (nodes).
+            rank: Local rank of this node (0-based).
+            cpu_offload: If True, offload non-local shards to CPU instead of
+                freeing memory after forward.
+            min_param_size: Minimum number of elements to shard (smaller
+                parameters are replicated on every rank).
+        """
+        # Collect all components into a single module for FSDP sharding.
+        # We build a temporary wrapper so FSDPShard can traverse parameters.
+        wrapper = nn.ModuleDict()
+        if self.embed_tokens is not None:
+            wrapper["embed_tokens"] = self.embed_tokens
+        if self.layers:
+            wrapper["layers"] = self.layers
+        if self.final_norm is not None:
+            wrapper["final_norm"] = self.final_norm
+        if self.lm_head is not None:
+            wrapper["lm_head"] = self.lm_head
+        if self.rotary_emb is not None:
+            wrapper["rotary_emb"] = self.rotary_emb
+
+        config = FSDPConfig(
+            world_size=world_size,
+            rank=rank,
+            min_param_size=min_param_size,
+            cpu_offload=cpu_offload,
+        )
+        self._fsdp = FSDPShard(wrapper, config=config)
+        self._fsdp.shard()
+
+        num_sharded = len(self._fsdp._sharded_params)
+        logger.info(
+            f"FSDP enabled on rank {rank}/{world_size}: "
+            f"{num_sharded} parameter groups sharded, "
+            f"min_param_size={min_param_size}"
+        )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -544,7 +600,12 @@ class ModelPartitioner:
         position_ids: torch.Tensor | None = None,
         past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]] | None]:
-        """Run forward pass through assigned layers."""
+        """Run forward pass through assigned layers.
+
+        If FSDP weight sharding is enabled, this method automatically
+        gathers full weights before the layer loop and frees non-local
+        shards after.
+        """
         new_past_key_values = []
         seq_len = hidden_states.shape[1]
 
@@ -595,49 +656,60 @@ class ModelPartitioner:
                 )
                 self._causal_mask_limit_warned = True
 
-        for i, layer in enumerate(self.layers):
-            layer_past = None
-            if past_key_values and i < len(past_key_values):
-                layer_past = past_key_values[i]
+        # FSDP: gather full weights before the layer forward pass
+        fsdp = getattr(self, "_fsdp", None)
+        if fsdp is not None:
+            fsdp.gather()
 
-            params = self._layer_params[i] if i < len(self._layer_params) else set()
+        try:
+            for i, layer in enumerate(self.layers):
+                layer_past = None
+                if past_key_values and i < len(past_key_values):
+                    layer_past = past_key_values[i]
 
-            layer_kwargs = {"hidden_states": hidden_states}
+                params = self._layer_params[i] if i < len(self._layer_params) else set()
 
-            if "attention_mask" in params and attention_mask_4d is not None:
-                layer_kwargs["attention_mask"] = attention_mask_4d
-            if "position_ids" in params and position_ids is not None:
-                layer_kwargs["position_ids"] = position_ids
-            if "past_key_value" in params and layer_past is not None:
-                layer_kwargs["past_key_value"] = layer_past
-            elif "past_key_values" in params and layer_past is not None:
-                layer_kwargs["past_key_values"] = layer_past
-            if "use_cache" in params:
-                layer_kwargs["use_cache"] = True
+                layer_kwargs = {"hidden_states": hidden_states}
 
-            if "position_embeddings" in params and self.rotary_emb is not None:
-                past_seq_len = 0
-                if past_key_values and len(past_key_values) > 0:
-                    past_seq_len = past_key_values[0][0].shape[-2]
-                total_seq_len = past_seq_len + seq_len
-                full_position_ids = torch.arange(total_seq_len, device=hidden_states.device).unsqueeze(0)
-                current_position_ids = full_position_ids[:, past_seq_len:]
-                cos, sin = self.rotary_emb(hidden_states, current_position_ids)
-                layer_kwargs["position_embeddings"] = (cos, sin)
+                if "attention_mask" in params and attention_mask_4d is not None:
+                    layer_kwargs["attention_mask"] = attention_mask_4d
+                if "position_ids" in params and position_ids is not None:
+                    layer_kwargs["position_ids"] = position_ids
+                if "past_key_value" in params and layer_past is not None:
+                    layer_kwargs["past_key_value"] = layer_past
+                elif "past_key_values" in params and layer_past is not None:
+                    layer_kwargs["past_key_values"] = layer_past
+                if "use_cache" in params:
+                    layer_kwargs["use_cache"] = True
 
-            outputs = layer(**layer_kwargs)
+                if "position_embeddings" in params and self.rotary_emb is not None:
+                    past_seq_len = 0
+                    if past_key_values and len(past_key_values) > 0:
+                        past_seq_len = past_key_values[0][0].shape[-2]
+                    total_seq_len = past_seq_len + seq_len
+                    full_position_ids = torch.arange(total_seq_len, device=hidden_states.device).unsqueeze(0)
+                    current_position_ids = full_position_ids[:, past_seq_len:]
+                    cos, sin = self.rotary_emb(hidden_states, current_position_ids)
+                    layer_kwargs["position_embeddings"] = (cos, sin)
 
-            if isinstance(outputs, tuple):
-                hidden_states = outputs[0]
-                for item in outputs[1:]:
-                    if isinstance(item, tuple) and len(item) == 2:
-                        new_past_key_values.append(item)
-                        break
-                    if hasattr(item, 'past_key_values') and item.past_key_values is not None:
-                        new_past_key_values.extend(item.past_key_values)
-                        break
-            else:
-                hidden_states = outputs
+                outputs = layer(**layer_kwargs)
+
+                if isinstance(outputs, tuple):
+                    hidden_states = outputs[0]
+                    for item in outputs[1:]:
+                        if isinstance(item, tuple) and len(item) == 2:
+                            new_past_key_values.append(item)
+                            break
+                        if hasattr(item, 'past_key_values') and item.past_key_values is not None:
+                            new_past_key_values.extend(item.past_key_values)
+                            break
+                else:
+                    hidden_states = outputs
+
+        finally:
+            # FSDP: free non-local shards after forward
+            if fsdp is not None:
+                fsdp.free()
 
         return hidden_states, new_past_key_values
 
@@ -645,25 +717,42 @@ class ModelPartitioner:
         """Convert token IDs to embeddings with positional encoding (first node only)."""
         if self.embed_tokens is None:
             raise RuntimeError("No embedding layer on this node")
-        hidden = self.embed_tokens(input_ids)
-        if self.position_embeds is not None:
-            seq_len = input_ids.shape[-1]
-            position_ids = torch.arange(position_offset, position_offset + seq_len, device=input_ids.device).unsqueeze(0)
-            hidden = hidden + self.position_embeds(position_ids)
-        return hidden
+
+        fsdp = getattr(self, "_fsdp", None)
+        if fsdp is not None:
+            fsdp.gather()
+
+        try:
+            hidden = self.embed_tokens(input_ids)
+            if self.position_embeds is not None:
+                seq_len = input_ids.shape[-1]
+                position_ids = torch.arange(position_offset, position_offset + seq_len, device=input_ids.device).unsqueeze(0)
+                hidden = hidden + self.position_embeds(position_ids)
+            return hidden
+        finally:
+            if fsdp is not None:
+                fsdp.free()
 
     def get_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Compute logits from hidden states (last node only)."""
         if not self.is_last_node:
             raise RuntimeError("This node is not the last node in the pipeline")
 
-        if self.final_norm is not None:
-            hidden_states = self.final_norm(hidden_states)
+        fsdp = getattr(self, "_fsdp", None)
+        if fsdp is not None:
+            fsdp.gather()
 
-        if self.lm_head is not None:
-            return self.lm_head(hidden_states)
+        try:
+            if self.final_norm is not None:
+                hidden_states = self.final_norm(hidden_states)
 
-        raise RuntimeError("No LM head available")
+            if self.lm_head is not None:
+                return self.lm_head(hidden_states)
+
+            raise RuntimeError("No LM head available")
+        finally:
+            if fsdp is not None:
+                fsdp.free()
 
     def get_model_config(self) -> dict:
         """Get model configuration parameters."""

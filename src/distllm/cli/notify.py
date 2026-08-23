@@ -1,20 +1,20 @@
-"""CLI commands for notification system."""
+"""CLI commands for notification system.
 
-import typer
+Functions are imported by :mod:`distllm.cli.main` which registers them
+as Typer commands on the ``system notify`` sub-group.
+"""
+
 from rich.console import Console
 from rich.table import Table
 
-notify_app = typer.Typer(help="Manage notifications and alerts")
 
-
-@notify_app.command("send")
 def notify_send(
-    title: str = typer.Option(..., "--title", "-t", help="Notification title"),
-    message: str = typer.Option(..., "--message", "-m", help="Notification message"),
-    severity: str = typer.Option("info", "--severity", "-s", help="Severity (debug, info, warning, error, critical)"),
-    channel: str = typer.Option("console", "--channel", "-c", help="Channel (slack, discord, email, console)"),
-    webhook_url: str = typer.Option("", "--webhook-url", help="Webhook URL for slack/discord/http"),
-):
+    title: str,
+    message: str,
+    severity: str = "info",
+    channel: str = "console",
+    webhook_url: str = "",
+) -> None:
     """Send a test notification."""
     from distllm.core.notification_manager import (
         NotificationManager, Notification, NotificationSeverity, NotificationChannel,
@@ -47,14 +47,12 @@ def notify_send(
         console.print(f"[green]Notification sent via {ch.value}[/]")
     else:
         console.print(f"[red]Failed to send notification via {ch.value}[/]")
-        raise typer.Exit(1)
 
 
-@notify_app.command("history")
 def notify_history(
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of recent notifications"),
-    severity: str = typer.Option("", "--severity", "-s", help="Filter by severity"),
-):
+    limit: int = 20,
+    severity: str = "",
+) -> None:
     """Show recent notification history."""
     from distllm.core.notification_manager import (
         NotificationManager, NotificationSeverity,

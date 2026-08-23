@@ -1,0 +1,28 @@
+---
+title: Pipeline Parallelism
+description: How model layers are split and scheduled across nodes.
+group: Architecture
+order: 2
+---
+
+## Layer splitting
+
+The partitioner scores every registering device by available memory, compute,
+and bandwidth, then assigns a contiguous layer range that balances total
+latency. You can also assign layers manually:
+
+```bash
+distllm-node --node-id gpu-box --start-layer 0 --end-layer 20 ...
+```
+
+## 1F1B scheduling
+
+DistLLM uses one-forward-one-backward micro-batching: each stage runs a single
+micro-batch forward, then immediately a backward (or in inference, the next
+micro-batch's forward), keeping every stage busy while capping activation memory.
+
+## Straggler handling
+
+Per-stage latencies feed an MAD-based detector. A statistically slow node is
+flagged, batches are re-routed, and the rebalancer can migrate layer ranges at
+runtime without a cluster restart.

@@ -1,0 +1,31 @@
+---
+title: Auto-Discovery
+description: Workers find and join the coordinator without manual layer assignment.
+group: Architecture
+order: 3
+---
+
+## How it works
+
+1. The coordinator announces itself (multicast on LAN, or a seed list for routed networks).
+2. A worker starts with `--coordinator-host` and its device profile.
+3. The partitioner assigns the worker a layer range based on current cluster load.
+4. The worker downloads weights for its range from the hub or a peer (`weight_source`).
+
+## Manual override
+
+Pin any node's layers by passing explicit ranges:
+
+```bash
+distllm-node --node-id gpu-box --start-layer 0 --end-layer 11 ...
+```
+
+## Inspecting the cluster
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  http://coordinator:8000/admin/v1/nodes
+```
+
+Every registered node reports health, draining state, GPU capability, and its
+current layer assignment.

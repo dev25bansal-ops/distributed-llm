@@ -1,0 +1,216 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "dashboard": {
+    "title": "DistLLM Cluster Overview",
+    "description": "Unified observability dashboard for the distributed LLM inference cluster. Requires the distllm-prometheus-exporter and the node_exporter.",
+    "tags": ["distllm", "inference", "gpu"],
+    "timezone": "browser",
+    "editable": true,
+    "refresh": "30s",
+    "panels": [
+      {
+        "title": "Cluster Health",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+        "targets": [
+          {"expr": "distllm_active_nodes", "legendFormat": "Active Nodes"},
+          {"expr": "distllm_draining_nodes", "legendFormat": "Draining"},
+          {"expr": "distllm_dead_nodes", "legendFormat": "Dead"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [{"color": "green", "value": 0}, {"color": "red", "value": 1}]
+            }
+          }
+        }
+      },
+      {
+        "title": "Request Throughput",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 4, "y": 0},
+        "targets": [
+          {"expr": "rate(distllm_requests_total[5m])", "legendFormat": "Requests/s"},
+          {"expr": "rate(distllm_tokens_generated_total[5m])", "legendFormat": "Tokens/s"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "rps",
+            "custom": {"line_interpolation": "smooth"}
+          }
+        }
+      },
+      {
+        "title": "Token Generation Latency (p50/p99)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 12, "y": 0},
+        "targets": [
+          {"expr": "distllm_token_generation_latency_seconds{p50}", "legendFormat": "p50"},
+          {"expr": "distllm_token_generation_latency_seconds{p99}", "legendFormat": "p99"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {"line_interpolation": "smooth"}
+          }
+        }
+      },
+      {
+        "title": "GPU Utilization by Node",
+        "type": "bargauge",
+        "gridPos": {"h": 6, "w": 8, "x": 0, "y": 4},
+        "targets": [
+          {"expr": "distllm_node_gpu_utilization_percent", "legendFormat": "{{node_id}}"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 60},
+                {"color": "red", "value": 85}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "GPU Memory Usage by Node",
+        "type": "bargauge",
+        "gridPos": {"h": 6, "w": 8, "x": 8, "y": 4},
+        "targets": [
+          {"expr": "distllm_node_gpu_memory_bytes / 1e9", "legendFormat": "{{node_id}}"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "GB",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 60},
+                {"color": "red", "value": 85}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "KV Cache Hit Rate",
+        "type": "timeseries",
+        "gridPos": {"h": 6, "w": 8, "x": 16, "y": 4},
+        "targets": [
+          {"expr": "rate(distllm_cache_hits_total[5m]) / (rate(distllm_cache_hits_total[5m]) + rate(distllm_cache_misses_total[5m])) * 100", "legendFormat": "Hit Rate%"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100
+          }
+        }
+      },
+      {
+        "title": "Pipeline Overlap Efficiency",
+        "type": "gauge",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 10},
+        "targets": [
+          {"expr": "distllm_pipeline_overlap_efficiency_percent"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "red", "color": "green", "value": 0},
+                {"color": "green", "color": "green", "value": 60},
+                {"color": "blue", "value": 85}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Federation Peers",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 10},
+        "targets": [
+          {"expr": "distllm_federation_peers"}
+        ]
+      },
+      {
+        "title": "NCCL Bandwidth",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 8, "y": 10},
+        "targets": [
+          {"expr": "rate(distllm_nccl_bytes_total[5m]) * 8 / 1e9", "legendFormat": "{{comm_type}}"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Gbps",
+            "custom": {"line_interpolation": "smooth"}
+          }
+        }
+      },
+      {
+        "title": "Recovery Events",
+        "type": "logs",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+        "targets": [
+          {"expr": "{job=\"distllm-coordinator\"} |= \"recovery\"", "legendFormat": ""}
+        ]
+      },
+      {
+        "title": "Node Latency (p50/p99)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+        "targets": [
+          {"expr": "distllm_node_latency_p50_ms", "legendFormat": "{{node_id}} p50"},
+          {"expr": "distllm_node_latency_p99_ms", "legendFormat": "{{node_id}} p99"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms",
+            "custom": {"line_interpolation": "smooth"}
+          }
+        }
+      },
+      {
+        "title": "SLO Compliance by Tenant",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+        "targets": [
+          {"expr": "distllm_requests_total", "legendFormat": "{{tenant}}"}
+        ],
+        "transformations": [
+          {"id": "groupBy", "options": {"fields": {"tenant": {"aggregations": ["last"]}, "Value": {"aggregations": ["sum"]}}}}
+        ]
+      },
+      {
+        "title": "Power Savings",
+        "type": "gauge",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 26},
+        "targets": [
+          {"expr": "avg(distllm_gpu_power_savings_percent) by (gpu)"}
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100
+          }
+        }
+      }
+    ]
+  }
+}

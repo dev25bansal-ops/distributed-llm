@@ -1,0 +1,82 @@
+# Default values for distllm-operator.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# ── Operator deployment ───────────────────────────────────────────────
+
+operator:
+  name: distllm-operator
+  replicaCount: 1
+  image:
+    repository: ghcr.io/distributed-llm/operator
+    tag: "0.4.0"
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    name: distllm-operator
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  leaderElection:
+    enabled: true
+    resourceName: distllm-operator-leader
+  metrics:
+    port: 9092
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+
+# ── Controller reconciliation ─────────────────────────────────────────
+
+controller:
+  # How often to reconcile DistrubutedLLMCluster resources.
+  syncPeriod: 5m
+  # Max concurrent reconciles.
+  maxConcurrentReconciles: 3
+  # Default images when not specified in the CR.
+  defaultCoordinatorImage: ghcr.io/distributed-llm/coordinator:0.4.0
+  defaultWorkerImage: ghcr.io/distributed-llm/worker:0.4.0
+  # Grace period for worker pod termination.
+  workerGracePeriodSeconds: 30
+  # Grace period for coordinator pod termination.
+  coordinatorGracePeriodSeconds: 60
+
+# ── Default resource templates (used when CR omits resources) ─────────
+
+defaultResources:
+  coordinator:
+    requests:
+      cpu: "2"
+      memory: "8Gi"
+    limits:
+      cpu: "4"
+      memory: "16Gi"
+  worker:
+    requests:
+      cpu: "1"
+      memory: "16Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "4"
+      memory: "32Gi"
+      nvidia.com/gpu: "1"
+
+# ── Network ───────────────────────────────────────────────────────────
+
+network:
+  coordinatorPort: 8000
+  coordinatorGrpcPort: 50050
+  workerGrpcPort: 50051
+  metricsPort: 9091
+
+# ── TLS ───────────────────────────────────────────────────────────────
+
+tls:
+  enabled: false
+  certManager:
+    enabled: false
+    issuerName: distllm-selfsigned-issuer

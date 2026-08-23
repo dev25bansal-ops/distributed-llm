@@ -1,0 +1,30 @@
+---
+title: Docker
+description: Run coordinator and workers in containers.
+group: Deployment
+order: 1
+---
+
+## Single node
+
+```bash
+docker run -d --gpus all -p 8000:8000 \
+  -e API_KEY=your-key \
+  -e MODEL_NAME=meta-llama/Llama-3.1-8B \
+  distributed-llm/server:latest
+```
+
+## Coordinator + workers
+
+The repository ships a compose file that brings up a full cluster:
+
+```bash
+cd tests/dist/integration
+docker compose up --build -d
+```
+
+## Notes
+
+- Mount a cache volume at `/root/.cache/huggingface` to avoid re-downloading weights.
+- Workers reach the coordinator over the compose network by service name.
+- Pass `DISTLLM_LOG_LEVEL=DEBUG` for tensor-shape logging during setup.

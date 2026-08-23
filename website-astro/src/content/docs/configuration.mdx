@@ -1,0 +1,42 @@
+---
+title: YAML Config
+description: Configure the coordinator and workers with a single YAML file.
+group: Configuration
+order: 1
+---
+
+## Config file
+
+DistLLM reads `config.yaml` from the working directory (or pass `--config path/to/file.yaml`).
+Environment variables override YAML values.
+
+```yaml
+model:
+  name: meta-llama/Llama-3.1-8B
+  dtype: float16
+
+network:
+  cluster_key: your-shared-secret   # authenticates worker joins
+
+api:
+  host: 0.0.0.0
+  port: 8000
+
+tls:
+  enabled: false
+```
+
+## Precedence
+
+1. CLI flags (`--model`, `--port`, …)
+2. Environment variables
+3. YAML config file
+4. Built-in defaults
+
+## Validate before launch
+
+```bash
+distllm --validate-config --config config.yaml
+```
+
+Exits 0 when the configuration is valid; non-zero with a detailed error otherwise.

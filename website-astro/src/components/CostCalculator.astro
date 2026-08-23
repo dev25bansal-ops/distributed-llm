@@ -1,0 +1,108 @@
+---
+// Cloud-cost calculator: cloud GPU rental vs owned-hardware serving.
+---
+
+<div class="mx-auto max-w-3xl" data-cost-calc>
+  <div class="rounded-2xl border border-line bg-surface p-6 shadow-card">
+    <div class="grid gap-5 sm:grid-cols-2">
+      <div>
+        <span class="flex justify-between text-xs font-semibold tracking-wide text-faint uppercase">
+          Requests per day
+          <span data-cc="reqVal" class="font-mono text-ink">1,000</span>
+        </span>
+        <input data-cc="requests" type="range" min="100" max="50000" step="100" value="1000"
+          class="mt-2 w-full accent-brand-600" />
+      </div>
+      <div>
+        <span class="flex justify-between text-xs font-semibold tracking-wide text-faint uppercase">
+          Tokens per request
+          <span data-cc="tokVal" class="font-mono text-ink">500</span>
+        </span>
+        <input data-cc="tokens" type="range" min="100" max="4000" step="100" value="500"
+          class="mt-2 w-full accent-brand-600" />
+      </div>
+    </div>
+
+    <div class="mt-6 grid gap-4 sm:grid-cols-3">
+      <div class="rounded-xl bg-sunken p-4 text-center">
+        <p class="text-xs font-semibold tracking-wider text-faint uppercase">Cloud GPU cost</p>
+        <p data-cc="cloudCost" class="mt-1 font-display text-2xl font-bold">$73</p>
+        <p class="text-xs text-faint">per month (A100 @ ~$1.90/hr)</p>
+      </div>
+      <div class="rounded-xl border-2 border-brand-500 bg-brand-50 p-4 text-center">
+        <p class="text-xs font-semibold tracking-wider text-brand-700 uppercase">Your hardware</p>
+        <p data-cc="homeCost" class="mt-1 font-display text-2xl font-bold text-brand-800">~$8</p>
+        <p class="text-xs text-brand-700">electricity, per month</p>
+      </div>
+      <div class="rounded-xl bg-sunken p-4 text-center">
+        <p class="text-xs font-semibold tracking-wider text-faint uppercase">Yearly savings</p>
+        <p data-cc="savings" class="mt-1 font-display text-2xl font-bold text-accent-600">$780</p>
+        <p class="text-xs text-faint">vs renting equivalent capacity</p>
+      </div>
+    </div>
+
+    <p data-cc="verdict" class="mt-5 rounded-xl bg-brand-50 p-3 text-center text-sm text-brand-800"></p>
+
+    <p class="mt-4 text-center text-xs text-faint">
+      Estimates assume one always-on A100-class GPU on a major cloud vs a pooled cluster of owned
+      consumer GPUs at $0.13/kWh. Your real numbers depend on utilization and hardware — run the
+      built-in benchmark suite to measure your own throughput.
+    </p>
+  </div>
+</div>
+
+<script>
+  const root = document.querySelector<HTMLElement>("[data-cost-calc]");
+  if (root) {
+    const req = root.querySelector<HTMLInputElement>('[data-cc="requests"]')!;
+    const tok = root.querySelector<HTMLInputElement>('[data-cc="tokens"]')!;
+    const reqVal = root.querySelector<HTMLElement>('[data-cc="reqVal"]')!;
+    const tokVal = root.querySelector<HTMLElement>('[data-cc="tokVal"]')!;
+    const cloudEl = root.querySelector<HTMLElement>('[data-cc="cloudCost"]')!;
+    const homeEl = root.querySelector<HTMLElement>('[data-cc="homeCost"]')!;
+    const savEl = root.querySelector<HTMLElement>('[data-cc="savings"]')!;
+    const verdict = root.querySelector<HTMLElement>('[data-cc="verdict"]')!;
+
+    // Assumptions (public cloud list prices, approximate):
+    const A100_HOURLY = 1.9;           // $/hr for an A100 40GB-class instance
+    const CONSUMER_TPS = 20;           // tokens/sec sustained per pooled consumer node
+    const A100_TPS = 60;               // tokens/sec on the rented instance
+    const KWH_PRICE = 0.13;            // $/kWh
+    const NODE_WATTS = 350;            // average draw of an active consumer node
+
+    const render = () => {
+      const requests = parseInt(req.value, 10);
+      const tokens = parseInt(tok.value, 10);
+      reqVal.textContent = requests.toLocaleString();
+      tokVal.textContent = tokens.toLocaleString();
+
+      const tokensPerDay = requests * tokens;
+      const hoursPerMonth = 24 * 30;
+
+      // Cloud: rent enough uptime to cover peak-ish demand; simplest honest model:
+      // you pay for the whole month of one instance if traffic is daily.
+      const cloudMonthly = A100_HOURLY * hoursPerMonth;
+
+      // Home: hours of active inference needed per day at consumer throughput.
+      const genHoursPerDay = tokensPerDay / CONSUMER_TPS / 3600;
+      const idleWatts = 15; // nodes mostly idle between bursts
+      const kwhPerMonth = ((genHoursPerDay * NODE_WATTS) + ((24 - genHoursPerDay) * idleWatts)) * 30 / 1000;
+      const homeMonthly = Math.max(5, kwhPerMonth * KWH_PRICE); // floor: baseline power
+
+      const savings = Math.max(0, cloudMonthly - homeMonthly);
+
+      cloudEl.textContent = `$${Math.round(cloudMonthly)}`;
+      homeEl.textContent = `~$${Math.round(homeMonthly)}`;
+      savEl.textContent = `$${Math.round(savings * 12).toLocaleString()}`;
+
+      verdict.textContent =
+        `At ${tokensPerDay.toLocaleString()} tokens/day, DistLLM on ${CONSUMER_TPS} tokens/sec of pooled` +
+        ` consumer hardware costs about $${Math.round(homeMonthly)}/month in electricity —` +
+        ` roughly ${(cloudMonthly / Math.max(homeMonthly, 1)).toFixed(0)}× less than renting.`;
+    };
+
+    req.addEventListener("input", render);
+    tok.addEventListener("input", render);
+    render();
+  }
+</script>

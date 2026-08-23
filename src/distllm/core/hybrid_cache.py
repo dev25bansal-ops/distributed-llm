@@ -178,16 +178,21 @@ class HybridKVCache:
         layer_idx: int,
         seq_len: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Retrieve KV tensors for attention."""
-        mode = self._mode.get(request_id)
-        if mode is None:
-            raise KeyError(f"Sequence {request_id} not found")
+        """Retrieve KV tensors for attention.
 
-        if mode == "paged":
-            return self._paged_mgr.gather_kv_for_attention(request_id, layer_idx, seq_len)
-        else:
-            buf = self._contiguous[request_id]
-            return buf.get(layer_idx, seq_len)
+        Thread-safe: acquires ``self._lock`` to prevent TOCTOU races
+        with concurrent ``_migrate_to_paged`` or ``free`` operations.
+        """
+        with self._lock:
+            mode = self._mode.get(request_id)
+            if mode is None:
+                raise KeyError(f"Sequence {request_id} not found")
+
+            if mode == "paged":
+                return self._paged_mgr.gather_kv_for_attention(request_id, layer_idx, seq_len)
+            else:
+                buf = self._contiguous[request_id]
+                return buf.get(layer_idx, seq_len)
 
     def free(self, request_id: str) -> None:
         """Free KV cache for a request."""

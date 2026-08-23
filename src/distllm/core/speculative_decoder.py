@@ -15,11 +15,36 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 
 
-class SpeculativeDecoder:
+class SpecDecoderBase:
+    """Mixin with shared _sample and stats for all speculative decoder classes.
+
+    Eliminates 7× duplicated ``_sample`` methods across speculative_decoder.py,
+    tree_speculative_decoder.py, and multi_draft_verifier.py.
+    """
+
+    # Subclasses must set these
+    _temperature: float
+    _top_k: int
+    _stats: dict
+
+    def _sample(self, logits: torch.Tensor) -> torch.Tensor:
+        """Sample a token from logits with optional top-k."""
+        if self._temperature == 0:
+            return logits.argmax(dim=-1, keepdim=True)
+        if self._top_k > 0:
+            values, indices = torch.topk(logits, self._top_k, dim=-1)
+            mask = torch.full_like(logits, float("-inf"))
+            logits = mask.scatter_(-1, indices, values)
+        probs = F.softmax(logits / self._temperature, dim=-1)
+        return torch.multinomial(probs, num_samples=1)
+
+
+class SpeculativeDecoder(SpecDecoderBase):
     """Speculative decoding engine.
 
     Uses a fast draft model to propose candidate tokens and the target
@@ -79,51 +104,65 @@ class SpeculativeDecoder:
             num_draft = min(self._num_candidates, remaining)
 
             # --- Draft phase ---
-            draft_tokens = self._draft_forward(generated, num_draft, **kwargs)
+            draft_tokens, draft_logprobs = self._draft_forward(generated, num_draft, **kwargs)
             self._stats["draft_calls"] += 1
 
             # --- Verification phase ---
-            # Concatenate: prompt + all draft tokens
             full_input = torch.cat([generated, draft_tokens], dim=1)
             target_logits = self._target(full_input, **kwargs)
             self._stats["target_calls"] += 1
 
-            # Verify each draft token
+            # Verify each draft token using pre-computed draft logprobs
+            # (avoids redundant draft model forward passes during verification)
             accepted_count = self._verify_tokens(
-                generated, full_input, draft_tokens, target_logits, **kwargs
+                generated, full_input, draft_tokens, target_logits,
+                draft_logprobs=draft_logprobs, **kwargs,
             )
 
             # Append accepted tokens
             generated = torch.cat([generated, draft_tokens[:, :accepted_count]], dim=1)
 
             if accepted_count < num_draft:
-                # Sample one more token from target distribution at the rejection point
                 next_logits = target_logits[:, generated.shape[1] - 1, :]
                 next_token = self._sample(next_logits)
                 generated = torch.cat([generated, next_token], dim=1)
 
-        self._stats["total_proposed"] += self._stats["draft_calls"] * num_draft
+            # Accumulate stats per iteration (not by multiplying total
+            # draft_calls by last iteration's num_draft, which was wrong)
+            self._stats["total_proposed"] += num_draft
+
         self._stats["accepted"] += generated.shape[1] - prompt_len
 
         return generated
 
     def _draft_forward(
         self, prefix: torch.Tensor, num_tokens: int, **kwargs: Any
-    ) -> torch.Tensor:
-        """Generate *num_tokens* draft tokens autoregressively."""
+    ) -> tuple[torch.Tensor, list[float]]:
+        """Generate *num_tokens* draft tokens autoregressively.
+
+        Returns:
+            (draft_tokens, draft_logprobs) — token IDs and their softmax
+            probabilities from the draft model.  The logprobs are used
+            by ``_verify_tokens`` for proper rejection sampling, avoiding
+            a redundant draft model forward pass during verification.
+        """
         if num_tokens <= 0:
-            return torch.empty(1, 0, dtype=torch.long, device=prefix.device)
+            return torch.empty(1, 0, dtype=torch.long, device=prefix.device), []
         draft_tokens = []
+        draft_logprobs: list[float] = []
         current = prefix
 
         for _ in range(num_tokens):
             logits = self._draft(current, **kwargs)
             next_logits = logits[:, -1, :] if logits.dim() > 2 else logits
+            probs = F.softmax(next_logits / self._temperature, dim=-1)
             token = self._sample(next_logits)
+            token_id = token.item()
             draft_tokens.append(token)
+            draft_logprobs.append(probs[0, token_id].item())
             current = torch.cat([current, token], dim=1)
 
-        return torch.cat(draft_tokens, dim=1)
+        return torch.cat(draft_tokens, dim=1), draft_logprobs
 
     def _verify_tokens(
         self,
@@ -131,9 +170,14 @@ class SpeculativeDecoder:
         full_input: torch.Tensor,
         draft_tokens: torch.Tensor,
         target_logits: torch.Tensor,
+        draft_logprobs: list[float] | None = None,
         **kwargs: Any,
     ) -> int:
         """Verify draft tokens against target model distribution.
+
+        When *draft_logprobs* is provided, uses them to compute
+        ``q = exp(logprob)`` for proper rejection sampling.  Without them,
+        re-runs the draft model for each position (slower but compatible).
 
         Returns the number of accepted draft tokens.
         """
@@ -151,34 +195,25 @@ class SpeculativeDecoder:
             target_probs = F.softmax(
                 target_logits[:, prefix_len + i, :] / self._temperature, dim=-1
             )
+            token_id = draft_tokens[0, i].item()
+            p = target_probs[0, token_id].item()
 
-            draft_out = self._draft(full_input[:, :prefix_len + i + 1], **kwargs)
-            draft_probs = F.softmax(
-                draft_out[:, -1, :] / self._temperature, dim=-1
-            )
-
-            q = draft_probs[0, draft_tokens[0, i]].item()
-            p = target_probs[0, draft_tokens[0, i]].item()
-
-            if q <= 0 or torch.rand(1).item() < p / q:
-                if p <= 0:
-                    return i
+            # Use pre-computed draft logprobs when available (avoids
+            # redundant draft model forward pass during verification).
+            if draft_logprobs is not None and i < len(draft_logprobs):
+                q = draft_logprobs[i]
             else:
+                # Fallback: re-run draft model (expensive but compatible)
+                draft_out = self._draft(full_input[:, :prefix_len + i + 1], **kwargs)
+                draft_probs = F.softmax(draft_out[:, -1, :] / self._temperature, dim=-1)
+                q = draft_probs[0, token_id].item()
+
+            if q <= 0:
+                return i
+            if torch.rand(1).item() >= p / q:
                 return i
 
         return num_draft
-
-    def _sample(self, logits: torch.Tensor) -> torch.Tensor:
-        """Sample a token from logits with top-k."""
-        if self._temperature == 0:
-            return logits.argmax(dim=-1, keepdim=True)
-        if self._top_k > 0:
-            values, indices = torch.topk(logits, self._top_k, dim=-1)
-            mask = torch.full_like(logits, float("-inf"))
-            logits = mask.scatter_(-1, indices, values)
-
-        probs = F.softmax(logits / self._temperature, dim=-1)
-        return torch.multinomial(probs, num_samples=1)
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -188,7 +223,233 @@ class SpeculativeDecoder:
         return s
 
 
-class MultiDraftSpeculativeDecoder:
+class SelfSpeculativeDecoder(SpecDecoderBase):
+    """Self-speculative decoding using target model hidden states (Medusa/EAGLE-style).
+
+    Instead of a separate draft model, this attaches a small MLP head to the
+    second-to-last layer of the target model.  The MLP head (Linear(hidden_size,
+    vocab_size * num_candidates)) predicts *num_candidates* draft tokens in a
+    **single forward pass** — no autoregressive draft loop.  Candidates are then
+    verified with a full target forward pass.  Tokens matching the target
+    distribution are accepted; the first mismatch triggers a re-draft.
+
+    Advantages over standard speculative decoding:
+    - No separate draft model to train or load.
+    - Draft head is tiny (~hidden_size * vocab_size * num_candidates params).
+    - Single-pass draft generation is faster than autoregressive drafting.
+
+    Args:
+        target_forward: Callable accepting ``input_ids`` and returning logits.
+        hidden_states_fn: Callable returning ``(logits, hidden_states)`` where
+            ``hidden_states`` is a tuple of all layer hidden states.  Used to
+            extract the second-to-last layer.
+        hidden_size: Dimensionality of the hidden states.
+        vocab_size: Size of the vocabulary.
+        num_candidates: Number of candidate tokens to predict per step.
+        top_k: Top-k sampling for draft generation.
+        temperature: Sampling temperature for draft generation.
+        device: Torch device.
+    """
+
+    def __init__(
+        self,
+        target_forward: Callable,
+        hidden_states_fn: Callable,
+        hidden_size: int,
+        vocab_size: int,
+        num_candidates: int = 5,
+        top_k: int = 20,
+        temperature: float = 1.0,
+        device: str = "cuda",
+    ):
+        self._target = target_forward
+        self._hidden_states_fn = hidden_states_fn
+        self._num_candidates = num_candidates
+        self._top_k = top_k
+        self._temperature = temperature
+        self._device = torch.device(device)
+
+        # Small MLP head: hidden_size -> vocab_size * num_candidates
+        self._draft_head = nn.Linear(hidden_size, vocab_size * num_candidates)
+        self._draft_head.to(self._device)
+
+        self._stats: dict[str, Any] = {
+            "draft_calls": 0,
+            "target_calls": 0,
+            "accepted": 0,
+            "total_proposed": 0,
+        }
+
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 256,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        """Generate tokens using self-speculative decoding.
+
+        Args:
+            input_ids: Prompt token IDs, shape ``(1, seq_len)``.
+            max_new_tokens: Maximum tokens to generate.
+            **kwargs: Additional arguments forwarded to both forward functions.
+
+        Returns:
+            Generated token IDs, shape ``(1, prompt_len + generated)``.
+        """
+        generated = input_ids.clone()
+        prompt_len = input_ids.shape[1]
+        target_len = prompt_len + max_new_tokens
+
+        while generated.shape[1] < target_len:
+            remaining = target_len - generated.shape[1]
+            num_draft = min(self._num_candidates, remaining)
+
+            # --- Draft phase (single forward pass through target) ---
+            draft_tokens, draft_logprobs = self._draft_forward(generated, num_draft, **kwargs)
+            self._stats["draft_calls"] += 1
+
+            # --- Verification phase ---
+            full_input = torch.cat([generated, draft_tokens], dim=1)
+            target_logits = self._target(full_input, **kwargs)
+            self._stats["target_calls"] += 1
+
+            accepted_count = self._verify_tokens(
+                generated, full_input, draft_tokens, target_logits,
+                draft_logprobs=draft_logprobs, **kwargs,
+            )
+
+            generated = torch.cat([generated, draft_tokens[:, :accepted_count]], dim=1)
+
+            if accepted_count < num_draft:
+                next_logits = target_logits[:, generated.shape[1] - 1, :]
+                next_token = self._sample(next_logits)
+                generated = torch.cat([generated, next_token], dim=1)
+
+            # Accumulate stats per iteration — not by multiplying total
+            # draft_calls by last iteration's num_draft (bug #2 in the report).
+            self._stats["total_proposed"] += num_draft
+
+        self._stats["accepted"] += generated.shape[1] - prompt_len
+
+        return generated
+
+    def _draft_forward(
+        self, prefix: torch.Tensor, num_tokens: int, **kwargs: Any,
+    ) -> tuple[torch.Tensor, list[float]]:
+        """Generate *num_tokens* draft tokens from the MLP head in one pass.
+
+        Extracts hidden states from the second-to-last layer, runs the MLP
+        head to produce ``vocab_size * num_candidates`` logits, then slices
+        to ``num_tokens * vocab_size`` and reshapes to sample draft tokens.
+
+        NOTE: The MLP head is fixed at ``vocab_size * num_candidates`` output
+        features.  When ``num_tokens < num_candidates`` (last iteration), we
+        slice only the first ``num_tokens * vocab_size`` elements before
+        reshaping to avoid a dimension mismatch in ``.view()``.
+
+        Returns:
+            (draft_tokens, draft_logprobs) — the sampled token IDs and their
+            softmax probabilities from the MLP head, used for Medusa-style
+            rejection sampling during verification.
+        """
+        if num_tokens <= 0:
+            return torch.empty(1, 0, dtype=torch.long, device=prefix.device), []
+
+        # Get logits + all hidden states from target model
+        logits, all_hidden = self._hidden_states_fn(prefix, **kwargs)  # type: ignore[misc]
+
+        # Extract second-to-last layer hidden state at the last position
+        if isinstance(all_hidden, (tuple, list)):
+            layer_hidden = all_hidden[-2]
+        else:
+            layer_hidden = all_hidden
+
+        # Take the last position's hidden state
+        last_hidden = layer_hidden[:, -1:, :]  # (1, 1, hidden_size)
+
+        # MLP head: (1, 1, hidden_size) -> (1, 1, vocab_size * num_candidates)
+        # The head always outputs for all num_candidates, even when
+        # num_tokens < num_candidates.  We slice to avoid view() mismatches.
+        head_logits = self._draft_head(last_hidden)  # (1, 1, vocab_size * num_candidates)
+
+        # Slice to (1, 1, num_tokens * vocab_size) then reshape
+        needed = num_tokens * (head_logits.shape[-1] // self._num_candidates)
+        head_logits = head_logits[:, :, :needed]
+        head_logits = head_logits.view(1, num_tokens, -1)
+
+        # Sample one token per candidate slot, recording logprobs
+        draft_tokens = []
+        draft_logprobs: list[float] = []
+        for i in range(num_tokens):
+            token_logits = head_logits[:, i, :]
+            probs = F.softmax(token_logits / self._temperature, dim=-1)
+            token = self._sample(token_logits)
+            token_id = token.item()
+            draft_tokens.append(token)
+            draft_logprobs.append(probs[0, token_id].item())
+
+        return torch.cat(draft_tokens, dim=1), draft_logprobs
+
+    def _verify_tokens(
+        self,
+        prefix: torch.Tensor,
+        full_input: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        target_logits: torch.Tensor,
+        draft_logprobs: list[float] | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Verify draft tokens against target model distribution.
+
+        When *draft_logprobs* is provided (one float per draft token),
+        uses proper Medusa-style rejection sampling:
+        ``accept_prob = min(1, p_target / p_draft)``.
+
+        Without it, falls back to a simplified check using raw target
+        probability (lower acceptance rate).
+
+        Returns the number of accepted draft tokens.
+        """
+        num_draft = draft_tokens.shape[1]
+        prefix_len = prefix.shape[1]
+
+        if self._temperature == 0:
+            for i in range(num_draft):
+                target_argmax = target_logits[:, prefix_len + i, :].argmax(dim=-1).item()
+                if target_argmax != draft_tokens[0, i].item():
+                    return i
+            return num_draft
+
+        for i in range(num_draft):
+            target_probs = F.softmax(
+                target_logits[:, prefix_len + i, :] / self._temperature, dim=-1,
+            )
+            token_id = draft_tokens[0, i].item()
+            p = target_probs[0, token_id].item()
+
+            if draft_logprobs is not None and i < len(draft_logprobs):
+                q = draft_logprobs[i]
+                if q <= 0:
+                    return i  # Per spec decoding theory (Leviathan et al.)
+                if torch.rand(1).item() >= p / q:
+                    return i  # Standard rejection sampling: reject
+            else:
+                # Fallback: accept proportional to target probability
+                if torch.rand(1).item() >= p:
+                    return i
+
+        return num_draft
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        s = dict(self._stats)
+        if s["total_proposed"] > 0:
+            s["acceptance_rate"] = round(s["accepted"] / max(s["total_proposed"], 1), 3)
+        return s
+
+
+class MultiDraftSpeculativeDecoder(SpecDecoderBase):
     """Speculative decoding with an ensemble of draft models.
 
     Uses multiple small draft models to propose candidate tokens via
@@ -377,17 +638,6 @@ class MultiDraftSpeculativeDecoder:
 
         return num_draft
 
-    def _sample(self, logits: torch.Tensor) -> torch.Tensor:
-        """Sample a token from logits with top-k."""
-        if self._temperature == 0:
-            return logits.argmax(dim=-1, keepdim=True)
-        if self._top_k > 0:
-            values, indices = torch.topk(logits, self._top_k, dim=-1)
-            logits = torch.full_like(logits, float("-inf")).scatter_(-1, indices, values)
-
-        probs = F.softmax(logits / self._temperature, dim=-1)
-        return torch.multinomial(probs, num_samples=1)
-
     @property
     def stats(self) -> dict[str, Any]:
         s = dict(self._stats)
@@ -397,7 +647,7 @@ class MultiDraftSpeculativeDecoder:
         return s
 
 
-class TreeDraftSpeculativeDecoder:
+class TreeDraftSpeculativeDecoder(SpecDecoderBase):
     """Speculative decoding with tree-structured draft (SpecInfer style).
 
     Instead of a single draft sequence, builds a **tree** of candidate
@@ -754,15 +1004,6 @@ class TreeDraftSpeculativeDecoder:
                 best_path = seq[:accepted]
 
         return best_path if best_length > 0 else None
-
-    def _sample(self, logits: torch.Tensor) -> torch.Tensor:
-        if self._temperature == 0:
-            return logits.argmax(dim=-1, keepdim=True)
-        if self._top_k > 0:
-            values, indices = torch.topk(logits, self._top_k, dim=-1)
-            logits = torch.full_like(logits, float("-inf")).scatter_(-1, indices, values)
-        probs = F.softmax(logits / self._temperature, dim=-1)
-        return torch.multinomial(probs, num_samples=1)
 
     @property
     def stats(self) -> dict[str, Any]:

@@ -1,0 +1,30 @@
+---
+title: Health Checks
+description: Liveness, readiness, and cluster health endpoints.
+group: API
+order: 3
+---
+
+## Endpoints (no auth required — designed for load balancers)
+
+| Path | Purpose |
+|------|---------|
+| `GET /health` | Liveness + model state (503 until a model loads) |
+| `GET /v1/health` | Same, alternate path |
+| `GET /ready` | Readiness for traffic |
+| `GET /live` | Process liveness |
+| `GET /healthz`, `/readyz` | Kubernetes conventions |
+
+## Cluster health
+
+```
+GET /admin/v1/nodes        # requires admin key
+```
+
+Returns every node with health state, draining status, GPU capability, and
+layer assignment.
+
+## Metrics
+
+`GET /metrics` serves Prometheus-format RED metrics:
+`distllm_requests_total`, `distllm_request_latency`, error counters, and more.

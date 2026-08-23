@@ -56,6 +56,12 @@ repos:
         args: [--fix=lf]
       - id: name-tests-test
 
+  - repo: https://github.com/pypa/pip-audit
+    rev: v2.7.3
+    hooks:
+      - id: pip-audit
+        args: [--desc, --requirement, requirements.txt, --fail-on, HIGH]
+
   - repo: local
     hooks:
       - id: helm-lint

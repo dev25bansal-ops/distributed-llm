@@ -12,6 +12,7 @@ Supports:
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 import uuid
@@ -67,13 +68,22 @@ def _build_chunk(
     finish_reason: str | None = None,
     logprob_data: dict | None = None,
     include_role: bool = False,
+    tool_calls: list[dict] | None = None,
 ) -> StreamChunk:
-    """Build a StreamChunk for a streaming SSE event."""
+    """Build a StreamChunk for a streaming SSE event.
+
+    Supports both content delta and tool_calls delta.
+    When ``tool_calls`` is provided, content is set to null per
+    the OpenAI streaming spec.
+    """
     if object_type == "chat.completion.chunk":
         delta: dict[str, Any] = {}
         if include_role:
             delta["role"] = "assistant"
-        if token_text:
+        if tool_calls:
+            delta["content"] = None
+            delta["tool_calls"] = tool_calls
+        elif token_text:
             delta["content"] = token_text
         choice: dict[str, Any] = {
             "index": 0,
@@ -295,7 +305,7 @@ async def _stream_response(
             puc.register(request_id)
 
     model_name = request.model
-    user_id = getattr(request.state, 'user', None) or getattr(request, 'user', None) or 'default'
+    user_id = getattr(request.state, 'tenant', None) or getattr(request.state, 'user', None) or 'default'
     local_tokenizer = getattr(local_coord, 'tokenizer', None) if local_coord else None
     prompt_len = len(local_tokenizer.encode(prompt)) if local_tokenizer else 0
 
@@ -323,12 +333,14 @@ async def _stream_response(
 
         token_buffer = TokenStreamingBuffer(max_batch_size=1)
         completion_tokens = 0
+        full_text = ""  # Accumulate full text for post-generation tool call detection
         async for token_text, logprob_data, ttft in _generate_tokens(
             prompt, request_id, request.max_tokens,
             request.temperature, request.top_p, request.top_k,
             response_format=response_format,
         ):
             completion_tokens += 1
+            full_text += token_text
 
             # Track streaming cost
             cost_event = None
@@ -353,14 +365,61 @@ async def _stream_response(
                 yield chunk.to_sse()
 
         batch = token_buffer.finish()
-        if batch:
+
+        # Detect tool calls in the generated full text and emit
+        # a delta.tool_calls chunk if found.
+        # This runs before the final finish chunk so the correct
+        # finish_reason ("tool_calls" vs "stop") is emitted.
+        tool_calls_data = None
+        _full_text_trimmed = full_text.strip()
+        if _full_text_trimmed and ('"tool_calls"' in _full_text_trimmed or '<tool_call>' in _full_text_trimmed):
+            try:
+                from distllm.api.routes.chat import _ToolCallingEngine
+                _tc_engine = _ToolCallingEngine()
+                parsed_calls = _tc_engine.extract_tool_calls(_full_text_trimmed)
+                if parsed_calls:
+                    tool_calls_data = []
+                    for tc in parsed_calls:
+                        tc_id = tc.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                        func = tc.get("function", {})
+                        args = func.get("arguments", {})
+                        tool_calls_data.append({
+                            "index": len(tool_calls_data),
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {
+                                "name": func.get("name", ""),
+                                "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
+                            },
+                        })
+            except Exception:
+                logger.opt(exception=True).debug(
+                    f"Tool call extraction failed for request {request_id}"
+                )
+
+        # Emit final chunk with correct finish_reason
+        if tool_calls_data:
+            # Emit any remaining buffered text first (without finish_reason),
+            # then the tool_calls chunk with finish_reason="tool_calls"
+            if batch:
+                yield _build_chunk(
+                    request_id, object_type, model_name,
+                    token_text=batch.text,
+                ).to_sse()
             yield _build_chunk(
                 request_id, object_type, model_name,
-                token_text=batch.text,
-                finish_reason="stop",
+                tool_calls=tool_calls_data,
+                finish_reason="tool_calls",
             ).to_sse()
         else:
-            yield _build_chunk(request_id, object_type, model_name, finish_reason="stop").to_sse()
+            if batch:
+                yield _build_chunk(
+                    request_id, object_type, model_name,
+                    token_text=batch.text,
+                    finish_reason="stop",
+                ).to_sse()
+            else:
+                yield _build_chunk(request_id, object_type, model_name, finish_reason="stop").to_sse()
 
         # Final cost summary in usage chunk
         cost_summary = None

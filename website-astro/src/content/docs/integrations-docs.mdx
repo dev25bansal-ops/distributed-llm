@@ -1,0 +1,30 @@
+---
+title: Integrations
+description: LangChain, LlamaIndex, CrewAI, Dify, and more.
+group: Reference
+order: 5
+---
+
+## Agent & RAG frameworks
+
+| Framework | Package | Install |
+|-----------|---------|---------|
+| LangChain | `distllm-langchain` | `pip install -e integrations/langchain` |
+| LlamaIndex | `distllm-llamaindex` | `pip install -e integrations/llamaindex` |
+| CrewAI | `distllm-crewai` | `pip install -e integrations/crewai` |
+| Dify | provider plugin | see `integrations/dify` |
+
+All integrations speak to the same OpenAI-compatible endpoint — point them at
+your coordinator URL with a Bearer key.
+
+## Serving proxies
+
+- **LiteLLM**: add DistLLM as an OpenAI-compatible model entry.
+- **Open WebUI**: set the connection URL to your coordinator.
+- **Ollama-compatible module**: serves Ollama-style endpoints for tools that
+  expect the Ollama protocol.
+
+## Full list
+
+The [Integrations page](/integrations/) covers deploy platforms and every
+community integration.

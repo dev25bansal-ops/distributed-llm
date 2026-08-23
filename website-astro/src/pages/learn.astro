@@ -1,0 +1,74 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+
+const tracks = [
+  {
+    title: "First cluster (15 min)",
+    desc: "Install, start a coordinator, join a worker from a second machine, stream your first token.",
+    href: "/docs/quick-start/",
+    level: "Beginner",
+  },
+  {
+    title: "Multi-node pipeline (30 min)",
+    desc: "Layer ranges, partitioner scoring, and reading the cluster health endpoints.",
+    href: "/docs/multi-node/",
+    level: "Beginner",
+  },
+  {
+    title: "YAML configuration (20 min)",
+    desc: "Config files, env precedence, validation, and secrets management.",
+    href: "/docs/configuration/",
+    level: "Beginner",
+  },
+  {
+    title: "Docker deployment (25 min)",
+    desc: "Containerize a coordinator + worker cluster with compose and healthchecks.",
+    href: "/docs/docker/",
+    level: "Intermediate",
+  },
+  {
+    title: "Kubernetes (40 min)",
+    desc: "GPU-scheduled deployments, probes, and horizontal worker scaling.",
+    href: "/docs/kubernetes/",
+    level: "Intermediate",
+  },
+  {
+    title: "Security model (30 min)",
+    desc: "Auth, TLS, cluster keys, DP training — the full fail-closed story.",
+    href: "/docs/security/",
+    level: "Intermediate",
+  },
+];
+
+const levelColors: Record<string, string> = {
+  Beginner: "bg-brand-100 text-brand-800",
+  Intermediate: "bg-accent-100 text-accent-600",
+  Advanced: "bg-pop-100 text-pop-500",
+};
+---
+
+<PageLayout
+  title="Learn"
+  description="Guided tracks for DistLLM — from first cluster to production Kubernetes."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Learn"
+      title="Guided tracks"
+      lead="Each track is hands-on with runnable commands and ends with something working."
+    />
+    <div class="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+      {tracks.map((t) => (
+        <a href={t.href} class="group rounded-2xl border border-line bg-surface p-6 shadow-sm transition-all hover:border-brand-300 hover:shadow-card">
+          <span class:list={["rounded-full px-2.5 py-0.5 text-xs font-semibold", levelColors[t.level]]}>
+            {t.level}
+          </span>
+          <h2 class="mt-3 text-lg font-semibold group-hover:text-brand-700">{t.title}</h2>
+          <p class="mt-2 text-sm text-muted">{t.desc}</p>
+          <span class="mt-4 inline-block text-sm font-medium text-brand-700">Start →</span>
+        </a>
+      ))}
+    </div>
+  </section>
+</PageLayout>

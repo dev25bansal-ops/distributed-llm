@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import torch
+
 
 class GBNFParser:
     """Parses GBNF grammar strings into rule definitions.
@@ -124,7 +126,9 @@ class GBNFFSM:
     """Finite state machine for GBNF grammar validation.
 
     Tracks the current position in a grammar and reports which
-    bytes are valid at each step.
+    bytes are valid at each step.  Integrates with the token-level
+    ``get_logits_mask()`` interface used by ``JSONSchemaConstraint``
+    for direct token masking during generation.
 
     Usage::
 
@@ -149,17 +153,14 @@ class GBNFFSM:
         root = self._rules.get("root", [])
         if not root:
             return ""
-        # Simple case: root ::= "literal"
         alt = root[0]
         parts = []
         for token in alt:
             if token.startswith('"') and token.endswith('"'):
                 parts.append(token[1:-1])
             elif token.startswith("["):
-                # Character class - expand for simple cases
                 parts.append(token)
             else:
-                # Rule reference - try to resolve
                 resolved = self._resolve_rule(token)
                 if resolved:
                     parts.append(resolved)
@@ -179,13 +180,11 @@ class GBNFFSM:
     def compile_to_dfa(self) -> None:
         """Compile the grammar to a DFA for faster lookups."""
         self._compiled = True
-        # Simple DFA: state -> {byte -> next_state}
         self._dfa = {}
         for i, ch in enumerate(self._target):
             if i not in self._dfa:
                 self._dfa[i] = {}
             self._dfa[i][ord(ch)] = i + 1
-        # Terminal state
         self._dfa[len(self._target)] = {}
 
     def transition(self, byte_value: int) -> int:
@@ -208,20 +207,47 @@ class GBNFFSM:
         if self._compiled and self._dfa:
             state = self._dfa.get(self._position, {})
             return set(state.keys())
-
         if self._position < len(self._target):
             return {ord(self._target[self._position])}
         return set()
 
+    # ── Token-level masking interface (compatible with JSONSchemaConstraint) ──
+
+    def get_logits_mask(self, vocab_size: int, tokenizer, device: str | torch.device | None = None) -> torch.Tensor:
+        """Return a boolean mask: True for allowed token IDs, False for blocked.
+
+        Compatible with the interface used by ``JSONSchemaConstraint`` and
+        ``inference_engine.py``.  A token is allowed if ALL bytes of its
+        decoded form are valid per the GBNF grammar at the current position.
+        """
+        import torch as _torch
+
+        allowed_bytes = self.get_allowed_bytes()
+        if not allowed_bytes:
+            return _torch.ones(vocab_size, dtype=_torch.bool, device=device or "cpu")
+
+        # Walk through the vocabulary: decode each token ID and check
+        # whether every byte passes the GBNF grammar.
+        mask = _torch.zeros(vocab_size, dtype=_torch.bool, device=device or "cpu")
+        vocab_size_actual = min(vocab_size, getattr(tokenizer, 'vocab_size', vocab_size))
+
+        eos_id = getattr(tokenizer, 'eos_token_id', None)
+        for token_id in range(vocab_size_actual):
+            decoded = tokenizer.decode([token_id])
+            if decoded and all(ord(b) in allowed_bytes for b in decoded):
+                mask[token_id] = True
+
+        if eos_id is not None and eos_id < vocab_size:
+            mask[eos_id] = True
+
+        return mask
+
     def is_accepting(self) -> bool:
-        """Return True if the FSM has matched the complete grammar."""
         return self._position >= len(self._target)
 
     def can_end(self) -> bool:
-        """Return True if the FSM is in a state where it can end."""
         return self.is_accepting()
 
     def reset(self) -> None:
-        """Reset the FSM to initial state."""
         self._generated = ""
         self._position = 0

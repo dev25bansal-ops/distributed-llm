@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 
+import torch
 from loguru import logger
 
 from distllm.core.kv_cache import KVCache
@@ -89,6 +90,7 @@ class CacheManager:
         predictive_cache_enabled: bool = False,
         gpu_cache_mb: int = 512,
         cpu_cache_mb: int = 4096,
+        ssd_cache_gb: int = 50,
     ):
         if prefix_cache_enabled:
             from distllm.dist.prefix_cache import PrefixCache
@@ -132,12 +134,124 @@ class CacheManager:
         }
         self._tier_timeout_ms: float = 5000.0  # Skip tier if P95 > this
 
+        # ── Multi-tier cache orchestration ──────────────────────────────
+        # Tiers: GPU (L1, fastest), CPU pinned memory (L2), SSD (L3, largest).
+        # Entries start in L1, graduate to L2 on inactivity, demote to L3
+        # under pressure.  Promotion (L3→L2, L2→L1) happens on access.
+        self._tiers: dict[str, dict[str, Any]] = {
+            "gpu": {
+                "max_bytes": gpu_cache_mb * 1024 * 1024,
+                "used_bytes": 0,
+                "entries": {},  # prefix_hash -> (blob, last_access, size)
+                "latency_ns": 1_000,       # ~1µs
+                "bandwidth_gbps": 900,     # HBM2e
+            },
+            "cpu": {
+                "max_bytes": cpu_cache_mb * 1024 * 1024,
+                "used_bytes": 0,
+                "entries": {},
+                "latency_ns": 100_000,     # ~100µs
+                "bandwidth_gbps": 50,      # PCIe 4.0 x16
+            },
+            "ssd": {
+                "max_bytes": ssd_cache_gb * 1024**3,
+                "used_bytes": 0,
+                "entries": {},
+                "latency_ns": 10_000_000,  # ~10ms
+                "bandwidth_gbps": 3,       # NVMe
+            },
+        }
+        # Ghost cache: metadata-only tracking of recently evicted blocks
+        # to detect thrashing and adjust admission policy.
+        self._ghost_cache: dict[str, float] = {}  # prefix_hash -> eviction_time
+        self._ghost_cache_ttl: float = 60.0
+
+    def _tier_lookup(self, prefix_hash: str) -> tuple[str | None, Any | None]:
+        """Look up *prefix_hash* across tiers L1→L2→L3.
+
+        On a hit in a lower tier, promotes the entry one level up.
+        Returns (tier_name, blob) or (None, None) on miss.
+        """
+        with self._lock:
+            for tier_name in ("gpu", "cpu", "ssd"):
+                tier = self._tiers[tier_name]
+                if prefix_hash in tier["entries"]:
+                    blob, last_access, size = tier["entries"][prefix_hash]
+                    now = time.time()
+                    # Promote: if hit in a lower tier, move to the tier above
+                    if tier_name == "ssd":
+                        self._tier_store("cpu", prefix_hash, blob, size)
+                        self._tiers["ssd"]["entries"].pop(prefix_hash, None)
+                        self._tiers["ssd"]["used_bytes"] -= size
+                    elif tier_name == "cpu":
+                        self._tier_store("gpu", prefix_hash, blob, size)
+                        self._tiers["cpu"]["entries"].pop(prefix_hash, None)
+                        self._tiers["cpu"]["used_bytes"] -= size
+                    else:
+                        tier["entries"][prefix_hash] = (blob, now, size)
+                    return tier_name, blob
+            return None, None
+
+    def _tier_store(self, tier_name: str, prefix_hash: str, blob: Any, size: int) -> None:
+        """Store *blob* in *tier_name*, evicting if necessary.
+        Must be called with self._lock held.
+        """
+        tier = self._tiers[tier_name]
+        while tier["used_bytes"] + size > tier["max_bytes"] and tier["entries"]:
+            victim_hash, (victim_blob, _, victim_size) = min(
+                tier["entries"].items(),
+                key=lambda kv: self._tier_eviction_score(kv[0], kv[1], tier_name),
+            )
+            if tier_name == "gpu":
+                self._tier_store("cpu", victim_hash, victim_blob, victim_size)
+            elif tier_name == "cpu":
+                self._tier_store("ssd", victim_hash, victim_blob, victim_size)
+            else:
+                self._ghost_cache[victim_hash] = time.time()
+            tier["entries"].pop(victim_hash, None)
+            tier["used_bytes"] -= victim_size
+        tier["entries"][prefix_hash] = (blob, time.time(), size)
+        tier["used_bytes"] += size
+
+    def _tier_eviction_score(
+        self, prefix_hash: str, entry: tuple[Any, float, int], tier_name: str,
+    ) -> float:
+        """Compute eviction score for a tier entry.
+
+        Lower score = better eviction candidate.
+        Factors: recency, frequency (from ghost cache), and size.
+        """
+        _blob, last_access, size = entry
+        now = time.time()
+        age = max(now - last_access, 1.0)
+        recency = 1.0 / age
+        # Entries that were recently evicted from upper tiers (thrashing
+        # signal) get a boost to avoid repeated promote/demote cycles.
+        ghost_boost = 0.0
+        if prefix_hash in self._ghost_cache and (now - self._ghost_cache[prefix_hash]) < self._ghost_cache_ttl:
+            ghost_boost = 2.0  # Penalty — was recently evicted
+        return recency + ghost_boost + (size / max(tier["max_bytes"], 1))
+
     def lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
         """Lookup prefix across all local and remote tiers.
 
-        Linear fallthrough: predictive → local → remote.
+        Linear fallthrough: predictive → L1/L2/L3 → local prefix cache → remote.
+        The multi-tier cache (GPU → CPU → SSD) is checked first for the
+        full prefix_hash.  If found, the entry is promoted one level.
         """
-        # 1. Predictive cache (ML-based pattern matching)
+        prefix_hash = ""
+        if tokens:
+            prefix_hash = self._hash_tokens(tokens)
+
+        # 1. Multi-tier cache (GPU L1 → CPU L2 → SSD L3) with promotion
+        if prefix_hash:
+            _tier, blob = self._tier_lookup(prefix_hash)
+            if blob is not None:
+                if isinstance(blob, tuple) and len(blob) == 2:
+                    return blob
+                return len(tokens), blob
+
+        # 2. Predictive cache (ML-based pattern matching)
         if self._predictive_cache is not None:
             predictions = self._predictive_cache.observe_request(tokens)
             if predictions:
@@ -145,14 +259,14 @@ class CacheManager:
                 if result and result[0] > 0:
                     return result
 
-        # 2. Local prefix cache (in-memory)
+        # 3. Local prefix cache (in-memory)
         if self.prefix_cache is not None:
             with self._lock:
                 match_len, kv_data = self.prefix_cache.lookup(tokens)
                 if match_len > 0 and kv_data is not None:
                     return match_len, kv_data
 
-        # 3. Remote peers via gossip protocol
+        # 4. Remote peers via gossip protocol
         return self._lookup_prefix_remote(tokens)
 
     def _lookup_prefix_remote(self, tokens: list[int]) -> tuple[int, Any]:
@@ -175,6 +289,24 @@ class CacheManager:
             logger.debug("Remote prefix lookup failed", exc_info=True)
         return (0, None)
 
+    def _estimate_entry_size(self, kv_data: Any) -> int:
+        """Estimate memory footprint of a cache entry."""
+        if isinstance(kv_data, torch.Tensor):
+            return kv_data.element_size() * kv_data.numel()
+        if isinstance(kv_data, dict):
+            total = 0
+            for v in kv_data.values():
+                if isinstance(v, torch.Tensor):
+                    total += v.element_size() * v.numel()
+            return total
+        if isinstance(kv_data, (list, tuple)):
+            total = 0
+            for v in kv_data:
+                if isinstance(v, torch.Tensor):
+                    total += v.element_size() * v.numel()
+            return total
+        return 1024  # default 1KB for unknown types
+
     def store_prefix(self, tokens: list[int], kv_data: Any) -> None:
         """Store a prefix in the local cache and advertise via gossip.
 
@@ -182,6 +314,13 @@ class CacheManager:
             tokens: List of token IDs.
             kv_data: Cache entry / KV data to store.
         """
+        # Store in multi-tier cache (GPU L1)
+        if tokens:
+            prefix_hash = self._hash_tokens(tokens[:32])
+            size = self._estimate_entry_size(kv_data)
+            self._tier_store("gpu", prefix_hash, (len(tokens), kv_data), size)
+
+        # Local prefix cache (in-memory)
         if self.prefix_cache is not None:
             with self._lock:
                 self.prefix_cache.store(tokens, kv_data)
@@ -235,16 +374,34 @@ class CacheManager:
 
     @staticmethod
     def release_kv_cache(cache: KVCache) -> None:
-        """Release a KV cache and free associated memory."""
+        """Release a KV cache and free associated memory.
+
+        Clears the cache's internal data structures and moves tensors to CPU
+        so that garbage collection can reclaim GPU memory. Note: the caller
+        must also drop their reference to the KVCache object for full cleanup.
+
+        Thread-safe: acquires the cache's internal lock before mutating.
+        """
         import torch
-        # Move tensors off GPU in-place before deleting to ensure memory is freed
+        # Acquire the cache's lock before accessing internals to prevent
+        # racing with concurrent update() or get() calls.
+        cache_lock = getattr(cache, '_lock', None)
+        if cache_lock is not None:
+            cache_lock.acquire()
         try:
+            if hasattr(cache, 'clear'):
+                cache.clear()
             if hasattr(cache, 'cache') and isinstance(cache.cache, list):
                 for i, (k, v) in enumerate(cache.cache):
                     cache.cache[i] = (k.cpu(), v.cpu())
-        except Exception:
-            pass
-        del cache
+                cache.cache.clear()
+            if hasattr(cache, '_seq_lens'):
+                cache._seq_lens.clear()
+            if hasattr(cache, '_qsegments'):
+                cache._qsegments.clear()
+        finally:
+            if cache_lock is not None:
+                cache_lock.release()
         try:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

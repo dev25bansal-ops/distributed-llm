@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CoordinatorArgs(BaseModel):
@@ -59,3 +59,16 @@ class WorkerArgs(BaseModel):
         if "start_layer" in info.data and v < info.data["start_layer"]:
             raise ValueError(f"end_layer ({v}) must be >= start_layer ({info.data['start_layer']})")
         return v
+
+    @model_validator(mode="after")
+    def _validate_layer_bounds(self) -> "WorkerArgs":
+        """Ensure the worker covers at least one layer (no zero-layer workers)."""
+        if self.start_layer >= self.total_layers:
+            raise ValueError(
+                f"start_layer ({self.start_layer}) must be < total_layers ({self.total_layers})"
+            )
+        if self.end_layer >= self.total_layers:
+            raise ValueError(
+                f"end_layer ({self.end_layer}) must be < total_layers ({self.total_layers})"
+            )
+        return self

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distllm-one-api"
+version = "0.1.0"
+description = "Register DistLLM as a one-api provider"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/distributed-llm/distributed-llm"
+
+[tool.setuptools.packages.find]
+where = ["src"]

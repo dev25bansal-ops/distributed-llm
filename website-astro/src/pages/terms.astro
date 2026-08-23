@@ -1,0 +1,19 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+---
+
+<PageLayout
+  title="Terms of Use"
+  description="DistLLM website terms of use."
+  noindex={true}
+>
+  <section class="container-site max-w-3xl py-14">
+    <h1 class="text-4xl">Terms of Use</h1>
+    <p class="mt-2 text-sm text-faint">Last updated: August 2026</p>
+    <div class="prose-doc mt-8">
+      <p>The DistLLM software is licensed under the Apache License, Version 2.0. This website is provided "as is" without warranties of any kind.</p>
+      <p>Benchmark numbers published on this site reflect specific hardware and workload configurations; your results will vary. We encourage you to run the built-in benchmark suite on your own cluster.</p>
+      <p>You are responsible for complying with all applicable laws when deploying models and processing data with DistLLM, including data-protection regulations applicable to your jurisdiction.</p>
+    </div>
+  </section>
+</PageLayout>

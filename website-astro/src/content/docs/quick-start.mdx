@@ -1,0 +1,58 @@
+---
+title: Quick Start
+description: From install to first streamed token in five minutes.
+group: "Getting Started"
+order: 2
+---
+
+## 1. Start a server
+
+```bash
+distllm system api --model TinyStories-1M --local --host 0.0.0.0 --port 8000
+```
+
+`--local` loads the model weights on this machine. The first run downloads
+weights from Hugging Face (pinned to a safe revision).
+
+## 2. Send a request
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "TinyStories-1M",
+    "messages": [{"role": "user", "content": "Once upon a time"}],
+    "max_tokens": 50
+  }'
+```
+
+## 3. Stream tokens
+
+Add `"stream": true` to receive Server-Sent Events as each token is generated:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-key")
+stream = client.chat.completions.create(
+    model="TinyStories-1M",
+    messages=[{"role": "user", "content": "Once upon a time"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+## 4. Add more machines
+
+On any other machine with the package installed:
+
+```bash
+distllm-node --node-id worker-1 --model TinyStories-1M \
+  --start-layer 6 --end-layer 11 --total-layers 12 \
+  --coordinator-host <coordinator-ip> --coordinator-port 50051 \
+  --port 55052
+```
+
+The node registers itself and appears in `/admin/v1/nodes`.

@@ -270,7 +270,7 @@ class LearningRouter:
         # Verify selected model is available
         if selected not in models:
             base_match = self._base.route(messages, available_models)
-            return base_match.model
+            return base_match  # Return the full RouteMatch, not just model name
 
         # Return a RouteMatch
         elapsed = 0.0  # Will be filled by caller
@@ -482,3 +482,164 @@ class LearningRouter:
                 best_model = model
 
         return best_model or (self._models[0] if self._models else "")
+
+
+# ── Neural bandit router ──────────────────────────────────────────────────
+
+class NeuralBanditRouter:
+    """Neural contextual bandit router using a 2-layer MLP.
+
+    Replaces the feature-hashing + UCB1 approach of ``LearningRouter``
+    with a lightweight neural network that can capture complex feature
+    interactions and generalise across tenants via per-tenant embeddings.
+
+    Architecture::
+
+        features (256-dim) ──┐
+        tenant embedding ────┤──► Linear(128) ──► ReLU ──► Linear(num_models)
+        context signals ─────┘
+
+    Training: online mini-batch SGD with replay buffer.
+    Exploration: Thompson sampling (Gaussian noise on output logits).
+
+    Falls back to the base ``LearningRouter`` when sample count < threshold.
+    """
+
+    def __init__(
+        self,
+        base_router: LearningRouter | ModelRouter,
+        models: list[str],
+        feature_dim: int = 256,
+        hidden_dim: int = 128,
+        replay_capacity: int = 5_000,
+        batch_size: int = 32,
+        lr: float = 1e-3,
+        min_samples_for_training: int = 50,
+        device: str = "cpu",
+    ):
+        self._base = base_router
+        self._models = models
+        self._feature_dim = feature_dim
+        self._hidden_dim = hidden_dim
+        self._min_samples = min_samples_for_training
+        self._device = torch.device(device)
+
+        # Neural network: 2-layer MLP with ReLU
+        # Input: features (256) + context (16) + tenant embedding (32) = 304
+        self._net = torch.nn.Sequential(
+            torch.nn.Linear(feature_dim + 16 + 32, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, len(models)),
+        ).to(self._device)
+
+        self._optimizer = torch.optim.Adam(self._net.parameters(), lr=lr)
+        self._replay_buffer: list[tuple[torch.Tensor, int]] = []
+        self._replay_capacity = replay_capacity
+        self._batch_size = batch_size
+        self._lock = threading.Lock()
+        self._train_count = 0
+        self._total_decisions = 0
+        self._fallback_count = 0
+
+        # Per-tenant learnable embedding table (lazy initialised)
+        self._tenant_embeddings: dict[str, torch.Tensor] = {}
+        self._embed_dim = 32
+
+    def _encode(
+        self, text: str, ctx: RoutingContext | None = None, tenant_id: str = ""
+    ) -> torch.Tensor:
+        """Encode (text, context, tenant) into a fixed-size feature tensor."""
+        # Text features via hashing
+        feat = _feature_hash(text, self._feature_dim)
+        x = torch.tensor(feat, dtype=torch.float, device=self._device)
+
+        # Context bits
+        ctx_vec = torch.zeros(16, dtype=torch.float, device=self._device)
+        if ctx:
+            if ctx.cost_budget is not None:
+                ctx_vec[0] = min(ctx.cost_budget, 1.0)
+            if ctx.max_latency_ms is not None:
+                ctx_vec[1] = min(ctx.max_latency_ms / 10_000, 1.0)
+            if ctx.has_tool_calls:
+                ctx_vec[2] = 1.0
+            if ctx.input_tokens is not None:
+                ctx_vec[3] = min(ctx.input_tokens / 32_000, 1.0)
+        x = torch.cat([x, ctx_vec])
+
+        # Tenant embedding
+        if tenant_id:
+            if tenant_id not in self._tenant_embeddings:
+                self._tenant_embeddings[tenant_id] = torch.randn(
+                    self._embed_dim, device=self._device,
+                ) * 0.1
+            x = torch.cat([x, self._tenant_embeddings[tenant_id]])
+        else:
+            x = torch.cat([x, torch.zeros(self._embed_dim, device=self._device)])
+
+        return x
+
+    def route(
+        self, text: str, ctx: RoutingContext | None = None, tenant_id: str = "",
+    ) -> str:
+        """Select a model using the neural bandit."""
+        self._total_decisions += 1
+        with self._lock:
+            if len(self._replay_buffer) < self._min_samples:
+                self._fallback_count += 1
+                if isinstance(self._base, LearningRouter):
+                    return self._base.route(text, ctx, tenant_id)
+                return self._models[0] if self._models else ""
+
+        x = self._encode(text, ctx, tenant_id).unsqueeze(0)
+        self._net.eval()
+        with torch.no_grad():
+            logits = self._net(x)[0]
+        self._net.train()
+
+        # Thompson sampling: add Gaussian noise to logits
+        noise = torch.randn_like(logits) * 0.3
+        chosen = (logits + noise).argmax().item()
+        return self._models[chosen] if chosen < len(self._models) else self._models[0]
+
+    def record_outcome(
+        self, model: str, reward: float, text: str = "",
+        ctx: RoutingContext | None = None, tenant_id: str = "",
+    ) -> None:
+        """Record outcome and optionally train the network."""
+        if model not in self._models:
+            return
+        x = self._encode(text, ctx, tenant_id)
+        action = self._models.index(model)
+
+        with self._lock:
+            self._replay_buffer.append((x.cpu(), action))
+            if len(self._replay_buffer) > self._replay_capacity:
+                self._replay_buffer.pop(0)
+            buf_size = len(self._replay_buffer)
+
+        if buf_size < self._min_samples:
+            return
+
+        # Online mini-batch training
+        import random as _random
+        batch = _random.sample(self._replay_buffer, min(self._batch_size, buf_size))
+        batch_x = torch.stack([b[0] for b in batch]).to(self._device)
+        batch_a = torch.tensor([b[1] for b in batch], device=self._device)
+
+        logits = self._net(batch_x)
+        loss = torch.nn.functional.cross_entropy(logits, batch_a)
+
+        self._optimizer.zero_grad()
+        loss.backward()
+        self._optimizer.step()
+        self._train_count += 1
+
+    @property
+    def stats(self) -> dict:
+        return {
+            "total_decisions": self._total_decisions,
+            "fallback_count": self._fallback_count,
+            "train_count": self._train_count,
+            "replay_buffer_size": len(self._replay_buffer),
+            "num_tenants": len(self._tenant_embeddings),
+        }

@@ -1,0 +1,47 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+import { GLOSSARY } from "../data/glossary";
+
+const categories = [...new Set(GLOSSARY.map((g) => g.category))];
+const chipColors: Record<string, string> = {
+  Core: "bg-brand-100 text-brand-800",
+  Performance: "bg-accent-100 text-accent-600",
+  Efficiency: "bg-pop-100 text-pop-500",
+  Training: "bg-brand-50 text-brand-700",
+  Privacy: "bg-accent-100 text-accent-600",
+  Metrics: "bg-sunken text-muted",
+  Format: "bg-sunken text-muted",
+  Reliability: "bg-sunken text-muted",
+  DistLLM: "bg-brand-600 text-white",
+};
+---
+
+<PageLayout
+  title="Glossary"
+  description="Key terms for distributed LLM inference — pipeline parallelism, KV cache, speculative decoding, and more."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Glossary"
+      title="Speak fluent distributed inference"
+      lead="The vocabulary behind pooling GPUs, splitting pipelines, and serving tokens fast."
+    />
+    <div class="mt-12 grid gap-4 md:grid-cols-2">
+      {GLOSSARY.map((entry) => (
+        <div class="rounded-xl border border-line bg-surface p-5 shadow-sm">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-lg font-semibold">{entry.term}</h2>
+            <span class:list={["rounded-full px-2.5 py-0.5 text-xs font-semibold", chipColors[entry.category] ?? "bg-sunken text-muted"]}>
+              {entry.category}
+            </span>
+          </div>
+          <p class="mt-2 text-sm leading-relaxed text-muted">{entry.def}</p>
+        </div>
+      ))}
+    </div>
+    <p class="mt-8 text-center text-sm text-faint">
+      {categories.length} categories · {GLOSSARY.length} terms
+    </p>
+  </section>
+</PageLayout>

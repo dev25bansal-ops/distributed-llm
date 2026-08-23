@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -139,15 +140,30 @@ class KVCache:
         """Get cached key/value states for a layer.
 
         When quantization is enabled, dequantizes from segments on-demand.
+        Supports two quantization paths:
+        - Incremental (``_update_fp8_unquantized`` / ``_update_quantized``):
+          segments stored in ``_qsegments``, dequantized via ``_dequantize_layer``.
+        - Bulk ``compress()``: quantized tensors stored directly in ``self.cache``,
+          dequantized on-the-fly using stored scale factors.
         """
         with self._lock:
-            # If we have a dequantized cache (non-quantized path), use it
+            # Dequantized path (no quantization)
             if not self._quantized and layer_idx < len(self.cache):
                 return self.cache[layer_idx]
 
-            # Quantized path: dequantize from segments on-demand
-            if self._quantized and layer_idx < len(self._qsegments):
+            # Incremental quantization path: dequantize from segments
+            if self._quantized and layer_idx < len(self._qsegments) and self._qsegments[layer_idx]:
                 return self._dequantize_layer(layer_idx)
+
+            # Bulk compress() path: cache holds quantized tensors directly
+            if self._quantized and layer_idx < len(self.cache):
+                k, v = self.cache[layer_idx]
+                # Dequantize FP8/E5M2: multiply by scale
+                if self._quant_fp8 and layer_idx < len(self._scale_k):
+                    k_deq = (k.float() * self._scale_k[layer_idx]).to(k.dtype)
+                    v_deq = (v.float() * self._scale_v[layer_idx]).to(v.dtype)
+                    return k_deq, v_deq
+                return k, v  # Return raw quantized if no scale available
 
             if layer_idx < len(self.cache):
                 return self.cache[layer_idx]
@@ -270,6 +286,14 @@ class KVCache:
                     cpu_cache.append((k, v))
 
             self._cpu_cache = cpu_cache
+            # Clear GPU cache references so the original GPU tensors can be
+            # garbage-collected.  Without this the method only *copies* to
+            # CPU and never frees GPU memory, making it a no-op.
+            self.cache.clear()
+            import gc as _gc
+            _gc.collect()
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                torch.cuda.empty_cache()
             self._offloaded = True
             return bytes_offloaded
 
@@ -458,10 +482,15 @@ class KVCache:
 
         Returns:
             Dict with compression stats (original_bytes, compressed_bytes, ratio).
+
+        Note:
+            Creates a temporary copy during compression so that an OOM or
+            CUDA error mid-compression leaves the original cache intact.
         """
         import torch as _torch
 
         original_bytes = self.memory_usage()
+        original_cache = list(self.cache)  # shallow copy for rollback
 
         if method == "fp8":
             if not hasattr(_torch, 'float8_e4m3fn'):
@@ -469,87 +498,106 @@ class KVCache:
                 method = "int8"
             else:
                 with self._lock:
-                    compressed_cache = []
-                    scales_k = []
-                    scales_v = []
-                    for k, v in self.cache:
-                        # Scale to preserve dynamic range
-                        k_scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / FP8_E4M3_MAX
-                        v_scale = v.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / FP8_E4M3_MAX
-                        k_fp8 = (k / k_scale).to(_torch.float8_e4m3fn)
-                        v_fp8 = (v / v_scale).to(_torch.float8_e4m3fn)
-                        compressed_cache.append((k_fp8, v_fp8))
-                        scales_k.append(k_scale)
-                        scales_v.append(v_scale)
-                    self.cache = compressed_cache
-                    self._quantized = True
-                    self._quant_fp8 = True
-                    self._quant_bits = 8
-                    self._scale_k = scales_k
-                    self._scale_v = scales_v
-                    compressed_bytes = self.memory_usage()
-                    return {
-                        "method": "fp8",
-                        "original_bytes": original_bytes,
-                        "compressed_bytes": compressed_bytes,
-                        "ratio": compressed_bytes / max(original_bytes, 1),
-                        "savings_pct": (1 - compressed_bytes / max(original_bytes, 1)) * 100,
-                    }
+                    try:
+                        compressed_cache = []
+                        scales_k = []
+                        scales_v = []
+                        for k, v in self.cache:
+                            k_scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / FP8_E4M3_MAX
+                            v_scale = v.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / FP8_E4M3_MAX
+                            k_fp8 = (k / k_scale).to(_torch.float8_e4m3fn)
+                            v_fp8 = (v / v_scale).to(_torch.float8_e4m3fn)
+                            compressed_cache.append((k_fp8, v_fp8))
+                            scales_k.append(k_scale)
+                            scales_v.append(v_scale)
+                        self.cache = compressed_cache
+                        self._quantized = True
+                        self._quant_fp8 = True
+                        self._quant_bits = 8
+                        self._scale_k = scales_k
+                        self._scale_v = scales_v
+                    except Exception:
+                        # Rollback on OOM / CUDA error — still under lock
+                        self.cache = original_cache
+                        self._scale_k = []
+                        self._scale_v = []
+                        raise
 
-        if method == "int8":
-            with self._lock:
-                compressed_cache = []
-                scales_k = []
-                scales_v = []
-                for k, v in self.cache:
-                    k_scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT8_MAX
-                    v_scale = v.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT8_MAX
-                    k_int8 = (k / k_scale).to(_torch.int8)
-                    v_int8 = (v / v_scale).to(_torch.int8)
-                    compressed_cache.append((k_int8, v_int8))
-                    scales_k.append(k_scale)
-                    scales_v.append(v_scale)
-                self.cache = compressed_cache
-                self._quantized = True
-                self._quant_fp8 = False
-                self._quant_bits = 8
-                self._scale_k = scales_k
-                self._scale_v = scales_v
                 compressed_bytes = self.memory_usage()
                 return {
-                    "method": "int8",
+                    "method": "fp8",
                     "original_bytes": original_bytes,
                     "compressed_bytes": compressed_bytes,
                     "ratio": compressed_bytes / max(original_bytes, 1),
                     "savings_pct": (1 - compressed_bytes / max(original_bytes, 1)) * 100,
                 }
 
+        if method == "int8":
+            with self._lock:
+                try:
+                    compressed_cache = []
+                    scales_k = []
+                    scales_v = []
+                    for k, v in self.cache:
+                        k_scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT8_MAX
+                        v_scale = v.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT8_MAX
+                        k_int8 = (k / k_scale).to(_torch.int8)
+                        v_int8 = (v / v_scale).to(_torch.int8)
+                        compressed_cache.append((k_int8, v_int8))
+                        scales_k.append(k_scale)
+                        scales_v.append(v_scale)
+                    self.cache = compressed_cache
+                    self._quantized = True
+                    self._quant_fp8 = False
+                    self._quant_bits = 8
+                    self._scale_k = scales_k
+                    self._scale_v = scales_v
+                except Exception:
+                    self.cache = original_cache
+                    self._scale_k = []
+                    self._scale_v = []
+                    raise
+            compressed_bytes = self.memory_usage()
+            return {
+                "method": "int8",
+                "original_bytes": original_bytes,
+                "compressed_bytes": compressed_bytes,
+                "ratio": compressed_bytes / max(original_bytes, 1),
+                "savings_pct": (1 - compressed_bytes / max(original_bytes, 1)) * 100,
+            }
+
         if method == "int4":
             with self._lock:
-                compressed_cache = []
-                scales_k = []
-                scales_v = []
-                for k, v in self.cache:
-                    k_scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT4_MAX
-                    v_scale = v.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT4_MAX
-                    k_int4 = (k / k_scale).clamp(-7, 7).to(_torch.int8)
-                    v_int4 = (v / v_scale).clamp(-7, 7).to(_torch.int8)
-                    compressed_cache.append((k_int4, v_int4))
-                    scales_k.append(k_scale)
-                    scales_v.append(v_scale)
-                self.cache = compressed_cache
-                self._quantized = True
-                self._quant_fp8 = False
-                self._quant_bits = 4
-                self._scale_k = scales_k
-                self._scale_v = scales_v
-                compressed_bytes = self.memory_usage()
-                return {
-                    "method": "int4",
-                    "original_bytes": original_bytes,
-                    "compressed_bytes": compressed_bytes,
-                    "ratio": compressed_bytes / max(original_bytes, 1),
-                    "savings_pct": (1 - compressed_bytes / max(original_bytes, 1)) * 100,
+                try:
+                    compressed_cache = []
+                    scales_k = []
+                    scales_v = []
+                    for k, v in self.cache:
+                        k_scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT4_MAX
+                        v_scale = v.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / INT4_MAX
+                        k_int4 = (k / k_scale).clamp(-7, 7).to(_torch.int8)
+                        v_int4 = (v / v_scale).clamp(-7, 7).to(_torch.int8)
+                        compressed_cache.append((k_int4, v_int4))
+                        scales_k.append(k_scale)
+                        scales_v.append(v_scale)
+                    self.cache = compressed_cache
+                    self._quantized = True
+                    self._quant_fp8 = False
+                    self._quant_bits = 4
+                    self._scale_k = scales_k
+                    self._scale_v = scales_v
+                except Exception:
+                    self.cache = original_cache
+                    self._scale_k = []
+                    self._scale_v = []
+                    raise
+            compressed_bytes = self.memory_usage()
+            return {
+                "method": "int4",
+                "original_bytes": original_bytes,
+                "compressed_bytes": compressed_bytes,
+                "ratio": compressed_bytes / max(original_bytes, 1),
+                "savings_pct": (1 - compressed_bytes / max(original_bytes, 1)) * 100,
                 }
 
         raise ValueError(f"Unknown compression method: {method}. Use 'fp8', 'int8', or 'int4'.")
@@ -651,21 +699,41 @@ class KVCache:
         return new_k, new_v
 
     def _update_fp8_unquantized(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Append KV tensors without FP8 quantization (fallback path).
+        """Append KV tensors with per-step FP8 quantization.
 
-        FP8 quantization during incremental autoregressive steps is not yet
-        implemented (requires a fused FP8 append kernel).  This method uses
-        the standard pre-allocated slice / torch.cat path — functionally
-        correct but no memory savings.  Use compress(method="fp8") for bulk
-        FP8 compression of an already-populated cache.
+        Quantizes new tokens to FP8 E4M3 on each append, storing only
+        the quantized values. Dequantizes on-the-fly for the return value
+        so callers always see full-precision tensors.
+
+        This avoids the 2x memory overhead of storing FP16 values and
+        instead matches the memory usage of FP8 bulk compression.
         """
-        if not hasattr(self, '_fp8_fallback_warned'):
-            self._fp8_fallback_warned = True
-            logger.warning(
-                "FP8 incremental quantization not implemented — falling back to "
-                "full precision storage. Memory usage will be 2x higher than expected. "
-                "Use KVCache.compress(method='fp8') for bulk compression."
-            )
+        if not self._qsegments:
+            logger.info("FP8 incremental quantization enabled for KV cache")
+
+        fp8_dtype = getattr(torch, 'float8_e4m3fn', None)
+        if fp8_dtype is None:
+            logger.warning("FP8 not available, falling back to full precision append")
+            return self._append_full_precision(layer_idx, new_key, new_value)
+
+        # FP8 E4M3 quantization: scale to [0, FP8_E4M3_MAX] then cast
+        k_scale = new_key.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / FP8_E4M3_MAX
+        v_scale = new_value.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / FP8_E4M3_MAX
+        qk = (new_key / k_scale).to(fp8_dtype)
+        qv = (new_value / v_scale).to(fp8_dtype)
+
+        # Store quantized segment
+        while len(self._qsegments) <= layer_idx:
+            self._qsegments.append([])
+        self._qsegments[layer_idx].append((qk, qv, k_scale, v_scale))
+
+        # Return dequantized view for the caller
+        new_k = qk.to(new_key.dtype) * k_scale
+        new_v = qv.to(new_value.dtype) * v_scale
+        return new_k, new_v
+
+    def _append_full_precision(self, layer_idx: int, new_key: torch.Tensor, new_value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Fallback: append KV tensors in full precision (no quantization)."""
         old_k, old_v = self.cache[layer_idx]
         cur_len = self._seq_lens[layer_idx]
         new_len = new_key.shape[-2]
@@ -718,6 +786,13 @@ class KVCacheManager:
         self._metadata: dict[str, dict] = {}  # E12: Per-cache metadata for eviction scoring
         self._lock = threading.RLock()
 
+        # Reuse-aware eviction state.
+        # _prefix_freq[prefix_hash] = count of requests sharing this prefix hash.
+        # Updated on create() and used by eviction_score() to boost cache
+        # entries whose prefix appears frequently (i.e., likely to be reused).
+        self._prefix_freq: dict[str, int] = defaultdict(int)
+        self._request_prefix: dict[str, str] = {}  # request_id -> prefix_hash
+
     def create(
         self,
         request_id: str,
@@ -727,6 +802,7 @@ class KVCacheManager:
         head_dim: int,
         device: str = "cpu",
         quant_bits: int = 0,
+        prefix_hash: str = "",
     ) -> KVCache:
         """Create a new KV cache for a request.
 
@@ -738,6 +814,9 @@ class KVCacheManager:
             head_dim: Dimension of each head.
             device: Device to allocate tensors on.
             quant_bits: Enable KV cache quantization (4 or 8). 0 = disabled.
+            prefix_hash: Optional hash of the request prefix (prompt).
+                Used by reuse-aware eviction to boost cache entries that
+                share popular prefixes.
         """
         cache = KVCache()
         cache.init_cache(num_layers, batch_size, num_heads, head_dim, device)
@@ -751,7 +830,11 @@ class KVCacheManager:
                 "last_accessed": time.time(),
                 "access_count": 0,
                 "priority": 0,
+                "prefix_hash": prefix_hash,
             }
+            if prefix_hash:
+                self._prefix_freq[prefix_hash] += 1
+                self._request_prefix[request_id] = prefix_hash
         return cache
 
     def get(self, request_id: str) -> KVCache | None:
@@ -782,6 +865,12 @@ class KVCacheManager:
                 self.caches[request_id].clear()
                 del self.caches[request_id]
                 self._metadata.pop(request_id, None)
+                # Clean up prefix tracking
+                prefix_hash = self._request_prefix.pop(request_id, "")
+                if prefix_hash:
+                    self._prefix_freq[prefix_hash] = max(0, self._prefix_freq[prefix_hash] - 1)
+                    if self._prefix_freq[prefix_hash] == 0:
+                        del self._prefix_freq[prefix_hash]
 
     def clear_all(self):
         """Clear all caches."""
@@ -805,7 +894,12 @@ class KVCacheManager:
         """E12: Compute eviction priority score for a cache.
 
         Lower score = better candidate for eviction.
-        Score = 0.4 * recency + 0.3 * frequency + 0.3 * memory_pressure
+        Score = (recency + frequency + memory_pressure + reuse_score) / 4
+
+        The *reuse_score* factor boosts cache entries whose prefix hash
+        appears frequently across requests — popular prefixes (common
+        prompt beginnings, system prompts) are kept longer since they
+        are likely to be reused.
         """
         with self._lock:
             if request_id not in self._metadata:
@@ -820,7 +914,20 @@ class KVCacheManager:
             mem = cache.memory_usage() if cache else 0
             total = sum(c.memory_usage() for c in self.caches.values())
             mem_pressure = mem / max(total, 1)
-            return 0.4 * recency + 0.3 * frequency + 0.3 * (1.0 - mem_pressure)
+
+            # Reuse-aware factor: boost entries sharing a popular prefix.
+            # prefix_freq is the count of cached requests with this prefix
+            # hash.  The more requests share this prefix, the more likely
+            # it is to be hit again, so we penalize it less (higher score).
+            prefix_hash = meta.get("prefix_hash", "")
+            if prefix_hash and prefix_hash in self._prefix_freq:
+                freq = self._prefix_freq[prefix_hash]
+                # Saturate at 10+ to bound the boost
+                reuse_score = min(1.0, freq / 10.0)
+            else:
+                reuse_score = 0.0
+
+            return (recency + frequency + (1.0 - mem_pressure) + reuse_score) / 4
 
     def evict_lowest_score(self) -> str | None:
         """E12: Evict the cache with the lowest eviction score.

@@ -81,11 +81,17 @@ class E2EError(Exception):
 class SessionKeys:
     """Holds key material for a single encrypted session between two nodes.
 
+    Supports message-level forward secrecy via ``RATCHET_INTERVAL``:
+    the symmetric key is ratcheted (one-way KDF chain) every N messages,
+    so past ciphertexts cannot be decrypted if the current key is compromised.
+
     Attributes:
         session_id: Short identifier for this session.
         shared_key: 32-byte symmetric key derived from ECDH.
         salt: Optional salt for key derivation (improves kDF).
     """
+
+    RATCHET_INTERVAL: int = 10  # Ratchet every N messages for forward secrecy
 
     def __init__(self, shared_key: bytes, session_id: str = "", salt: bytes | None = None):
         if len(shared_key) != KEY_BYTES:
@@ -94,6 +100,20 @@ class SessionKeys:
         self._shared_key = shared_key
         self._salt = salt or os.urandom(SALT_BYTES)
         self._seq: int = 0
+
+    def ratchet(self) -> None:
+        """Advance the key one step in a one-way KDF chain.
+
+        After this call, the previous key cannot be recovered even by
+        an attacker who knows the current key.  This provides message-level
+        forward secrecy when called periodically.
+
+        The salt is also ratcheted to prevent correlation across ratchets.
+        """
+        self._shared_key = hmac.new(b"distllm-ratchet", self._shared_key, hashlib.sha256).digest()
+        self._salt = hmac.new(b"distllm-ratchet-salt", self._salt, hashlib.sha256).digest()[:SALT_BYTES]
+        self.session_id = hashlib.sha256(self._shared_key).hexdigest()[:8]
+        logger.debug(f"Session key ratcheted (new id: {self.session_id})")
 
     def derive_box_key(self, salt: bytes | None = None) -> bytes:
         """Derive the per-session symmetric key using a proper KDF.
@@ -131,6 +151,9 @@ class SessionKeys:
 
         Returns (ciphertext_with_nonce, salt). The nonce is prepended to
         the ciphertext so the recipient doesn't need to manage it separately.
+
+        After every ``RATCHET_INTERVAL`` encryptions, the key is ratcheted
+        forward to provide message-level forward secrecy.
         """
         if not HAS_NACL:
             raise E2EError("PyNaCl not installed; cannot encrypt")
@@ -138,6 +161,12 @@ class SessionKeys:
         key = self.derive_box_key()
         nonce = os.urandom(NONCE_BYTES)
         ct_and_tag = crypto_secretbox(plaintext, nonce, key)
+
+        # Ratchet key forward for forward secrecy
+        self._seq += 1
+        if self._seq % self.RATCHET_INTERVAL == 0:
+            self.ratchet()
+
         return nonce + ct_and_tag, self._salt
 
     def decrypt(self, ciphertext: bytes, salt: bytes | None = None) -> bytes:
@@ -145,6 +174,9 @@ class SessionKeys:
 
         Expects the first ``NONCE_BYTES`` (24) bytes to be the nonce,
         followed by the ciphertext + MAC tag.
+
+        After every ``RATCHET_INTERVAL`` decryptions, the key is ratcheted
+        forward to stay in sync with the encrypting side.
 
         Args:
             ciphertext: nonce + ciphertext + MAC tag.
@@ -168,6 +200,11 @@ class SessionKeys:
             plaintext = crypto_secretbox_open(ct, nonce, key)
         except nacl_exceptions.CryptoError as e:
             raise E2EError(f"Decryption failed (wrong key or tampered data): {e}") from e
+
+        # Ratchet key forward to stay in sync with encrypting side
+        self._seq += 1
+        if self._seq % self.RATCHET_INTERVAL == 0:
+            self.ratchet()
 
         return plaintext
 
@@ -371,10 +408,21 @@ def encrypt_tensor_payload(
 ) -> bytes:
     """Convenience wrapper: encrypt raw tensor bytes if E2E is active.
 
-    If ``e2e`` is ``None`` or the session is not established, returns
-    *raw_bytes* unmodified.
+    If ``e2e`` is ``None`` or the session is not established, logs a
+    warning (first time only) and returns *raw_bytes* unmodified.
+
+    SECURITY: When PyNaCl is not installed or E2E keys have not been
+    exchanged, tensor data is transmitted in plaintext.  The caller
+    should verify that E2E prerequisites are met at startup when
+    encryption is required.
     """
     if e2e is None or not e2e.is_established:
+        if not getattr(encrypt_tensor_payload, '_warned', False):
+            logger.warning(
+                "E2E encryption not active — tensor data transmitted in "
+                "plaintext. Install PyNaCl and exchange keys to enable."
+            )
+            encrypt_tensor_payload._warned = True
         return raw_bytes
     return e2e.encrypt_tensor_payload(raw_bytes)
 

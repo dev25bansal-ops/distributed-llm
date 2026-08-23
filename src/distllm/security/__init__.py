@@ -16,6 +16,11 @@ from .e2e import (
     decrypt_tensor_payload,
     HAS_NACL,
 )
+from .watermark import (
+    ModelWatermark,
+    WatermarkConfig,
+    run_cli,
+)
 
 __all__ = [
     "hf_revision",
@@ -26,4 +31,7 @@ __all__ = [
     "encrypt_tensor_payload",
     "decrypt_tensor_payload",
     "HAS_NACL",
+    "ModelWatermark",
+    "WatermarkConfig",
+    "run_cli",
 ]

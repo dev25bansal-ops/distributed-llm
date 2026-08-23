@@ -1,0 +1,19 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+---
+
+<PageLayout
+  title="Privacy Policy"
+  description="DistLLM website privacy policy."
+  noindex={true}
+>
+  <section class="container-site max-w-3xl py-14">
+    <h1 class="text-4xl">Privacy Policy</h1>
+    <p class="mt-2 text-sm text-faint">Last updated: August 2026</p>
+    <div class="prose-doc mt-8">
+      <p>This website stores no personal data and sets no tracking cookies of its own. Aggregate, anonymous usage analytics are collected via Plausible Analytics (EU-hosted), which does not use cookies or fingerprinting.</p>
+      <p>The DistLLM software itself runs entirely on your own hardware. The project's developers receive no telemetry, logs, or model data from your deployments.</p>
+      <p>Questions about this policy may be raised via GitHub issues.</p>
+    </div>
+  </section>
+</PageLayout>

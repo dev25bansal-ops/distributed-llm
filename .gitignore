@@ -5,7 +5,7 @@ __pycache__/
 *.so
 *.egg
 *.egg-info/
-dist/
+/dist/
 build/
 *.whl
 .pytest_cache/
@@ -77,3 +77,13 @@ _find_unpack.py
 
 # Mutation testing cache
 .mutmut-cache
+.database-mcp/
+.hf_cache/
+
+# Astro site
+website-astro/.astro/
+og_*.txt
+# Astro site
+website-astro/dist/
+website-astro/.astro/
+og_*.txt

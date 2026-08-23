@@ -60,6 +60,7 @@ except ImportError:
 #: All recognised roles in privilege order (highest first).
 ROLE_PRIVILEGES: dict[str, int] = {
     "admin": 6,
+    "user-admin": 5,
     "model-admin": 4,
     "auditor": 3,
     "inference-only": 2,
@@ -205,13 +206,21 @@ def validate_jwt(
     """
     if _HAS_PYJWT:
         try:
-            options: dict[str, Any] = {}
+            options: dict[str, Any] = {
+                "verify_signature": True,
+                "require": ["exp"],
+            }
+            # Auto-detect: if secret looks like a PEM public key, use RS256;
+            # otherwise use HS256 (shared secret).
+            _is_pem = secret.strip().startswith("-----BEGIN") if isinstance(secret, str) else False
+            _algorithms = ["RS256", "RS384", "RS512"] if _is_pem else ["HS256"]
+
             payload = _pyjwt.decode(
                 token,
                 secret,
-                algorithms=["HS256", "HS384", "HS512"],
-                audience=audience if audience else None,
-                issuer=issuer if issuer else None,
+                algorithms=_algorithms,
+                audience=audience or None,
+                issuer=issuer or None,
                 options=options,
             )
             return payload
@@ -389,13 +398,23 @@ class AuthPlugin(PluginBase):
         if payload is None:
             return None
 
-        # Extract role from JWT claims; fall back to existing role
+        # JWT is valid — extract the role claim from the token.
+        # The caller (on_request) will use this to override api_key_role,
+        # giving the JWT role higher authority than the underlying API key.
         jwt_role = payload.get("role", "")
-        if jwt_role and jwt_role in ROLE_PRIVILEGES:
+        if jwt_role in ROLE_PRIVILEGES:
             return jwt_role
 
-        # JWT is valid but has no role claim — preserve the API key role
-        return None
+        # JWT is valid but has no recognized role claim — fall back to
+        # the API key role if one exists, otherwise grant minimum access
+        # (read-only) rather than denying the request outright.
+        # SECURITY: The API key role was already validated by AuthMiddleware
+        # and is from a trusted source (not attacker-supplied).
+        api_key_role = context.get("api_key_role", "")
+        if api_key_role in ROLE_PRIVILEGES:
+            return api_key_role
+
+        return "read"
 
     # ── RBAC enforcement ──────────────────────────────────────────────────
 

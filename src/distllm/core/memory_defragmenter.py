@@ -293,8 +293,8 @@ class MemoryDefragmenter:
         """Defragment the PagedAttention block pool.
 
         Thread-safe: acquires internal lock around all mutation.
-        Uses the ``Defragmentable`` protocol if the manager supports it,
-        falling back to direct attribute access otherwise.
+        Also acquires the mgr's lock to prevent concurrent free_sequence()
+        or allocate_sequence() calls from racing with block moves.
 
         Args:
             paged_attention_mgr: A PagedAttentionManager (or any object
@@ -303,8 +303,16 @@ class MemoryDefragmenter:
         Returns:
             DefragResult with statistics.
         """
+        # Acquire both locks (self first, then mgr) to prevent deadlock
         with self._lock:
-            return self._defragment_impl(paged_attention_mgr)
+            mgr_lock = getattr(paged_attention_mgr, '_lock', None)
+            if mgr_lock is not None:
+                mgr_lock.acquire()
+            try:
+                return self._defragment_impl(paged_attention_mgr)
+            finally:
+                if mgr_lock is not None:
+                    mgr_lock.release()
 
     @staticmethod
     def _resolve_blocks(mgr: Any) -> tuple[list[Any], dict[str, Any]]:
@@ -441,6 +449,17 @@ class MemoryDefragmenter:
         result.blocks_moved = len(moves)
         result.bytes_compacted = bytes_moved
         result.time_ms = (time.monotonic() - start) * 1000
+
+        # Only reclaim GPU memory when blocks were actually moved.
+        # torch.cuda.empty_cache() causes 10-100ms stalls and should not
+        # be called on every defrag pass.  See backends/paged_attention.py
+        # line 471 for the same rationale.
+        if bytes_moved > 0:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
         result.tier_used = tier or TieredCompactionLevel.L1_HOT
 
         # Update stats
@@ -487,6 +506,11 @@ class MemoryDefragmenter:
             if tier == TieredCompactionLevel.L2_WARM:
                 offloaded += mgr.swap_blocks_to_cpu(seq_id)
             elif tier == TieredCompactionLevel.L3_COLD:
+                logger.warning(
+                    "L3 NVMe offload not yet implemented; "
+                    "falling back to CPU swap for seq_id={}",
+                    seq_id,
+                )
                 try:
                     mgr.swap_blocks_to_cpu(seq_id)
                     offloaded += 1

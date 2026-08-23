@@ -1,0 +1,17 @@
+{
+  "name": "DistLLM",
+  "short_name": "DistLLM",
+  "description": "Distributed LLM inference — pool consumer GPUs to run large models.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fdfdfb",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

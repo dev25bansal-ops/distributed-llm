@@ -1,0 +1,77 @@
+---
+import { NAV, SITE } from "../config/site";
+import Logo from "./Logo.astro";
+
+const current = Astro.url.pathname;
+const isActive = (href: string) =>
+  href === "/" ? current === "/" : current.startsWith(href.replace(/\/$/, ""));
+---
+
+<header class="sticky top-0 z-40 border-b border-line/80 bg-bg/85 backdrop-blur">
+  <div class="container-site flex h-16 items-center justify-between gap-4">
+    <a href="/" class="flex items-center gap-2 font-display text-lg font-bold" aria-label={SITE.name + " home"}>
+      <Logo class="h-7 w-7" />
+      <span>DistLLM</span>
+    </a>
+
+    <nav class="hidden items-center gap-1 md:flex" aria-label="Main">
+      {NAV.map((item) => (
+        <a
+          href={item.href}
+          aria-current={isActive(item.href) ? "page" : undefined}
+          class:list={[
+            "rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+            isActive(item.href)
+              ? "bg-brand-50 text-brand-700"
+              : "text-muted hover:bg-sunken hover:text-ink",
+          ]}
+        >
+          {item.label}
+        </a>
+      ))}
+    </nav>
+
+    <div class="flex items-center gap-2">
+      <a
+        href={SITE.github}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="hidden rounded-lg border border-line px-3 py-2 text-sm font-medium text-muted transition-colors hover:border-brand-300 hover:text-ink sm:block"
+      >
+        GitHub ★
+      </a>
+      <a
+        href="/docs/installation/"
+        class="rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700"
+      >
+        Get Started
+      </a>
+      <details class="relative md:hidden">
+        <summary
+          class="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-lg border border-line"
+          aria-label="Open menu"
+        >
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </summary>
+        <nav
+          class="absolute right-0 mt-2 w-48 rounded-xl border border-line bg-surface p-2 shadow-card"
+          aria-label="Mobile"
+        >
+          {NAV.map((item) => (
+            <a
+              href={item.href}
+              class:list={[
+                "block rounded-lg px-3 py-2 text-sm font-medium",
+                isActive(item.href) ? "bg-brand-50 text-brand-700" : "text-muted hover:bg-sunken hover:text-ink",
+              ]}
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>

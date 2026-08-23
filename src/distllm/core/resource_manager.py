@@ -90,6 +90,10 @@ class NodeRegistration:
         self.client: NodeClient | None = _PlaceholderClient()
         self.async_client = _PlaceholderClient()
         self.weight_source: str | None = None
+        # TLS configuration — stored for reconnect so the security
+        # property is preserved after transient failures.
+        self.use_tls = use_tls
+        self.ca_cert = ca_cert
 
         # GPU capabilities (populated by init_client via Profile RPC)
         self.gpu_name: str = ""
@@ -202,7 +206,8 @@ class NodeRegistration:
             self.client = create_node_client(
                 host=self.host,
                 port=self.port,
-                use_tls=False,
+                use_tls=getattr(self, 'use_tls', False),
+                ca_cert=getattr(self, 'ca_cert', None),
                 timeout_s=timeout_s,
                 cluster_key=cluster_key,
             )
@@ -264,6 +269,12 @@ class ResourceManager:
         }
         self._conn_pool = ConnectionPool(max_size=10, connect_timeout=5.0)
         self._async_conn_pool = AsyncConnectionPool(max_size=10, connect_timeout=5.0)
+        # Shared thread pool for health check cycles — replaces per-cycle
+        # ThreadPoolExecutor creation (~8,640 pools/day at 10s intervals).
+        self._health_check_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(32, (os.cpu_count() or 1) * 2),
+            thread_name_prefix="health-check",
+        )
 
     def _get_node_lock(self, node_id: str) -> threading.Lock:
         with self._lock:
@@ -445,13 +456,11 @@ class ResourceManager:
                 self.record_failure(node_id)
                 return node_id, {"healthy": False, "error": str(e)}
 
-        max_workers = min(len(nodes), 32) if nodes else 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(check_one, nid, node): nid for nid, node in nodes.items()}
-            results = {}
-            for future in concurrent.futures.as_completed(futures):
-                node_id, status = future.result()
-                results[node_id] = status
+        futures = {self._health_check_pool.submit(check_one, nid, node): nid for nid, node in nodes.items()}
+        results = {}
+        for future in concurrent.futures.as_completed(futures):
+            node_id, status = future.result()
+            results[node_id] = status
         return results
 
     async def health_check_all_async(self, nodes: dict[str, NodeRegistration]) -> dict:
@@ -590,6 +599,16 @@ class ResourceManager:
             self._node_recovery_time[node_id] = time.time() + 3600  # 1 hour
         with self._metrics_lock:
             self._metrics["node_failures"] += 1
+
+    def shutdown(self) -> None:
+        """Release all resources: thread pool, connection pools.
+
+        Called from coordinator.stop() to prevent thread leaks on restart.
+        """
+        self._health_check_pool.shutdown(wait=False)
+        self._conn_pool.close_all()
+        # async conn pool close is async — just log that it should be awaited
+        # (the event loop may already be closed during shutdown)
 
     def save_state(self, path: str = ".distllm_circuit_breakers.json") -> None:
         """Persist circuit breaker state to survive restarts (owner-only perms)."""

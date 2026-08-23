@@ -346,7 +346,7 @@ class PluginSystem:
         closed).  Otherwise a missing allowlist logs a warning and allows
         loading (fail open, backward compatible).
         """
-        strict = self._config.get("verify_plugins", False)
+        strict = self._config.get("verify_plugins", True)
         allowlist_path = path.parent / "distllm_plugin_hashes.txt"
 
         if not allowlist_path.exists():
@@ -404,10 +404,19 @@ class PluginSystem:
                 logger.warning(f"Rejected plugin from untrusted path: {path}")
                 return None
 
-            # Security: reject symlinks pointing outside trusted dirs
+            # Security: reject symlinks pointing outside trusted dirs.
+            # Uses path resolution + prefix check ensuring the resolved
+            # target path is actually a CHILD of a trusted dir (not just
+            # a string prefix match, which could be bypassed by paths
+            # like /trusted_evil matching /trusted).
             if path.is_symlink():
                 link_target = path.resolve()
-                if not any(str(link_target).startswith(str(Path(d).resolve())) for d in getattr(self, '_trusted_dirs', [])):
+                trusted = [Path(d).resolve() for d in getattr(self, '_trusted_dirs', [])]
+                allowed = any(
+                    str(link_target) == str(t) or str(link_target).startswith(str(t) + os.sep)
+                    for t in trusted
+                )
+                if not allowed:
                     logger.warning(f"Rejected symlinked plugin: {path} -> {link_target}")
                     return None
 
@@ -453,8 +462,11 @@ class PluginSystem:
         - Plugin name is sanitised to prevent shell injection
         - Only alphanumeric, dash, and underscore characters are allowed
         - Installation runs with a timeout (120s) to prevent resource exhaustion
-        - ``--require-hashes`` is passed to pip to enforce hash verification
         - A warning is logged when installing from a public PyPI index
+        - Hash verification is performed by the PluginSystem's integrity
+          check after installation, not by pip's ``--require-hashes``
+          (which requires hash values that are impractical to maintain
+          for dynamic PyPI packages)
         """
         import hashlib
         import re
@@ -473,7 +485,7 @@ class PluginSystem:
             f"ensure the package is trusted before use in production."
         )
 
-        cmd = [sys.executable, "-m", "pip", "install", "--require-hashes"]
+        cmd = [sys.executable, "-m", "pip", "install"]
         if upgrade:
             cmd.append("--upgrade")
         cmd.append(package_name)

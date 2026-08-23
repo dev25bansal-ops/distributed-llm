@@ -214,10 +214,22 @@ class AWSSecretsBackend(SecretBackend):
             logger.warning(f"AWS Secrets Manager put failed for '{key}': {e}")
             return False
 
-    def delete(self, key: str) -> bool:
+    def delete(self, key: str, force: bool = False) -> bool:
+        """Delete a secret from AWS Secrets Manager.
+
+        Args:
+            key: The secret key.
+            force: If True, bypass the 7-day recovery window (default: False).
+
+        Returns:
+            True if deletion was successful.
+        """
         try:
             client = self._get_client()
-            client.delete_secret(SecretId=self._full_key(key), ForceDeleteWithoutRecovery=True)
+            kwargs: dict[str, Any] = {"SecretId": self._full_key(key)}
+            if force:
+                kwargs["ForceDeleteWithoutRecovery"] = True
+            client.delete_secret(**kwargs)
             return True
         except Exception as e:
             logger.warning(f"AWS Secrets Manager delete failed for '{key}': {e}")

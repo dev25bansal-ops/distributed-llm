@@ -38,12 +38,14 @@ class _RateLimiter:
 
     def __init__(self, max_attempts: int = 30, window_seconds: int = 60,
                  max_ips: int = 10000, key_by: str = "ip"):
+        import threading
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
         self.max_ips = max_ips
         self._key_by = key_by if key_by in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH) else "ip"
         self._attempts: dict[str, deque[float]] = defaultdict(deque)
         self._access_order: OrderedDict[str, None] = OrderedDict()
+        self._lock = threading.Lock()
 
     def set_key_by(self, mode: str) -> None:
         """Change rate limiting key mode at runtime.
@@ -51,8 +53,9 @@ class _RateLimiter:
         Args:
             mode: 'ip', 'api_key', or 'both'.
         """
-        if mode in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH):
-            self._key_by = mode
+        with self._lock:
+            if mode in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH):
+                self._key_by = mode
 
     def _make_keys(self, ip: str, api_key: str | None = None) -> list[str]:
         """Generate rate limit keys based on current keying mode."""
@@ -97,12 +100,13 @@ class _RateLimiter:
             ip: Client IP address.
             api_key: Optional API key for dual-keyed rate limiting.
         """
-        keys = self._make_keys(ip, api_key)
-        for key in keys:
-            self._prune(key)
-            if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
-                return True
-        return False
+        with self._lock:
+            keys = self._make_keys(ip, api_key)
+            for key in keys:
+                self._prune(key)
+                if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
+                    return True
+            return False
 
     def retry_after(self, ip: str, api_key: str | None = None) -> int:
         """Return the number of seconds until the rate limit resets.
@@ -111,22 +115,24 @@ class _RateLimiter:
             ip: Client IP address.
             api_key: Optional API key for dual-keyed rate limiting.
         """
-        now = time.time()
-        keys = self._make_keys(ip, api_key)
-        max_wait = 0
-        for key in keys:
-            if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
-                oldest = min(self._attempts[key])
-                wait = max(1, int(self.window_seconds - (now - oldest)))
-                max_wait = max(max_wait, wait)
-        return max_wait
+        with self._lock:
+            now = time.time()
+            keys = self._make_keys(ip, api_key)
+            max_wait = 0
+            for key in keys:
+                if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
+                    oldest = min(self._attempts[key])
+                    wait = max(1, int(self.window_seconds - (now - oldest)))
+                    max_wait = max(max_wait, wait)
+            return max_wait
 
     def record_attempt(self, ip: str, api_key: str | None = None) -> None:
         """Record a failed auth attempt."""
-        keys = self._make_keys(ip, api_key)
-        for key in keys:
-            self._attempts[key].append(time.time())
-            self._prune(key)
+        with self._lock:
+            keys = self._make_keys(ip, api_key)
+            for key in keys:
+                self._attempts[key].append(time.time())
+                self._prune(key)
 
 def _get_or_generate_api_key() -> str | None:
     """Get API_KEY from env, or generate one if not set.
@@ -144,12 +150,21 @@ def _get_or_generate_api_key() -> str | None:
 
     # Generate a secure random API key if not set
     generated_key = secrets.token_urlsafe(48)
-    os.environ["API_KEY"] = generated_key
     os.environ["API_KEY_WAS_SET"] = "0"
+
+    # SECURITY: Log a fingerprint, not the full key. Full keys in logs = credential leak.
+    # Logs are written to disk, captured by log aggregators, and visible in CI output.
+    import hashlib
+    fingerprint = generated_key[:8] + "..." + hashlib.sha256(generated_key.encode()).hexdigest()[:8]
     logger.warning(
-        "API_KEY not set. Generated a secure random API key for production use.\n"
-        "Save this key and set API_KEY=<your-key> in your environment:\n"
-        f"API_KEY={generated_key}"
+        f"API_KEY not set. Generated a secure random API key.\n"
+        f"Key fingerprint: {fingerprint}\n"
+        "Save the full key printed below — it will never be shown again:\n"
+        f"Generated API key:\n{generated_key}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "IMPORTANT: Copy this key now and set API_KEY=<key> in your environment.\n"
+        "This is the only time the full key will be displayed.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return generated_key
 
@@ -179,36 +194,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        _get_or_generate_api_key()
         store = get_api_key_store()
 
-        no_auth = False
+        # AUTH BYPASS REMOVED — CRITICAL SECURITY FIX
+        # DISTLLM_NO_AUTH and DISABLE_AUTH env vars are no longer supported.
+        # Authentication is always required. Dev mode bypass was a security risk
+        # because the env var could be set in production by accident.
+        #
+        # For development/testing, use DISTLLM_DEV_MODE=1 with a valid API key,
+        # or run the test suite which sets PYTEST_CURRENT_TEST automatically.
         if os.environ.get("DISTLLM_NO_AUTH") == "1":
-            if os.environ.get("DISTLLM_PROFILE") == "production":
-                raise RuntimeError("Security violation: DISTLLM_NO_AUTH=1 is not allowed in production profile.")
-            if os.environ.get("DISTLLM_DEV_MODE") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
-                no_auth = True
-            else:
-                logger.critical("DISTLLM_NO_AUTH=1 is ignored: dev mode is not enabled.")
-
+            logger.critical(
+                "SECURITY: DISTLLM_NO_AUTH is no longer supported. "
+                "Authentication is always required. Remove this env var."
+            )
         if os.environ.get("DISABLE_AUTH") == "1":
-            if os.environ.get("DISTLLM_PROFILE") == "production":
-                raise RuntimeError("Security violation: DISABLE_AUTH=1 is not allowed in production profile.")
-            if (
-                os.environ.get("DISTLLM_DEV_MODE") == "1"
-                and os.environ.get("API_KEY_WAS_SET") != "1"
-                and not os.environ.get("API_KEY")
-            ):
-                no_auth = True
-
-        if no_auth:
-            if not getattr(self, "_warned", False):
-                logger.warning(
-                    "AUTHENTICATION DISABLED. "
-                    "This is a security risk and should only be used in development."
-                )
-                self._warned = True
-            return await call_next(request)
+            logger.critical(
+                "SECURITY: DISABLE_AUTH is no longer supported. "
+                "Authentication is always required. Remove this env var."
+            )
 
         # Skip auth for health endpoints (K8s probes, load balancers) and OPTIONS (CORS preflight)
         if request.url.path in ("/health", "/ready", "/live", "/metrics") or request.method == "OPTIONS":
@@ -217,24 +221,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("Authorization", "")
         client_ip = get_client_ip(request)
 
-        # Check rate limit before validating
-        if _rate_limiter.is_rate_limited(client_ip):
-            retry_after = _rate_limiter.retry_after(client_ip)
-            return error_response(
-                status_code=429,
-                error="Too Many Requests",
-                message="Too many failed authentication attempts. Try again later.",
-                type="auth_rate_limit",
-                retry_after=retry_after,
-                request_id=getattr(request.state, "request_id", None),
-            )
-
         if not auth_header.startswith("Bearer ") or len(auth_header) < 8:
+            if _rate_limiter.is_rate_limited(client_ip):
+                retry_after = _rate_limiter.retry_after(client_ip)
+                return error_response(
+                    status_code=429,
+                    error="Too Many Requests",
+                    message="Too many failed authentication attempts. Try again later.",
+                    type="auth_rate_limit",
+                    retry_after=retry_after,
+                    request_id=getattr(request.state, "request_id", None),
+                )
             _rate_limiter.record_attempt(client_ip)
             return error_response(
                 status_code=401,
                 error="Unauthorized",
-                message="Unauthorized: missing API key",
+                message="Unauthorized: invalid API key",
                 type="auth_error",
                 request_id=getattr(request.state, "request_id", None),
             )
@@ -242,6 +244,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         token = auth_header[7:]
         result = store.authenticate(token)
         if result is None:
+            if _rate_limiter.is_rate_limited(client_ip):
+                retry_after = _rate_limiter.retry_after(client_ip)
+                return error_response(
+                    status_code=429,
+                    error="Too Many Requests",
+                    message="Too many failed authentication attempts. Try again later.",
+                    type="auth_rate_limit",
+                    retry_after=retry_after,
+                    request_id=getattr(request.state, "request_id", None),
+                )
             _rate_limiter.record_attempt(client_ip)
             return error_response(
                 status_code=401,

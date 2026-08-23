@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext
 from typing import Any, Callable
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
@@ -47,6 +47,7 @@ from distllm.constants import HSTS_MAX_AGE
 
 # Re-export route routers
 from distllm.api.api_state import g as _g
+from distllm.api.auth_deps import require_role
 from distllm.api.errors import error_response, error_response_from_request
 from distllm.api.routes import (
     chat_router,
@@ -65,6 +66,7 @@ from distllm.api.routes import (
     router_admin_router,
     defrag_router,
     batch_router,
+    eval_router,
 )
 
 # Re-export models from route modules for backward compatibility
@@ -402,10 +404,14 @@ def _init_observability() -> None:
     """Initialize tracing, logging, metrics exporter."""
     setup_logging(level="INFO", json_format=True)
 
+    # Tracing sampling: default to 10% (head-based) in production.
+    # Set DISTLLM_TRACE_SAMPLE_RATE=1.0 for full traces during debugging.
+    import os as _os
+    _trace_sample_rate = float(_os.environ.get("DISTLLM_TRACE_SAMPLE_RATE", "0.1"))
     setup_tracing(
         service_name="distllm-api",
         sampling_strategy="head",
-        sampling_ratio=1.0,
+        sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
     )
 
     state.metrics_exporter = DistLLMPrometheusExporter()
@@ -470,6 +476,12 @@ app.add_middleware(RequestRateLimitMiddleware)
 # Only applies to /v1/chat/completions; uses content fingerprinting.
 from distllm.api.dedup import DedupMiddleware
 app.add_middleware(DedupMiddleware)
+
+# Prompt Injection Detection Middleware — detects and mitigates prompt
+# injection attacks (BLOCK / SANITIZE / FLAG). Runs after auth so blocked
+# requests don't consume resources, but before the main route handlers.
+from distllm.api.prompt_injection import PromptInjectionMiddleware
+app.add_middleware(PromptInjectionMiddleware)
 
 
 
@@ -672,6 +684,21 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Build plugin context from the request
+        # SECURITY: Only pass a redacted auth fingerprint in the general context
+        # to prevent arbitrary plugins from leaking credentials via logs
+        # or external storage. The auth plugin receives the full header
+        # separately via its own dispatch hook.
+        auth_header_raw = request.headers.get("authorization", "")
+        auth_fingerprint = ""
+        if auth_header_raw.startswith("Bearer "):
+            token = auth_header_raw[7:]
+            if len(token) > 8:
+                import hashlib
+                auth_fingerprint = f"Bearer {token[:8]}...{hashlib.sha256(token.encode()).hexdigest()[:8]}"
+            else:
+                auth_fingerprint = "Bearer (invalid)"
+        elif auth_header_raw:
+            auth_fingerprint = "(non-bearer)"
         req_ctx = {
             "method": request.method,
             "path": request.url.path,
@@ -683,6 +710,11 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
             "user_agent": request.headers.get("user-agent", ""),
             "api_key_role": getattr(request.state, "api_key_role", ""),
             "api_key_id": getattr(request.state, "api_key_id", ""),
+            "auth_fingerprint": auth_fingerprint,
+            # Internal: full auth header for auth plugin JWT validation.
+            # WARNING: Do not log or persist this value. It contains the
+            # full bearer token / API key.
+            "_auth_header": auth_header_raw,
         }
 
         # Allow plugins to modify/reject the request
@@ -739,6 +771,7 @@ app.include_router(prompts_router)
 app.include_router(model_registry_router)
 app.include_router(router_admin_router)
 app.include_router(batch_router)
+app.include_router(eval_router)
 
 # Cost tracking middleware
 try:
@@ -764,13 +797,13 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
     kv_cache, speculative, cost, queue_depth, active_requests, scheduler,
     nodes, gpu, prefix_cache, spec_decoder, topology, tenants.
     """
-    # Authenticate WebSocket connection via query param or first message
-    auth_token = websocket.query_params.get("token", "")
-    if not auth_token:
-        # Try to get from Authorization header
-        auth_header = websocket.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            auth_token = auth_header[7:]
+    # SECURITY FIX: Removed query param token support — tokens in URLs are logged
+    # in server access logs, proxy logs, browser history, and analytics.
+    # Token must come from Authorization header only.
+    auth_token = None
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        auth_token = auth_header[7:]
 
     # Validate API key if auth is configured
     from distllm.core.api_key_store import get_api_key_store
@@ -825,14 +858,14 @@ async def metrics_websocket(websocket: WebSocket) -> None:
         categories: Comma-separated metric categories to include
         token: API key for authentication
     """
-    # SECURITY: Authenticate WebSocket connection
+    # SECURITY: Authenticate WebSocket connection via header only
+    # Query param tokens are insecure (logged in URLs, proxies, browser history)
     from distllm.core.api_key_store import get_api_key_store
     store = get_api_key_store()
-    auth_token = websocket.query_params.get("token", "")
-    if not auth_token:
-        auth_header = websocket.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            auth_token = auth_header[7:]
+    auth_token = None
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        auth_token = auth_header[7:]
 
     if store.get_key_count() > 0:
         if not auth_token:
@@ -967,8 +1000,9 @@ async def model_registry_page() -> HTMLResponse:
     summary="Cluster node topology",
     description="Return all registered worker nodes with their GPU info, health status, and layer assignments.",
     response_description="List of cluster nodes with capabilities",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_cluster_nodes() -> dict:
+async def api_cluster_nodes(request: Request) -> dict:
     """Return current cluster node topology."""
     coord = state.coordinator
     if coord is None:
@@ -1018,31 +1052,165 @@ async def federation_heartbeat(request: Request) -> dict:
     if coord is None:
         return JSONResponse(status_code=503, content={"status": "unavailable"})
 
-    # Verify cluster key
+    # SECURITY: Cluster key is required
     local_key = getattr(coord.config, 'cluster_key', None)
-    if local_key:
-        received_key = request.headers.get("X-Cluster-Key", "")
-        if not received_key or not hmac.compare_digest(received_key, local_key):
-            return JSONResponse(
-                status_code=401,
-                content={"status": "unauthorized", "error": "invalid cluster key"},
-            )
+    if not local_key:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "error": "Federation disabled: no cluster_key configured"},
+        )
+    received_key = request.headers.get("X-Cluster-Key", "")
+    if not received_key:
+        return JSONResponse(
+            status_code=401,
+            content={"status": "unauthorized", "error": "missing cluster key"},
+        )
 
-    body = await request.json()
+    # Accept current key or pending old key (grace period during rotation)
+    key_valid = hmac.compare_digest(received_key, local_key)
+    if not key_valid:
+        pending_old = getattr(coord, "_pending_old_cluster_key", None)
+        rotation_time = getattr(coord, "_key_rotation_time", 0)
+        grace_expiry = rotation_time + 300  # 5-minute grace period
+        if pending_old and time.time() < grace_expiry:
+            key_valid = hmac.compare_digest(received_key, pending_old)
+    if not key_valid:
+        return JSONResponse(
+            status_code=401,
+            content={"status": "unauthorized", "error": "invalid cluster key"},
+        )
+
+    # Validate heartbeat body with Pydantic
+    from pydantic import BaseModel, Field, field_validator
+
+    class FederationHeartbeat(BaseModel):
+        active_requests: int = Field(default=0, ge=0)
+        pending_requests: int = Field(default=0, ge=0)
+        gpu_utilization: float = Field(default=0.0, ge=0.0, le=100.0)
+        queue_depth: int | None = Field(default=None, ge=0)
+
+        @field_validator("gpu_utilization")
+        @classmethod
+        def validate_utilization_range(cls, v: float) -> float:
+            return max(0.0, min(100.0, v))
+
+    raw_body = await request.json()
+    heartbeat = FederationHeartbeat(**raw_body)
+
     if hasattr(coord, '_federation') and coord._federation:
         try:
             for pid, peer in coord._federation._peers.items():
                 if pid != coord._federation.config.cluster_id:
                     coord._federation._load_balancer.report_load(
                         cluster_id=pid,
-                        active_requests=body.get("active_requests", 0),
-                        pending_requests=body.get("pending_requests", 0),
-                        gpu_utilization=body.get("gpu_utilization", 0.0),
-                        queue_depth=body.get("pending_requests", 0),
+                        active_requests=heartbeat.active_requests,
+                        pending_requests=heartbeat.pending_requests,
+                        gpu_utilization=heartbeat.gpu_utilization,
+                        queue_depth=heartbeat.queue_depth or heartbeat.pending_requests,
                     )
         except Exception:
-            pass
+            logger.opt(exception=True).debug("Federation heartbeat processing failed")
     return {"status": "ok"}
+
+
+@app.post(
+    "/api/cluster/rotate-key",
+    summary="Rotate cluster key",
+    description="Rotate the cluster authentication key. The new key is applied immediately "
+                "and must be distributed to all nodes. Supports a grace period during which "
+                "both the old and new key are accepted.",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def rotate_cluster_key(request: Request) -> dict:
+    """Rotate the cluster authentication key.
+
+    Generates a new cryptographically random key, applies it with a
+    configurable grace period during which both old and new keys are
+    accepted for HMAC verification.
+
+    Rate-limited: max 1 rotation per 60 seconds to prevent
+    rolling-DoS attacks (CWE-799).
+    """
+    # Rate limit: max 1 rotation per 60 seconds
+    now = time.time()
+    last_rotation = getattr(state, "_last_key_rotation_time", 0.0)
+    if now - last_rotation < 60.0:
+        remaining = int(60.0 - (now - last_rotation))
+        return JSONResponse(
+            status_code=429,
+            content={
+                "status": "rate_limited",
+                "detail": f"Key rotation rate limited. Retry in {remaining}s.",
+                "retry_after_s": remaining,
+            },
+        )
+    state._last_key_rotation_time = now
+
+    import secrets
+    new_key = secrets.token_urlsafe(32)
+
+    coord = state.coordinator
+    if coord is None:
+        return {"status": "error", "detail": "coordinator not available"}
+
+    old_key = getattr(coord.config, 'cluster_key', None)
+    # Store old key as pending_old_key for grace period validation
+    if old_key:
+        coord._pending_old_cluster_key = old_key
+        coord._key_rotation_time = time.time()
+
+    coord.config.cluster_key = new_key
+    logger.warning(
+        f"Cluster key rotated by admin. "
+        f"New key fingerprint: {hashlib.sha256(new_key.encode()).hexdigest()[:16]}"
+    )
+    return {
+        "status": "ok",
+        "new_key": new_key,
+        "detail": "Save this key and distribute it to all nodes. "
+                  "The previous key will be accepted for 5 minutes.",
+    }
+
+
+@app.post(
+    "/api/v1/ha/snapshot",
+    summary="HA state snapshot",
+    description="Receive a coordinator state snapshot from the leader for HA standby replication.",
+    include_in_schema=False,
+)
+async def ha_state_snapshot(request: Request) -> dict:
+    """Receive and apply a coordinator state snapshot from the HA leader.
+
+    Authenticated via a shared HA secret header that both leader and
+    standby coordinators use, preventing arbitrary state injection.
+    """
+    coord = state.coordinator
+    if coord is None:
+        return {"status": "error", "detail": "coordinator not available"}
+
+    # SECURITY: Require HA shared secret
+    expected_secret = os.environ.get("DISTLLM_HA_SECRET", "")
+    if expected_secret:
+        received_secret = request.headers.get("X-HA-Secret", "")
+        if not hmac.compare_digest(received_secret, expected_secret):
+            return JSONResponse(
+                status_code=403,
+                content={"status": "error", "detail": "invalid HA secret"},
+            )
+
+    try:
+        from pydantic import BaseModel
+
+        class HASnapshot(BaseModel):
+            nodes: dict = {}
+            metadata: dict = {}
+
+        raw = await request.json()
+        snapshot = HASnapshot(**raw)
+        coord.apply_state_snapshot(raw)
+        return {"status": "ok", "applied_nodes": len(snapshot.nodes)}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @app.get(
@@ -1050,8 +1218,9 @@ async def federation_heartbeat(request: Request) -> dict:
     summary="Pipeline orchestrator health and metrics",
     description="Return pipeline health status, node execution metrics, transport info, and configuration.",
     response_description="Pipeline health and metrics",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_pipeline_health() -> dict:
+async def api_pipeline_health(request: Request) -> dict:
     """Return pipeline orchestrator health and metrics."""
     coord = state.coordinator
     if coord is None:
@@ -1084,8 +1253,9 @@ async def api_pipeline_health() -> dict:
     summary="Node reputation scores",
     description="Return reputation scores for all registered nodes based on reliability, speed, uptime, and health.",
     response_description="Reputation scores per node",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_cluster_reputation() -> dict:
+async def api_cluster_reputation(request: Request) -> dict:
     """Return node reputation scores."""
     coord = state.coordinator
     if coord is None or not hasattr(coord, '_reputation'):
@@ -1098,8 +1268,9 @@ async def api_cluster_reputation() -> dict:
     summary="Metrics collector snapshot",
     description="Return a snapshot of all collected metrics from the observability collector, including raw counters and gauges for instrumentation debugging.",
     response_description="Collector metrics snapshot",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_collector_metrics() -> dict:
+async def api_collector_metrics(request: Request) -> dict:
     """Return current collector metrics snapshot."""
     return get_collector().summary()
 
@@ -1109,8 +1280,10 @@ async def api_collector_metrics() -> dict:
     summary="Metrics SSE stream",
     description="Subscribe to a real-time metrics stream via Server-Sent Events. Use query parameters to filter metric categories and set update interval.",
     response_description="Event stream of structured metrics JSON.",
+    dependencies=[Depends(require_role("auditor"))],
 )
 async def api_metrics_stream(
+    request: Request,
     metrics: str = "",
     interval: float = 1.0,
 ) -> StreamingResponse:
@@ -1155,8 +1328,9 @@ async def api_metrics_stream(
     summary="Recent request waterfall data",
     description="Return recent request lifecycle data (queue → prefill → decode) for the dashboard waterfall chart.",
     response_description="List of request timing entries with elapsed_ms, ttft_ms, and request_id",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_waterfall(limit: int = 50) -> list:
+async def api_waterfall(request: Request, limit: int = 50) -> list:
     """Return recent request waterfall entries showing lifecycle phases."""
     coord = state.coordinator
     if coord is None:
@@ -1178,8 +1352,9 @@ async def api_waterfall(limit: int = 50) -> list:
     summary="Edge-to-cloud continuum statistics",
     description="Return statistics about the edge-to-cloud device continuum including device types, transports, and layer assignments.",
     response_description="Continuum statistics",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_continuum_stats() -> dict:
+async def api_continuum_stats(request: Request) -> dict:
     """Return edge-to-cloud continuum statistics."""
     continuum = getattr(state, "continuum", None)
     if continuum is None:
@@ -1192,8 +1367,9 @@ async def api_continuum_stats() -> dict:
     summary="Cost tracking summary",
     description="Return cost tracking summary including per-request costs, savings vs cloud APIs, and throughput metrics.",
     response_description="Cost summary",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_cost_summary(tenant_id: str = "") -> dict:
+async def api_cost_summary(request: Request, tenant_id: str = "") -> dict:
     """Return cost tracking summary."""
     try:
         from distllm.core.cost_tracker import get_cost_tracker
@@ -1207,8 +1383,9 @@ async def api_cost_summary(tenant_id: str = "") -> dict:
     summary="Cost history",
     description="Return recent cost tracking history.",
     response_description="Cost history entries",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_cost_history(limit: int = 100) -> list:
+async def api_cost_history(request: Request, limit: int = 100) -> list:
     """Return recent cost history."""
     try:
         from distllm.core.cost_tracker import get_cost_tracker
@@ -1222,8 +1399,9 @@ async def api_cost_history(limit: int = 100) -> list:
     summary="Streaming cost statistics",
     description="Return real-time streaming cost tracker statistics.",
     response_description="Streaming cost stats",
+    dependencies=[Depends(require_role("auditor"))],
 )
-async def api_streaming_cost_stats() -> dict:
+async def api_streaming_cost_stats(request: Request) -> dict:
     """Return streaming cost tracker statistics."""
     try:
         from distllm.core.streaming_cost import get_streaming_cost_tracker
@@ -1318,6 +1496,17 @@ def create_coordinator(
     try:
         from distllm.dist.node_service import NodeServer
 
+        # Determine TLS config from settings
+        coord_tls = False
+        coord_cert_file: str | None = None
+        coord_key_file: str | None = None
+        coord_ca_cert: str | None = None
+        if settings and settings.tls.enabled:
+            coord_tls = True
+            coord_cert_file = settings.tls.cert_file
+            coord_key_file = settings.tls.key_file
+            coord_ca_cert = settings.tls.ca_cert_file
+
         # Create a wrapper that provides the interface NodeServer expects
         class _CoordinatorNode:
             def __init__(self, coordinator: Coordinator) -> None:
@@ -1339,8 +1528,16 @@ def create_coordinator(
 
         coord._node_wrapper = _CoordinatorNode(coord)
         coord._node_server = NodeServer(coord._node_wrapper, port=coord_port, max_workers=4)
-        coord._node_server.start(use_tls=False)
-        logger.info(f"Coordinator gRPC server started on port {coord_port} for worker connections")
+        coord._node_server.start(
+            use_tls=coord_tls,
+            cert_file=coord_cert_file,
+            key_file=coord_key_file,
+            ca_cert=coord_ca_cert,
+        )
+        if coord_tls:
+            logger.info(f"Coordinator gRPC server started on port {coord_port} with TLS for worker connections")
+        else:
+            logger.info(f"Coordinator gRPC server started on port {coord_port} for worker connections (no TLS)")
     except Exception as e:
         logger.warning(f"Could not start gRPC server on port {coord_port}: {e}")
         logger.warning("Workers will not be able to connect. Run 'system coordinator' separately.")

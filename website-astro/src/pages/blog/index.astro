@@ -1,0 +1,64 @@
+---
+import { getCollection } from "astro:content";
+import PageLayout from "../../layouts/PageLayout.astro";
+import SectionHeading from "../../components/SectionHeading.astro";
+import { formatDate } from "../../lib/format";
+
+const posts = (await getCollection("blog", ({ data }) => !data.draft && !data.linkOut))
+  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());
+const linkOuts = (await getCollection("blog", ({ data }) => !data.draft && data.linkOut))
+  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());
+---
+
+<PageLayout
+  title="Blog"
+  description="Release notes and guides from the DistLLM project."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="Blog"
+      title="News & writing"
+      lead="Release announcements, deep dives, and practical guides for pooled inference."
+    />
+
+    <div class="mx-auto mt-12 max-w-3xl space-y-5">
+      {[...posts, ...linkOuts].map((post) => {
+        const inner = (
+          <>
+            <div class="flex items-center gap-3 text-xs text-faint">
+              <time datetime={post.data.pubDate.toISOString()}>
+                {formatDate(post.data.pubDate)}
+              </time>
+              {post.data.tags.map((t) => (
+                <span class="rounded-full bg-brand-50 px-2 py-0.5 font-medium text-brand-700">{t}</span>
+              ))}
+            </div>
+            <h2 class="mt-2 text-xl group-hover:text-brand-700">{post.data.title}</h2>
+            <p class="mt-1 text-sm text-muted">{post.data.description}</p>
+          </>
+        );
+        return post.data.linkOut ? (
+          <a
+            href={post.data.linkOut}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="group block rounded-xl border border-line bg-surface p-6 shadow-sm transition-shadow hover:shadow-card"
+          >
+            {inner} <span class="mt-2 inline-block text-xs text-faint">Read on GitHub ↗</span>
+          </a>
+        ) : (
+          <a
+            href={`/blog/${post.id}/`}
+            class="group block rounded-xl border border-line bg-surface p-6 shadow-sm transition-shadow hover:shadow-card"
+          >
+            {inner}
+          </a>
+        );
+      })}
+    </div>
+
+    <p class="mt-10 text-center">
+      <a href="/rss.xml" class="text-sm font-medium text-brand-700 hover:underline">Subscribe via RSS</a>
+    </p>
+  </section>
+</PageLayout>

@@ -220,7 +220,14 @@ class BlockCompressor:
             flat_indices = torch.cat([flat_indices, torch.zeros(1, dtype=torch.long, device=flat_indices.device)])
         packed = (flat_indices[::2] | (flat_indices[1::2] << 4)).to(torch.uint8)
 
-        return packed.reshape(*tensor.shape[:-1], -1), absmax
+        # Reshape to (batch, num_heads, seq_len, ceil(head_dim/2)).
+        # Using ``*tensor.shape[:-1]`` matches all dims except the last
+        # (which is packed to ceil(head_dim/2)).  For odd head_dim values
+        # the packed count may undershoot the naive ``*tensor.shape[:-1], -1``
+        # reshape by up to ``(H * S) // 2`` elements, so we compute the
+        # exact trailing dimension.
+        packed_last_dim = packed.numel() // (tensor.shape[0] * tensor.shape[1] * tensor.shape[2])
+        return packed.reshape(*tensor.shape[:-1], packed_last_dim), absmax
 
     @staticmethod
     def _decompress_nf4(
@@ -228,7 +235,15 @@ class BlockCompressor:
         scale: torch.Tensor,
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
-        """Decompress NF4-packed tensor."""
+        """Decompress NF4-packed tensor.
+
+        The original tensor had shape ``(batch, num_heads, seq_len, head_dim)``.
+        The packed tensor has shape ``(batch, num_heads, seq_len, ceil(head_dim / 2))``
+        with two 4-bit values packed per byte.
+
+        The scale tensor from ``amax(dim=-1, keepdim=True)`` has shape
+        ``(batch, num_heads, seq_len, 1)``.
+        """
         nf4_levels = torch.tensor([
             -1.0, -0.6962, -0.5251, -0.3949,
             -0.2844, -0.1848, -0.0911, 0.0,
@@ -236,14 +251,25 @@ class BlockCompressor:
             0.4407, 0.5626, 0.7230, 1.0,
         ], device=packed.device, dtype=torch.float32)
 
-        # Unpack
+        # Unpack: each byte → two 4-bit indices
         flat = packed.reshape(-1)
         lo = (flat & 0x0F).long()
         hi = ((flat >> 4) & 0x0F).long()
-        indices = torch.stack([lo, hi], dim=-1).reshape(-1)[:scale.shape[-2] * scale.shape[-1]]
+        indices = torch.stack([lo, hi], dim=-1).reshape(-1)
 
-        values = nf4_levels[indices].to(target_dtype)
-        return (values * scale.squeeze(-1).to(target_dtype))
+        # During compression, at most 1 zero-padding element may have been
+        # appended (when total element count was odd). Trim it:
+        indices = indices[:indices.numel() - (indices.numel() % 2)]
+
+        # The original number of elements per group (batch * num_heads * seq_len)
+        # can be derived from the unpacked index count. This avoids the old
+        # bug: truncating to scale.shape[-2] * scale.shape[-1] = seq_len * 1,
+        # which drops all but the first ``seq_len`` indices.
+        total_groups = scale.numel()
+        head_dim = indices.numel() // total_groups
+        original_shape = (*packed.shape[:-1], head_dim)
+        values = nf4_levels[indices].reshape(original_shape).to(target_dtype)
+        return (values * scale.to(target_dtype))
 
     def stats(self) -> dict:
         return {

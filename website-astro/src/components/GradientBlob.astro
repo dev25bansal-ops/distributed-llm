@@ -1,0 +1,15 @@
+---
+interface Props { variant?: "emerald" | "violet" | "coral"; class?: string }
+const { variant = "emerald", class: className = "" } = Astro.props;
+const colors = {
+  emerald: "bg-brand-300/40",
+  violet: "bg-accent-300/40",
+  coral: "bg-pop-400/30",
+};
+---
+
+<div
+  class:list={["pointer-events-none absolute rounded-full blur-3xl", colors[variant], className]}
+  aria-hidden="true"
+>
+</div>

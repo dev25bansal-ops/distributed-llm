@@ -69,7 +69,16 @@ class MultiDraftVerifier:
         max_new_tokens: int = 256,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Generate tokens using multi-draft speculative decoding."""
+        """Generate tokens using multi-draft speculative decoding.
+
+        Each draft model proposes an independent autoregressive chain of
+        candidates. Each chain is verified against the target model in a
+        separate forward pass with proper rejection sampling (min(1, p/q)).
+        The chain with the most accepted tokens is chosen.
+
+        This avoids the mathematically incorrect flattening of independent
+        autoregressive chains into a single sequence for verification.
+        """
         generated = input_ids.clone()
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
@@ -79,72 +88,95 @@ class MultiDraftVerifier:
             if remaining <= 0:
                 break
 
-            # Phase 1: Generate candidates from all draft models
-            all_candidates = []
-            draft_sources = []  # Which draft model each candidate came from
-
-            for draft_idx, draft_fn in enumerate(self._drafts):
-                num_draft = min(self._num_candidates, remaining)
-                if num_draft <= 0:
-                    break
-
-                draft_tokens = self._draft_generate(
-                    draft_fn, generated, num_draft, **kwargs
-                )
-                self._stats["draft_calls"][draft_idx] += 1
-
-                for i in range(draft_tokens.shape[1]):
-                    all_candidates.append(draft_tokens[0, i].item())
-                    draft_sources.append(draft_idx)
-
-            if not all_candidates:
+            num_draft = min(self._num_candidates, remaining)
+            if num_draft <= 0:
                 break
 
-            self._stats["total_proposed"] += len(all_candidates)
+            # Phase 1: Generate an independent autoregressive chain from each draft model
+            draft_chains: list[torch.Tensor] = []  # each is (1, num_draft)
+            for draft_idx, draft_fn in enumerate(self._drafts):
+                chain = self._draft_generate(draft_fn, generated, num_draft, **kwargs)
+                draft_chains.append(chain)
+                self._stats["draft_calls"][draft_idx] += 1
 
-            # Phase 2: Verify all candidates with target model
-            # Build input with the first candidate path
-            candidate_tensor = torch.tensor(
-                [all_candidates], dtype=generated.dtype, device=generated.device
-            )
-            full_input = torch.cat([generated, candidate_tensor], dim=1)
+            self._stats["total_proposed"] += num_draft * len(self._drafts)
 
-            target_logits = self._target(full_input, **kwargs)
-            self._stats["target_calls"] += 1
-
-            # Phase 3: Find the best matching candidate
-            accepted_count = 0
+            # Phase 2: Verify each draft chain independently with the target model.
+            # Each chain is conditioned on [generated, chain_tokens_so_far],
+            # which is the correct autoregressive context for that chain.
+            best_accepted = 0
             best_draft_idx = -1
+            best_chain: torch.Tensor | None = None
 
-            prefix_len = generated.shape[1] - 1
-            for i, (candidate_token, draft_idx) in enumerate(
-                zip(all_candidates, draft_sources)
-            ):
-                if prefix_len + i >= target_logits.shape[1]:
-                    break
+            for draft_idx, chain in enumerate(draft_chains):
+                # Build the full input: [prefix, candidate_chain]
+                full_input = torch.cat([generated, chain], dim=1)
+                target_logits = self._target(full_input, **kwargs)
+                self._stats["target_calls"] += 1
 
-                target_probs = F.softmax(
-                    target_logits[:, prefix_len + i, :] / self._temperature, dim=-1
-                )
-                target_prob = target_probs[0, candidate_token].item()
+                # Rejection-sample each token in the chain
+                prefix_len = generated.shape[1]
+                accepted = 0
+                for i in range(num_draft):
+                    pos = prefix_len + i
+                    if pos >= target_logits.shape[1]:
+                        break
 
-                if target_prob > 0.3:  # Accept threshold
-                    accepted_count += 1
+                    target_probs = F.softmax(
+                        target_logits[:, pos, :] / self._temperature, dim=-1
+                    )
+                    token_id = chain[0, i].item()
+                    p = target_probs[0, token_id].item()
+
+                    if self._temperature == 0:
+                        # Greedy: accept iff token equals target argmax
+                        if target_logits[:, pos, :].argmax(dim=-1).item() != token_id:
+                            break
+                    else:
+                        # Proper rejection sampling: compute draft probability q
+                        # and accept with probability min(1, p/q).
+                        # Get the draft logits at this position from the draft chain.
+                        draft_input = torch.cat([generated, chain[:, :i + 1]], dim=1)
+                        draft_logits = self._drafts[draft_idx](draft_input, **kwargs)
+                        draft_logits = draft_logits[:, -1, :] if draft_logits.dim() > 2 else draft_logits
+                        draft_probs = F.softmax(draft_logits / self._temperature, dim=-1)
+                        q = draft_probs[0, token_id].item()
+
+                        if q <= 0:
+                            break  # Per spec decoding theory: reject when q=0
+                        if torch.rand(1).item() >= p / q:
+                            break  # Standard rejection sampling
+
+                    accepted += 1
+
+                if accepted > best_accepted:
+                    best_accepted = accepted
                     best_draft_idx = draft_idx
-                else:
-                    break
+                    best_chain = chain
 
-            if accepted_count > 0:
-                accepted_tokens = candidate_tensor[:, :accepted_count]
+            # Phase 3: Apply the best chain result
+            if best_accepted > 0 and best_chain is not None:
+                accepted_tokens = best_chain[:, :best_accepted]
                 generated = torch.cat([generated, accepted_tokens], dim=1)
                 if best_draft_idx >= 0:
-                    self._stats["accepted_by_draft"][best_draft_idx] += accepted_count
+                    self._stats["accepted_by_draft"][best_draft_idx] += best_accepted
 
-            # Sample correction token from target
-            if accepted_count < len(all_candidates):
-                next_logits = target_logits[:, generated.shape[1] - 1, :]
-                next_token = self._sample(next_logits)
-                generated = torch.cat([generated, next_token], dim=1)
+            # Sample correction token from target (use the best chain's target logits)
+            if best_draft_idx >= 0:
+                full_input = torch.cat([generated[:, :-best_accepted] if best_accepted > 0 else generated,
+                                        draft_chains[best_draft_idx]], dim=1)
+                target_logits = self._target(full_input, **kwargs)
+                if best_accepted < num_draft:
+                    next_logits = target_logits[:, generated.shape[1] - 1, :]
+                else:
+                    next_logits = target_logits[:, -1, :]
+            else:
+                # No draft accepted; fallback to target-only sample
+                target_logits = self._target(generated, **kwargs)
+                next_logits = target_logits[:, -1, :]
+
+            next_token = self._sample(next_logits)
+            generated = torch.cat([generated, next_token], dim=1)
 
         return generated
 

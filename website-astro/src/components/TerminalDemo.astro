@@ -1,0 +1,92 @@
+---
+// Typed terminal demo: command types itself, then tokens stream in.
+---
+
+<div class="mx-auto max-w-2xl overflow-hidden rounded-2xl bg-[#080d0a] shadow-card ring-1 ring-brand-300/40" data-term>
+  <!-- title bar -->
+  <div class="flex items-center gap-1.5 border-b border-white/10 px-4 py-3">
+    <span class="h-3 w-3 rounded-full bg-[#ff5f57]"></span>
+    <span class="h-3 w-3 rounded-full bg-[#febc2e]"></span>
+    <span class="h-3 w-3 rounded-full bg-[#28c840]"></span>
+    <span class="ml-3 font-mono text-xs text-white/40">you@home — distllm</span>
+  </div>
+
+  <div class="p-5 font-mono text-sm leading-relaxed">
+    <p>
+      <span class="text-brand-400">$</span>
+      <span data-term-cmd class="text-white"></span><span data-term-caret class="animate-pulse text-brand-400">▊</span>
+    </p>
+    <div data-term-out class="mt-3 min-h-[120px] whitespace-pre-wrap text-[#d5f5e3]/90"></div>
+  </div>
+</div>
+
+<script>
+  const root = document.querySelector<HTMLElement>("[data-term]");
+  if (root) {
+    // Respect reduced motion: show final state immediately.
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      root.querySelector<HTMLElement>("[data-term-cmd]")!.textContent =
+        'distllm system api --model TinyStories-1M --local';
+      root.querySelector<HTMLElement>("[data-term-out]")!.textContent =
+        "✓ Model loaded on 3 pooled nodes\n" +
+        "✓ API ready at http://localhost:8000/v1\n\n" +
+        "Once upon a time there was a little girl who loved\n" +
+        "to explore the woods behind her house...";
+    } else {
+      runAnimation(root);
+    }
+
+    function runAnimation(rootEl: HTMLElement) {
+      const cmd = "distllm system api --model TinyStories-1M --local";
+      const outputLines = [
+        "✓ Model loaded on 3 pooled nodes",
+        "✓ API ready at http://localhost:8000/v1",
+        "",
+        "Once upon a time there was a little girl who loved",
+        "to explore the woods behind her house...",
+      ];
+
+      const cmdEl = rootEl.querySelector<HTMLElement>("[data-term-cmd]")!;
+      const outEl = rootEl.querySelector<HTMLElement>("[data-term-out]")!;
+      const caret = rootEl.querySelector<HTMLElement>("[data-term-caret]")!;
+
+      let i = 0;
+      const type = () => {
+        if (i <= cmd.length) {
+          cmdEl.textContent = cmd.slice(0, i);
+          i += 1;
+          setTimeout(type, 34 + Math.random() * 46);
+        } else {
+          setTimeout(runOutput, 500);
+        }
+      };
+
+      let line = 0;
+      let ch = 0;
+      const runOutput = () => {
+        caret.style.display = "none";
+        if (line >= outputLines.length) return;
+        const text = outputLines[line];
+        if (ch === 0) outEl.textContent += "\n";
+        ch += 1;
+        outEl.textContent += text[ch - 1];
+        if (ch < text.length) {
+          setTimeout(runOutput, 18);
+        } else {
+          line += 1;
+          ch = 0;
+          setTimeout(runOutput, line === 3 ? 400 : 120);
+        }
+      };
+
+      // Start when scrolled into view.
+      const io = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+          io.disconnect();
+          setTimeout(type, 300);
+        }
+      }, { threshold: 0.4 });
+      io.observe(rootEl);
+    }
+  }
+</script>

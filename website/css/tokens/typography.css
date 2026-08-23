@@ -1,0 +1,387 @@
+/**
+ * DistLLM Premium Typography System
+ * ===================================
+ *
+ * Font pairing: Fraunces (heading) + Inter (body) + JetBrains Mono (code)
+ *
+ * Design rationale:
+ *   - Fraunces: A soft, variable serif with optical sizing and a distinctive
+ *     "wonky" axis. At display sizes it feels editorial and authoritative;
+ *     at text sizes it reads cleanly. Variable axes allow fine-tuning weight,
+ *     width, and optical size without loading separate font files.
+ *   - Inter: The workhorse sans-serif. Designed for screens, with tabular
+ *     numerals, contextual alternates, and excellent hinting. Covers UI,
+ *     body text, and navigation.
+ *   - JetBrains Mono: Monospaced with ligatures and a tall x-height.
+ *     Optimized for code readability at small sizes.
+ *
+ * Scale: Major Third (1.25 ratio), 16px base
+ *   1rem = 16px
+ *   Each step up = multiply by 1.25
+ *   Each step down = divide by 1.25
+ *
+ * Google Fonts import (add to <head> or @import):
+ *   <link rel="preconnect" href="https://fonts.googleapis.com">
+ *   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ *   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,800;0,9..144,900;1,9..144,400;1,9..144,500&family=Inter:wght@400;425;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+ */
+
+:root {
+
+  /* ──────────────────────────────────────────────
+     1. FONT FAMILIES
+     ────────────────────────────────────────────── */
+
+  /* Display / Hero — serif with full variable features */
+  --font-display: 'Fraunces', 'Georgia', 'Cambria', 'Times New Roman', serif;
+
+  /* Headings — same family, but we set different optical size via font-variation-settings */
+  --font-heading: 'Fraunces', 'Georgia', 'Cambria', 'Times New Roman', serif;
+
+  /* Body / UI — humanist sans */
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+
+  /* Code / Technical — monospace with ligatures */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code',
+    'Consolas', 'Liberation Mono', monospace;
+
+  /* Labels / Overlines — body font, used with letter-spacing + uppercase */
+  --font-label: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+
+
+  /* ──────────────────────────────────────────────
+     2. FONT SIZES — Major Third Scale (1.25)
+     ──────────────────────────────────────────────
+     Base: 1rem (16px)
+     Scale ratio: 1.25 (Major Third)
+
+     Computed values:
+       --text-xs:    12.8px   (1 / 1.25)
+       --text-sm:    14.4px   (1 / 1.111)  — adjusted for readability
+       --text-base:  16px     (1)
+       --text-md:    18px     (1.125)      — sub-body, intro text
+       --text-lg:    20px     (1.25)
+       --text-xl:    25px     (1.5625)
+       --text-2xl:   31.25px  (1.953)
+       --text-3xl:   39px     (2.441)
+       --text-4xl:   48.83px  (3.052)
+       --text-5xl:   61px     (3.815)
+       --text-6xl:   76.29px  (4.768)
+  */
+
+  --text-xs:    0.8rem;       /* 12.8px — captions, metadata */
+  --text-sm:    0.9rem;       /* 14.4px — secondary text, labels */
+  --text-base:  1rem;         /* 16px   — body copy */
+  --text-md:    1.125rem;     /* 18px   — intro paragraphs, lead text */
+  --text-lg:    1.25rem;      /* 20px   — h6, large body */
+  --text-xl:    1.563rem;     /* 25px   — h5 */
+  --text-2xl:   1.953rem;     /* 31.25px — h4 */
+  --text-3xl:   2.441rem;     /* 39px   — h3 */
+  --text-4xl:   3.052rem;     /* 48.83px — h2 */
+  --text-5xl:   3.815rem;     /* 61px   — h1 */
+  --text-6xl:   4.768rem;     /* 76.29px — display / hero */
+
+  /* Mono scale — slightly reduced because monospace glyphs are wider */
+  --mono-xs:    0.75rem;      /* 12px */
+  --mono-sm:    0.8125rem;    /* 13px */
+  --mono-base:  0.875rem;     /* 14px */
+  --mono-lg:    1rem;         /* 16px */
+  --mono-xl:    1.125rem;     /* 18px */
+
+
+  /* ──────────────────────────────────────────────
+     3. FONT WEIGHTS
+     ────────────────────────────────────────────── */
+
+  --weight-light:      300;
+  --weight-regular:    400;
+  --weight-book:       425;   /* Inter-specific: slightly heavier than 400 */
+  --weight-medium:     500;
+  --weight-semibold:   600;
+  --weight-bold:       700;
+  --weight-extrabold:  800;
+  --weight-black:      900;
+
+  /* Semantic weight assignments */
+  --weight-display:    800;
+  --weight-h1:         700;
+  --weight-h2:         700;
+  --weight-h3:         600;
+  --weight-h4:         600;
+  --weight-h5:         600;
+  --weight-h6:         600;
+  --weight-body:       425;
+  --weight-caption:    400;
+  --weight-label:      600;
+  --weight-code:       400;
+  --weight-nav:        500;
+  --weight-btn:        600;
+  --weight-link:       500;
+  --weight-quote:      400;
+
+
+  /* ──────────────────────────────────────────────
+     4. LINE HEIGHTS
+     ──────────────────────────────────────────────
+     Principle: larger type gets tighter leading.
+     Body text needs generous leading for readability.
+  */
+
+  /* Semantic line heights */
+  --leading-none:      1;
+  --leading-tight:     1.1;
+  --leading-snug:      1.2;
+  --leading-normal:    1.5;
+  --leading-relaxed:   1.625;
+  --leading-loose:     1.75;
+  --leading-spaced:    2;
+
+  /* Context-specific line heights */
+  --leading-display:   1.05;   /* Hero text — tight for impact */
+  --leading-h1:        1.1;    /* h1 */
+  --leading-h2:        1.15;   /* h2 */
+  --leading-h3:        1.2;    /* h3 */
+  --leading-h4:        1.25;   /* h4 */
+  --leading-h5:        1.3;    /* h5 */
+  --leading-h6:        1.35;   /* h6 */
+  --leading-body:      1.625;  /* Body copy — optimized for reading */
+  --leading-lead:      1.6;    /* Lead / intro paragraphs */
+  --leading-caption:   1.4;    /* Captions, figcaptions */
+  --leading-code:      1.6;    /* Code blocks */
+  --leading-label:     1.2;    /* Overlines, labels */
+  --leading-nav:       1;      /* Navigation items */
+  --leading-btn:       1;      /* Button text */
+  --leading-table:     1.4;    /* Table cells */
+  --leading-quote:     1.6;    /* Blockquotes */
+
+
+  /* ──────────────────────────────────────────────
+     5. LETTER SPACING
+     ──────────────────────────────────────────────
+     Negative for large type (editorial compression).
+     Slightly positive for small caps / labels.
+     Tight for body, zero for code.
+  */
+
+  /* Base tracking values */
+  --tracking-tighter:  -0.035em;
+  --tracking-tight:    -0.025em;
+  --tracking-snug:     -0.015em;
+  --tracking-normal:   -0.011em;  /* Body — Sub-pixel optical refinement */
+  --tracking-base:      0;
+  --tracking-wide:      0.025em;
+  --tracking-wider:     0.06em;
+  --tracking-widest:    0.1em;
+
+  /* Context-specific letter spacing */
+  --tracking-display:  -0.035em;  /* Hero text — editorial compression */
+  --tracking-h1:       -0.03em;
+  --tracking-h2:       -0.025em;
+  --tracking-h3:       -0.02em;
+  --tracking-h4:       -0.015em;
+  --tracking-h5:       -0.01em;
+  --tracking-h6:       -0.005em;
+  --tracking-body:     -0.011em;  /* Subtle refinement for Inter */
+  --tracking-caption:   0;
+  --tracking-label:     0.06em;   /* Uppercase labels — needs space */
+  --tracking-overline:  0.1em;    /* Overlines — maximum breathing room */
+  --tracking-code:      0;
+  --tracking-nav:      -0.01em;
+  --tracking-btn:       0.01em;
+
+
+  /* ──────────────────────────────────────────────
+     6. FONT FEATURE SETTINGS
+     ────────────────────────────────────────────── */
+
+  /* Inter: enable tabular numerals, contextual alternates, stylistic alternates */
+  --features-body:     'cv01', 'cv02', 'cv03', 'cv04', 'cv06', 'cv07', 'cv08', 'cv09', 'cv11',
+                       'tnum', 'calt', 'ss01', 'ss02', 'ss03';
+
+  /* Fraunces: optical sizing is automatic via opsz axis; enable tabular numerals */
+  --features-heading:  'tnum', 'calt';
+
+  /* JetBrains Mono: enable programming ligatures */
+  --features-code:     'calt', 'liga', 'ss01';
+
+  /* Tabular data — enforce tabular numerals */
+  --features-tabular:  'tnum', 'calt';
+
+
+  /* ──────────────────────────────────────────────
+     7. FONT VARIATION SETTINGS (Variable Axes)
+     ────────────────────────────────────────────── */
+
+  /* Fraunces variable axes:
+     opsz  — optical size (9..144)
+     wght  — weight (300..900)
+     WONK  — wonky alternates (0 = off, 1 = on)
+     SOFT  — softness (0..100)
+  */
+
+  /* Display: large optical size, wonky on, soft */
+  --var-display:    'opsz' 72, 'wght' 800, 'WONK' 1, 'SOFT' 50;
+
+  /* h1: large optical size, wonky on */
+  --var-h1:         'opsz' 48, 'wght' 700, 'WONK' 1, 'SOFT' 30;
+
+  /* h2: medium optical size, wonky on */
+  --var-h2:         'opsz' 36, 'wght' 700, 'WONK' 1, 'SOFT' 20;
+
+  /* h3: medium optical size, wonky subtle */
+  --var-h3:         'opsz' 28, 'wght' 600, 'WONK' 0.5, 'SOFT' 10;
+
+  /* h4–h6: text optical size, wonky off */
+  --var-h4:         'opsz' 22, 'wght' 600, 'WONK' 0, 'SOFT' 0;
+  --var-h5:         'opsz' 18, 'wght' 600, 'WONK' 0, 'SOFT' 0;
+  --var-h6:         'opsz' 16, 'wght' 600, 'WONK' 0, 'SOFT' 0;
+
+  /* Blockquote: text optical, italic feel */
+  --var-quote:      'opsz' 18, 'wght' 400, 'WONK' 0.5, 'SOFT' 20;
+
+
+  /* ──────────────────────────────────────────────
+     8. COMPOSITE TEXT STYLES (Semantic Tokens)
+     ──────────────────────────────────────────────
+     These combine multiple properties into single
+     references for common element types.
+  */
+
+  /* ── Display / Hero ── */
+  --style-display-font:      var(--font-display);
+  --style-display-size:      var(--text-6xl);
+  --style-display-weight:    var(--weight-display);
+  --style-display-leading:   var(--leading-display);
+  --style-display-tracking:  var(--tracking-display);
+  --style-display-variation: var(--var-display);
+
+  /* ── Headings ── */
+  --style-h1-font:           var(--font-heading);
+  --style-h1-size:           var(--text-5xl);
+  --style-h1-weight:         var(--weight-h1);
+  --style-h1-leading:        var(--leading-h1);
+  --style-h1-tracking:       var(--tracking-h1);
+  --style-h1-variation:      var(--var-h1);
+
+  --style-h2-font:           var(--font-heading);
+  --style-h2-size:           var(--text-4xl);
+  --style-h2-weight:         var(--weight-h2);
+  --style-h2-leading:        var(--leading-h2);
+  --style-h2-tracking:       var(--tracking-h2);
+  --style-h2-variation:      var(--var-h2);
+
+  --style-h3-font:           var(--font-heading);
+  --style-h3-size:           var(--text-3xl);
+  --style-h3-weight:         var(--weight-h3);
+  --style-h3-leading:        var(--leading-h3);
+  --style-h3-tracking:       var(--tracking-h3);
+  --style-h3-variation:      var(--var-h3);
+
+  --style-h4-font:           var(--font-heading);
+  --style-h4-size:           var(--text-2xl);
+  --style-h4-weight:         var(--weight-h4);
+  --style-h4-leading:        var(--leading-h4);
+  --style-h4-tracking:       var(--tracking-h4);
+  --style-h4-variation:      var(--var-h4);
+
+  --style-h5-font:           var(--font-heading);
+  --style-h5-size:           var(--text-xl);
+  --style-h5-weight:         var(--weight-h5);
+  --style-h5-leading:        var(--leading-h5);
+  --style-h5-tracking:       var(--tracking-h5);
+  --style-h5-variation:      var(--var-h5);
+
+  --style-h6-font:           var(--font-heading);
+  --style-h6-size:           var(--text-lg);
+  --style-h6-weight:         var(--weight-h6);
+  --style-h6-leading:        var(--leading-h6);
+  --style-h6-tracking:       var(--tracking-h6);
+  --style-h6-variation:      var(--var-h6);
+
+  /* ── Body ── */
+  --style-body-font:         var(--font-body);
+  --style-body-size:         var(--text-base);
+  --style-body-weight:       var(--weight-body);
+  --style-body-leading:      var(--leading-body);
+  --style-body-tracking:     var(--tracking-body);
+  --style-body-features:     var(--features-body);
+
+  --style-lead-font:         var(--font-body);
+  --style-lead-size:         var(--text-md);
+  --style-lead-weight:       var(--weight-book);
+  --style-lead-leading:      var(--leading-lead);
+  --style-lead-tracking:     var(--tracking-body);
+
+  /* ── Caption / Small ── */
+  --style-caption-font:      var(--font-body);
+  --style-caption-size:      var(--text-sm);
+  --style-caption-weight:    var(--weight-caption);
+  --style-caption-leading:   var(--leading-caption);
+  --style-caption-tracking:  var(--tracking-caption);
+
+  --style-overline-font:     var(--font-label);
+  --style-overline-size:     var(--text-xs);
+  --style-overline-weight:   var(--weight-label);
+  --style-overline-leading:  var(--leading-label);
+  --style-overline-tracking: var(--tracking-overline);
+
+  /* ── Code ── */
+  --style-code-font:         var(--font-mono);
+  --style-code-size:         var(--mono-base);
+  --style-code-weight:       var(--weight-code);
+  --style-code-leading:      var(--leading-code);
+  --style-code-tracking:     var(--tracking-code);
+  --style-code-features:     var(--features-code);
+
+  /* ── UI / Navigation ── */
+  --style-nav-font:          var(--font-body);
+  --style-nav-size:          var(--text-sm);
+  --style-nav-weight:        var(--weight-nav);
+  --style-nav-leading:       var(--leading-nav);
+  --style-nav-tracking:      var(--tracking-nav);
+
+  --style-btn-font:          var(--font-body);
+  --style-btn-size:          var(--text-sm);
+  --style-btn-weight:        var(--weight-btn);
+  --style-btn-leading:       var(--leading-btn);
+  --style-btn-tracking:      var(--tracking-btn);
+
+  --style-label-font:        var(--font-label);
+  --style-label-size:        var(--text-xs);
+  --style-label-weight:      var(--weight-label);
+  --style-label-leading:     var(--leading-label);
+  --style-label-tracking:    var(--tracking-label);
+
+  /* ── Blockquote ── */
+  --style-quote-font:        var(--font-display);
+  --style-quote-size:        var(--text-lg);
+  --style-quote-weight:      var(--weight-quote);
+  --style-quote-leading:     var(--leading-quote);
+  --style-quote-tracking:    var(--tracking-snug);
+  --style-quote-variation:   var(--var-quote);
+
+
+  /* ──────────────────────────────────────────────
+     9. PARAGRAPH & VERTICAL RHYTHM
+     ────────────────────────────────────────────── */
+
+  --paragraph-margin:    1.25em;    /* Space between paragraphs */
+  --heading-margin-top:  2em;       /* Space above headings (section breaks) */
+  --heading-margin-bot:  0.5em;     /* Space below headings (before content) */
+  --list-gap:            0.5em;     /* Gap between list items */
+  --section-gap:         4rem;      /* Gap between major sections */
+
+
+  /* ──────────────────────────────────────────────
+     10. TEXT DECORATION & TRANSFORM
+     ────────────────────────────────────────────── */
+
+  /* Link underline — skip descenders for a clean look */
+  --link-underline-offset:   0.15em;
+  --link-underline-thickness: 0.08em;
+
+  /* Selection color (background handled by color tokens) */
+  --selection-decoration:    none;
+}

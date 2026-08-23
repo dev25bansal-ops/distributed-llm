@@ -1,0 +1,80 @@
+---
+import "@fontsource-variable/inter";
+import "@fontsource-variable/fraunces";
+import "@fontsource-variable/jetbrains-mono";
+import "../styles/global.css";
+import { SITE } from "../config/site";
+
+interface Props {
+  title: string;
+  description: string;
+  ogType?: string;
+  noindex?: boolean;
+  jsonLd?: Record<string, unknown> | Record<string, unknown>[];
+}
+
+const { title, description, ogType = "website", noindex = false, jsonLd } = Astro.props;
+const canonical = new URL(Astro.url.pathname, SITE.url);
+const fullTitle = title === SITE.name ? title : `${title} · ${SITE.name}`;
+const jsonLdArray = jsonLd ? (Array.isArray(jsonLd) ? jsonLd : [jsonLd]) : [];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#060907" />
+
+    <meta property="og:type" content={ogType} />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={new URL("/og-image.png", SITE.url)} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={new URL("/og-image.png", SITE.url)} />
+
+    {jsonLdArray.map((obj) => (
+      <script type="application/ld+json" set:html={JSON.stringify(obj)} />
+    ))}
+
+    {import.meta.env.PROD && (
+      <script defer data-domain={SITE.plausibleDomain} src="https://plausible.io/js/script.js"></script>
+    )}
+  </head>
+  <body class="min-h-screen">
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-brand-600 focus:text-white focus:px-3 focus:py-2 focus:rounded-lg"
+    >
+      Skip to content
+    </a>
+    <slot />
+    <script>
+      // Delegated copy-to-clipboard for every [data-copy] button.
+      document.addEventListener("click", async (e) => {
+        const target = e.target as HTMLElement;
+        const btn = target.closest<HTMLElement>("[data-copy]");
+        if (!btn) return;
+        const text = btn.getAttribute("data-copy") ?? "";
+        try {
+          await navigator.clipboard.writeText(text);
+          const original = btn.textContent;
+          btn.textContent = "Copied!";
+          setTimeout(() => (btn.textContent = original), 1500);
+        } catch {
+          /* clipboard unavailable */
+        }
+      });
+    </script>
+  </body>
+</html>

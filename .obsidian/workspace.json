@@ -1,0 +1,213 @@
+{
+  "main": {
+    "id": "32f6a2a603885ee2",
+    "type": "split",
+    "children": [
+      {
+        "id": "6bdfed3b7554ba23",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2fe7007dd37d4015",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "043cfcad16e1eaf2",
+    "type": "split",
+    "children": [
+      {
+        "id": "4301792ea871d37c",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "15fdde7e021c34f4",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "5fb63c52b8a5ba71",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "53eec27e9cafdc98",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "9bb072cf95192d7a",
+    "type": "split",
+    "children": [
+      {
+        "id": "cb7f15c293673bcf",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "47bcf1ab5380bd96",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks"
+            }
+          },
+          {
+            "id": "48bbf1a190097a99",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links"
+            }
+          },
+          {
+            "id": "d68e6b6d37bd0660",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "8d00db98605efc02",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "08c5130f22bc063a",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "workspaces:Manage workspace layouts": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "2fe7007dd37d4015",
+  "lastOpenFiles": [
+    "src/distllm/core/batch_scheduler.py.tmp.24316.03bd425b23eb",
+    "src/distllm/core/batch_scheduler.py.tmp.24316.8bf8164214ef",
+    "src/distllm/core/batch_scheduler.py.tmp.24316.fc0b74c62aa6",
+    "src/distllm/core/batch_scheduler.py.tmp.24316.ca8175c99001",
+    "src/distllm/core/batch_scheduler.py.tmp.24316.a665cb49f4a7",
+    "docs/adr/0001-pipeline-parallelism.md",
+    "website/node_modules/ajv/README.md",
+    "website/node_modules/playwright-core/lib/vite/traceViewer/playwright-logo.svg",
+    "src/distllm/core/batch_scheduler.py.tmp.24316.8870a7ab7fef",
+    "10-tests/Tests.md",
+    "10-tests",
+    "09-infra/Infrastructure.md",
+    "09-infra",
+    "08-frontends/Frontends.md",
+    "08-frontends",
+    "07-integrations/Integrations.md",
+    "07-integrations",
+    "06-security/Security.md",
+    "06-security",
+    "05-backends-models/Backends & Models.md",
+    "04-cli-config/CLI & Config.md",
+    "03-api/API Server.md",
+    "02-dist/Pipeline Orchestrator.md",
+    "02-dist/Distributed Layer.md",
+    "01-core/KV Cache.md",
+    "01-core/Scheduler.md",
+    "01-core/Core Engine.md",
+    "00-meta/Security Audit.md",
+    "00-meta/Project Overview.md",
+    "00-meta/Fixes & Changes Log.md"
+  ]
+}

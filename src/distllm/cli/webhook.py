@@ -1,19 +1,19 @@
-"""CLI commands for webhook management."""
+"""CLI commands for webhook management.
 
-import typer
+Functions are imported by :mod:`distllm.cli.main` which registers them
+as Typer commands on the ``config webhook`` sub-group.
+"""
+
 from rich.console import Console
 from rich.table import Table
 
-webhook_app = typer.Typer(help="Manage webhook endpoints")
 
-
-@webhook_app.command("register")
 def webhook_register(
-    url: str = typer.Argument(..., help="Webhook endpoint URL"),
-    events: list[str] = typer.Option([], "--event", "-e", help="Events to subscribe to (all if empty)"),
-    secret: str = typer.Option("", "--secret", "-s", help="HMAC signing secret"),
-    label: str = typer.Option("", "--label", "-l", help="Human-readable label"),
-):
+    url: str,
+    events: list[str] | None = None,
+    secret: str = "",
+    label: str = "",
+) -> None:
     """Register a new webhook endpoint."""
     from distllm.core.webhook_manager import WebhookManager
 
@@ -24,11 +24,9 @@ def webhook_register(
         console.print(f"[green]Webhook registered:[/] {url}")
     else:
         console.print(f"[red]Failed to register webhook:[/] {url}")
-        raise typer.Exit(1)
 
 
-@webhook_app.command("list")
-def webhook_list():
+def webhook_list() -> None:
     """List registered webhook endpoints."""
     from distllm.core.webhook_manager import WebhookManager
 
@@ -55,10 +53,9 @@ def webhook_list():
     console.print(table)
 
 
-@webhook_app.command("unregister")
 def webhook_unregister(
-    url: str = typer.Argument(..., help="Webhook URL to remove"),
-):
+    url: str,
+) -> None:
     """Unregister a webhook endpoint."""
     from distllm.core.webhook_manager import WebhookManager
 
@@ -70,11 +67,10 @@ def webhook_unregister(
         console.print(f"[red]Not found:[/] {url}")
 
 
-@webhook_app.command("test")
 def webhook_test(
-    url: str = typer.Argument(..., help="Webhook URL to test"),
-    event: str = typer.Option("test.ping", "--event", "-e", help="Event type"),
-):
+    url: str,
+    event: str = "test.ping",
+) -> None:
     """Send a test webhook event."""
     from distllm.core.webhook_manager import WebhookManager, WebhookEvent
 

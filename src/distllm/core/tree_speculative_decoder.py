@@ -38,6 +38,7 @@ Usage::
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -263,16 +264,14 @@ class TreeSpeculativeDecoder:
             )
             node.children.append(child)
 
-            # Expand child (greedy for depth > 0 to save computation)
+            # Expand child recursively (all top-K children go deeper)
             if depth < self._depth - 1:
                 child_input = torch.cat([
                     prefix,
                     torch.tensor([[token_id]], device=prefix.device),
                 ], dim=1)
                 child_logits = self._draft(child_input)
-                # Only expand best child greedily, others are leaves
-                if i == 0:
-                    self._expand_node(child, child_input, child_logits, depth + 1)
+                self._expand_node(child, child_input, child_logits, depth + 1)
 
     def _verify_branches(
         self,
@@ -321,19 +320,37 @@ class TreeSpeculativeDecoder:
         for i, branch in enumerate(branches):
             accepted = []
             for j, expected_token in enumerate(branch):
-                pos = prefix.shape[1] + j - 1
+                # Aligned with speculative_decoder.py convention: target_logits[pos]
+                # represents the distribution over the token at input position pos.
+                # Branch token j is at input position prefix.shape[1] + j.
+                pos = prefix.shape[1] + j
                 if pos < 0 or pos >= target_logits.shape[1]:
                     break
 
-                # Check if target model agrees with draft token
                 target_probs = F.softmax(target_logits[i, pos, :], dim=-1)
                 target_token = target_logits[i, pos, :].argmax().item()
 
-                # Accept if target agrees (greedy) or high probability
-                if target_token == expected_token or target_probs[expected_token] > 0.3:
-                    accepted.append(expected_token)
+                if self._temperature == 0:
+                    # Greedy: accept iff target argmax matches draft token
+                    if target_token != expected_token:
+                        break
                 else:
-                    break
+                    # Proper rejection sampling: compute acceptance probability
+                    # min(1, p/q) where p = target probability, q = draft probability.
+                    p = target_probs[expected_token].item()
+                    # Recover draft logprob from the tree node for this branch
+                    # by traversing the tree along the branch path
+                    q = self._get_draft_prob(i, j, branch, root)
+
+                    if q <= 0:
+                        # Draft would never generate this token — must reject
+                        # (Leviathan et al., Algorithm 1)
+                        break
+                    if torch.rand(1).item() >= p / q:
+                        # Standard rejection sampling: reject with prob 1 - p/q
+                        break
+
+                accepted.append(expected_token)
 
             if len(accepted) > best_count:
                 best_count = len(accepted)
@@ -357,3 +374,32 @@ class TreeSpeculativeDecoder:
             return logits.argmax(dim=-1, keepdim=True)
         probs = F.softmax(logits / self._temperature, dim=-1)
         return torch.multinomial(probs, num_samples=1)
+
+    @staticmethod
+    def _get_draft_prob(
+        branch_idx: int,
+        position: int,
+        branch: list[int],
+        root: "TreeNode",
+    ) -> float:
+        """Recover the draft probability for a token in a verified branch.
+
+        Traverses the tree along the path defined by ``branch`` and returns
+        ``exp(logprob)`` for the token at ``position``.  The root's first
+        child corresponds to the first token of ``branches[0]``, and so on.
+
+        Returns 0.0 if the node cannot be found (safety fallback that forces
+        rejection in the caller).
+        """
+        node = root
+        for j in range(position + 1):
+            target_id = branch[j]
+            found = False
+            for child in node.children:
+                if child.token_id == target_id:
+                    node = child
+                    found = True
+                    break
+            if not found:
+                return 0.0
+        return math.exp(node.logprob)

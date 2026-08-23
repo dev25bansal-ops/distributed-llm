@@ -1,0 +1,47 @@
+---
+title: Installation
+description: Install DistLLM with pip, Docker, or from source.
+group: "Getting Started"
+order: 1
+---
+
+## Requirements
+
+- Python **3.10+**
+- 4 GB RAM minimum (models load lazily)
+- Optional: NVIDIA GPU for accelerated inference
+
+## pip install
+
+```bash
+pip install distributed-llm[cli,self-hosted]
+```
+
+The `self-hosted` extra pulls in torch, transformers, and Hugging Face Hub.
+For API-only clients, the base package is enough:
+
+```bash
+pip install distributed-llm
+```
+
+## Docker
+
+```bash
+docker pull distributed-llm/server:latest
+docker run -d -p 8000:8000 -e API_KEY=your-key distributed-llm/server:latest
+```
+
+## From source
+
+```bash
+git clone https://github.com/distributed-llm/distributed-llm
+cd distributed-llm
+pip install -e ".[cli,self-hosted]"
+```
+
+## Verify
+
+```bash
+distllm --help          # CLI is available
+python -c "import distllm"   # library import works
+```

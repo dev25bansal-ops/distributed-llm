@@ -170,10 +170,16 @@ class ONNXNodeAdapter(BackendAdapter):
         return self._detokenize(output_ids)
 
     def _tokenize(self, text: str) -> dict[str, Any]:
-        return {"input_ids": torch.zeros((1, 1), dtype=torch.long).numpy()}
+        raise NotImplementedError(
+            "ONNX generate() requires a tokenizer. "
+            "Use forward() or set self._tokenizer."
+        )
 
     def _detokenize(self, ids: list[int]) -> str:
-        return ""
+        raise NotImplementedError(
+            "ONNX generate() requires a detokenizer. "
+            "Use forward() or set self._detokenizer."
+        )
 
     @staticmethod
     def _sample(logits: torch.Tensor, temperature: float) -> torch.Tensor:

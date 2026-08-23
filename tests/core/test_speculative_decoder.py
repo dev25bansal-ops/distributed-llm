@@ -28,15 +28,18 @@ def _always_logit(token_id: int):
 
 
 def _identity_target(input_ids, **kwargs):
+    """Mock target: logits[pos] predicts the token AT input[pos].
+
+    Convention: ``target_logits[:, pos, :]`` represents the distribution
+    over the token at input position ``pos`` (not ``pos+1``).  This
+    matches the convention used by SpeculativeDecoder._verify_tokens.
+    """
     batch, seq_len = input_ids.shape
     logits = torch.full((batch, seq_len, 100), -10.0)
-    for i in range(seq_len - 1):
-        t = input_ids[0, i + 1].item()
+    for i in range(seq_len):
+        t = input_ids[0, i].item()
         if t < 100:
             logits[0, i, t] = 10.0
-    last_t = input_ids[0, -1].item()
-    if last_t < 100:
-        logits[0, -1, last_t] = 10.0
     return logits
 
 
@@ -68,9 +71,10 @@ class TestSpeculativeDecoder:
                      draft_forward=draft_fn,
                      num_candidates=4, temperature=0)
         prefix = torch.tensor([[1, 2, 3]])
-        tokens = d._draft_forward(prefix, num_tokens=3)
+        tokens, logprobs = d._draft_forward(prefix, num_tokens=3)
         assert tokens.shape == (1, 3)
         assert tokens[0, 0].item() == 42
+        assert len(logprobs) == 3
 
     def test_verify_tokens_all_accepted_greedy(self):
         prefix = torch.tensor([[1, 2, 3]])
@@ -80,7 +84,10 @@ class TestSpeculativeDecoder:
         d = self.SD(target_forward=_identity_target,
                      draft_forward=lambda x: _always_logit(10),
                      temperature=0)
-        accepted = d._verify_tokens(prefix, full, draft, target_logits)
+        # draft_logprobs: q=1.0 for token 10 (softmax of _always_logit(10))
+        draft_logprobs = [1.0, 1.0]
+        accepted = d._verify_tokens(prefix, full, draft, target_logits,
+                                     draft_logprobs=draft_logprobs)
         assert accepted == 2
 
     def test_verify_tokens_none_accepted_greedy(self):

@@ -1,0 +1,43 @@
+---
+title: Kubernetes
+description: Deploy DistLLM on Kubernetes with GPU scheduling.
+group: Deployment
+order: 2
+---
+
+## Coordinator deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: distllm-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: distllm-coordinator }
+  template:
+    spec:
+      containers:
+        - name: coordinator
+          image: distributed-llm/server:latest
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef: { name: distllm, key: api-key }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+```
+
+## Workers
+
+Run workers as a DaemonSet (one per GPU node) with `--coordinator-host`
+pointing at the coordinator Service. Node device profiles are discovered via
+the downward API or the NVIDIA device plugin.
+
+## Scaling
+
+Workers scale horizontally — new pods self-register and the partitioner
+rebalances layer ranges across the enlarged pool.

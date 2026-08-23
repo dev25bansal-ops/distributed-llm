@@ -102,8 +102,10 @@ class SAMLHandler:
                             (self._callback_url, BINDING_HTTP_POST),
                         ],
                     },
-                    "allow_unsolicited": True,
-                    "authn_requests_signed": False,
+                    # SECURITY: Disable unsolicited assertions (prevents SAML response injection)
+                    # Require signed authn requests (prevents request forgery)
+                    "allow_unsolicited": False,
+                    "authn_requests_signed": True,
                 },
             })
             self._client = Saml2Client(config=config)
@@ -181,6 +183,11 @@ class OIDCHandler:
         self._userinfo_endpoint = ""
         self._discovered_jwks_url = ""
 
+        # OAuth2 state and OIDC nonce stores for CSRF protection
+        self._state_store: dict[str, float] = {}
+        self._nonce_store: dict[str, float] = {}
+        self._nonce_ttl = 600.0  # 10 minutes
+
         self._discover()
 
     def _discover(self) -> None:
@@ -214,19 +221,44 @@ class OIDCHandler:
         self._userinfo_endpoint = f"{base}/userinfo"
 
     def get_login_url(self, state: str = "") -> str:
-        """Generate the OIDC authorization URL."""
+        """Generate the OIDC authorization URL with CSRF-protected state and nonce.
+
+        The state parameter is stored server-side and validated on callback
+        to prevent CSRF attacks on the OAuth2 redirect flow.
+        """
         state = state or os.urandom(16).hex()
+        import time
+        self._state_store[state] = time.time() + self._nonce_ttl
+        # OIDC nonce for replay protection
+        nonce = os.urandom(16).hex()
+        self._nonce_store[state] = time.time() + self._nonce_ttl
         params = urllib.parse.urlencode({
             "response_type": "code",
             "client_id": self._client_id,
             "redirect_uri": self._callback_url,
             "scope": "openid profile email",
             "state": state,
+            "nonce": nonce,
         })
         return f"{self._authorization_endpoint}?{params}"
 
-    def handle_callback(self, code: str) -> SSOUserInfo | None:
-        """Exchange authorization code for tokens and get user info."""
+    def handle_callback(self, code: str, expected_state: str = "") -> SSOUserInfo | None:
+        """Exchange authorization code for tokens and get user info.
+
+        If *expected_state* is provided, validates it against the stored
+        state parameter to prevent OAuth2 CSRF attacks.
+        """
+        import time
+        import secrets
+
+        if expected_state:
+            stored_expiry = self._state_store.pop(expected_state, None)
+            if stored_expiry is None:
+                logger.error("OAuth state not found — possible CSRF attack")
+                return None
+            if time.time() > stored_expiry:
+                logger.error("OAuth state expired")
+                return None
         try:
             import httpx
 
@@ -251,13 +283,17 @@ class OIDCHandler:
             id_token = tokens.get("id_token", "")
 
             # H-13: Verify ID token signature when JWKS is available
+            # SECURITY: Validation failure MUST reject, not continue
             if id_token and self._discovered_jwks_url:
                 try:
                     validated = self.validate_token(id_token)
-                    if validated is not None:
-                        logger.debug("OIDC ID token signature verified")
+                    if validated is None:
+                        logger.error("OIDC ID token validation failed — rejecting authentication")
+                        return None
+                    logger.debug("OIDC ID token signature verified")
                 except Exception as e:
-                    logger.warning(f"OIDC ID token validation failed: {e}")
+                    logger.error(f"OIDC ID token validation failed with exception: {e}")
+                    return None
 
             # Get user info
             if access_token and self._userinfo_endpoint:
@@ -368,9 +404,15 @@ class GenericOAuth2Handler:
         self._userinfo_url = userinfo_url
         self._callback_url = callback_url
         self._scope = scope
+        # OAuth2 state store for CSRF protection
+        self._state_store: dict[str, float] = {}
+        self._state_ttl = 600.0  # 10 minutes
 
     def get_login_url(self, state: str = "") -> str:
+        """Generate OAuth2 authorization URL with CSRF-protected state."""
         state = state or os.urandom(16).hex()
+        import time
+        self._state_store[state] = time.time() + self._state_ttl
         params = urllib.parse.urlencode({
             "response_type": "code",
             "client_id": self._client_id,
@@ -380,7 +422,17 @@ class GenericOAuth2Handler:
         })
         return f"{self._authorize_url}?{params}"
 
-    def handle_callback(self, code: str) -> SSOUserInfo | None:
+    def handle_callback(self, code: str, expected_state: str = "") -> SSOUserInfo | None:
+        """Exchange code for token. Validates state if provided."""
+        import time
+        if expected_state:
+            stored_expiry = self._state_store.pop(expected_state, None)
+            if stored_expiry is None:
+                logger.error("OAuth2 state not found — possible CSRF attack")
+                return None
+            if time.time() > stored_expiry:
+                logger.error("OAuth2 state expired")
+                return None
         try:
             import httpx
 
@@ -438,6 +490,12 @@ class SSOAuthHandler:
         self._provider: str = os.environ.get("DISTLLM_SSO_PROVIDER", "").lower()
         self._handler: SAMLHandler | OIDCHandler | GenericOAuth2Handler | None = None
         self._initialize()
+        # Local token revocation blocklist — maps (token_hash, iat) to
+        # revocation timestamp.  Populated via the revoke_token() API.
+        # Entries expire after REVOCATION_TTL_S to bound memory growth.
+        self._revoked_tokens: dict[str, float] = {}
+        self._revocation_ttl_s: float = 3600.0  # 1 hour
+        self._last_revocation_cleanup: float = time.time()
 
     def _initialize(self) -> None:
         """Initialize the appropriate SSO handler based on configuration."""
@@ -502,12 +560,43 @@ class SSOAuthHandler:
     def handle_callback(self, code: str, state: str = "") -> SSOUserInfo | None:
         if self._handler is None:
             return None
-        if isinstance(self._handler, OIDCHandler):
-            return self._handler.handle_callback(code)
+        # SECURITY: Validate OAuth state parameter to prevent CSRF on callback
+        # The handler stores state on get_login_url() and validates on handle_callback()
+        if isinstance(self._handler, (OIDCHandler, GenericOAuth2Handler)):
+            return self._handler.handle_callback(code, expected_state=state)
         return self._handler.handle_callback(code)
 
+    def revoke_token(self, token_hash: str) -> None:
+        """Revoke a token by its SHA-256 hash.
+
+        The token will be rejected by subsequent ``validate_token`` calls
+        until the revocation entry expires (after REVOCATION_TTL_S).
+        """
+        self._revoked_tokens[token_hash] = time.time()
+        logger.info(f"Token revoked (hash prefix: {token_hash[:16]}...)")
+
+    def _cleanup_revoked(self) -> None:
+        """Periodic cleanup of expired revocation entries."""
+        now = time.time()
+        if now - self._last_revocation_cleanup < 300:  # every 5 min
+            return
+        cutoff = now - self._revocation_ttl_s
+        self._revoked_tokens = {h: ts for h, ts in self._revoked_tokens.items() if ts > cutoff}
+        self._last_revocation_cleanup = now
+
     def validate_token(self, access_token: str) -> SSOUserInfo | None:
-        """Validate an access token (OIDC only for now)."""
+        """Validate an access token (OIDC only for now).
+
+        Checks the local revocation blocklist before delegating to
+        the provider-specific handler.  If the token's hash is in
+        the blocklist, returns ``None`` (rejected).
+        """
+        import hashlib
+        token_hash = hashlib.sha256(access_token.encode()).hexdigest()
+        self._cleanup_revoked()
+        if token_hash in self._revoked_tokens:
+            logger.debug(f"Token rejected — revoked (hash prefix: {token_hash[:16]}...)")
+            return None
         if isinstance(self._handler, OIDCHandler):
             return self._handler.validate_token(access_token)
         return None

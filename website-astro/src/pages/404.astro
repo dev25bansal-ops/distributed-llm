@@ -1,0 +1,18 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import Button from "../components/Button.astro";
+---
+
+<PageLayout title="404 — Not Found" description="Page not found." noindex={true}>
+  <section class="container-site flex min-h-[60vh] flex-col items-center justify-center py-20 text-center">
+    <p class="text-gradient font-display text-8xl font-bold">404</p>
+    <h1 class="mt-4 text-2xl">This layer isn't on any node</h1>
+    <p class="mt-2 max-w-md text-muted">
+      The page you're looking for doesn't exist or moved. Try the docs or head home.
+    </p>
+    <div class="mt-8 flex gap-3">
+      <Button href="/" variant="primary">Home</Button>
+      <Button href="/docs/" variant="outline">Docs</Button>
+    </div>
+  </section>
+</PageLayout>

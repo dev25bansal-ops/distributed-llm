@@ -1,0 +1,240 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+import InstallTabs from "../components/InstallTabs.astro";
+import FeatureTabs from "../components/FeatureTabs.astro";
+import FaqAccordion from "../components/FaqAccordion.astro";
+import TerminalDemo from "../components/TerminalDemo.astro";
+import StatBand from "../components/StatBand.astro";
+import GradientBlob from "../components/GradientBlob.astro";
+import ArchDiagram from "../components/ArchDiagram.astro";
+import InstallCustomizer from "../components/InstallCustomizer.astro";
+import CostCalculator from "../components/CostCalculator.astro";
+import Button from "../components/Button.astro";
+import { FEATURES, STATS, FAQ } from "../data/features";
+import { SITE } from "../config/site";
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: SITE.name,
+    applicationCategory: "DeveloperApplication",
+    operatingSystem: "Linux, Windows, macOS",
+    description: SITE.description,
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    license: "https://www.apache.org/licenses/LICENSE-2.0",
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: SITE.name,
+    url: SITE.url,
+  },
+];
+
+const INSTALL_TABS = [
+  { label: "pip", code: 'pip install "distributed-llm[cli,self-hosted]"\n\ndistllm system api --model TinyStories-1M --local --host 0.0.0.0' },
+  { label: "docker", code: `docker run -d -p 8000:8000 \\\n  -e API_KEY=your-key-here \\\n  distributed-llm/server:latest` },
+  { label: "from source", code: `git clone https://github.com/distributed-llm/distributed-llm\ncd distributed-llm\npip install -e ".[cli,self-hosted]"\ndistllm system api --model TinyStories-1M --local` },
+];
+
+const BENEFITS = [
+  { title: "Hardware you already own", body: "No cloud rentals. The gaming PC, the old laptop, the mini-PC under the desk — pooled into one serving endpoint." },
+  { title: "Private by architecture", body: "Inference and training run on your machines over your network. Nothing is sent to third parties." },
+  { title: "OpenAI drop-in", body: "Point any OpenAI SDK at your coordinator URL with a Bearer key. Existing tools keep working." },
+  { title: "Self-healing clusters", body: "Health probes, OFFLINE transitions, checkpoint replay — nodes come and go without losing requests." },
+];
+---
+
+<PageLayout
+  title={SITE.name}
+  description={SITE.description}
+  jsonLd={jsonLd}
+>
+  <!-- Hero -->
+  <section class="relative overflow-hidden">
+    <GradientBlob variant="emerald" class="-top-20 -left-20 h-96 w-96" />
+    <GradientBlob variant="violet" class="top-10 right-0 h-80 w-80" />
+    <GradientBlob variant="coral" class="bottom-0 left-1/3 h-64 w-64" />
+    <div class="container-site relative py-24 text-center sm:py-32">
+      <p class="animate-fade-up inline-block rounded-full border border-brand-200 bg-brand-50 px-4 py-1.5 text-sm font-semibold text-brand-700">
+        v0.4.1 — now on <code class="font-mono">pip install distributed-llm</code>
+      </p>
+      <h1 class="mx-auto mt-6 max-w-3xl text-6xl leading-[1.05] sm:text-7xl">
+        Pool your GPUs.
+        <span class="text-gradient">Run 70B models.</span>
+      </h1>
+      <p class="mx-auto mt-6 max-w-2xl text-lg text-muted sm:text-xl">
+        DistLLM splits large language models across the devices you already own —
+        laptops, desktops, old workstations — into one private, OpenAI-compatible endpoint.
+      </p>
+      <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+        <Button href="/docs/installation/" variant="primary">Get Started</Button>
+        <Button href="/playground/" variant="outline">Try the Playground →</Button>
+      </div>
+      <div class="mt-12 text-left">
+        <TerminalDemo />
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section id="install" class="container-site py-16">
+    <SectionHeading
+      eyebrow="Quick start"
+      title="Two commands to a running server"
+      lead="Install the package, point it at any Hugging Face model. Workers join later with one command each."
+    />
+    <div class="mt-8">
+      <InstallCustomizer />
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="bg-sunken py-24">
+    <div class="container-site">
+      <SectionHeading
+        eyebrow="Capabilities"
+        title="Four capabilities, one engine"
+        lead="Everything runs on hardware you control — inference, training, measurement, and deployment."
+      />
+      <div class="mt-10">
+        <FeatureTabs features={FEATURES} />
+      </div>
+    </div>
+  </section>
+
+  <!-- Why -->
+  <section id="why" class="container-site py-24">
+    <SectionHeading
+      eyebrow="Why DistLLM"
+      title="Pool your existing hardware. Skip the cloud."
+      lead="Cloud GPU platforms rent capacity by the hour. DistLLM makes the machines in your building behave like that platform — for free."
+    />
+    <div class="mt-12">
+      <ArchDiagram />
+    </div>
+    <div class="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      {STATS.map((s) => (
+        <div class="rounded-2xl border border-line bg-surface p-6 shadow-sm">
+          <p class="text-gradient font-display text-3xl font-bold">{s.value}</p>
+          <p class="mt-2 text-sm text-muted">{s.label}</p>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section id="privacy" class="relative overflow-hidden bg-sunken py-24">
+    <GradientBlob variant="violet" class="top-0 right-10 h-72 w-72" />
+    <div class="container-site relative grid items-center gap-10 lg:grid-cols-2">
+      <div>
+        <SectionHeading
+          align="left"
+          eyebrow="Privacy"
+          title="Your data stays on your devices"
+          lead="There is no telemetry pipeline and no third-party API. Inference traffic flows only between nodes you own, authenticated with cluster keys."
+        />
+        <ul class="mt-6 space-y-3">
+          {["Per-node authentication with shared cluster secrets", "API keys hashed with salted PBKDF2", "Differential privacy for federated training", "JWT/SSO support for team deployments"].map((item) => (
+            <li class="flex items-start gap-2 text-muted">
+              <span class="mt-0.5 font-semibold text-brand-600">→</span> {item}
+            </li>
+          ))}
+        </ul>
+        <Button href="/security/" variant="outline" class="mt-8">Read the security model</Button>
+      </div>
+      <div class="rounded-2xl border border-line bg-surface p-8 shadow-card">
+        <p class="font-mono text-sm text-faint">// every request stays local</p>
+        <pre class="mt-3 overflow-x-auto rounded-xl border border-brand-300/40 bg-[#080d0a] p-4 font-mono text-xs leading-relaxed text-[#d5f5e3]" data-copy="curl http://localhost:8000/v1/chat/completions"><code>you@laptop:~$ curl http://localhost:8000/v1/chat/completions \
+    -H &quot;Authorization: Bearer $KEY&quot; ...
+
+# tokens generated by YOUR gpus
+# on YOUR network
+# visible to NO ONE else</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Benefits -->
+  <section id="benefits" class="container-site py-24">
+    <SectionHeading eyebrow="Benefits" title="Why teams choose DistLLM" />
+    <div class="mt-12 grid gap-6 md:grid-cols-2">
+      {BENEFITS.map((b) => (
+        <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm transition-shadow hover:shadow-card">
+          <h3 class="text-xl">{b.title}</h3>
+          <p class="mt-2 leading-relaxed text-muted">{b.body}</p>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <!-- Open source -->
+  <section id="pricing" class="bg-sunken py-24">
+    <div class="container-site">
+      <SectionHeading
+        eyebrow="Pricing"
+        title="Free. Forever. For everyone."
+        lead="DistLLM is Apache-2.0 open source. There is no paid tier, no license key, and no feature gate — the whole engine belongs to its users."
+      />
+      <div class="mx-auto mt-10 grid max-w-4xl gap-6 md:grid-cols-3">
+        <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+          <p class="font-display text-3xl font-bold text-brand-700">$0</p>
+          <h3 class="mt-1 font-semibold">No license fees</h3>
+          <p class="mt-2 text-sm text-muted">Every capability — pooling, training, benchmarks — ships in the free package.</p>
+        </div>
+        <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+          <p class="font-display text-3xl font-bold text-brand-700">0</p>
+          <h3 class="mt-1 font-semibold">No per-token charges</h3>
+          <p class="mt-2 text-sm text-muted">Your hardware, your electricity. Serving costs nothing beyond what the machines already draw.</p>
+        </div>
+        <div class="rounded-2xl border border-line bg-surface p-7 shadow-sm">
+          <p class="font-display text-3xl font-bold text-accent-600">100%</p>
+          <h3 class="mt-1 font-semibold">Open development</h3>
+          <p class="mt-2 text-sm text-muted">Public roadmap, public issues, adversarially-reviewed security fixes.</p>
+        </div>
+      </div>
+      <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
+        <Button href={SITE.github} variant="primary">Star on GitHub ★</Button>
+        <Button href="/docs/installation/" variant="outline">Install Now</Button>
+      </div>
+
+      <div class="mt-16">
+        <SectionHeading
+          title="The math: your hardware vs renting"
+          lead="Drag the sliders — this is why pooling beats renting for steady daily traffic."
+        />
+        <div class="mt-8">
+          <CostCalculator />
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="container-site py-24">
+    <SectionHeading eyebrow="FAQ" title="Questions, answered" />
+    <div class="mt-12">
+      <FaqAccordion items={FAQ} />
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="relative overflow-hidden bg-[#131a16] py-24">
+    <GradientBlob variant="emerald" class="top-0 left-1/4 h-96 w-96 opacity-30" />
+    <GradientBlob variant="violet" class="right-1/4 bottom-0 h-96 w-96 opacity-30" />
+    <div class="container-site relative text-center">
+      <h2 class="text-5xl text-white">Your GPUs are already there.</h2>
+      <p class="mx-auto mt-4 max-w-xl text-lg text-white/70">
+        One install command turns them into a private LLM endpoint. Five minutes, start to first token.
+      </p>
+      <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+        <Button href="/docs/installation/" variant="primary">Install Now</Button>
+        <Button href={SITE.github} variant="outline" class="border-white/25 bg-transparent text-white hover:border-white hover:text-white">
+          Star on GitHub ★
+        </Button>
+      </div>
+    </div>
+  </section>
+</PageLayout>

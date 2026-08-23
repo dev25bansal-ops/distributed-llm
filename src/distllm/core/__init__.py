@@ -37,7 +37,15 @@ _register("distllm.core.usage_meter", "QuotaLimit", "TenantUsage", "UsageMeter",
 _register("distllm.core.webhook_manager", "WebhookDelivery", "WebhookEvent", "WebhookManager", "WebhookTarget")
 _register("distllm.core.event_bus", "EventBus", "MarketplaceEvent", "MarketplaceEventType")
 _register("distllm.core.memory_defragmenter", "DefragConfig", "DefragPolicy", "DefragResult", "FragmentInfo", "MemoryDefragmenter", "TieredCompactionLevel")
+_register("distllm.core.agentic_router", "AgenticRouter", "RouterJudge", "RoutingDecision")
+_register("distllm.core.autonomous_healer", "AutonomousHealer", "FailurePredictor", "GPUResetManager", "GPUHeartbeat", "GPUHealthState")
+_register("distllm.core.bargaining_engine", "SpotBidManager", "DQNAgent", "BudgetController", "MarketSnapshot", "SpotBid")
+_register("distllm.core.compressed_speculative", "CompressedSpeculativeDecoder", "LightweightVerifier", "CompressionVerifierTrainer")
 _register("distllm.core.persistence", "SQLiteBackend", "StorageBackend")
+_register("distllm.core.prompt_library", "PromptRepository", "PromptVersion")
+_register("distllm.core.evaluation_harness", "EvalRunner", "EvaluationReport")
+_register("distllm.core.dp_inference", "DifferentialPrivacyInference", "PrivacyBudgetManager")
+_register("distllm.core.media_pipeline", "AudioPipeline", "MediaStreamRouter", "SpeechRecognizer", "TextToSpeech", "VoiceActivityDetector", "LLMResponder")
 
 
 def __getattr__(name: str):

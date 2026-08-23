@@ -1,0 +1,134 @@
+---
+import PageLayout from "../layouts/PageLayout.astro";
+import SectionHeading from "../components/SectionHeading.astro";
+---
+
+<PageLayout
+  title="Playground"
+  description="Send live requests to your DistLLM server — streaming chat, generated snippets, shareable URLs."
+>
+  <section class="container-site py-14">
+    <SectionHeading
+      eyebrow="API Playground"
+      title="Talk to your cluster"
+      lead="Runs entirely in your browser against your own DistLLM server. Start the server, then send real requests."
+    />
+
+    <div class="mx-auto mt-10 grid max-w-5xl gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+      <!-- Controls -->
+      <div class="rounded-2xl border border-line bg-surface p-6 shadow-card" data-pg="controls">
+        <details class="rounded-lg bg-sunken p-3 text-sm" open={false}>
+          <summary class="cursor-pointer font-semibold">Connection</summary>
+          <div class="mt-3 space-y-3">
+            <label class="block">
+              <span class="text-xs font-semibold tracking-wide text-faint uppercase">Base URL</span>
+              <input data-pg="baseUrl" type="text" value="http://localhost:8000"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 font-mono text-sm" />
+            </label>
+            <label class="block">
+              <span class="text-xs font-semibold tracking-wide text-faint uppercase">API key (optional)</span>
+              <input data-pg="apiKey" type="password" placeholder="your-api-key"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 font-mono text-sm" />
+            </label>
+            <label class="block">
+              <span class="flex items-center justify-between text-xs font-semibold tracking-wide text-faint uppercase">
+                Model
+                <button type="button" data-pg="refreshModels"
+                  class="rounded px-1 text-[10px] normal-case text-brand-600 hover:text-brand-700">↻ fetch from server</button>
+              </span>
+              <input data-pg="model" type="text" value="TinyStories-1M" list="pg-models"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 font-mono text-sm" />
+              <datalist id="pg-models"></datalist>
+            </label>
+          </div>
+        </details>
+
+        <label class="mt-4 block">
+          <span class="text-xs font-semibold tracking-wide text-faint uppercase">Message</span>
+          <textarea data-pg="message" rows="4" class="mt-1 w-full resize-y rounded-lg border border-line px-3 py-2 text-sm"
+            placeholder="Once upon a time">Once upon a time</textarea>
+        </label>
+
+        <label class="mt-4 block">
+          <span class="flex justify-between text-xs font-semibold tracking-wide text-faint uppercase">
+            Temperature <span data-pg="tempVal" class="font-mono">0.7</span>
+          </span>
+          <input data-pg="temperature" type="range" min="0" max="2" step="0.1" value="0.7" class="mt-1 w-full accent-brand-600" />
+        </label>
+
+        <label class="mt-4 block">
+          <span class="flex justify-between text-xs font-semibold tracking-wide text-faint uppercase">
+            Max tokens <span data-pg="maxTokVal" class="font-mono">128</span>
+          </span>
+          <input data-pg="maxTokens" type="range" min="16" max="1024" step="16" value="128" class="mt-1 w-full accent-brand-600" />
+        </label>
+
+        <div class="mt-4 space-y-2">
+          <label class="flex items-center gap-2 text-sm">
+            <input data-pg="stream" type="checkbox" checked class="accent-brand-600" />
+            Stream tokens (SSE)
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input data-pg="multiturn" type="checkbox" checked class="accent-brand-600" />
+            Multi-turn conversation
+          </label>
+        </div>
+
+        <div class="mt-5 flex gap-2">
+          <button data-pg="send"
+            class="flex-1 rounded-xl bg-brand-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-brand-700">
+            Send request
+          </button>
+          <button data-pg="stop" disabled
+            class="rounded-xl border border-pop-400 px-4 py-3 text-sm font-semibold text-pop-500 transition-colors hover:bg-pop-100 disabled:cursor-not-allowed disabled:opacity-40">
+            Stop
+          </button>
+          <button data-pg="share" title="Copy shareable URL"
+            class="rounded-xl border border-line px-4 py-3 text-sm font-medium text-muted hover:text-ink">
+            Share
+          </button>
+        </div>
+      </div>
+
+      <!-- Response -->
+      <div class="space-y-5">
+        <div class="rounded-2xl border border-line bg-surface shadow-card">
+          <div class="flex items-center justify-between border-b border-line px-5 py-3">
+            <span class="text-sm font-semibold">Response</span>
+            <span class="flex items-center gap-2">
+              <button data-pg="copyOut" title="Copy response"
+                class="rounded-md border border-line px-2 py-0.5 text-xs text-muted hover:text-ink disabled:opacity-40" disabled>
+                Copy
+              </button>
+              <span data-pg="status" class="rounded-full bg-sunken px-2.5 py-0.5 font-mono text-xs text-muted">idle</span>
+            </span>
+          </div>
+          <div data-pg="output"
+            class="min-h-[220px] whitespace-pre-wrap p-5 font-mono text-sm leading-relaxed text-ink">
+            Send a request to see the response here.
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-line bg-surface shadow-card">
+          <div class="flex items-center justify-between border-b border-line px-5 py-3">
+            <span class="text-sm font-semibold">Snippet</span>
+            <div class="flex gap-1" role="tablist" aria-label="Snippet language">
+              {["curl", "python", "javascript"].map((lang, i) => (
+                <button role="tab" data-pg-lang={lang} aria-selected={i === 0 ? "true" : "false"}
+                  class:list={[
+                    "rounded-md px-2.5 py-1 text-xs font-medium",
+                    i === 0 ? "bg-brand-50 text-brand-700" : "text-muted hover:text-ink",
+                  ]}>
+                  {lang}
+                </button>
+              ))}
+            </div>
+          </div>
+          <pre class="overflow-x-auto border-t border-line bg-[#080d0a] p-5 font-mono text-xs leading-relaxed text-[#d5f5e3]"><code data-pg="snippet"></code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</PageLayout>
+
+<script src="../scripts/playground.ts"></script>

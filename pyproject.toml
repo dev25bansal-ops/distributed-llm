@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "distributed-llm"
-version = "0.4.0"
+version = "0.4.1"
 description = "Distributed LLM inference — pool GPUs across multiple devices to run models no single machine can handle"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -115,7 +115,7 @@ wan = [
 ]
 all = [
     "distributed-llm[self-hosted,observability,ray,security,ui,backends]",
-    "distributed-llm[dev,examples,model-extras,wan]",
+    "distributed-llm[model-extras]",
 ]
 all-dev = [
     "distributed-llm[all,dev]",
@@ -211,3 +211,18 @@ module = [
     "distllm.dist.node_pb2_grpc",
 ]
 ignore_errors = true
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*", "build/*", "proto/*", "benchmarks/*", "examples/*", "integrations/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "pragma: nocover",
+    'if __name__ == .__main__.:',
+    "raise NotImplementedError",
+    "return None  # pragma: no cover",
+]
+fail_under = 80
+skip_empty = true

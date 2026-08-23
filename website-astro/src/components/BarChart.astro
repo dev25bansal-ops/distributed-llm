@@ -1,0 +1,36 @@
+---
+// Horizontal CSS bar chart — no JS/chart library needed.
+interface Row { label: string; sub?: string; value: number; display: string; max: number; unitColor?: string }
+interface Props {
+  title: string;
+  unitLabel: string;
+  rows: Row[];
+}
+const { title, unitLabel, rows } = Astro.props;
+---
+
+<div class="rounded-2xl border border-line bg-surface p-6 shadow-sm">
+  <div class="flex items-baseline justify-between">
+    <h3 class="text-lg font-semibold">{title}</h3>
+    <span class="text-xs font-medium tracking-wide text-faint uppercase">{unitLabel}</span>
+  </div>
+  <div class="mt-5 space-y-3">
+    {rows.map((r) => (
+      <div>
+        <div class="flex items-baseline justify-between gap-3 text-sm">
+          <span class="font-mono">{r.label}</span>
+          <span class="font-semibold text-brand-700">{r.display}</span>
+        </div>
+        <div class="mt-1 h-2.5 w-full overflow-hidden rounded-full bg-sunken" role="img"
+          aria-label={`${r.label}: ${r.display} ${unitLabel}`}>
+          <div
+            class:list={["h-full rounded-full", r.unitColor ?? "bg-gradient-to-r from-brand-500 to-brand-600"]}
+            style={`width: ${Math.max(3, (r.value / r.max) * 100)}%`}
+          >
+          </div>
+        </div>
+        {r.sub && <p class="mt-0.5 text-xs text-faint">{r.sub}</p>}
+      </div>
+    ))}
+  </div>
+</div>

@@ -1,0 +1,30 @@
+---
+title: Observability
+description: Prometheus metrics, tracing, and the live dashboard.
+group: Reference
+order: 4
+---
+
+## Prometheus metrics
+
+`GET /metrics` exposes RED metrics for every route:
+
+- `distllm_requests_total` — request counter by endpoint and status
+- `distllm_request_latency` — latency histogram with percentiles
+- `distllm_request_duration_seconds`, error counters, cost and GPU-hour trackers
+
+## Tracing
+
+Structured JSON logs include `trace_id`/`span_id` per request. OpenTelemetry
+spans cover generation, with TTFT recorded as a span attribute.
+
+## Dashboard
+
+The coordinator serves an operations dashboard at `/dashboard` — cluster node
+health, model status, and live metrics over WebSocket (`/ws/metrics`).
+
+## SLA tiers
+
+Request latency is tracked against per-hardware-class SLA tiers with
+compliance percentiles; completed requests freeze their elapsed time so
+compliance numbers stay stable.
