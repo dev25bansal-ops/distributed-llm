@@ -1,61 +1,24 @@
-# Dependabot configuration for automated dependency updates
-# https://docs.github.com/en/code-security/dependabot
-
 version: 2
 updates:
-  # Python (pip) dependencies
+  # Python ecosystem — grouped, weekly
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "America/New_York"
-    open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "automated"
-    reviewers:
-      - "distributed-llm/maintainers"
     ignore:
-      # torch and friends are pinned to CUDA compatibility
-      - dependency-name: "torch"
-      - dependency-name: "torchvision"
-      - dependency-name: "torchaudio"
-      - dependency-name: "nvidia*"
-      - dependency-name: "cuda*"
-      - dependency-name: "tensorrt*"
-    # Group patch updates into a single PR
+      # vllm 0.x releases frequently change internal APIs the backend uses;
+      # the <0.9.0 cap in pyproject.toml is intentional. Bump manually after
+      # testing against the backend integration suite.
+      - dependency-name: "vllm"
+        versions: [">=0.9.0"]
     groups:
-      dev-dependencies:
-        patterns:
-          - "pytest*"
-          - "ruff"
-          - "mypy"
-          - "black"
-          - "bandit"
+      python-minor-and-patch:
         update-types:
-          - "patch"
-      core-dependencies:
-        patterns:
-          - "fastapi*"
-          - "uvicorn*"
-          - "pydantic*"
-          - "httpx*"
-          - "loguru"
-          - "rich"
-          - "typer"
-        update-types:
-          - "patch"
           - "minor"
+          - "patch"
 
-  # GitHub Actions
+  # GitHub Actions — monthly
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "ci"
-      - "automated"
+      interval: "monthly"
