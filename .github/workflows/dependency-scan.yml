@@ -1,0 +1,62 @@
+# Focus Area 4 — dependency vulnerability gate.
+#
+# Runs pip-audit against the project's *installed* core dependency set.
+# (The `security-deps` job in ci.yml audits a bare environment and therefore
+# sees almost nothing — this workflow installs the package first so the real
+# dependency tree is audited.)
+#
+# ADVISORY MODE: continue-on-error is true while existing findings are
+# triaged. TODO(security): flip continue-on-error to false (and remove this
+# comment) once the initial report is clean — the gate then blocks merges on
+# new known vulnerabilities.
+
+name: Dependency Scan
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Weekly scan Mondays 06:23 UTC (off-the-hour to reduce load spikes).
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      - name: Install project (core dependency set)
+        # Core deps only (fastapi, uvicorn, pydantic, httpx, pyjwt, numpy, ...).
+        # Heavy extras (torch/vllm) are intentionally excluded to keep this
+        # fast; add extras here if their trees need coverage too.
+        run: pip install .
+
+      - name: Run pip-audit
+        # Advisory until triaged — see TODO at top of file.
+        continue-on-error: true
+        run: |
+          pip-audit --strict --desc --format json --output dep-audit.json || true
+          pip-audit --desc
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dep-audit-report
+          path: dep-audit.json
+          if-no-files-found: ignore

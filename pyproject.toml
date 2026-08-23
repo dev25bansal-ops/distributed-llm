@@ -93,6 +93,9 @@ dev = [
     "opentelemetry-test-utils>=0.42b0",
     "bandit[toml]>=1.7",
     "detect-secrets>=1.5",
+    # Mirrors .github/workflows/dependency-scan.yml so devs can run
+    # `pip-audit` locally against the same dependency gate.
+    "pip-audit>=2.7",
 ]
 sdk = [
     "httpx>=0.27.0",
