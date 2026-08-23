@@ -4,6 +4,8 @@ version = "1.0.0"
 edition = "2021"
 description = "Rust SDK for Distributed LLM inference"
 license = "Apache-2.0"
+repository = "https://github.com/distributed-llm/distributed-llm"
+homepage = "https://github.com/distributed-llm/distributed-llm/tree/main/sdk/rust"
 keywords = ["llm", "inference", "distributed", "openai"]
 categories = ["api-bindings", "web-programming::http-client"]
 

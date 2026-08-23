@@ -472,7 +472,7 @@ class NodeGRPCClient:
             ]
         except Exception as e:
             logger.warning(f"Model advertisement failed: {e}")
-            return []
+            raise RuntimeError(f"Model advertisement failed: {e}") from e
 
     async def transfer_weights_stream(
         self,

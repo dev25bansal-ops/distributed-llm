@@ -17,10 +17,19 @@
  * DistLLM client for Node.js and browsers.
  */
 export class DistLLMClient {
+    baseUrl;
+    apiKey;
+    timeout;
+    maxRetries;
+    defaultHeaders;
+    chat;
+    completions;
+    embeddings;
+    models;
     constructor(options = {}) {
         this.baseUrl = (options.baseUrl || 'http://localhost:8000').replace(/\/$/, '');
         this.apiKey = options.apiKey || '';
-        this.timeout = options.timeout || 120000;
+        this.timeout = options.timeout || 120_000;
         this.maxRetries = options.maxRetries || 3;
         this.defaultHeaders = options.headers || {};
         this.chat = { completions: new ChatCompletions(this) };
@@ -63,7 +72,7 @@ export class DistLLMClient {
                     throw error;
                 }
                 if (attempt < this.maxRetries) {
-                    await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 30000)));
+                    await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 30_000)));
                 }
             }
         }
@@ -115,6 +124,7 @@ export class DistLLMClient {
     }
 }
 class ChatCompletions {
+    client;
     constructor(client) {
         this.client = client;
     }
@@ -126,6 +136,7 @@ class ChatCompletions {
     }
 }
 class Completions {
+    client;
     constructor(client) {
         this.client = client;
     }
@@ -134,6 +145,7 @@ class Completions {
     }
 }
 class Embeddings {
+    client;
     constructor(client) {
         this.client = client;
     }
@@ -142,6 +154,7 @@ class Embeddings {
     }
 }
 class Models {
+    client;
     constructor(client) {
         this.client = client;
     }
@@ -150,6 +163,8 @@ class Models {
     }
 }
 export class DistLLMApiError extends Error {
+    statusCode;
+    errorType;
     constructor(message, statusCode, errorType = 'api_error') {
         super(message);
         this.statusCode = statusCode;

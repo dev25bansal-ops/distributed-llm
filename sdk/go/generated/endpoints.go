@@ -9,4 +9,3 @@ const EndpointlistModels = "/v1/models"
 const EndpointgetHealth = "/health"
 const EndpointcreateBatch = "/v1/batches"
 const EndpointlistBatches = "/v1/batches"
-

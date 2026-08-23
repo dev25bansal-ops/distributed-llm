@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator, Iterator
 
 import httpx
 
-from distllm_sdk.constants import DEFAULT_HTTP_TIMEOUT, MAX_RETRIES, RETRY_DELAY
+from distllm_sdk.constants import DEFAULT_HTTP_TIMEOUT, MAX_RETRIES, RETRY_AFTER_FLOOR, RETRY_DELAY
 from distllm_sdk.types import (
     ChatCompletionResponse,
     ChatMessage as DataChatMessage,
@@ -40,7 +40,16 @@ from distllm_sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, Ci
 from distllm_sdk.errors import AuthenticationError, RateLimitError, TimeoutError
 
 
-def _compute_delay(attempt: int, cfg: "RetryConfig") -> float:
+def _compute_delay(attempt: int, cfg: "RetryConfig", headers: dict | None = None) -> float:
+    # Honor a server-provided Retry-After header verbatim (with a floor) when
+    # present; otherwise fall back to exponential backoff with jitter.
+    if headers:
+        raw = headers.get("retry-after")
+        if raw is not None:
+            try:
+                return max(float(raw), RETRY_AFTER_FLOOR) * (0.5 + random.random() * 0.5)
+            except (ValueError, TypeError):
+                pass
     delay = min(cfg.initial_delay * (cfg.exponential_base ** attempt), cfg.max_delay)
     return delay * (0.5 + random.random() * 0.5)
 
@@ -394,10 +403,11 @@ class DistLLMClient(_BaseClient):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         retry: RetryConfig | None = None,
         pool: PoolConfig | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
         super().__init__(base_url, api_key, timeout, retry, pool)
         limits = httpx.Limits(max_connections=self._pool.max_connections, max_keepalive_connections=self._pool.max_keepalive_connections, keepalive_expiry=self._pool.keepalive_expiry)
-        self._client = httpx.AsyncClient(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits)
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits, transport=transport)
 
     async def __aenter__(self):
         return self
@@ -582,7 +592,7 @@ class DistLLMClient(_BaseClient):
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in self._retry.retryable_status_codes and attempt < self._retry.max_retries:
-                    delay = _compute_delay(attempt, self._retry)
+                    delay = _compute_delay(attempt, self._retry, dict(e.response.headers))
                     await asyncio.sleep(delay)
                     last_exc = e
                     continue
@@ -622,7 +632,8 @@ class DistLLMClient(_BaseClient):
                 return response
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
-                    delay = _compute_delay(attempt, self._retry)
+                    retry_headers = dict(e.response.headers) if isinstance(e, httpx.HTTPStatusError) else None
+                    delay = _compute_delay(attempt, self._retry, retry_headers)
                     await asyncio.sleep(delay)
                     last_exc = e
                     continue
@@ -652,10 +663,11 @@ class DistLLMClientSync(_BaseClient):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         retry: RetryConfig | None = None,
         pool: PoolConfig | None = None,
+        transport: httpx.BaseTransport | None = None,
     ):
         super().__init__(base_url, api_key, timeout, retry, pool)
         limits = httpx.Limits(max_connections=self._pool.max_connections, max_keepalive_connections=self._pool.max_keepalive_connections, keepalive_expiry=self._pool.keepalive_expiry)
-        self._client = httpx.Client(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits)
+        self._client = httpx.Client(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits, transport=transport)
 
     def __enter__(self):
         return self
@@ -847,7 +859,7 @@ class DistLLMClientSync(_BaseClient):
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in self._retry.retryable_status_codes and attempt < self._retry.max_retries:
-                    delay = _compute_delay(attempt, self._retry)
+                    delay = _compute_delay(attempt, self._retry, dict(e.response.headers))
                     time.sleep(delay)
                     last_exc = e
                     continue
@@ -887,7 +899,8 @@ class DistLLMClientSync(_BaseClient):
                 return response
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
-                    delay = _compute_delay(attempt, self._retry)
+                    retry_headers = dict(e.response.headers) if isinstance(e, httpx.HTTPStatusError) else None
+                    delay = _compute_delay(attempt, self._retry, retry_headers)
                     time.sleep(delay)
                     last_exc = e
                     continue

@@ -45,7 +45,6 @@ from distllm_sdk.errors import (
 )
 
 __all__ = [
-    "__version__",
     "DistLLMClient",
     "DistLLMClientSync",
     "RetryConfig",

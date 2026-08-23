@@ -1,4 +1,4 @@
-// Package distllm provides a Go client for the DistLLM distributed inference API.
+// HTTP client for the DistLLM API. Package documentation lives in doc.go.
 //
 // Usage:
 //
@@ -63,15 +63,15 @@ type Message struct {
 
 // ChatRequest is the request body for chat completions.
 type ChatRequest struct {
-	Model          string            `json:"model"`
-	Messages       []Message         `json:"messages"`
-	Temperature    float64           `json:"temperature,omitempty"`
-	TopP           float64           `json:"top_p,omitempty"`
-	MaxTokens      int               `json:"max_tokens,omitempty"`
-	Stream         bool              `json:"stream,omitempty"`
-	ResponseFormat *ResponseFormat    `json:"response_format,omitempty"`
-	Adapter        string            `json:"adapter,omitempty"`
-	Stop           []string          `json:"stop,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Temperature    float64         `json:"temperature,omitempty"`
+	TopP           float64         `json:"top_p,omitempty"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	Adapter        string          `json:"adapter,omitempty"`
+	Stop           []string        `json:"stop,omitempty"`
 }
 
 // ResponseFormat specifies the output format.
@@ -82,12 +82,12 @@ type ResponseFormat struct {
 
 // ChatResponse is the response from chat completions.
 type ChatResponse struct {
-	ID             string      `json:"id"`
-	Model          string      `json:"model"`
-	Created        int64       `json:"created"`
+	ID             string       `json:"id"`
+	Model          string       `json:"model"`
+	Created        int64        `json:"created"`
 	Choices        []ChatChoice `json:"choices"`
-	Usage          *Usage      `json:"usage,omitempty"`
-	GenerationTime float64     `json:"generation_time,omitempty"`
+	Usage          *Usage       `json:"usage,omitempty"`
+	GenerationTime float64      `json:"generation_time,omitempty"`
 }
 
 // ChatChoice represents a single choice in the response.
@@ -119,11 +119,11 @@ type CompletionRequest struct {
 
 // CompletionResponse is the response from text completions.
 type CompletionResponse struct {
-	ID             string             `json:"id"`
-	Model          string             `json:"model"`
-	Created        int64              `json:"created"`
-	Choices        []CompletionChoice `json:"choices"`
-	Usage          *Usage             `json:"usage,omitempty"`
+	ID      string             `json:"id"`
+	Model   string             `json:"model"`
+	Created int64              `json:"created"`
+	Choices []CompletionChoice `json:"choices"`
+	Usage   *Usage             `json:"usage,omitempty"`
 }
 
 // CompletionChoice represents a single choice.
@@ -135,15 +135,15 @@ type CompletionChoice struct {
 
 // EmbeddingRequest is the request body for embeddings.
 type EmbeddingRequest struct {
-	Model string `json:"model"`
+	Model string      `json:"model"`
 	Input interface{} `json:"input"`
 }
 
 // EmbeddingResponse is the response from embeddings.
 type EmbeddingResponse struct {
-	Model string           `json:"model"`
+	Model string            `json:"model"`
 	Data  []EmbeddingObject `json:"data"`
-	Usage *Usage           `json:"usage,omitempty"`
+	Usage *Usage            `json:"usage,omitempty"`
 }
 
 // EmbeddingObject represents a single embedding.
@@ -159,9 +159,9 @@ type ModelList struct {
 
 // ModelInfo represents a model.
 type ModelInfo struct {
-	ID       string `json:"id"`
-	OwnedBy  string `json:"owned_by"`
-	Created  int64  `json:"created"`
+	ID      string `json:"id"`
+	OwnedBy string `json:"owned_by"`
+	Created int64  `json:"created"`
 }
 
 // HealthResponse is the response from the health endpoint.
