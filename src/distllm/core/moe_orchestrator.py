@@ -203,3 +203,57 @@ class MoEOrchestrator:
             "top_k": self._top_k,
             "nodes": list(self._registry._node_experts.keys()),
         }
+
+
+def replicate_experts_across_nodes(
+    num_experts: int,
+    nodes: int,
+    replication_factor: int = 1,
+) -> dict[str, list[int]]:
+    """Assign expert placements across *nodes* with balanced round-robin.
+
+    Every expert is placed on ``replication_factor`` distinct nodes.  Hosts
+    are chosen greedily as the least-loaded nodes (ties broken by node id),
+    which for ``replication_factor == 1`` degenerates to plain round-robin
+    (expert *e* lands on node ``e % nodes``) and in general keeps per-node
+    placement counts within one of each other.
+
+    Args:
+        num_experts: Total number of experts to place.
+        nodes: Number of available nodes.
+        replication_factor: How many copies of each expert to place
+            (clamped to ``[1, nodes]``).
+
+    Returns:
+        Mapping ``{"node_<i>": [expert_id, ...]}`` covering all experts.
+        Node keys follow the ``node_{i}`` convention used by the parallel
+        planners' :class:`ParallelPlan.expert_assignment`.
+
+    Raises:
+        None -- degenerate inputs (non-positive counts) yield an empty map.
+    """
+    if num_experts <= 0 or nodes <= 0:
+        return {}
+
+    replicas = max(1, min(int(replication_factor), nodes))
+
+    placement: dict[str, list[int]] = {f"node_{i}": [] for i in range(nodes)}
+    counts = [0] * nodes
+
+    for expert_id in range(num_experts):
+        # Pick the `replicas` least-loaded nodes so every node ends up with
+        # an equal share of expert placements (max diff of one slot).
+        hosts = sorted(range(nodes), key=lambda n: (counts[n], n))[:replicas]
+        for host in hosts:
+            placement[f"node_{host}"].append(expert_id)
+            counts[host] += 1
+
+    logger.debug(
+        "Replicated {} experts across {} nodes (replication_factor={}); "
+        "per-node placements: {}",
+        num_experts,
+        nodes,
+        replicas,
+        counts,
+    )
+    return placement

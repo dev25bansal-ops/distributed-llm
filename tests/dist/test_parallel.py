@@ -702,13 +702,21 @@ class TestHybridParallelPlanner:
         assert len(plan.tp_groups) > 0
         assert plan.tp_group_size > 1
 
-    # -- _assign_experts raises ImportError (no such function) --
+    # -- _assign_experts places experts across nodes (C9 regression) --
 
-    def test_assign_experts_missing_function(self):
-        """_assign_experts depends on an import that does not exist."""
+    def test_assign_experts_balanced_round_robin(self):
+        """_assign_experts covers every expert exactly once.
+
+        Regression: this used to assert ImportError because the helper
+        ``replicate_experts_across_nodes`` did not exist in
+        moe_orchestrator; the function is now implemented and the call
+        site must produce a valid, balanced assignment.
+        """
         planner = HybridParallelPlanner()
-        with pytest.raises(ImportError):
-            planner._assign_experts(8, 2)
+        result = planner._assign_experts(8, 2)
+        assert set(result) == {"node_0", "node_1"}
+        placed = sorted(e for ids in result.values() for e in ids)
+        assert placed == list(range(8))
 
 
 # ---------------------------------------------------------------------------

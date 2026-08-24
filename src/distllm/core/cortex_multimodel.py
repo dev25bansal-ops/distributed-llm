@@ -627,9 +627,16 @@ class ModelPool:
         """Evict least-recently-used models until the budget is satisfied.
 
         Must be called while holding ``_lock``.
+
+        The running memory total is tracked locally instead of read from the
+        :attr:`total_memory_bytes` property: that property re-acquires
+        ``_lock``, which is a plain (non-reentrant) ``threading.Lock``, so
+        calling it from here -- always executed under the lock -- deadlocked
+        the pool on the very first eviction check.
         """
         budget = self._max_memory_bytes
-        while self.total_memory_bytes + incoming_bytes > budget and self._models:
+        total = sum(h.memory_bytes for h in self._handles.values())
+        while total + incoming_bytes > budget and self._models:
             # Remove the first (oldest) entry from OrderedDict.
             oldest_id, oldest_model = next(iter(self._models.items()))
             oldest_handle = self._handles[oldest_id]
@@ -641,6 +648,7 @@ class ModelPool:
             )
             self._models.pop(oldest_id)
             self._handles.pop(oldest_id)
+            total -= oldest_handle.memory_bytes
             # Attempt to free GPU memory.
             self._try_clear_device(oldest_model)
 
