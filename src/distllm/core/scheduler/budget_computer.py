@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -239,9 +240,13 @@ class BudgetComputer:
         Returns:
             Fully resolved iteration budget with all policies applied.
         """
-        if base_budget.enable_chunked_prefill and enable_chunked_prefill:
-            base = base_budget
-        else:
+        # Work on a COPY: ``base_budget`` may alias the scheduler's
+        # persistent IterationBudget when chunked prefill is enabled, and
+        # policy hooks downstream are allowed to mutate the budget they
+        # receive -- mutating the persistent object would compound every
+        # adjustment across iterations.
+        base = replace(base_budget)
+        if not (base_budget.enable_chunked_prefill and enable_chunked_prefill):
             base = IterationBudget(
                 max_prefill_tokens=max_tokens_per_batch,
                 max_decode_tokens=max_tokens_per_batch,

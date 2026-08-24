@@ -8,6 +8,8 @@ from typing import Any
 
 from loguru import logger
 
+from distllm.core.scheduler.budget import IterationBudget
+
 
 class DeviceClass(str, Enum):
     """GPU device class for scheduling decisions."""
@@ -59,26 +61,43 @@ class HeterogeneousBudgetComputer:
             ),
         }
 
-    def compute_budget(self, base_budget: Any) -> Any:
-        """Adjust budget based on node capabilities."""
-        if not self._nodes:
-            return base_budget
+    def compute_budget(
+        self,
+        base_prefill_tokens: int,
+        base_decode_tokens: int,
+        base_batch_size: int,
+        base_total_tokens: int,
+    ) -> IterationBudget:
+        """Adjust the budget based on node capabilities (budget_computer contract).
 
-        # Find the slowest node
-        min_tflops = min(n.gpu_tflops for n in self._nodes.values() if n.gpu_tflops > 0)
-        max_tflops = max(n.gpu_tflops for n in self._nodes.values() if n.gpu_tflops > 0)
+        Called once per scheduling iteration with the four scalar budget
+        fields; returns a NEW ``IterationBudget`` scaled for cluster
+        heterogeneity.  Inputs are never mutated.
 
-        if max_tflops == 0:
-            return base_budget
+        When the slowest node has less than half the TFLOPS of the
+        fastest, prefill is throttled by the min/max ratio so straggler
+        nodes are not starved of decode slots.
+        """
+        if self._nodes:
+            tflops = [n.gpu_tflops for n in self._nodes.values() if n.gpu_tflops > 0]
+            # Nodes may be registered without compute info (e.g. bandwidth
+            # only) — an empty tflops list must pass the budget through
+            # instead of raising ValueError from min()/max().
+            if tflops:
+                min_tflops = min(tflops)
+                max_tflops = max(tflops)
+                if max_tflops > 0 and min_tflops / max_tflops < 0.5:
+                    # Significant heterogeneity — reduce prefill to avoid straggler
+                    ratio = min_tflops / max_tflops
+                    base_prefill_tokens = int(base_prefill_tokens * ratio)
+                    logger.debug(
+                        f"Heterogeneous budget: prefill scaled by {ratio:.2f} "
+                        f"(slowest={min_tflops:.0f} TFLOPS)"
+                    )
 
-        # Scale down prefill budget if there's a slow node
-        ratio = min_tflops / max_tflops
-        if ratio < 0.5:
-            # Significant heterogeneity — reduce prefill to avoid straggler
-            base_budget.max_prefill_tokens = int(base_budget.max_prefill_tokens * ratio)
-            logger.debug(
-                f"Heterogeneous budget: prefill scaled by {ratio:.2f} "
-                f"(slowest={min_tflops:.0f} TFLOPS)"
-            )
-
-        return base_budget
+        return IterationBudget(
+            max_prefill_tokens=base_prefill_tokens,
+            max_decode_tokens=base_decode_tokens,
+            max_batch_size=base_batch_size,
+            max_total_tokens=base_total_tokens,
+        )

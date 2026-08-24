@@ -28,6 +28,24 @@ _current_request_id_ctx: ContextVar[str | None] = ContextVar(
     "current_request_id", default=None
 )
 
+# ---------------------------------------------------------------------------
+# C2: prefix-cache KV reuse is NOT wired.
+#
+# ``CacheManager.lookup_prefix(tokens)`` returns ``(match_len, kv_data)``.
+# The pipeline used to record ``match_len`` on the sequence and DISCARD
+# ``kv_data``; the scheduler then emits only ``prompt_tokens[match_len:]``
+# while every node's KV caches start empty, so attention ran over a missing
+# prefix and produced corrupted output on every repeat prompt (and a fresh
+# sequence with a full-prompt hit crashed outright in the scheduler's decode
+# path).  Until the matched KV blocks are actually re-seeded into the
+# engine's per-request KV caches (local past_key_values / pipeline node
+# caches), a hit MUST be treated as a miss: ``prefix_match_len`` stays 0
+# and the full prompt is prefetched.
+#
+# Flip this to True only together with the KV-restoration wiring at every
+# site guarded below (submission lookup + both batch loops).
+PREFIX_CACHE_KV_REUSE_WIRED = False
+
 
 class RequestPipeline:
     """Handles text generation, batch scheduling, and speculative decoding.
@@ -406,8 +424,11 @@ class RequestPipeline:
                 raise NodeError("Rate limit exceeded")
 
         input_ids = c.tokenizer.encode(prompt, return_tensors="pt")
+        # C2: see PREFIX_CACHE_KV_REUSE_WIRED above -- a prefix hit must not
+        # skip prompt tokens whose KV was never restored, so the submission
+        # path leaves prefix_match_len at 0 (full prompt prefetched).
         prefix_match_len = 0
-        if c.prefix_cache:
+        if PREFIX_CACHE_KV_REUSE_WIRED and c.prefix_cache:
             prefix_match_len, _ = c._cache_mgr.lookup_prefix(input_ids)
 
         constraint = None
@@ -555,7 +576,10 @@ class RequestPipeline:
         batch_size = batch.batch_size
         device = next(c.local_partitioner.full_model.parameters()).device
 
-        if c._cache_mgr.prefix_cache is not None:
+        # C2: prefix hits are only adopted when the matched KV blocks are
+        # actually reusable (see PREFIX_CACHE_KV_REUSE_WIRED).  Adopting a
+        # bare match_len while discarding kv_data corrupted output.
+        if PREFIX_CACHE_KV_REUSE_WIRED and c._cache_mgr.prefix_cache is not None:
             for seq in batch.sequences:
                 if seq.prefix_match_len == 0 and len(seq.generated_tokens) == 0:
                     match_len, _ = c._cache_mgr.lookup_prefix(seq.prompt_tokens)
@@ -597,7 +621,10 @@ class RequestPipeline:
         c = self._coord
         next_tokens = []
 
-        if c._cache_mgr.prefix_cache is not None:
+        # C2: prefix hits are only adopted when the matched KV blocks are
+        # actually reusable (see PREFIX_CACHE_KV_REUSE_WIRED).  Adopting a
+        # bare match_len while discarding kv_data corrupted output.
+        if PREFIX_CACHE_KV_REUSE_WIRED and c._cache_mgr.prefix_cache is not None:
             for seq in batch.sequences:
                 if seq.prefix_match_len == 0 and len(seq.generated_tokens) == 0:
                     match_len, _ = c._cache_mgr.lookup_prefix(seq.prompt_tokens)

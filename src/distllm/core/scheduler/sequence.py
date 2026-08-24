@@ -177,3 +177,34 @@ class ScheduledBatch:
     def total_tokens(self) -> int:
         """Total tokens in the flat tensor (sum of all seq lengths)."""
         return sum(self.seq_lengths) if self.seq_lengths else 0
+
+    def build_inputs(self) -> tuple:
+        """Return the per-iteration tensor views for the generation loops.
+
+        Returns ``(input_ids, attention_mask, seq_starts, seq_lengths,
+        position_offsets, is_prefill)``.  ``request_pipeline`` discards
+        elements 1 and 5 (it fetches the mask separately via
+        :meth:`build_attention_mask`).
+        """
+        return (
+            self.input_ids,
+            self.attention_mask,
+            self.seq_starts,
+            self.seq_lengths,
+            self.position_offsets,
+            self.is_prefill,
+        )
+
+    def build_attention_mask(self) -> "torch.Tensor":
+        """All-visible attention mask for the flat ragged layout.
+
+        The flat layout packs every sequence's tokens contiguously into a
+        ``[1, total]`` tensor, so every produced position attends to the
+        full row.
+        """
+        import torch
+        total = int(self.input_ids.shape[-1]) if self.input_ids is not None else 0
+        return torch.ones(
+            (1, total), dtype=torch.long, device=self.input_ids.device
+            if self.input_ids is not None else None
+        )

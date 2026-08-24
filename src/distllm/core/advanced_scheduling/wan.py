@@ -21,6 +21,9 @@ class WANConfig:
     batch_multiplier: float = 1.5
     rtt_threshold_ms: float = 10.0
     prefetch_kv: bool = True
+    # When True (default) WAN latency variance disables Sarathi-Serve
+    # pressure adaptation (see should_disable_pressure_adaptation).
+    disable_sarathi_pressure: bool = True
 
 
 class WANSchedulingPolicy:
@@ -32,6 +35,39 @@ class WANSchedulingPolicy:
 
     def __init__(self, config: WANConfig | None = None):
         self._config = config or WANConfig()
+        self._max_seen_rtt_ms: float = 0.0
+
+    @property
+    def is_wan_active(self) -> bool:
+        """True while WAN mode is active (budget_computer contract)."""
+        return self._config.enabled
+
+    def adjust_budget_for_wan(
+        self,
+        base_prefill_tokens: int,
+        base_batch_size: int,
+        base_total_tokens: int,
+    ) -> tuple[int, int, int]:
+        """Scale budgets for high-latency links (budget_computer contract).
+
+        Prefill chunks are multiplied by ``chunk_multiplier`` (amortize
+        RTT across a bigger chunk) and batch size by ``batch_multiplier``
+        (amortize per-request round trips); total token budget scales by
+        both factors so the enlarged chunks/batches actually fit.
+
+        Returns ``(prefill, batch_size, total_tokens)``, unchanged when
+        WAN mode is inactive.
+        """
+        if not self._config.enabled:
+            return base_prefill_tokens, base_batch_size, base_total_tokens
+        adj_prefill = int(base_prefill_tokens * self._config.chunk_multiplier)
+        adj_batch = int(base_batch_size * self._config.batch_multiplier)
+        adj_total = int(
+            base_total_tokens
+            * self._config.chunk_multiplier
+            * self._config.batch_multiplier
+        )
+        return adj_prefill, adj_batch, adj_total
 
     def detect_wan_mode(self, nodes: dict[str, Any]) -> bool:
         """Auto-enable WAN mode when any node looks like a WAN link.
@@ -47,6 +83,8 @@ class WANSchedulingPolicy:
         wan = False
         for node in nodes.values():
             latency = getattr(node, "measured_latency_ms", None)
+            if latency is not None:
+                self._max_seen_rtt_ms = max(self._max_seen_rtt_ms, float(latency))
             if latency is not None and latency > self._config.rtt_threshold_ms:
                 wan = True
                 break
@@ -68,11 +106,12 @@ class WANSchedulingPolicy:
             "wan_active": self._config.enabled,
             "rtt_threshold_ms": self._config.rtt_threshold_ms,
             "chunk_multiplier": self._config.chunk_multiplier,
+            "measured_max_rtt_ms": self._max_seen_rtt_ms,
         }
 
     def should_disable_pressure_adaptation(self) -> bool:
         """WAN latency variance dominates pressure signal."""
-        return self._config.enabled
+        return self._config.enabled and self._config.disable_sarathi_pressure
 
     def compute_budget(self, base_budget: Any) -> Any:
         if not self._config.enabled:

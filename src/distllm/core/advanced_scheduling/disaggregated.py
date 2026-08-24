@@ -220,16 +220,21 @@ class DisaggregatedBatchScheduler:
                 # Fast path: NCCL / RDMA for same-machine transfers
                 transport.send_tensor(kv_data, dst=int(decode_node.split("-")[-1]))
             else:
-                # Fallback: serialize and send via gRPC
+                # C12: the gRPC fallback is a FENCED STUB — it pickles the
+                # payload locally, sends nothing over the network, and
+                # reports success.  Real cross-pool KV transfer is not yet
+                # implemented; this subsystem must only be used with an
+                # explicit DISTLLM_DISAGGREGATED_ENABLED=1 opt-in.
                 import pickle
                 serialized = pickle.dumps(kv_data, protocol=pickle.HIGHEST_PROTOCOL)
                 size_mb = len(serialized) / (1024 * 1024)
                 bw_bps = self._kv_transfer_bandwidth_gbps * 1e9 / 8
                 estimated_ms = (len(serialized) / bw_bps) * 1000
-                logger.debug(
-                    f"KV stream {request_id}: {size_mb:.1f}MB → "
-                    f"{decode_node} in ~{estimated_ms:.0f}ms "
-                    f"({self._kv_transfer_bandwidth_gbps} Gbps)"
+                logger.warning(
+                    f"KV stream {request_id}: NOT TRANSFERRED (stub) — "
+                    f"{size_mb:.1f}MB pickled locally for {decode_node} "
+                    f"(~{estimated_ms:.0f}s at {self._kv_transfer_bandwidth_gbps} "
+                    f"Gbps nominal); no data was sent over the network"
                 )
                 self._stats["kv_transfers"] += 1
 
@@ -256,11 +261,14 @@ class DisaggregatedBatchScheduler:
             True if blocks were pre-allocated.
         """
         try:
-            # In production this sends a gRPC request to the decode node
-            # to pre-allocate PagedAttention blocks for this request_id.
-            logger.debug(
-                f"Pre-allocated {num_tokens} decode blocks for "
-                f"{request_id} on {decode_node}"
+            # C12: FENCED STUB — no gRPC request is sent and no PagedAttention
+            # blocks are actually reserved on the decode node.  Real
+            # pre-allocation is not yet implemented; this subsystem must only
+            # be used with an explicit DISTLLM_DISAGGREGATED_ENABLED=1 opt-in.
+            logger.warning(
+                f"allocate_decode_blocks({request_id}): NOT ALLOCATED (stub) — "
+                f"no blocks were reserved on {decode_node}; "
+                "cross-pool KV block reservation is not implemented"
             )
             return True
         except Exception as e:

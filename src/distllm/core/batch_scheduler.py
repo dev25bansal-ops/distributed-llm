@@ -797,7 +797,7 @@ class BatchScheduler:
                     effective_pri += min((ld / (batch_avg_remaining + 1)) * 0.1, 0.5)
                 if self._cost_adjuster is not None:
                     effective_pri, _ = self._cost_adjuster.adjust_priority(
-                        base_priority=effective_pri, estimated_tokens=candidate.total_len)
+                        base_priority=effective_pri, est_tokens=candidate.total_len)
 
                 c_tokens = candidate.total_len
                 if remain_slots <= 0 or (remain_p <= 0 and remain_t <= 0) or c_tokens > remain_t:
@@ -839,10 +839,25 @@ class BatchScheduler:
                 remain_slots -= 1
                 self.allocate_paged_blocks(candidate)
                 if self._enable_chunked_prefill and c_tokens > budget.max_prefill_tokens > 0:
-                    self._chunked_prefill[candidate.request_id] = ChunkedPrefillInfo(
-                        seq_id=candidate.request_id, total_prompt_tokens=c_tokens,
-                        chunk_size=budget.max_prefill_tokens,
-                        chunks_remaining=math.ceil(c_tokens / budget.max_prefill_tokens))
+                    # C1: with a prefix-cache hit, token processing starts
+                    # at seq.prefix_match_len (_build_seq_tokens adds it to
+                    # the chunk cursor and slices prompt_tokens up to its
+                    # full length), so the schedulable work is the prompt
+                    # MINUS the matched prefix.  Charging the full
+                    # total_len here made ChunkedPrefillInfo.is_complete
+                    # unattainable on every cache hit, wedging the sequence
+                    # in PREFILLING forever while it held a slot and budget.
+                    remaining_work = c_tokens - candidate.prefix_match_len
+                    if remaining_work > 0:
+                        self._chunked_prefill[candidate.request_id] = ChunkedPrefillInfo(
+                            seq_id=candidate.request_id,
+                            total_prompt_tokens=remaining_work,
+                            chunk_size=budget.max_prefill_tokens,
+                            chunks_remaining=math.ceil(
+                                remaining_work / budget.max_prefill_tokens))
+                    # remaining_work <= 0 => fully-cached prompt: nothing to
+                    # chunk; _build_seq_tokens primes decoding with the
+                    # final prompt token instead.
 
             for pri, cnt, candidate in rejected:
                 heapq.heappush(self._pending_heap, (pri, cnt, candidate))
@@ -957,10 +972,27 @@ class BatchScheduler:
                 seq.status = SequenceStatus.PREFILLING
             return tokens, True, pos_offset
 
-        if len(seq.generated_tokens) == 0 and seq.prefix_match_len == 0:
-            tokens = seq.prompt_tokens[seq.prefix_match_len:]
+        if len(seq.generated_tokens) == 0:
+            # Prefill step: process the prompt suffix not already covered by
+            # a prefix-cache hit.  ``prefix_match_len`` claims the first N
+            # prompt tokens are already resident in the engine KV caches;
+            # request_pipeline keeps it at 0 until cached-KV reuse is wired
+            # (PREFIX_CACHE_KV_REUSE_WIRED, C2), so this is normally the
+            # full prompt.
+            prompt_len = len(seq.prompt_tokens)
+            start = min(seq.prefix_match_len, prompt_len)
+            if prompt_len == 0:
+                # Degenerate empty prompt -- preserve the historical
+                # (empty) token list rather than indexing [-1] below.
+                seq.status = SequenceStatus.PREFILLING
+                return [], True, 0
+            if start >= prompt_len:
+                # Fully-matched prompt: nothing left to prefill, but the
+                # model still needs one forward pass to produce first-token
+                # logits -- replay the final prompt token.
+                start = prompt_len - 1
             seq.status = SequenceStatus.PREFILLING if not seq.is_complete else seq.status
-            return tokens, True, seq.prefix_match_len
+            return seq.prompt_tokens[start:], True, start
 
         # Decode step: single token
         seq.status = SequenceStatus.DECODING
