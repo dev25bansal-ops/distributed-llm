@@ -165,11 +165,13 @@ class TestStateReplication:
         """state_snapshot captures registered node details."""
         coord = _make_coordinator()
 
+        # C6: snapshot health comes from the canonical ``is_healthy``
+        # attribute (what schedulers filter on) — not ``.healthy``.
         mock_node_0 = MagicMock(
-            host="10.0.0.1", port=50051, start_layer=0, end_layer=7, healthy=True,
+            host="10.0.0.1", port=50051, start_layer=0, end_layer=7, is_healthy=True,
         )
         mock_node_1 = MagicMock(
-            host="10.0.0.2", port=50052, start_layer=8, end_layer=15, healthy=False,
+            host="10.0.0.2", port=50052, start_layer=8, end_layer=15, is_healthy=False,
         )
         coord._cluster_mgr = _mock_cluster_mgr({
             "node-0": mock_node_0,

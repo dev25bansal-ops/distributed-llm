@@ -421,13 +421,15 @@ class TestRecoveryCallbacks:
     """_setup_recovery_callbacks -- drain, redistribute, recover, mark_dead."""
 
     def test_drain_callback_marks_node_unhealthy_and_records_failure(self) -> None:
-        """The drain callback should set node.healthy = False and record failure."""
+        """The drain callback should set node.is_healthy = False and record failure."""
         pipe, rmgr, nodes = make_pipeline_and_rmgr("node-a")
         hm = HealthManager(pipeline=pipe, resource_mgr=rmgr)
         drain = hm.recovery_manager._on_drain
         assert drain is not None
         drain("node-a")
-        assert nodes["node-a"].healthy is False
+        # C6: canonical attribute is ``is_healthy`` (what schedulers filter
+        # on) — the old code wrote a nonexistent ``.healthy`` attribute.
+        assert nodes["node-a"].is_healthy is False
         assert "node-a" in rmgr.failures
 
     def test_drain_callback_missing_node_does_not_crash(self) -> None:

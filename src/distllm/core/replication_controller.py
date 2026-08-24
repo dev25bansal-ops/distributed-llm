@@ -9,12 +9,24 @@ stop signal.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
+
+
+def _ha_auth_headers() -> dict[str, str]:
+    """Build auth headers matching the HA receiver's fail-closed check.
+
+    The receiver (``POST /api/v1/ha/snapshot`` in api/server.py) rejects any
+    request whose ``X-HA-Secret`` header does not match ``DISTLLM_HA_SECRET``.
+    Senders must attach the same secret or every push is silently 403'd.
+    """
+    secret = os.environ.get("DISTLLM_HA_SECRET", "")
+    return {"X-HA-Secret": secret} if secret else {}
 
 
 class ReplicationController:
@@ -116,13 +128,14 @@ class ReplicationController:
                             resp = client.post(
                                 f"{peer_url.rstrip('/')}/api/v1/ha/snapshot",
                                 json=snapshot,
+                                headers=_ha_auth_headers(),
                             )
                             if resp.status_code != 200:
-                                logger.debug(
+                                logger.warning(
                                     f"Replication to {peer_url} returned {resp.status_code}"
                                 )
                         except Exception as e:  # noqa: BLE001 - network best-effort
-                            logger.debug(f"Replication to {peer_url} failed: {e}")
+                            logger.warning(f"Replication to {peer_url} failed: {e}")
                 except Exception as e:  # noqa: BLE001 - loop must survive
                     logger.warning(f"State replication error: {e}")
                 time.sleep(1.0)
