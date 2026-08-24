@@ -245,3 +245,150 @@ class TestMetrics:
             assert "distllm_coordinator_loaded 0" in resp.text
         finally:
             g.coordinator = original
+
+
+class TestMetricsExpositionContract:
+    """Prometheus exposition contract for GET /metrics.
+
+    Regression coverage for the /metrics duplication bug (area-analysis
+    B-C1): the coordinator shares the API layer's exporter instance
+    (``create_coordinator`` passes ``state.metrics_exporter`` into the
+    Coordinator), and the route used to render the registry a second time,
+    duplicating every HELP/TYPE header and sample. Strict Prometheus parsers
+    reject repeated TYPE declarations and lenient scrapers double-count.
+    """
+
+    EXPECTED_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+
+    @staticmethod
+    def _type_family_counts(body: str) -> dict[str, int]:
+        import re
+
+        counts: dict[str, int] = {}
+        for name in re.findall(r"^# TYPE (\S+) ", body, flags=re.MULTILINE):
+            counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    @staticmethod
+    def _materialize_samples(exporter) -> None:
+        """Labeled collectors emit nothing until a child exists — create
+        children so their families actually render in the exposition."""
+        exporter.requests_total.labels(
+            method="GET", status="success", model="test-model", tenant="t1"
+        ).inc()
+        exporter.errors_total.labels(type="ValueError", model="test-model", tenant="t1").inc()
+        exporter.active_nodes.set(2)
+
+    def test_single_copy_of_every_family_with_shared_exporter(self, coordinator):
+        """Coordinator holding the SAME exporter as the API layer (production
+        wiring) must yield exactly ONE HELP/TYPE declaration per family."""
+        from distllm.observability.exporter import DistLLMPrometheusExporter
+
+        shared = DistLLMPrometheusExporter()
+        self._materialize_samples(shared)
+        coordinator.metrics_exporter = shared
+        # Keep populate_gauges away from auto-created MagicMock attributes.
+        coordinator._recovery = None
+
+        original_coord = g.coordinator
+        original_exporter = g.metrics_exporter
+        g.coordinator = coordinator
+        g.metrics_exporter = shared  # identical instance — create_coordinator wiring
+        try:
+            resp = TestClient(app).get("/metrics")
+        finally:
+            g.coordinator = original_coord
+            g.metrics_exporter = original_exporter
+
+        assert resp.status_code == 200
+        body = resp.text
+        counts = self._type_family_counts(body)
+        # Sampled families that we know rendered (children materialized).
+        for family in (
+            "distllm_requests_total",
+            "distllm_errors_total",
+            "distllm_active_nodes",
+        ):
+            assert counts.get(family, 0) == 1, (
+                f"family {family} declared {counts.get(family, 0)} times, expected 1"
+            )
+        # Global invariant: no family is declared more than once anywhere.
+        duplicated = {name: n for name, n in counts.items() if n > 1}
+        assert not duplicated, f"duplicate metric families in exposition: {duplicated}"
+        # Samples survive exactly once too (no double-counting).
+        assert body.count("distllm_requests_total{") == 1
+
+    def test_overlapping_families_deduped_across_distinct_registries(self, coordinator):
+        """A coordinator bringing its OWN exporter must not double-expose
+        families that also exist in the API registry."""
+        from distllm.observability.exporter import DistLLMPrometheusExporter
+
+        api_side = DistLLMPrometheusExporter()
+        coord_side = DistLLMPrometheusExporter()
+        self._materialize_samples(api_side)
+        self._materialize_samples(coord_side)
+
+        coordinator.metrics_exporter = coord_side
+        coordinator._recovery = None
+
+        original_coord = g.coordinator
+        original_exporter = g.metrics_exporter
+        g.coordinator = coordinator
+        g.metrics_exporter = api_side
+        try:
+            resp = TestClient(app).get("/metrics")
+        finally:
+            g.coordinator = original_coord
+            g.metrics_exporter = original_exporter
+
+        assert resp.status_code == 200
+        body = resp.text
+        counts = self._type_family_counts(body)
+        for family in (
+            "distllm_requests_total",
+            "distllm_errors_total",
+            "distllm_active_nodes",
+        ):
+            assert counts.get(family, 0) == 1, (
+                f"family {family} declared {counts.get(family, 0)} times, expected 1"
+            )
+        duplicated = {name: n for name, n in counts.items() if n > 1}
+        assert not duplicated, f"duplicate metric families in exposition: {duplicated}"
+
+    def test_content_type_is_prometheus_text_with_coordinator(self, coordinator):
+        from distllm.observability.exporter import DistLLMPrometheusExporter
+
+        shared = DistLLMPrometheusExporter()
+        coordinator.metrics_exporter = shared
+        coordinator._recovery = None
+
+        original_coord = g.coordinator
+        original_exporter = g.metrics_exporter
+        g.coordinator = coordinator
+        g.metrics_exporter = shared
+        try:
+            resp = TestClient(app).get("/metrics")
+        finally:
+            g.coordinator = original_coord
+            g.metrics_exporter = original_exporter
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == self.EXPECTED_CONTENT_TYPE
+
+    def test_content_type_is_prometheus_text_without_coordinator(self):
+        """No-coordinator path must return Prometheus text, NOT a JSON-encoded
+        string (the long-standing content-type quirk)."""
+        original = g.coordinator
+        g.coordinator = None
+        try:
+            resp = TestClient(app).get("/metrics")
+        finally:
+            g.coordinator = original
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == self.EXPECTED_CONTENT_TYPE
+        body = resp.text
+        assert not body.lstrip().startswith('"'), "body is JSON-encoded, not raw text"
+        assert "# TYPE distllm_service_up gauge" in body
+        assert "distllm_service_up 0" in body
+        assert body.count("# TYPE distllm_service_up gauge") == 1

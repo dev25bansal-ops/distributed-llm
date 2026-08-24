@@ -19,7 +19,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +32,53 @@ const (
 	defaultTimeout = 120 * time.Second
 	defaultRetries = 3
 )
+
+// Retry backoff policy, mirroring the Python SDK's _compute_delay
+// (sdk/src/distllm_sdk/client.py): honor a server-provided Retry-After header
+// verbatim with a floor (so a tiny/zero value cannot cause a tight retry
+// loop); otherwise exponential backoff capped at retryMaxDelaySeconds. Both
+// paths are multiplied by jitter in [0.5, 1.0).
+const (
+	retryInitialDelaySeconds = 1.0
+	retryMaxDelaySeconds     = 60.0
+	retryAfterFloorSeconds   = 0.5 // matches distllm_sdk.constants.RETRY_AFTER_FLOOR
+)
+
+// retryDelay computes how long to wait before the next attempt. A non-nil
+// headers value carrying a numeric Retry-After takes precedence; anything
+// unparseable (non-numeric, NaN, Inf, negative) falls through to plain
+// exponential backoff.
+func retryDelay(attempt int, headers http.Header) time.Duration {
+	jitter := 0.5 + rand.Float64()*0.5
+	if headers != nil {
+		raw := strings.TrimSpace(headers.Get("Retry-After"))
+		if raw != "" {
+			if secs, err := strconv.ParseFloat(raw, 64); err == nil &&
+				!math.IsNaN(secs) && !math.IsInf(secs, 0) && secs >= 0 {
+				wait := math.Max(secs, retryAfterFloorSeconds) * jitter
+				return time.Duration(wait * float64(time.Second))
+			}
+		}
+	}
+	secs := retryInitialDelaySeconds * math.Pow(2, float64(attempt))
+	if secs > retryMaxDelaySeconds {
+		secs = retryMaxDelaySeconds
+	}
+	return time.Duration(secs * jitter * float64(time.Second))
+}
+
+// sleepCtx waits for d, returning early with the context's error if ctx is
+// cancelled while backing off (retry sleeps must not ignore cancellation).
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 // Client is the DistLLM API client.
 type Client struct {
@@ -295,18 +345,21 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req *ChatRequest) (<-
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body interface{}, result interface{}) error {
-	var bodyReader io.Reader
+	// Buffer the serialized payload once and rebuild a fresh *bytes.Reader for
+	// every attempt: http.Client.Do consumes the request body, so reusing a
+	// single reader across retries would send an EMPTY body on attempt 2+.
+	var payload []byte
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("distllm: marshal request: %w", err)
 		}
-		bodyReader = bytes.NewReader(data)
+		payload = data
 	}
 
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bodyReader)
+		req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(payload))
 		if err != nil {
 			return err
 		}
@@ -316,18 +369,29 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		if err != nil {
 			lastErr = err
 			if attempt < c.MaxRetries {
-				time.Sleep(time.Duration(1<<attempt) * time.Second)
+				if sleepCtx(ctx, retryDelay(attempt, nil)) != nil {
+					return ctx.Err()
+				}
 				continue
 			}
 			return err
 		}
 
-		if resp.StatusCode >= 500 && attempt < c.MaxRetries {
+		// Retryable statuses mirror the Python SDK's policy minus 429 (this
+		// client treats all 4xx as terminal client errors): 500/502/503/504.
+		retryable := resp.StatusCode == http.StatusInternalServerError ||
+			resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout
+		if retryable && attempt < c.MaxRetries {
+			hdrs := resp.Header
+			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
-			time.Sleep(time.Duration(1<<attempt) * time.Second)
+			if sleepCtx(ctx, retryDelay(attempt, hdrs)) != nil {
+				return ctx.Err()
+			}
 			continue
 		}
-
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {

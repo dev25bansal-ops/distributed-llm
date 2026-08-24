@@ -157,6 +157,101 @@ def _deserialize_tensor(data: bytes) -> Any:
         return None
 
 
+# Wire-format dtype names -> numpy dtypes. The DistLLM server stamps
+# ``TensorProto.dtype`` with ``str(tensor.dtype)`` (see dist/node_service.py
+# ``tensor_to_proto``), so *both* the torch-prefixed form ("torch.bfloat16")
+# and the bare form ("bfloat16") are accepted here.
+_WIRE_DTYPES: dict[str, str] = {
+    "float32": "<f4",
+    "torch.float32": "<f4",
+    "float64": "<f8",
+    "torch.float64": "<f8",
+    "float16": "<f2",
+    "torch.float16": "<f2",
+    "int64": "<i8",
+    "torch.int64": "<i8",
+    "int32": "<i4",
+    "torch.int32": "<i4",
+    "uint8": "|u1",
+    "torch.uint8": "|u1",
+    "bool": "?",
+    "torch.bool": "?",
+}
+_BF16_NAMES = frozenset({"bfloat16", "torch.bfloat16"})
+
+
+def decode_tensor(
+    raw_data: bytes,
+    dtype: str,
+    shape: list[int] | None = None,
+):
+    """Decode ``TensorProto.raw_data`` into a numpy array.
+
+    bfloat16 payloads are widened correctly: bf16 is the truncated top half
+    of an fp32, so each 16-bit pattern is padded with 16 zero low bits and
+    reinterpreted as float32 (NOT reinterpreted as float16 — that silently
+    corrupts every value).
+
+    Args:
+        raw_data: Little-endian wire bytes from the protobuf payload.
+        dtype: Wire dtype name ("float32", "bfloat16", "torch.bfloat16", ...).
+        shape: Declared shape. When provided and non-empty the payload length
+            is validated against it; otherwise a flat array is returned.
+
+    Returns:
+        A numpy array (float32 for bfloat16 inputs, matching the declared
+        dtype otherwise).
+
+    Raises:
+        ValueError: For unsupported dtypes or payload-size mismatches.
+    """
+    try:
+        import numpy as np
+    except ImportError as e:  # pragma: no cover - numpy ships with the gRPC extra
+        raise RuntimeError(
+            "numpy is required to decode gRPC tensor payloads. "
+            "Install with: pip install distllm-sdk[grpc]"
+        ) from e
+
+    if not raw_data:
+        return np.empty(0, dtype=np.float32)
+
+    if dtype in _BF16_NAMES:
+        if len(raw_data) % 2 != 0:
+            raise ValueError(
+                f"bfloat16 payload must have an even byte count, got {len(raw_data)}"
+            )
+        # bf16 == truncated fp32: pad 16 zero bits into the low half.
+        bits = np.frombuffer(raw_data, dtype="<u2")
+        u32 = bits.astype("<u4") << np.uint32(16)
+        arr = u32.view("<f4")
+        expected_elems = len(bits)
+        itemsize = 2
+    else:
+        np_dtype = _WIRE_DTYPES.get(dtype)
+        if np_dtype is None:
+            supported = sorted({n.removeprefix("torch.") for n in _WIRE_DTYPES} | {"bfloat16"})
+            raise ValueError(
+                f"Unsupported tensor dtype {dtype!r}. Supported: {', '.join(supported)}"
+            )
+        arr = np.frombuffer(raw_data, dtype=np_dtype)
+        expected_elems = arr.size
+        itemsize = arr.itemsize
+
+    if shape:
+        declared_numel = 1
+        for dim in shape:
+            declared_numel *= dim
+        if expected_elems != declared_numel:
+            raise ValueError(
+                f"TensorProto payload mismatch: {len(raw_data)} bytes cannot fill "
+                f"shape {list(shape)} of {dtype} "
+                f"({declared_numel * itemsize} bytes expected)"
+            )
+        arr = arr.reshape(list(shape))
+    return arr
+
+
 class NodeGRPCClient:
     """gRPC client for communicating with DistLLM worker nodes.
 
@@ -285,14 +380,15 @@ class NodeGRPCClient:
                 timeout=self._timeout,
             )
 
-            output_tensor = None
+            # Decode the output payload (correctly handling bfloat16 via
+            # zero-padded fp32 widening; raises ValueError on unsupported
+            # dtypes or size mismatches rather than corrupting silently).
+            decoded = None
             if response.output.raw_data:
-                import numpy as np
-                shape = list(response.output.shape)
-                dtype_map = {"float32": "f4", "float16": "f2", "bfloat16": "f2"}
-                dtype_str = dtype_map.get(response.output.dtype, "f2")
-                output_tensor = torch.from_numpy(
-                    np.frombuffer(response.output.raw_data, dtype=dtype_str).reshape(shape)
+                decoded = decode_tensor(
+                    response.output.raw_data,
+                    response.output.dtype,
+                    list(response.output.shape),
                 )
 
             return ForwardPassResponse(
@@ -301,6 +397,7 @@ class NodeGRPCClient:
                     shape=list(response.output.shape),
                     dtype=response.output.dtype,
                     raw_data=response.output.raw_data,
+                    data=decoded.tolist() if decoded is not None else [],
                 ) if response.output.raw_data else None,
                 success=response.success,
                 error_message=response.error_message,

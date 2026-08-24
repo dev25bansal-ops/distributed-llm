@@ -16,6 +16,7 @@ from loguru import logger
 
 from distllm.dist import node_pb2
 from distllm.dist import node_pb2_grpc
+from distllm.dist.node_client import compute_weights_hmac
 from distllm.core.kv_cache import KVCache
 from distllm.security.e2e import E2EEncryption, decrypt_tensor_payload, encrypt_tensor_payload
 
@@ -267,9 +268,26 @@ class NodeServicer(node_pb2_grpc.NodeServiceServicer):
             torch.save(subset, buf)
             state_dict_bytes = buf.getvalue()
             checksum = hashlib.sha256(state_dict_bytes).hexdigest()
-            context.send_trailing_metadata((
-                ("x-checksum-sha256", checksum),
-            ))
+            # SEC-A5: authenticate integrity, not just checksum it — a bare
+            # SHA-256 is recomputable by any on-path attacker.  Sign under
+            # the cluster key; receivers holding the same key fail closed
+            # without a valid tag.
+            payload_hmac = compute_weights_hmac(
+                self._cluster_key,
+                state_dict_bytes,
+                request.model_name,
+                request.start_layer,
+                request.end_layer,
+            )
+            trailing = [("x-checksum-sha256", checksum)]
+            if payload_hmac:
+                trailing.append(("x-weights-hmac-sha256", payload_hmac))
+            else:
+                logger.warning(
+                    "TransferWeights: no cluster key available for HMAC — "
+                    "sending checksum-only metadata (unauthenticated)"
+                )
+            context.send_trailing_metadata(tuple(trailing))
             return node_pb2.TransferWeightsResponse(
                 model_name=request.model_name,
                 start_layer=request.start_layer,
@@ -311,6 +329,20 @@ class NodeServicer(node_pb2_grpc.NodeServiceServicer):
             buf = io.BytesIO()
             torch_mod.save(subset, buf)
             full_bytes = buf.getvalue()
+            # SEC-A5: HMAC over the full assembled payload, sent as trailing
+            # metadata at stream end; the receiver verifies before accepting.
+            payload_hmac = compute_weights_hmac(
+                self._cluster_key,
+                full_bytes,
+                request.model_name,
+                request.start_layer,
+                request.end_layer,
+            )
+            if not payload_hmac:
+                logger.warning(
+                    "TransferWeightsStream: no cluster key available for "
+                    "HMAC — sending unauthenticated weight stream"
+                )
             chunk_size = 1024 * 1024
             total_chunks = (len(full_bytes) + chunk_size - 1) // chunk_size
             for i in range(total_chunks):
@@ -326,6 +358,10 @@ class NodeServicer(node_pb2_grpc.NodeServiceServicer):
                     total_chunks=total_chunks,
                     is_final_chunk=is_final,
                 )
+            if payload_hmac:
+                context.send_trailing_metadata((
+                    ("x-weights-hmac-sha256", payload_hmac),
+                ))
         except Exception as e:
             logger.error(f"TransferWeightsStream failed: {e}")
             yield node_pb2.TransferWeightsResponse(success=False, error_message=str(e))

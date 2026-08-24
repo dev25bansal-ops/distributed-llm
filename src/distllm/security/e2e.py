@@ -78,6 +78,25 @@ class E2EError(Exception):
     pass
 
 
+_AAD_DOMAIN_SEP = b"distllm-e2e-aad-v1"
+
+
+def _aad_binding_term(aad: bytes | str | None) -> bytes:
+    """Return the KDF input term binding *aad* into box-key derivation.
+
+    Empty for ``None``/``b""``/``""`` so that "no associated data" keeps
+    the historical derivation byte-for-byte (backward compatibility).
+    Non-empty input is domain-separated via SHA256 before mixing, so
+    arbitrary-length AAD maps onto a fixed-size, collision-resistant
+    term regardless of which KDF path (Blake2b / HKDF) consumes it.
+    """
+    if not aad:
+        return b""
+    if isinstance(aad, str):
+        aad = aad.encode("utf-8")
+    return hashlib.sha256(_AAD_DOMAIN_SEP + aad).digest()
+
+
 class SessionKeys:
     """Holds key material for a single encrypted session between two nodes.
 
@@ -103,7 +122,9 @@ class SessionKeys:
         self._shared_key = shared_key
         self._salt = salt or os.urandom(SALT_BYTES)
 
-    def derive_box_key(self, salt: bytes | None = None) -> bytes:
+    def derive_box_key(
+        self, salt: bytes | None = None, aad: bytes | str | None = None
+    ) -> bytes:
         """Derive the box key for one message using a proper KDF.
 
         Uses libsodium's ``crypto_generichash`` (Blake2b) in keyed PRF
@@ -112,35 +133,63 @@ class SessionKeys:
         back to HKDF-SHA256 per :rfc:`5869` using only stdlib
         ``hashlib`` + ``hmac``.
 
+        AAD BINDING (fixes the silently-dropped ``aad`` parameter):
+        When *aad* is non-empty, its domain-separated digest
+        ``SHA256(b"distllm-e2e-aad-v1" || aad)`` is mixed into the KDF
+        input, so the box key is bound to the associated data.  A peer
+        decrypting with a different (or missing) aad derives a different
+        key, the Poly1305 tag fails, and decryption raises
+        :class:`E2EError`.  ``aad=None`` and ``aad=b""`` are equivalent
+        ("no associated data") and produce EXACTLY the historical
+        derivation — old ciphertexts remain readable.
+
+        Why KDF mixing rather than prepend-and-authenticate: SecretBox
+        has no native AAD, but once the key depends on the AAD the
+        existing Poly1305 tag authenticates it for free — no wire-format
+        change (AAD is never transmitted; peers supply context
+        out-of-band, per the standard AEAD contract), no length-prefix
+        parsing on the hot decrypt path.
+
         Args:
             salt: Domain-separation salt.  Must match the salt used when
                 encrypting the message; a ``None`` salt (default) is valid
                 only for one-sided calls such as keyed hashing.
+            aad: Associated data authenticated but not transmitted.
+                ``str`` values are UTF-8 encoded.
         """
         salt = salt if salt is not None else self._salt
+        # Empty aad (None or b"") must yield the historical derivation,
+        # so the binding term is empty bytes rather than a digest of "".
+        aad_term = _aad_binding_term(aad)
         if HAS_NACL:
             # Blake2b keyed PRF — the recommended KDF in libsodium.
             # Signature: crypto_generichash_blake2b_salt_personal(
             #   data, digest_size=32, key=b'', salt=b'', person=b'')
             return nacl_bindings.crypto_generichash_blake2b_salt_personal(
-                data=salt,
+                data=salt + aad_term,
                 key=self._shared_key,
                 salt=b"\x00" * SALT_BYTES,
                 person=b"distllm-kdf".ljust(16, b"\x00"),
                 digest_size=KEY_BYTES,
             )
         # Fallback: HKDF-SHA256 (RFC 5869) when PyNaCl is unavailable.
+        # The aad term rides in the info string; empty when unused, so
+        # the no-aad expansion is byte-identical to the legacy one.
         prk = hmac.new(salt, self._shared_key, hashlib.sha256).digest()
         t = b""
         okm = b""
         hash_len = hashlib.sha256().digest_size
         n = (KEY_BYTES + hash_len - 1) // hash_len
         for i in range(1, n + 1):
-            t = hmac.new(prk, t + b"distllm-e2e-key" + bytes([i]), hashlib.sha256).digest()
+            t = hmac.new(
+                prk, t + b"distllm-e2e-key" + bytes([i]) + aad_term, hashlib.sha256
+            ).digest()
             okm += t
         return okm[:KEY_BYTES]
 
-    def encrypt(self, plaintext: bytes, aad: bytes | None = None) -> tuple[bytes, bytes]:
+    def encrypt(
+        self, plaintext: bytes, aad: bytes | str | None = None
+    ) -> tuple[bytes, bytes]:
         """Encrypt *plaintext* with ``crypto_secretbox``.
 
         Returns (ciphertext_with_nonce, salt). The nonce is prepended to
@@ -152,6 +201,12 @@ class SessionKeys:
         ratchet counter — encryption works under strongly asymmetric
         traffic without any key-divergence risk.  Each message gets its own
         key material (per-message forward secrecy).
+
+        Args:
+            plaintext: Bytes to encrypt.
+            aad: Associated data to authenticate (not transmit).  The peer
+                MUST supply the identical value to ``decrypt()``; any other
+                value fails authentication.  See :meth:`derive_box_key`.
         """
         if not HAS_NACL:
             raise E2EError("PyNaCl not installed; cannot encrypt")
@@ -160,13 +215,18 @@ class SessionKeys:
         # Never re-use a salt — a repeated (key, nonce) pair re-uses the
         # SecretBox keystream and leaks plaintext XOR keystream.
         message_salt = os.urandom(SALT_BYTES)
-        key = self.derive_box_key(message_salt)
+        key = self.derive_box_key(message_salt, aad=aad)
         nonce = os.urandom(NONCE_BYTES)
         ct_and_tag = crypto_secretbox(plaintext, nonce, key)
 
         return nonce + ct_and_tag, message_salt
 
-    def decrypt(self, ciphertext: bytes, salt: bytes | None = None) -> bytes:
+    def decrypt(
+        self,
+        ciphertext: bytes,
+        salt: bytes | None = None,
+        aad: bytes | str | None = None,
+    ) -> bytes:
         """Decrypt *ciphertext* previously encrypted by the paired node.
 
         Expects the first ``NONCE_BYTES`` (24) bytes to be the nonce,
@@ -179,9 +239,15 @@ class SessionKeys:
         Args:
             ciphertext: nonce + ciphertext + MAC tag.
             salt: The per-message salt that was returned by ``encrypt()``.
+            aad: Associated data supplied at encryption time.  A different
+                or missing aad derives a different box key and raises
+                :class:`E2EError` (authentication failure).
 
         Returns:
             Decrypted plaintext bytes.
+
+        Raises:
+            E2EError: On tampering, wrong key, or mismatched aad.
         """
         if not HAS_NACL:
             raise E2EError("PyNaCl not installed; cannot decrypt")
@@ -190,7 +256,7 @@ class SessionKeys:
         # as the encrypting side did.  Never fall back to local state when a
         # salt is provided — a stale local salt (from an old ratchet or
         # asymmetric traffic) would derive the wrong key.
-        key = self.derive_box_key(salt=salt)
+        key = self.derive_box_key(salt=salt, aad=aad)
 
         if len(ciphertext) < NONCE_BYTES + TAG_BYTES:
             raise E2EError("Ciphertext too short")
@@ -331,30 +397,60 @@ class E2EEncryption:
             return ""
         return self._session.session_id
 
-    def encrypt(self, plaintext: bytes) -> tuple[bytes, bytes]:
+    def encrypt(
+        self, plaintext: bytes, aad: bytes | str | None = None
+    ) -> tuple[bytes, bytes]:
         """Encrypt *plaintext* using the established session key.
+
+        Args:
+            plaintext: Bytes to encrypt.
+            aad: Optional associated data to authenticate (node IDs,
+                request ID, sequence number...).  The peer MUST pass the
+                identical value to :meth:`decrypt`; any mismatch raises
+                :class:`E2EError`.  Not transmitted — context travels
+                out-of-band.
 
         Returns:
             Tuple of (ciphertext, salt). Both must be sent to the peer.
         """
         if self._session is None:
             raise E2EError("Session not established; exchange keys first")
-        return self._session.encrypt(plaintext)
+        return self._session.encrypt(plaintext, aad=aad)
 
-    def decrypt(self, ciphertext: bytes, salt: bytes | None = None) -> bytes:
-        """Decrypt *ciphertext* using the established session key."""
+    def decrypt(
+        self,
+        ciphertext: bytes,
+        salt: bytes | None = None,
+        aad: bytes | str | None = None,
+    ) -> bytes:
+        """Decrypt *ciphertext* using the established session key.
+
+        Args:
+            ciphertext: nonce + ciphertext + MAC tag from the peer.
+            salt: The per-message salt returned by the peer's ``encrypt()``.
+            aad: Associated data the peer bound at encryption time.  A
+                different or missing value fails authentication with
+                :class:`E2EError`.
+        """
         if self._session is None:
             raise E2EError("Session not established; exchange keys first")
-        return self._session.decrypt(ciphertext, salt=salt)
+        return self._session.decrypt(ciphertext, salt=salt, aad=aad)
 
-    def encrypt_tensor_payload(self, raw_tensor_bytes: bytes) -> bytes:
+    def encrypt_tensor_payload(
+        self, raw_tensor_bytes: bytes, aad: bytes | str | None = None
+    ) -> bytes:
         """Encrypt raw tensor bytes and return a self-contained packet.
 
         The packet includes the salt, nonce, ciphertext, and MAC tag so the
         recipient only needs the session to decrypt.
 
-        Packet format:
+        Packet format (unchanged by AAD support):
           [salt:16B][nonce+ciphertext+tag:...]
+
+        The optional *aad* is authenticated but NOT part of the packet;
+        the decrypting side supplies it out-of-band and decryption fails
+        if it does not match.  Callers that bind per-hop context (node
+        IDs, request ID) should pass it on both sides of the hop.
 
         Raises:
             RuntimeError: If PyNaCl is not installed.
@@ -365,13 +461,20 @@ class E2EEncryption:
                 "Install with: pip install 'distllm[e2e]'"
             )
 
-        ct_with_nonce, salt = self.encrypt(raw_tensor_bytes)
+        ct_with_nonce, salt = self.encrypt(raw_tensor_bytes, aad=aad)
         return struct.pack("!16s", salt) + ct_with_nonce
 
-    def decrypt_tensor_payload(self, encrypted_packet: bytes) -> bytes:
+    def decrypt_tensor_payload(
+        self, encrypted_packet: bytes, aad: bytes | str | None = None
+    ) -> bytes:
         """Decrypt a self-contained packet produced by ``encrypt_tensor_payload``.
 
         Returns the original plaintext tensor bytes.
+
+        Args:
+            encrypted_packet: ``[salt:16B][nonce+ciphertext+tag]`` packet.
+            aad: Associated data bound at encryption time; mismatch or
+                omission when one was used raises :class:`E2EError`.
 
         Raises:
             RuntimeError: If PyNaCl is not installed.
@@ -390,7 +493,7 @@ class E2EEncryption:
 
         salt = encrypted_packet[:SALT_BYTES]
         ct_with_nonce = encrypted_packet[SALT_BYTES:]
-        return self.decrypt(ct_with_nonce, salt=salt)
+        return self.decrypt(ct_with_nonce, salt=salt, aad=aad)
 
     def reset(self) -> None:
         """Generate a fresh keypair and discard the session."""

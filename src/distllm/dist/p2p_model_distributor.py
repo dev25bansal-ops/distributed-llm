@@ -40,10 +40,16 @@ class P2PModelDistributor:
         chunk_size_bytes: int = 100 * 1024 * 1024,
         max_peers: int = 16,
         max_concurrent_downloads: int = 4,
+        cluster_key: str | None = None,
+        use_tls: bool | None = None,
+        ca_cert: str | None = None,
     ):
         self._model_name = model_name
         self._chunk_size = chunk_size_bytes
         self._max_peers = max_peers
+        self._cluster_key = cluster_key
+        self._use_tls = use_tls
+        self._ca_cert = ca_cert
         self._peers: list[dict[str, Any]] = []
         self._merkle: MerkleTree | None = None
         self._chunks: dict[int, bytes] = {}
@@ -110,6 +116,9 @@ class P2PModelDistributor:
                 data = request_layer_weights(
                     host, port, self._model_name,
                     layer_index, layer_index + 1,
+                    cluster_key=self._cluster_key,
+                    use_tls=self._use_tls,
+                    ca_cert=self._ca_cert,
                 )
                 if data:
                     logger.debug(f"Downloaded layer {layer_index} from {peer_addr} ({len(data)} bytes)")

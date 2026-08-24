@@ -1,9 +1,20 @@
-"""Log redaction — strip PII from log messages before writing.
+"""Log redaction — strip PII/secrets from log messages before writing.
 
-Integrates with the existing PIIInspector from request_auditor.py
-to provide safe logging wrappers and exception redaction.
+Two integrations, installed together by :func:`install_global_redaction`:
 
-Usage:
+1. **loguru** (the primary path): the DistLLM codebase emits through loguru,
+   so a *core-level* ``logger.configure(patcher=...)`` is installed.  Loguru
+   applies the core patcher to every record dict after %-formatting and
+   before any sink writes, which means ALL existing ``logger.*`` calls across
+   the codebase -- and any future ones -- get redacted transparently,
+   regardless of which sinks are configured (default stderr, JSON sink,
+   ``enqueue=True`` queues, Loki, ...).  No call site needs to change.
+
+2. **stdlib logging**: a ``RedactingFilter`` on the root logger and its
+   handlers, covering libraries that bridge into stdlib logging.
+
+Per-call helpers remain available::
+
     from distllm.security.log_redaction import redact, redact_exception
 
     logger.info(redact(f"User prompt: {prompt}"))  # PII stripped
@@ -194,24 +205,125 @@ class RedactingFilter(logging.Filter):
         return True
 
 
+# ---------------------------------------------------------------------------
+# Loguru global redaction (core-level patcher)
+# ---------------------------------------------------------------------------
+#
+# 794 source files emit through ``loguru.logger``; none of them will ever be
+# rewritten to call ``redact()`` by hand.  A *core-level* patcher installed via
+# ``logger.configure(patcher=...)`` is applied by loguru to every record dict,
+# process-wide, after %-format interpolation and before any sink writes.  This
+# covers every existing and future ``logger.*`` call transparently, whatever
+# sinks are configured (default stderr, JSON stdout, enqueue'd queues, Loki).
+#
+# Why a core patcher and not a per-sink filter?
+#   - Sink filters only cover sinks added *after* installation; loguru's
+#     default stderr handler exists before startup code runs, and callers may
+#     add their own sinks at any time.
+#   - The patcher mutates the record once; ``Handler.emit`` then detects that
+#     the pre-colorized message no longer matches ``record["message"]`` and
+#     re-derives output from the mutated record, so colorized sinks are safe.
+#   - Patching happens before ``enqueue=True`` queueing, so queued/worker-side
+#     writes see the redacted message too.
+
+
+def _loguru_patcher(record: dict) -> None:
+    """Loguru core patcher: redact ``record["message"]`` in place.
+
+    Runs on every loguru record before handler emission.  Failures are
+    swallowed: redaction must never break logging itself.
+    """
+    try:
+        if not _patcher_enabled():
+            return
+        message = record.get("message")
+        if isinstance(message, str) and message:
+            # Use a module-level shared filter instance for its pattern list;
+            # building one per record would be wasteful.
+            global _SHARED_REDACTOR
+            if _SHARED_REDACTOR is None:
+                _SHARED_REDACTOR = RedactingFilter.from_env()
+            record["message"] = _SHARED_REDACTOR.redact_message(message)
+    except Exception:
+        pass
+
+
+# Marker so idempotency checks can recognise *our* patcher even if other
+# code touches ``core.patcher`` too (loguru supports only one core patcher;
+# installing ours necessarily replaces any previously-configured one).
+_loguru_patcher._distllm_redaction = True  # type: ignore[attr-defined]
+
+_SHARED_REDACTOR: "RedactingFilter | None" = None
+
+
+def _patcher_enabled() -> bool:
+    """Honour ``DISTLLM_LOG_REDACTION`` at emit time (cheap env read)."""
+    enabled = os.environ.get(ENV_REDACTION_ENABLED, "on").strip().lower()
+    return enabled not in ("off", "0", "false", "no", "")
+
+
+def install_loguru_redaction(*, force: bool = False) -> bool:
+    """Install the loguru core-level redaction patcher.
+
+    Idempotent: a no-op when our patcher is already active on loguru's core
+    (unless ``force=True``, which reinstalls unconditionally).  Returns
+    ``True`` if the patcher is active after the call, ``False`` when
+    redaction is disabled via ``DISTLLM_LOG_REDACTION`` (unless forced).
+    """
+    from loguru import logger as _loguru_logger
+
+    if not _patcher_enabled() and not force:
+        return False
+
+    core = _loguru_logger._core  # noqa: SLF001 -- documented extension point
+    if not force and getattr(core.patcher, "_distllm_redaction", False):
+        return True
+
+    _loguru_logger.configure(patcher=_loguru_patcher)
+    return True
+
+
+def uninstall_loguru_redaction() -> None:
+    """Remove the loguru redaction patcher (restores raw output).
+
+    Used by tests to verify uninstall restores pass-through behaviour.
+    """
+    from loguru import logger as _loguru_logger
+
+    core = _loguru_logger._core  # noqa: SLF001 -- documented extension point
+    if getattr(core.patcher, "_distllm_redaction", False):
+        with core.lock:
+            core.patcher = None
+
+
 def install_global_redaction(
     logger: logging.Logger | None = None,
     *,
     force: bool = False,
 ) -> RedactingFilter:
-    """Install a :class:`RedactingFilter` globally.
+    """Install redaction globally across BOTH logging frameworks.
 
-    Attaches the filter to every handler currently on the root logger (or the
-    supplied logger).  Because child loggers propagate their records to the root
-    logger's handlers, this covers *all* loggers in the process -- including
-    third-party libraries -- not just ``distllm``'s own loggers.
+    **loguru** (primary): installs a core-level patcher so that all ~794
+    modules emitting through ``loguru.logger`` are redacted transparently.
+    This happens only when called with no ``logger`` argument -- i.e. the
+    process-wide activation form used by server/CLI startup.  Passing an
+    explicit ``logger`` performs a *scoped* stdlib-only installation (used by
+    tests), leaving the global loguru pipeline untouched.
 
-    Idempotent: if a ``RedactingFilter`` is already present on a handler it is
-    left in place unless ``force=True``.
+    **stdlib** (secondary): attaches a :class:`RedactingFilter` to the given
+    logger (default: the root logger) and each of its handlers, covering
+    libraries that log via stdlib (including those bridged into it).
 
-    Returns the filter instance that was installed (or the first existing one).
+    Idempotent in both dimensions: an already-installed patcher or filter is
+    left in place unless ``force=True``.  Honours ``DISTLLM_LOG_REDACTION``
+    (set to off/0/false/no to skip installation entirely).
+
+    Returns the stdlib filter instance (installed or pre-existing).
     """
-    if logger is None:
+    scoped = logger is not None
+    if not scoped:
+        # Process-wide activation: cover the loguru pipeline too.
+        install_loguru_redaction(force=force)
         logger = logging.getLogger()
 
     redactor = RedactingFilter.from_env()

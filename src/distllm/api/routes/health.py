@@ -14,6 +14,58 @@ from distllm.api import server as _server_state
 
 router = APIRouter(tags=["system"])
 
+PROMETHEUS_MEDIA_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+
+
+def _merge_expositions(*expositions: str) -> str:
+    """Concatenate Prometheus text expositions, keeping ONE copy per family.
+
+    A metric family's block is its ``# HELP``/``# TYPE`` header lines plus
+    every following sample/comment line up to the next header. The first
+    occurrence of a family wins and later duplicates are dropped wholesale,
+    so strict parsers never see repeated TYPE declarations and lenient
+    scrapers cannot double-count samples.
+
+    This guards against the /metrics duplication bug (area-analysis B-C1):
+    the coordinator shares the API layer's exporter instance
+    (``create_coordinator`` passes ``state.metrics_exporter`` through), and
+    naively concatenating two renders of the same registry duplicated every
+    HELP/TYPE header and sample in the response.
+    """
+    merged_lines: list[str] = []
+    seen_families: set[str] = set()
+
+    for exposition in expositions:
+        if not exposition:
+            continue
+        # State for the family block currently being read within THIS
+        # exposition. A block spans its ``# HELP``/``# TYPE`` header lines
+        # (same family name on both) and all trailing sample lines.
+        current_family: str | None = None
+        block_is_duplicate = False
+
+        for line in exposition.splitlines():
+            stripped = line.strip()
+            is_header = stripped.startswith("# HELP ") or stripped.startswith("# TYPE ")
+            if is_header:
+                parts = stripped.split(maxsplit=3)  # ["#", "HELP"|"TYPE", family, ...]
+                family = parts[2] if len(parts) > 2 else None
+                if family != current_family:
+                    # New family block begins.
+                    current_family = family
+                    block_is_duplicate = family is not None and family in seen_families
+                    if family is not None and not block_is_duplicate:
+                        seen_families.add(family)
+                # else: continuation header (HELP followed by TYPE) of the
+                # same block — keep/drop with the block, decided above.
+            elif stripped.startswith("#"):
+                pass  # other comments belong to the current block too
+            # Sample and comment lines are kept iff their block survives.
+            if not block_is_duplicate:
+                merged_lines.append(line)
+
+    return "\n".join(merged_lines)
+
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
 ERR_ENTRY = error_openapi_entry
@@ -346,32 +398,50 @@ async def metrics():
 
     coord = g.coordinator
     mon = g.monitor
-    lines = []
 
-    # Include the API request-layer RED metrics recorded by
-    # ObservabilityMiddleware into the shared exporter registry, so /metrics
-    # reflects request rate/errors/duration in addition to coordinator gauges.
-    api_exporter = getattr(g, "metrics_exporter", None)
-    api_registry = getattr(api_exporter, "registry", None)
-    api_metrics = generate_latest(api_registry).decode() if api_registry is not None else ""
+    def _render_api_registry() -> str:
+        # Include the API request-layer RED metrics recorded by
+        # ObservabilityMiddleware into the shared exporter registry, so
+        # /metrics reflects request rate/errors/duration in addition to
+        # coordinator gauges. NOTE: production wiring gives the coordinator
+        # this *same* exporter instance; _merge_expositions guarantees the
+        # combined response exposes each family exactly once regardless.
+        api_exporter = getattr(g, "metrics_exporter", None)
+        api_registry = getattr(api_exporter, "registry", None)
+        return generate_latest(api_registry).decode("utf-8") if api_registry is not None else ""
 
     if coord is None:
         # Return service status even when not initialized
-        lines.append("# TYPE distllm_service_up gauge")
-        lines.append("distllm_service_up 0")
-        lines.append("# TYPE distllm_coordinator_loaded gauge")
-        lines.append("distllm_coordinator_loaded 0")
-        return api_metrics + "\n" + "\n".join(lines) if api_metrics else "\n".join(lines)
+        lines = [
+            "# TYPE distllm_service_up gauge",
+            "distllm_service_up 0",
+            "# TYPE distllm_coordinator_loaded gauge",
+            "distllm_coordinator_loaded 0",
+        ]
+        body = _merge_expositions(_render_api_registry(), "\n".join(lines))
+        # Response(...) rather than a bare str: FastAPI would otherwise
+        # JSON-encode the text and send application/json.
+        return Response(content=body, media_type=PROMETHEUS_MEDIA_TYPE)
 
     # Use Prometheus exporter if available
     if coord.metrics_exporter:
         coord.metrics_exporter.populate_gauges(coordinator=coord)
+        # Render the API registry AFTER populate_gauges: the shared-instance
+        # wiring means this render already includes the refreshed coordinator
+        # gauges, so the dedup below cannot keep a stale pre-population copy.
+        sections = [_render_api_registry()]
         data = coord.metrics_exporter.generate_metrics()
-        combined = api_metrics + "\n" + data if api_metrics else data
-        return Response(content=combined, media_type="text/plain; version=0.0.4; charset=utf-8")
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
+        sections.append(data)
+        return Response(
+            content=_merge_expositions(*sections),
+            media_type=PROMETHEUS_MEDIA_TYPE,
+        )
 
     # Fallback: dict-based text format
     m = coord.get_metrics()
+    lines = []
 
     # Add service status
     lines.append("# TYPE distllm_service_up gauge")
@@ -421,8 +491,8 @@ async def metrics():
     lines.append("# TYPE distllm_ready gauge")
     lines.append(f"distllm_ready {1 if not getattr(coord, '_shutting_down', False) else 0}")
 
-    body = "\n".join(lines)
-    return api_metrics + "\n" + body if api_metrics else body
+    body = _merge_expositions(_render_api_registry(), "\n".join(lines))
+    return Response(content=body, media_type=PROMETHEUS_MEDIA_TYPE)
 
 
 @router.post(

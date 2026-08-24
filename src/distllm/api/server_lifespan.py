@@ -38,6 +38,9 @@ def _init_observability() -> None:
     """Initialize tracing, logging, metrics exporter."""
     setup_logging(level="INFO", json_format=True)
 
+    from distllm.security.log_redaction import install_global_redaction
+    install_global_redaction()  # redact secrets/PII in loguru + stdlib output
+
     # Tracing sampling: default to 10% (head-based) in production.
     # Set DISTLLM_TRACE_SAMPLE_RATE=1.0 for full traces during debugging.
     import os as _os

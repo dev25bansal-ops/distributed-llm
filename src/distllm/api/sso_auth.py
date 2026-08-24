@@ -40,6 +40,18 @@ from typing import Any
 from loguru import logger
 
 
+# ── JWKS cache policy (SEC-A9) ─────────────────────────────────────────────────
+#
+# Unauthenticated garbage tokens used to trigger a fresh outbound JWKS fetch
+# per provider per request (latency DoS + request flood against the IdP).
+# Responses are now cached per issuer endpoint with a TTL, failed fetches are
+# negatively cached briefly, and concurrent validations share a single
+# in-flight request (single-flight).
+
+DEFAULT_JWKS_CACHE_TTL_S = 300.0   # successful JWKS responses live 5 minutes
+JWKS_NEGATIVE_CACHE_TTL_S = 60.0   # failed JWKS fetches retry at most 1x/minute
+
+
 @dataclass
 class SSOUserInfo:
     """User info returned after successful SSO authentication.
@@ -187,6 +199,16 @@ class OIDCHandler:
         self._state_store: dict[str, float] = {}
         self._nonce_store: dict[str, float] = {}
         self._nonce_ttl = 600.0  # 10 minutes
+
+        # SEC-A9: JWKS response cache + single-flight, keyed by the JWKS URL.
+        # The cache key is ALWAYS an operator-configured or discovery-derived
+        # endpoint — never anything taken from a token (no ``jku``/``x5u``
+        # support), so tokens cannot steer where we fetch from.
+        self._jwks_cache_ttl_s = DEFAULT_JWKS_CACHE_TTL_S
+        self._jwks_cache_lock = threading.Lock()
+        self._jwks_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._jwks_inflight: dict[str, threading.Event] = {}
+        self._jwks_last_error: dict[str, tuple[float, Exception]] = {}
 
         self._discover()
 
@@ -349,6 +371,92 @@ class OIDCHandler:
             logger.error(f"OIDC callback handling failed: {e}")
             return None
 
+    def _fetch_jwks_cached(self, jwks_url: str) -> dict[str, Any]:
+        """Fetch the provider's JWKS document through the TTL cache.
+
+        Guarantees (SEC-A9):
+
+        * ``jwks_url`` is derived solely from trusted operator config or OIDC
+          discovery of that config — callers must never pass a token-derived
+          URL.  This handler reads no ``jku``/``x5u`` headers, so tokens can
+          never steer this fetch.
+        * Repeated validations inside the cache TTL make **zero** network
+          calls; a failed fetch is negatively cached for
+          ``JWKS_NEGATIVE_CACHE_TTL_S`` so an outage cannot be amplified into
+          a per-request retry storm against the IdP.
+        * Concurrent validations for the same endpoint share one in-flight
+          HTTP request (single-flight via ``threading.Event``).
+
+        Raises on network/parsing failure (after consulting the negative
+        cache) — ``validate_token`` catches and rejects the token.
+        """
+        now = time.time()
+
+        with self._jwks_cache_lock:
+            entry = self._jwks_cache.get(jwks_url)
+            if entry is not None and entry[0] > now:
+                return entry[1]
+            # Negative cache: a recent failure means "IdP unreachable / bad
+            # response" — fail fast without another outbound request.
+            err_entry = self._jwks_last_error.get(jwks_url)
+            if err_entry is not None and err_entry[0] > now:
+                raise err_entry[1]
+
+        # Single-flight: only one thread fetches per URL; others wait on the
+        # same Event and then read the result from the shared cache.
+        with self._jwks_cache_lock:
+            event = self._jwks_inflight.get(jwks_url)
+            if event is None:
+                event = threading.Event()
+                self._jwks_inflight[jwks_url] = event
+                leader = True
+            else:
+                leader = False
+
+        if not leader:
+            # Wait bounded time for the in-flight fetch to finish.
+            if not event.wait(timeout=10.0):
+                # Leader hung (e.g., DNS black hole). Surface as failure;
+                # do NOT issue our own duplicate request.
+                raise TimeoutError(
+                    f"timed out waiting for in-flight JWKS fetch ({jwks_url})"
+                )
+            with self._jwks_cache_lock:
+                entry = self._jwks_cache.get(jwks_url)
+                if entry is not None and entry[0] > time.time():
+                    return entry[1]
+                err_entry = self._jwks_last_error.get(jwks_url)
+                if err_entry is not None:
+                    raise err_entry[1]
+                raise RuntimeError("JWKS fetch completed but no result recorded")
+
+        try:
+            import httpx
+            resp = httpx.get(jwks_url, timeout=10.0)
+            if resp.status_code != 200:
+                raise RuntimeError(f"JWKS fetch failed with status {resp.status_code}")
+            jwks_data = resp.json()
+            if not isinstance(jwks_data, dict):
+                raise ValueError("JWKS document is not a JSON object")
+            with self._jwks_cache_lock:
+                self._jwks_cache[jwks_url] = (
+                    time.time() + self._jwks_cache_ttl_s,
+                    jwks_data,
+                )
+                self._jwks_last_error.pop(jwks_url, None)
+            return jwks_data
+        except Exception as e:
+            with self._jwks_cache_lock:
+                self._jwks_last_error[jwks_url] = (
+                    time.time() + JWKS_NEGATIVE_CACHE_TTL_S,
+                    e,
+                )
+            raise
+        finally:
+            with self._jwks_cache_lock:
+                self._jwks_inflight.pop(jwks_url, None)
+            event.set()
+
     def validate_token(self, access_token: str) -> SSOUserInfo | None:
         """Validate an OIDC access token using JWKS."""
         jwks_url = self._jwks_url or self._discovered_jwks_url
@@ -357,15 +465,12 @@ class OIDCHandler:
             return None
 
         try:
-            import httpx
             import jwt  # PyJWT
 
-            # Fetch JWKS
-            jwks_resp = httpx.get(jwks_url, timeout=10.0)
-            if jwks_resp.status_code != 200:
-                return None
+            # SEC-A9: fetch through the TTL + single-flight cache. The URL is
+            # trusted config/discovery output only — never token-controlled.
+            jwks_data = self._fetch_jwks_cached(jwks_url)
 
-            jwks_data = jwks_resp.json()
             # Find the signing key
             unverified_header = jwt.get_unverified_header(access_token)
             kid = unverified_header.get("kid", "")

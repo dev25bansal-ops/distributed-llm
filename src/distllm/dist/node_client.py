@@ -7,6 +7,9 @@ Includes a channel pool to reuse connections and reduce overhead.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import os
 import threading
 from dataclasses import dataclass
 
@@ -274,11 +277,142 @@ async def create_async_node_client(host: str, port: int,
     return AsyncNodeClient(channel=channel, stub=stub, cluster_key=cluster_key)
 
 
+# ---------------------------------------------------------------------------
+# Weight-transfer security helpers (SEC-A5)
+#
+# Model weights are high-value IP; they must travel over TLS when the rest of
+# the pipeline does, and their integrity must be *authenticated* (HMAC keyed by
+# the cluster secret), not just checksummed — a bare SHA-256 is recomputable by
+# any on-path attacker.  These helpers are shared by request_layer_weights /
+# request_layer_weights_stream and mirrored on the sender side by
+# NodeServicer.TransferWeights(Stream) in node_service.py.
+# ---------------------------------------------------------------------------
+
+WEIGHTS_HMAC_METADATA_KEY = "x-weights-hmac-sha256"
+LEGACY_CHECKSUM_METADATA_KEY = "x-checksum-sha256"
+
+
+def resolve_pipeline_tls() -> tuple[bool, str | None]:
+    """Resolve TLS settings for weight transfers from the shared env contract.
+
+    Mirrors :meth:`PipelineOrchestrator.__init__`: ``DISTLLM_PIPELINE_TLS=1``
+    enables TLS and ``DISTLLM_TLS_CA_CERT_FILE`` / ``DISTLLM_TLS_CA_CERT``
+    point at the cluster CA.  Explicit arguments at call sites always win.
+    """
+    use_tls = os.environ.get("DISTLLM_PIPELINE_TLS", "0") == "1"
+    ca_cert = (
+        os.environ.get("DISTLLM_TLS_CA_CERT_FILE")
+        or os.environ.get("DISTLLM_TLS_CA_CERT")
+    )
+    return use_tls, ca_cert
+
+
+def compute_weights_hmac(cluster_key: str | None,
+                         payload: bytes,
+                         model_name: str = "",
+                         start_layer: int = 0,
+                         end_layer: int = 0) -> str | None:
+    """Compute an HMAC-SHA256 over weight-transfer payload bytes.
+
+    Keyed by the shared cluster secret so only holders of the key (i.e.
+    nodes that already passed ``NodeServicer._check_auth``) can produce a
+    tag a receiver will accept.  The layer range and model name are folded
+    into the message so a captured tag cannot be replayed for a different
+    request.
+
+    Returns ``None`` when no cluster key is available (caller decides
+    whether that is acceptable — weight receivers fail closed).
+    """
+    if not cluster_key:
+        return None
+    msg = payload + b"|weights-hmac-v1|" + model_name.encode(
+        "utf-8", errors="replace") + b"|" + f"{start_layer}:{end_layer}".encode()
+    return hmac.new(
+        cluster_key.encode("utf-8"), msg, hashlib.sha256,
+    ).hexdigest()
+
+
+def _verify_weight_payload(payload: bytes,
+                           cluster_key: str | None,
+                           metadata_keys: dict[str, str],
+                           context_desc: str,
+                           model_name: str = "",
+                           start_layer: int = 0,
+                           end_layer: int = 0) -> bytes | None:
+    """Authenticate + integrity-check received weight bytes. Fail closed.
+
+    Policy:
+      * The legacy bare SHA-256 checksum (``x-checksum-sha256``), when
+        present, is still enforced — but it is never sufficient on its own
+        because any on-path attacker can recompute it after tampering.
+      * When the caller holds a ``cluster_key``, a valid
+        ``x-weights-hmac-sha256`` tag under that key is REQUIRED: absence
+        or mismatch rejects the payload outright.
+      * Without any cluster key, HMAC verification is impossible; the
+        payload is accepted with UNAUTHENTICATED integrity and a loud
+        warning.  (Against a secured serving node this branch cannot yield
+        a successful RPC anyway — the servicer rejects keyless requests.)
+
+    Returns the payload on success, or ``None`` (after logging).
+    """
+    context = f"{context_desc} ({len(payload)} bytes)"
+
+    legacy_checksum = metadata_keys.get(LEGACY_CHECKSUM_METADATA_KEY)
+    if legacy_checksum:
+        actual_checksum = hashlib.sha256(payload).hexdigest()
+        if actual_checksum != legacy_checksum:
+            logger.error(
+                f"{context}: checksum mismatch — "
+                f"expected {legacy_checksum}, got {actual_checksum}; "
+                "rejecting corrupted transfer"
+            )
+            return None
+
+    expected_hmac = metadata_keys.get(WEIGHTS_HMAC_METADATA_KEY)
+
+    if cluster_key:
+        if not expected_hmac:
+            logger.error(
+                f"{context}: peer sent no {WEIGHTS_HMAC_METADATA_KEY} tag — "
+                "weight transfer rejected (fail-closed). Upgrade the serving "
+                "node to a DistLLM version that signs weight payloads."
+            )
+            return None
+        computed = compute_weights_hmac(
+            cluster_key, payload, model_name, start_layer, end_layer,
+        )
+        if computed is None or not hmac.compare_digest(computed, expected_hmac):
+            logger.error(
+                f"{context}: HMAC verification failed — weight payload "
+                "tampered with or cluster keys out of sync; rejecting transfer"
+            )
+            return None
+        return payload
+
+    if expected_hmac:
+        # Tag present but we lack the key: we could be under a downgrade /
+        # substitution attack against a signed peer. Refuse.
+        logger.error(
+            f"{context}: peer signed the payload but this node has no "
+            "cluster key to verify it — refusing unverified weights"
+        )
+        return None
+
+    logger.warning(
+        f"{context}: no cluster key configured — weight integrity is "
+        "UNAUTHENTICATED (checksum-only or unchecked). Configure "
+        "DISTLLM_CLUSTER_KEY to enable HMAC-verified transfers."
+    )
+    return payload
+
+
 def request_layer_weights(
     host: str, port: int,
     model_name: str, start_layer: int, end_layer: int,
     cluster_key: str | None = None,
     timeout_s: float = 120.0,
+    use_tls: bool | None = None,
+    ca_cert: str | None = None,
 ) -> bytes | None:
     """Request layer weights from a remote node via TransferWeights RPC.
 
@@ -288,16 +422,36 @@ def request_layer_weights(
         model_name: Model name.
         start_layer: First layer index (inclusive).
         end_layer: Last layer index (exclusive).
-        cluster_key: Shared cluster auth key.
+        cluster_key: Shared cluster auth key.  Also used to key the
+            required HMAC-SHA256 integrity tag on the received payload —
+            transfers without a valid tag are rejected (fail-closed).
         timeout_s: Request timeout.
+        use_tls: Encrypt the channel (model weights are high-value IP).
+            Defaults to ``DISTLLM_PIPELINE_TLS`` env when not set explicitly;
+            falls back to plaintext with a loud warning.
+        ca_cert: CA cert path for verifying the node's certificate.
 
     Returns:
         Serialized state dict bytes, or None on failure.
     """
-    import hashlib
     from distllm.dist import node_pb2
+    # Resolution mirrors PipelineOrchestrator: explicit arg > env var.
+    cluster_key = cluster_key or os.environ.get("DISTLLM_CLUSTER_KEY") or None
     try:
-        client = create_node_client(host, port, timeout_s=timeout_s, cluster_key=cluster_key)
+        env_use_tls, env_ca_cert = resolve_pipeline_tls()
+        effective_tls = use_tls if use_tls is not None else env_use_tls
+        effective_ca = ca_cert or env_ca_cert
+        if not effective_tls:
+            logger.warning(
+                f"Weight transfer {host}:{port} over PLAINTEXT gRPC — model "
+                "weights are unencrypted on the wire. Set DISTLLM_PIPELINE_TLS=1"
+                " (+ DISTLLM_TLS_CA_CERT_FILE) or pass use_tls=True."
+            )
+        client = create_node_client(
+            host, port,
+            use_tls=effective_tls, ca_cert=effective_ca,
+            timeout_s=timeout_s, cluster_key=cluster_key,
+        )
         req = node_pb2.TransferWeightsRequest(
             model_name=model_name,
             start_layer=start_layer,
@@ -307,21 +461,27 @@ def request_layer_weights(
         resp, call = client.stub.TransferWeights.with_call(req)
         client.close()
         if resp.success and resp.state_dict_bytes:
-            # Verify integrity via SHA-256 checksum sent as trailing metadata
-            expected_checksum = None
+            # Authenticated integrity: HMAC-SHA256(cluster_key, payload) sent
+            # as trailing metadata by the serving node.  A bare SHA-256
+            # checksum ("x-checksum-sha256") is NOT accepted as proof — any
+            # on-path attacker can recompute it after tampering.
+            metadata_keys: dict[str, str] = {}
             for key, value in call.trailing_metadata():
-                if key == "x-checksum-sha256":
-                    expected_checksum = value
-                    break
-            if expected_checksum:
-                actual_checksum = hashlib.sha256(resp.state_dict_bytes).hexdigest()
-                if actual_checksum != expected_checksum:
-                    logger.error(
-                        f"Weight transfer checksum mismatch for {model_name} "
-                        f"layers {start_layer}-{end_layer}: "
-                        f"expected {expected_checksum}, got {actual_checksum}"
-                    )
-                    return None
+                k = key.decode("utf-8", errors="replace") if isinstance(key, bytes) else key
+                v = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+                metadata_keys[k] = v
+            context_desc = f"Weight transfer for {model_name} layers {start_layer}-{end_layer}"
+            verified = _verify_weight_payload(
+                resp.state_dict_bytes,
+                cluster_key,
+                metadata_keys,
+                context_desc,
+                model_name=model_name,
+                start_layer=start_layer,
+                end_layer=end_layer,
+            )
+            if verified is None:
+                return None
             logger.info(f"Received weights for {model_name} layers {start_layer}-{end_layer} "
                          f"({len(resp.state_dict_bytes)} bytes)")
             return resp.state_dict_bytes
@@ -489,10 +649,14 @@ def request_layer_weights_stream(
     model_name: str, start_layer: int, end_layer: int,
     cluster_key: str | None = None,
     timeout_s: float = 300.0,
+    use_tls: bool | None = None,
+    ca_cert: str | None = None,
 ) -> bytes | None:
     """Request layer weights via streaming TransferWeightsStream RPC.
 
-    Collects all streamed chunks into a single bytes buffer.
+    Collects all streamed chunks into a single bytes buffer, then verifies
+    the sender's HMAC-SHA256(cluster_key, buffer) tag (trailing metadata)
+    before returning anything — fail-closed.
 
     Args:
         host: Remote node host.
@@ -500,15 +664,36 @@ def request_layer_weights_stream(
         model_name: Model name.
         start_layer: First layer index (inclusive).
         end_layer: Last layer index (exclusive).
-        cluster_key: Shared cluster auth key.
+        cluster_key: Shared cluster auth key.  Also keys the required
+            payload HMAC; transfers without a valid tag are rejected.
         timeout_s: Request timeout.
+        use_tls: Encrypt the channel (model weights are high-value IP).
+            Defaults to ``DISTLLM_PIPELINE_TLS`` env when not set explicitly;
+            falls back to plaintext with a loud warning.
+        ca_cert: CA cert path for verifying the node's certificate.
 
     Returns:
         Complete serialized state dict bytes, or None on failure.
     """
     from distllm.dist import node_pb2
+    # Resolution mirrors PipelineOrchestrator: explicit arg > env var.
+    cluster_key = cluster_key or os.environ.get("DISTLLM_CLUSTER_KEY") or None
     try:
-        client = create_node_client(host, port, timeout_s=timeout_s, cluster_key=cluster_key)
+        env_use_tls, env_ca_cert = resolve_pipeline_tls()
+        effective_tls = use_tls if use_tls is not None else env_use_tls
+        effective_ca = ca_cert or env_ca_cert
+        if not effective_tls:
+            logger.warning(
+                f"Streaming weight transfer {host}:{port} over PLAINTEXT "
+                "gRPC — model weights are unencrypted on the wire. Set "
+                "DISTLLM_PIPELINE_TLS=1 (+ DISTLLM_TLS_CA_CERT_FILE) or "
+                "pass use_tls=True."
+            )
+        client = create_node_client(
+            host, port,
+            use_tls=effective_tls, ca_cert=effective_ca,
+            timeout_s=timeout_s, cluster_key=cluster_key,
+        )
         req = node_pb2.TransferWeightsRequest(
             model_name=model_name,
             start_layer=start_layer,
@@ -519,7 +704,8 @@ def request_layer_weights_stream(
         expected_index = 0
         total_chunks = None
         seen_final = False
-        for resp in client.stub.TransferWeightsStream(req):
+        responses = client.stub.TransferWeightsStream(req)
+        for resp in responses:
             if not resp.success:
                 logger.warning(f"Stream chunk error: {resp.error_message}")
                 client.close()
@@ -548,6 +734,14 @@ def request_layer_weights_stream(
                 seen_final = True
             buffer.extend(resp.state_dict_bytes)
             expected_index += 1
+        # Read trailing metadata while the call/channel is still open.
+        trailing_fn = getattr(responses, "trailing_metadata", None)
+        raw_metadata = ()
+        if callable(trailing_fn):
+            try:
+                raw_metadata = trailing_fn() or ()
+            except Exception as e:  # pragma: no cover - grpc internal errors
+                logger.debug(f"Could not read trailing metadata: {e}")
         client.close()
         if not buffer:
             logger.warning("Streamed weight transfer returned empty buffer")
@@ -559,10 +753,38 @@ def request_layer_weights_stream(
                 f"final={seen_final} — rejecting truncated transfer"
             )
             return None
-        # Integrity: reject a stream producing no bytes (all-empty chunks dup).
+
+        # Authenticated integrity over the ASSEMBLED payload: the serving
+        # node sends HMAC-SHA256(cluster_key, full_bytes) as trailing
+        # metadata once the stream finishes.  Fail closed on absence or
+        # mismatch — chunk ordering checks alone prove nothing about content.
+        payload = bytes(buffer)
+        context_desc = (
+            f"Streaming weight transfer for {model_name} "
+            f"layers {start_layer}-{end_layer}"
+        )
+        metadata_keys = {
+            (key.decode("utf-8", errors="replace")
+             if isinstance(key, bytes) else key):
+            (value.decode("utf-8", errors="replace")
+             if isinstance(value, bytes) else value)
+            for key, value in raw_metadata
+        }
+        verified = _verify_weight_payload(
+            payload,
+            cluster_key,
+            metadata_keys,
+            context_desc,
+            model_name=model_name,
+            start_layer=start_layer,
+            end_layer=end_layer,
+        )
+        if verified is None:
+            return None
+
         logger.info(f"Streamed weights for {model_name} layers {start_layer}-{end_layer} "
-                     f"({len(buffer)} bytes, {expected_index}/{total_chunks} chunks)")
-        return bytes(buffer)
+                     f"({len(payload)} bytes, {expected_index}/{total_chunks} chunks)")
+        return payload
     except Exception as e:
         logger.warning(f"Streaming weight transfer failed: {e}")
         return None
