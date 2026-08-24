@@ -1,5 +1,10 @@
 ---
 // Horizontal CSS bar chart — no JS/chart library needed.
+// IMPORTANT: bar width is linear in `value` (value / max). All rows in one
+// chart MUST be expressed in the SAME unit, otherwise bars silently
+// mis-rank (e.g. "1.1 s" parsed as 1.1 would beat "38 ms"). Callers with
+// lower-is-better metrics should keep values in one small unit (e.g. ms)
+// so that shorter bars are genuinely the better ones.
 interface Row { label: string; sub?: string; value: number; display: string; max: number; unitColor?: string }
 interface Props {
   title: string;

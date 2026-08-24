@@ -1,120 +1,223 @@
 ---
 import PageLayout from "../layouts/PageLayout.astro";
 import SectionHeading from "../components/SectionHeading.astro";
-import { THROUGHPUT, SPECULATIVE, SCALING, METHODOLOGY } from "../data/benchmarks";
 import BarChart from "../components/BarChart.astro";
+import {
+  IS_ILLUSTRATIVE,
+  MEASURED_DATE,
+  MODEL_NAME,
+  RIG_SUMMARY,
+  RESULTS_DOC_URL,
+  THROUGHPUT,
+  THROUGHPUT_VARIANCE,
+  TTFT,
+  LATENCY_CAVEAT,
+  SPEC_ACCEPTANCE,
+  ENGINE_PATH,
+  ENGINE_GAP,
+  CAPABILITY_STATS,
+  SUITE_TARGETS,
+  DESIGN_TARGETS,
+  METHODOLOGY,
+} from "../data/benchmarks";
 ---
 
 <PageLayout
   title="Benchmarks"
-  description="Reproducible throughput, latency, and scaling numbers for DistLLM on consumer hardware."
+  description="Measured throughput, latency, and speculative-decoding numbers for DistLLM on a single consumer laptop — raw JSON ships in the repo."
 >
   <section class="container-site py-14">
     <SectionHeading
       eyebrow="Benchmarks"
       title="Measured, not promised"
-      lead="Every number below is produced by the built-in benchmark suite against consumer hardware — rerun it yourself."
+      lead={`Every measured number below was produced by DistLLM's own benchmark suite on ${MEASURED_DATE}, against ${MODEL_NAME} on a single consumer laptop. Exact commands and raw JSON ship in the repo — rerun them yourself. Anything not yet measured is labeled as a design target.`}
       level={1}
     />
 
-    <div class="mt-12 space-y-12">
+    <div class="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-line bg-surface p-4 text-sm">
+      <span class="rounded-full bg-brand-100 px-2.5 py-0.5 text-xs font-semibold text-brand-700">Measured</span>
+      <p class="text-muted">{RIG_SUMMARY}</p>
+      <a
+        href={RESULTS_DOC_URL}
+        class="ml-auto whitespace-nowrap text-sm text-brand-700 hover:underline"
+        rel="noopener noreferrer"
+      >
+        Full methodology &amp; raw results ↗
+      </a>
+    </div>
+
+    <div class="mt-12 space-y-14">
+      {/* ── Measured: throughput + TTFT ─────────────────────────── */}
       <div>
-        <h2 class="text-2xl">Throughput at a glance</h2>
+        <div class="flex items-center gap-3">
+          <h2 class="text-2xl">Throughput &amp; first-token latency</h2>
+          <span class="rounded-full bg-brand-100 px-2.5 py-0.5 text-xs font-semibold text-brand-700">Measured</span>
+        </div>
         <div class="mt-4 grid gap-5 lg:grid-cols-2">
           <BarChart
-            title="Tokens / second"
+            title="Tokens / second — HF generate() baseline"
             unitLabel="higher is better"
             rows={THROUGHPUT.map((r) => ({
-              label: r.model,
-              sub: r.hardware,
-              value: parseFloat(r.tps),
-              display: r.tps,
-              max: Math.max(...THROUGHPUT.map((x) => parseFloat(x.tps))),
+              label: r.device,
+              sub: `${r.dtype} · aggregate over 8 prompts × 50 tokens`,
+              value: r.value,
+              display: r.display,
+              max: Math.max(...THROUGHPUT.map((x) => x.value)),
             }))}
           />
           <BarChart
             title="Time to first token"
-            unitLabel="lower is better"
-            rows={THROUGHPUT.map((r) => ({
-              label: r.model,
-              sub: r.hardware,
-              value: parseFloat(r.ttft),
-              display: r.ttft,
-              max: Math.max(...THROUGHPUT.map((x) => parseFloat(x.ttft))),
+            unitLabel="milliseconds — lower is better"
+            rows={TTFT.map((r) => ({
+              label: r.device,
+              sub: `${r.dtype} · median over 8 prompts (~5-token prompt)`,
+              value: r.value,
+              display: r.display,
+              max: Math.max(...TTFT.map((x) => x.value)),
               unitColor: "bg-gradient-to-r from-accent-500 to-violet-400",
             }))}
           />
         </div>
+        <div class="mt-4 space-y-1 text-sm leading-relaxed text-muted">
+          <p>{THROUGHPUT_VARIANCE}</p>
+          <p>Inter-token latency medians: 6.9–7.1 ms CUDA / 4.3–4.7 ms CPU.</p>
+          <p>{LATENCY_CAVEAT}</p>
+        </div>
       </div>
 
+      {/* ── Measured: speculative decoding acceptance ───────────── */}
       <div>
-        <h2 class="text-2xl">Full results</h2>
+        <div class="flex items-center gap-3">
+          <h2 class="text-2xl">Speculative decoding — verifier acceptance</h2>
+          <span class="rounded-full bg-brand-100 px-2.5 py-0.5 text-xs font-semibold text-brand-700">Measured</span>
+        </div>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          {SPEC_ACCEPTANCE.rows.map((s) => (
+            <div class="rounded-xl border border-line bg-surface p-5 shadow-sm">
+              <p class="font-mono text-sm">{s.method}</p>
+              <p class="mt-2 text-sm">acceptance <strong class="text-brand-700">{s.acceptance}</strong></p>
+            </div>
+          ))}
+        </div>
+        <p class="mt-4 rounded-xl border border-line bg-sunken p-4 text-sm leading-relaxed text-muted">
+          {SPEC_ACCEPTANCE.caveat}
+        </p>
+      </div>
+
+      {/* ── Measured: engine path (the honest number) ───────────── */}
+      <div>
+        <div class="flex items-center gap-3">
+          <h2 class="text-2xl">DistLLM engine path — end to end</h2>
+          <span class="rounded-full bg-brand-100 px-2.5 py-0.5 text-xs font-semibold text-brand-700">Measured</span>
+        </div>
+        <p class="mt-3 max-w-3xl text-sm leading-relaxed text-muted">{ENGINE_PATH.intro}</p>
         <div class="mt-4 overflow-x-auto rounded-xl border border-line bg-surface">
           <table class="w-full text-left text-sm">
             <thead>
               <tr class="border-b-2 border-line">
-                <th class="px-4 py-3 font-semibold">Model</th>
-                <th class="px-4 py-3 font-semibold">Hardware</th>
-                <th class="px-4 py-3 font-semibold">Tokens/s</th>
-                <th class="px-4 py-3 font-semibold">TTFT</th>
+                <th class="px-4 py-3 font-semibold">Metric</th>
+                <th class="px-4 py-3 font-semibold">CUDA fp16</th>
+                <th class="px-4 py-3 font-semibold">CPU fp32</th>
               </tr>
             </thead>
             <tbody>
-              {THROUGHPUT.map((r) => (
+              {ENGINE_PATH.rows.map((r) => (
                 <tr class="border-b border-line last:border-0">
-                  <td class="px-4 py-2.5 font-mono">{r.model}</td>
-                  <td class="px-4 py-2.5 text-muted">{r.hardware}</td>
-                  <td class="px-4 py-2.5 font-semibold text-brand-700">{r.tps}</td>
-                  <td class="px-4 py-2.5 text-muted">{r.ttft}</td>
+                  <td class="px-4 py-2.5">{r.metric}</td>
+                  <td class="px-4 py-2.5 font-semibold text-brand-700">{r.cuda}</td>
+                  <td class="px-4 py-2.5 text-muted">{r.cpu}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        <div class="mt-4 rounded-xl border border-pop-500/40 bg-pop-100 p-5">
+          <p class="text-xs font-semibold uppercase tracking-wide text-pop-500">Known optimization target</p>
+          <p class="mt-2 text-sm leading-relaxed text-muted">{ENGINE_GAP}</p>
+        </div>
       </div>
 
+      {/* ── Measured: other capabilities ────────────────────────── */}
       <div>
-        <h2 class="text-2xl">Speculative Decoding</h2>
+        <div class="flex items-center gap-3">
+          <h2 class="text-2xl">Also measured</h2>
+          <span class="rounded-full bg-brand-100 px-2.5 py-0.5 text-xs font-semibold text-brand-700">Measured</span>
+        </div>
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
-          {SPECULATIVE.map((s) => (
+          {CAPABILITY_STATS.map((c) => (
             <div class="rounded-xl border border-line bg-surface p-5 shadow-sm">
-              <p class="font-mono text-sm">{s.draft}</p>
-              <p class="mt-2 flex gap-6 text-sm">
-                <span>acceptance <strong class="text-brand-700">{s.acceptance}</strong></span>
-                <span>speedup <strong class="text-accent-600">{s.speedup}</strong></span>
-              </p>
+              <p class="font-mono text-sm">{c.label}</p>
+              <p class="mt-2 text-2xl font-semibold text-brand-700">{c.value}</p>
+              <p class="mt-2 text-sm leading-relaxed text-muted">{c.note}</p>
             </div>
           ))}
         </div>
       </div>
 
-      <div>
-        <h2 class="text-2xl">Multi-Node Scaling</h2>
-        <div class="mt-4 overflow-x-auto rounded-xl border border-line bg-surface">
+      {/* ── Design targets — explicitly NOT measurements ───────── */}
+      <div class="rounded-2xl border border-pop-500/40 p-6">
+        <div class="flex flex-wrap items-center gap-3">
+          <h2 class="text-2xl">Design targets</h2>
+          {IS_ILLUSTRATIVE && (
+            <span class="rounded-full bg-pop-100 px-2.5 py-0.5 text-xs font-semibold text-pop-500">
+              Illustrative — not yet measured
+            </span>
+          )}
+        </div>
+        <p class="mt-3 max-w-3xl text-sm leading-relaxed text-muted">
+          Everything in this box describes goals or thresholds, not results. No multi-node number has ever been
+          measured by this project; none is published as one.
+        </p>
+
+        <h3 class="mt-6 text-lg font-semibold">Built-in suite pass thresholds</h3>
+        <p class="mt-1 text-sm text-muted">
+          Thresholds embedded in <code class="font-mono text-xs">benchmarks/run.py</code>, written for
+          1.5B-class models. TinyStories-1M clears them trivially; they say nothing about larger models.
+        </p>
+        <div class="mt-3 overflow-x-auto rounded-xl border border-line bg-surface">
           <table class="w-full text-left text-sm">
             <thead>
               <tr class="border-b-2 border-line">
-                <th class="px-4 py-3 font-semibold">Cluster</th>
-                <th class="px-4 py-3 font-semibold">Split</th>
-                <th class="px-4 py-3 font-semibold">Efficiency</th>
+                <th class="px-4 py-3 font-semibold">Benchmark</th>
+                <th class="px-4 py-3 font-semibold">Threshold</th>
+                <th class="px-4 py-3 font-semibold">TinyStories-1M result</th>
+                <th class="px-4 py-3 font-semibold">Verdict</th>
               </tr>
             </thead>
             <tbody>
-              {SCALING.map((r) => (
+              {SUITE_TARGETS.map((t) => (
                 <tr class="border-b border-line last:border-0">
-                  <td class="px-4 py-2.5">{r.nodes}</td>
-                  <td class="px-4 py-2.5 text-muted">{r.layers}</td>
-                  <td class="px-4 py-2.5 font-semibold text-brand-700">{r.efficiency}</td>
+                  <td class="px-4 py-2.5 font-mono">{t.name}</td>
+                  <td class="px-4 py-2.5 text-muted">{t.target}</td>
+                  <td class="px-4 py-2.5 text-muted">{t.result}</td>
+                  <td class="px-4 py-2.5 font-semibold">
+                    {t.met ? (
+                      <span class="text-brand-700">pass</span>
+                    ) : (
+                      <span class="text-pop-500">missed by ngram drafts</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+
+        <h3 class="mt-6 text-lg font-semibold">Goals awaiting hardware</h3>
+        <div class="mt-3 grid gap-4 sm:grid-cols-3">
+          {DESIGN_TARGETS.map((d) => (
+            <div class="rounded-xl border border-line bg-surface p-5">
+              <p class="font-semibold">{d.area}</p>
+              <p class="mt-2 text-sm leading-relaxed text-muted">{d.body}</p>
+            </div>
+          ))}
+        </div>
       </div>
 
+      {/* ── Methodology ─────────────────────────────────────────── */}
       <div>
         <h2 class="text-2xl">Methodology</h2>
-        <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {METHODOLOGY.map((m) => (
             <div class="rounded-xl border border-line bg-surface p-5">
               <h3 class="font-semibold">{m.title}</h3>
