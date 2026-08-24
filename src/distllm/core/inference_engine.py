@@ -613,6 +613,12 @@ class InferenceEngine:
         self.total_layers = 0
         self._spec_decoder = None
 
+        # PagedAttention block manager.  Constructed lazily in
+        # load_local_model() (sized from the loaded model's config) so the
+        # coordinator's defrag loop and the batch scheduler have a real
+        # backend; None until a local model is loaded.
+        self._paged_mgr: Any | None = None
+
         # Strategy instances for unified generation dispatch
         self._local_strategy = _LocalStrategy(self)
         self._speculative_strategy = _SpeculativeStrategy(self)
@@ -646,7 +652,47 @@ class InferenceEngine:
         )
         self.model_info = get_model_info(self.model_name, self.trust_remote_code)
         self.total_layers = self.model_info["num_layers"]
+        self._init_paged_attention()
         logger.info(f"Local model loaded: {self.model_name}")
+
+    def _init_paged_attention(self) -> None:
+        """Construct the PagedAttention block manager from the model config.
+
+        Sized from the loaded model's layer/attention geometry so paged KV
+        blocks match real tensor shapes.  The manager allocates block storage
+        lazily (per-block on first allocation), so construction itself is
+        cheap.  Failures are non-fatal: the engine falls back to flat KV
+        caching and the coordinator's defrag loop simply finds no backends.
+        """
+        info = self.model_info or {}
+        try:
+            from distllm.backends.paged_attention import PagedAttentionManager
+
+            num_layers = int(info.get("num_layers") or 12)
+            num_heads = int(
+                info.get("num_key_value_heads")
+                or info.get("num_attention_heads")
+                or 32
+            )
+            head_dim = int(info.get("head_dim") or 64)
+            num_blocks = int(os.environ.get("DISTLLM_PAGED_NUM_BLOCKS", "1024"))
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._paged_mgr = PagedAttentionManager(
+                num_blocks=num_blocks,
+                block_size=16,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                device=device,
+            )
+            logger.info(
+                f"PagedAttention manager created: layers={num_layers}, "
+                f"kv_heads={num_heads}, head_dim={head_dim}, "
+                f"blocks={num_blocks}, device={device}"
+            )
+        except Exception as e:
+            logger.warning(f"PagedAttention manager not available: {e}")
+            self._paged_mgr = None
 
     def warmup(self, num_tokens: int = 8) -> float:
         """Warm up the model by running dummy tokens through it.

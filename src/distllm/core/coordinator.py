@@ -186,12 +186,20 @@ class Coordinator:
             recovery_manager=self._recovery_manager,
         )
 
+        # Pass the same recovery callbacks that _wire_recovery_callbacks()
+        # installed on _recovery_manager.  Previously HealthManager silently
+        # overwrote those with its own closures that set a nonexistent
+        # ``healthy`` attribute, so drained nodes kept receiving work.
         self._health_mgr = HealthManager(
             pipeline=self._pipeline,
             resource_mgr=self._resource_mgr,
             reputation=self._reputation,
             recovery_manager=self._recovery_manager,
             straggler_detector=self._straggler_detector,
+            drain_callback=self._on_node_drain,
+            redistribute_callback=self._on_node_redistribute,
+            recover_sequences_callback=self._on_node_recover,
+            mark_dead_callback=self._on_node_mark_dead,
         )
 
         self._metrics_collector = MetricsCollector(
@@ -811,6 +819,23 @@ class Coordinator:
                         backends.append(be._paged_mgr)
         return backends
 
+    def _wire_paged_attention(self) -> None:
+        """Connect the engine's PagedAttentionManager to the batch scheduler.
+
+        The manager is created during ``load_local_model()``; without this
+        wiring ``BatchScheduler.allocate_paged_blocks()`` always returned
+        None, the CPU-swap/preemption paths no-op'd, and the defrag loop
+        iterated zero backends forever.
+        """
+        paged_mgr = getattr(self._inference_engine, "_paged_mgr", None)
+        if paged_mgr is None or self._batch_scheduler is None:
+            return
+        try:
+            self._batch_scheduler.set_paged_attention(paged_mgr)
+            logger.info("PagedAttention manager wired into batch scheduler")
+        except Exception as e:
+            logger.warning(f"Failed to wire PagedAttention into scheduler: {e}")
+
     def defrag_status(self) -> dict:
         """Get current defragmentation status.
 
@@ -1221,6 +1246,40 @@ class Coordinator:
 
     # ── Start / Stop ──
 
+    def _maybe_start_disaggregated(self) -> None:
+        """Register the disaggregated P&D scheduler behind an explicit opt-in.
+
+        The scheduler's cross-pool KV transfer is not implemented yet
+        (``stream_kv_cache`` and ``allocate_decode_blocks`` are fenced
+        stubs), so it is OFF by default.  Set ``DISTLLM_DISAGGREGATED_ENABLED=1``
+        to register it anyway.
+        """
+        if os.environ.get("DISTLLM_DISAGGREGATED_ENABLED", "") != "1":
+            self._subsystem_health["disaggregated_scheduler"] = {
+                "status": "disabled",
+                "error": None,
+            }
+            logger.debug(
+                "Disaggregated P&D scheduler disabled "
+                "(set DISTLLM_DISAGGREGATED_ENABLED=1 to opt in)"
+            )
+            return
+
+        # C12: loud warning so operators know KV transfer is a stub —
+        # prefills/decodes routed to separate pools would silently lose KV.
+        logger.warning(
+            "Disaggregated P&D scheduler enabled via DISTLLM_DISAGGREGATED_ENABLED: "
+            "EXPERIMENTAL — cross-pool KV cache TRANSFER IS NOT IMPLEMENTED "
+            "(stream_kv_cache / allocate_decode_blocks are stubs). "
+            "Do not route production traffic through it."
+        )
+        self._start_subsystem(
+            "disaggregated_scheduler",
+            "distllm.core.advanced_scheduling.disaggregated",
+            "DisaggregatedBatchScheduler",
+            "_disaggregated_scheduler",
+        )
+
     def start(self, blocking: bool = True, on_stop: Callable | None = None,
               health_check_interval_s: float = 10.0) -> None:
         if self.tokenizer is None:
@@ -1233,6 +1292,11 @@ class Coordinator:
         self._running.set()
         self._health_event.clear()
         self._health_mgr.start()
+
+        # Connect the PagedAttention block manager (created during model
+        # load) to the batch scheduler so paged allocation, preemption, and
+        # defrag paths are live.
+        self._wire_paged_attention()
 
         # Propagate model metadata to the batch scheduler so its metrics
         # label rows with the real model name instead of "default".
@@ -1298,10 +1362,7 @@ class Coordinator:
             },
         )
 
-        self._start_subsystem(
-            "disaggregated_scheduler", "distllm.core.advanced_scheduling.disaggregated",
-            "DisaggregatedBatchScheduler", "_disaggregated_scheduler",
-        )
+        self._maybe_start_disaggregated()
 
         self._start_subsystem(
             "carbon_engine", "distllm.core.carbon_migration", "CarbonMigrationEngine", "_carbon_engine",
@@ -1572,7 +1633,15 @@ class Coordinator:
             "model_name": self.model_name,
             "shutdown_time": time.time(),
             "nodes": {
-                nid: {"host": n.host, "port": n.port, "healthy": n.healthy}
+                nid: {
+                    "host": n.host,
+                    "port": n.port,
+                    # Canonical health attribute (PipelineNode.is_healthy);
+                    # ``n.healthy`` is not a defined field.
+                    "healthy": bool(
+                        getattr(n, "is_healthy", getattr(n, "healthy", True))
+                    ),
+                }
                 for nid, n in self.nodes.items()
             },
         }

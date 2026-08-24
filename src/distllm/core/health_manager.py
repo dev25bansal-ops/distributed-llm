@@ -10,7 +10,9 @@ Integrates:
 import os
 import time
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from typing import Any
 
 from loguru import logger
 
@@ -45,6 +47,10 @@ class HealthManager:
         check_interval_s: float = 10.0,
         health_check_timeout_s: float = 5.0,
         failover_engine: FailoverEngine | None = None,
+        drain_callback: Callable[[str], None] | None = None,
+        redistribute_callback: Callable[[str, Any], None] | None = None,
+        recover_sequences_callback: Callable[[str, list[str]], list] | None = None,
+        mark_dead_callback: Callable[[str], None] | None = None,
     ):
         self._pipeline = pipeline
         self._resource_mgr = resource_mgr
@@ -56,6 +62,17 @@ class HealthManager:
         )
         self._check_interval_s = check_interval_s
         self._health_check_timeout_s = health_check_timeout_s
+
+        # Explicit recovery callbacks (single source of truth).  When the
+        # Coordinator supplies its own callbacks they are wired verbatim;
+        # previously HealthManager unconditionally installed its own closures
+        # here, clobbering the Coordinator's wiring (which set the canonical
+        # ``is_healthy`` attribute) with closures that wrote a nonexistent
+        # ``healthy`` attribute — so drained nodes kept receiving work.
+        self._drain_callback = drain_callback
+        self._redistribute_callback = redistribute_callback
+        self._recover_sequences_callback = recover_sequences_callback
+        self._mark_dead_callback = mark_dead_callback
 
         self._failover = failover_engine or FailoverEngine()
         self._health_store = HealthStateStore()
@@ -156,6 +173,16 @@ class HealthManager:
 
     # --- Recovery callbacks ---
 
+    @staticmethod
+    def _node_is_healthy(node: Any) -> bool:
+        """Read a node's health via the canonical ``is_healthy`` attribute.
+
+        ``PipelineNode`` (the object every scheduler filters on) defines
+        ``is_healthy``; it has no ``healthy`` field.  The fallback keeps
+        lightweight test doubles that only define ``.healthy`` working.
+        """
+        return bool(getattr(node, "is_healthy", getattr(node, "healthy", True)))
+
     def _setup_recovery_callbacks(self) -> None:
         if self._recovery_manager is None:
             return
@@ -164,7 +191,7 @@ class HealthManager:
             logger.info(f"Recovery: draining node {node_id}")
             node = self._pipeline.nodes.get(node_id)
             if node:
-                node.healthy = False
+                node.is_healthy = False
             self._resource_mgr.record_failure(node_id)
 
         def on_redistribute(node_id: str, plan) -> None:
@@ -185,7 +212,7 @@ class HealthManager:
             recovered = []
             surviving_nodes = [
                 nid for nid, n in self._pipeline.nodes.items()
-                if nid != node_id and getattr(n, "healthy", False)
+                if nid != node_id and self._node_is_healthy(n)
             ]
             if not surviving_nodes:
                 logger.warning("No surviving nodes for sequence recovery")
@@ -218,10 +245,20 @@ class HealthManager:
                 key=lambda nid: self._pipeline.nodes[nid].start_layer,
             )
 
-        self._recovery_manager.set_drain_callback(on_drain)
-        self._recovery_manager.set_redistribute_layers_callback(on_redistribute)
-        self._recovery_manager.set_recover_sequences_callback(on_recover)
-        self._recovery_manager.set_mark_dead_callback(on_mark_dead)
+        # Coordinator-supplied callbacks win (single source of truth);
+        # fall back to the defaults above only when none were provided.
+        self._recovery_manager.set_drain_callback(
+            self._drain_callback or on_drain
+        )
+        self._recovery_manager.set_redistribute_layers_callback(
+            self._redistribute_callback or on_redistribute
+        )
+        self._recovery_manager.set_recover_sequences_callback(
+            self._recover_sequences_callback or on_recover
+        )
+        self._recovery_manager.set_mark_dead_callback(
+            self._mark_dead_callback or on_mark_dead
+        )
 
     # --- Per-node health probe (runs in thread pool) ---
 
@@ -308,7 +345,7 @@ class HealthManager:
                 record = self._health_store.get(node_id)
                 state = record.state.value if record else "unknown"
                 nodes_status[node_id] = {
-                    "healthy": getattr(node, "healthy", False),
+                    "healthy": self._node_is_healthy(node),
                     "state": state,
                     "start_layer": node.start_layer,
                     "end_layer": node.end_layer,

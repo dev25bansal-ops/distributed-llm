@@ -7,6 +7,7 @@ The coordinator instantiates this class and delegates HA methods to it.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,17 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from distllm.core.coordinator import Coordinator
+
+
+def _ha_auth_headers() -> dict[str, str]:
+    """Build auth headers matching the HA receiver's fail-closed check.
+
+    The receiver (``POST /api/v1/ha/snapshot`` in api/server.py) rejects any
+    request whose ``X-HA-Secret`` header does not match ``DISTLLM_HA_SECRET``.
+    Senders must attach the same secret or every push is silently 403'd.
+    """
+    secret = os.environ.get("DISTLLM_HA_SECRET", "")
+    return {"X-HA-Secret": secret} if secret else {}
 
 
 class CoordinatorElection:
@@ -120,7 +132,13 @@ class CoordinatorElection:
                     "port": getattr(n, "port", 0),
                     "start_layer": getattr(n, "start_layer", 0),
                     "end_layer": getattr(n, "end_layer", 0),
-                    "healthy": getattr(n, "healthy", False),
+                    # PipelineNode's canonical health attribute is
+                    # ``is_healthy`` (schedulers filter on it); ``.healthy``
+                    # was never defined on the dataclass so every node used
+                    # to snapshot as unhealthy.
+                    "healthy": bool(
+                        getattr(n, "is_healthy", getattr(n, "healthy", True))
+                    ),
                 }
                 for nid, n in coord.nodes.items()
             },
@@ -226,11 +244,14 @@ class CoordinatorElection:
                             resp = client.post(
                                 f"{peer_url.rstrip('/')}/api/v1/ha/snapshot",
                                 json=snapshot,
+                                headers=_ha_auth_headers(),
                             )
                             if resp.status_code != 200:
-                                logger.debug(f"Replication to {peer_url} returned {resp.status_code}")
+                                logger.warning(
+                                    f"Replication to {peer_url} returned {resp.status_code}"
+                                )
                         except Exception as e:
-                            logger.debug(f"Replication to {peer_url} failed: {e}")
+                            logger.warning(f"Replication to {peer_url} failed: {e}")
                 except Exception as e:
                     logger.warning(f"State replication error: {e}")
                 time.sleep(1.0)
