@@ -15,16 +15,31 @@ from distllm.core.structured_output.streaming import BufferedAccumulator, Partia
 class JSONSchemaConstraint:
     """Token-level constraint for JSON schema-constrained decoding.
 
-    Uses a simple character-level state machine to track valid JSON
-    structure during generation. At each step, only tokens whose first
-    character is valid for the current JSON parse state are allowed.
+    Uses a character-level state machine to track valid JSON structure
+    during generation. At each step, only tokens whose first character is
+    valid for the current JSON parse state are allowed.
 
-    This is a simplified approach — it does not validate against a full
-    JSON schema, but ensures the output is valid JSON syntax.
+    Nesting is tracked with an explicit container stack: ``{`` / ``[``
+    push onto the stack, and a close character only pops the innermost
+    matching open. ``done`` is signaled exclusively when the OUTERMOST
+    container closes (or a root scalar/string finishes), so nested
+    documents such as ``{"a": {"b": [1, 2]}}`` no longer terminate early.
+
+    This enforces valid *JSON syntax* — it does not validate against a
+    full JSON schema (the schema layer in :mod:`.validator` does that).
+    Known simplifications, consistent with a first-character token mask:
+    number grammar is loose (any sequence of digits/.eE+- is accepted
+    inside a number) and escape-sequence spelling after ``\\`` is not
+    validated.
 
     For advanced constraint (grammar, regex, full JSON schema), use
     SchemaConstrainedDecoder from constrained_decoder.py.
     """
+
+    # Insignificant whitespace allowed between JSON tokens.
+    _WS: frozenset[str] = frozenset(' \t\n\r')
+    # First characters of any JSON value.
+    _VALUE_START: frozenset[str] = frozenset('"[{tfn-0123456789')
 
     _token_index_cache: dict = {}
     _token_ord_cache: dict = {}
@@ -34,14 +49,15 @@ class JSONSchemaConstraint:
     def __init__(self, schema: dict | None = None):
         self.schema = schema
         self._state = "object_start"
-        self._stack: list[str] = []
+        self._stack: list[str] = []  # open '{' / '[' markers, innermost last
         self._in_string = False
         self._escape_next = False
+        self._literal_remaining = ""  # rest of true/false/null after 1st char
         self._generated = ""
         self._token_first_chars: dict[int, str] | None = None
         self._mask_cache: dict[tuple, torch.Tensor] = {}
-        # Precomputed valid-ord tensor for each state (lazily built)
-        self._valid_ord_tensors: dict[str, torch.Tensor] = {}
+        # Precomputed valid-ord tensor per valid-char set (lazily built)
+        self._valid_ord_tensors: dict[frozenset, torch.Tensor] = {}
 
     @classmethod
     def from_response_format(cls, response_format: dict, tokenizer=None):
@@ -88,26 +104,18 @@ class JSONSchemaConstraint:
             logger.debug(f"Token index built: {vocab_size} tokens for {tok_key}")
             return index
 
-    def _get_valid_ord_tensor(self, state: str, in_string: bool) -> torch.Tensor:
-        """Return a precomputed tensor of valid character ordinals for the given state.
+    def _get_valid_ord_tensor(self, valid_chars: frozenset[str]) -> torch.Tensor:
+        """Return a precomputed tensor of valid character ordinals.
 
-        Caches the result per (state, in_string) key so repeated calls
-        avoid the Python set→tensor conversion.
+        Caches the result per valid-character set so repeated calls in the
+        same state avoid the Python set→tensor conversion.
         """
-        cache_key = (state, in_string)
-        cached = self._valid_ord_tensors.get(cache_key)
+        cached = self._valid_ord_tensors.get(valid_chars)
         if cached is not None:
             return cached
 
-        valid_chars = self._valid_next_chars()
-        valid_ords = {ord(ch) for ch in valid_chars}
-        if state in (
-            "after_value", "after_key", "after_colon", "object_value", "array_value"
-        ):
-            valid_ords.update(ord(ch) for ch in ' \t\n\r')
-
-        tensor = torch.tensor(sorted(valid_ords), dtype=torch.long)
-        self._valid_ord_tensors[cache_key] = tensor
+        tensor = torch.tensor(sorted(ord(ch) for ch in valid_chars), dtype=torch.long)
+        self._valid_ord_tensors[valid_chars] = tensor
         return tensor
 
     def get_logits_mask(self, vocab_size: int, tokenizer, device: str | torch.device | None = None) -> torch.Tensor:
@@ -123,6 +131,9 @@ class JSONSchemaConstraint:
             self._state,
             self._in_string,
             self._escape_next,
+            len(self._stack),
+            self._stack[-1] if self._stack else None,
+            self._literal_remaining,
             vocab_size,
             eos_token_id,
             str(device),
@@ -157,7 +168,7 @@ class JSONSchemaConstraint:
             target = device or "cpu"
             return torch.ones(vocab_size, dtype=torch.bool, device=target)
 
-        valid_ord_tensor = self._get_valid_ord_tensor(self._state, self._in_string)
+        valid_ord_tensor = self._get_valid_ord_tensor(frozenset(self._valid_next_chars()))
 
         # Move tensors to target device for GPU-accelerated comparison
         target = device or "cpu"
@@ -168,18 +179,19 @@ class JSONSchemaConstraint:
         mask = torch.zeros(vocab_size, dtype=torch.bool, device=target)
         mask[:n] = is_valid
 
-        # Escape hatch: if the FSM is in a dead state (no valid token can
-        # advance it) or the tokenizer is degenerate (nothing decodes),
-        # fall back to an unconstrained mask so the request can still
-        # terminate instead of generating forever.
-        if not bool(mask.any()):
-            mask = torch.ones(vocab_size, dtype=torch.bool, device=target)
-        # Allow EOS when the generated JSON is complete so normal
-        # termination is possible; block it mid-document so generation
-        # cannot end with truncated/invalid JSON (F-098).  An all-allowed
-        # escape mask also keeps EOS enabled.
-        elif eos_token_id is not None and self.is_complete():
+        # Once the OUTERMOST close has been emitted, only EOS may follow, so
+        # generation cannot append trailing garbage after valid JSON (F-098).
+        # This takes precedence over the escape hatch below ('done' has an
+        # empty valid-char set, which would otherwise look like a dead state).
+        if self._state == "done" and eos_token_id is not None and eos_token_id < vocab_size:
+            mask = torch.zeros_like(mask)
             mask[eos_token_id] = True
+        elif not bool(mask.any()):
+            # Escape hatch: if the FSM is in a dead state (no valid token can
+            # advance it) or the tokenizer is degenerate (nothing decodes),
+            # fall back to an unconstrained mask so the request can still
+            # terminate instead of generating forever.
+            mask = torch.ones(vocab_size, dtype=torch.bool, device=target)
 
         self._mask_cache[cache_key] = mask
         return mask
@@ -194,29 +206,61 @@ class JSONSchemaConstraint:
 
     def _valid_next_chars(self) -> set[str]:
         """Return the set of characters valid for the current JSON state."""
-        if self._in_string and not self._escape_next:
+        if self._in_string:
+            # Inside a string (including right after a backslash): any
+            # printable char may follow; raw line breaks are invalid.
             return set(string.printable) - {'\n', '\r', '\x0b', '\x0c'}
 
+        ws = self._WS
+        value_start = self._VALUE_START
+        # A number may be terminated by whichever delimiter closes the
+        # current context (C3 follow-up: offering the *other* bracket here
+        # let mismatched closes slip through mid-number).
+        if self._stack and self._stack[-1] == '[':
+            number_terminators = {',', ']'}
+        elif self._stack:
+            number_terminators = {',', '}'}
+        else:
+            number_terminators = set()  # root number: only whitespace ends it
         transitions: dict[str, set[str]] = {
-            "object_start": {'"', '{', '['},
-            "after_open_brace": {'"', '}', '{', '['},
-            "after_key": {':'},
-            "after_colon": {'"', '{', '[', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'},
-            "after_value": {',', '}'},
-            "after_comma": {'"'},
-            "array_start": {']', '"', '{', '[', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'},
-            "after_array_value": {',', ']'},
-            "after_array_comma": {'"', '{', '[', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'},
-            # A number may continue with digits / exponent / sign, and may also
-            # be terminated by , } ] or whitespace (F-045: previously the FSM
-            # had no in_number entry, so multi-digit numbers were truncated).
-            "in_number": set('0123456789.eE+-') | {',', '}', ']', ' ', '\t', '\n', '\r'},
+            # Root value: any JSON value may start here.
+            "object_start": value_start | ws,
+            "after_open_brace": {'"', '}'} | ws,
+            "after_key": {':'} | ws,
+            "after_colon": value_start | ws,
+            # Value just completed inside an OBJECT (stack top is '{').
+            "after_value": {',', '}'} | ws,
+            "array_start": value_start | {']'} | ws,
+            # Value just completed inside an ARRAY (stack top is '[').
+            "after_array_value": {',', ']'} | ws,
+            "after_comma": {'"'} | ws,
+            "after_array_comma": value_start | ws,  # no trailing commas
+            # A number may continue with digits / exponent / sign, and may
+            # also be terminated by , } ] or whitespace (F-045).
+            "in_number": set('0123456789.eE+-') | number_terminators | ws,
+            # Remaining characters of true/false/null: next literal char only.
+            "in_literal": {self._literal_remaining[0]} if self._literal_remaining else set(),
             "done": set(),
         }
-        return transitions.get(self._state, {'"', '}'})
+        return set(transitions.get(self._state, value_start | ws))
+
+    def _enclosing_after_value(self) -> str:
+        """State after a VALUE completes or a container closes.
+
+        Depends on the enclosing container: inside an object the next
+        token is `,` or `}`; inside an array `,` or `]`; with no open
+        container the document is complete.
+        """
+        if not self._stack:
+            return "done"
+        return "after_value" if self._stack[-1] == '{' else "after_array_value"
 
     def _transition(self, state: str, char: str) -> str:
         """Advance the JSON state machine by one character."""
+        if state == "done":
+            # Absorbing: nothing may follow the outermost close.
+            return "done"
+
         if self._escape_next:
             self._escape_next = False
             return state
@@ -229,54 +273,98 @@ class JSONSchemaConstraint:
                 self._in_string = False
                 if state == "in_string_key":
                     return "after_key"
-                return "after_value"
+                return self._enclosing_after_value()
+            return state
+
+        if self._literal_remaining:
+            # Continuation of true/false/null.  The mask only ever offers
+            # the exact next literal character; anything else leaves the
+            # state unchanged so direct update() calls cannot corrupt it.
+            if char == self._literal_remaining[0]:
+                self._literal_remaining = self._literal_remaining[1:]
+                if not self._literal_remaining:
+                    return self._enclosing_after_value()
+            return state
+
+        if char in ' \t\n\r':
+            # Insignificant whitespace between tokens; after a number it
+            # terminates the number ("1 }" must parse like "1}").
+            if state == "in_number":
+                return self._enclosing_after_value()
             return state
 
         if char == '"':
             self._in_string = True
-            if state in ("object_start", "after_open_brace", "after_comma"):
-                return "in_string_key"
+            if state in ("after_open_brace", "after_comma"):
+                return "in_string_key"  # object key position
             return "in_string"
 
         if char == '{':
+            self._stack.append('{')
             return "after_open_brace"
+
         if char == '}':
-            if self._stack:
-                return self._stack.pop()
-            return "done"
+            # Only pops when an object is actually open (C3: the first '}' at
+            # ANY depth used to terminate the whole document).
+            if self._stack and self._stack[-1] == '{':
+                self._stack.pop()
+                return self._enclosing_after_value()
+            return state
+
         if char == ':':
             return "after_colon"
-        if char == ',':
-            if state in ("after_value", "after_array_value", "in_number"):
-                return "after_comma"
-            if state in ("after_array_value",):
-                return "after_array_comma"
-            return state
-        if char == '[':
-            return "array_start"
-        if char == ']':
-            if self._stack:
-                return self._stack.pop()
-            return "done"
 
-        if state in ("after_colon", "array_start", "after_array_comma"):
-            if char in 'tfn':
-                return "after_value"
+        if char == ',':
+            # Route by enclosing container: array elements continue with a
+            # value, object entries continue with a key (C3: array commas
+            # used to demand a quoted key next).
+            if self._stack and self._stack[-1] == '[':
+                return "after_array_comma"
+            if self._stack and self._stack[-1] == '{':
+                return "after_comma"
+            return state
+
+        if char == '[':
+            self._stack.append('[')
+            return "array_start"
+
+        if char == ']':
+            if self._stack and self._stack[-1] == '[':
+                self._stack.pop()
+                return self._enclosing_after_value()
+            return state
+
+        if state in ("object_start", "after_colon", "array_start", "after_array_comma"):
+            if char == 't':
+                self._literal_remaining = "rue"
+                return "in_literal"
+            if char == 'f':
+                self._literal_remaining = "alse"
+                return "in_literal"
+            if char == 'n':
+                self._literal_remaining = "ull"
+                return "in_literal"
             if char in '-0123456789':
                 return "in_number"
-            return "after_value"
+            return state
 
         if state == "in_number" and char in '0123456789.eE+-':
             return "in_number"
-        if state == "in_number":
-            return "after_value"
 
         return state
 
     def is_complete(self) -> bool:
-        """Check if we have generated valid complete JSON."""
+        """Check if we have generated valid complete JSON.
+
+        True once the OUTERMOST container has closed, or for root-level
+        scalars/strings (a bare ``"hi"``, ``true``, or an in-progress root
+        number such as ``42`` — a number's end cannot be detected without a
+        following delimiter).  Note the EOS gate in ``get_logits_mask`` is
+        stricter: it opens only on the outermost close, so multi-digit root
+        numbers can still be continued digit-by-digit.
+        """
         return self._state == "done" or (
-            not self._in_string and self._state in ("after_value", "done")
+            not self._in_string and not self._stack and self._state == "in_number"
         )
 
     @property
