@@ -83,15 +83,23 @@ class TestComputeRedistributions:
         assert result[1].added_end_layer - result[1].added_start_layer + 1 == 2
 
     def test_three_survivors_uneven(self):
-        """4 layers across 3 nodes = 2, 1, 1."""
+        """Head-edge failure (0,3) with survivors to the right.
+
+        C3 fix: only the ADJACENT survivor (n1) absorbs the orphan;
+        distant survivors are untouched.  (Pre-fix the orphan was split
+        across all three, producing overlapping ranges like n1=(0,7)
+        vs n2=(1,11).)
+        """
         result = compute_redistributions(
             0, 3,
             {"n1": (4, 7), "n2": (8, 11), "n3": (12, 15)},
         )
-        assert len(result) == 3
-        counts = [r.added_end_layer - r.added_start_layer + 1 for r in result]
-        assert all(c >= 1 for c in counts)
-        assert sum(counts) == 4
+        # Only the adjacent neighbor receives a redistribution.
+        assert [r.surviving_node_id for r in result] == ["n1"]
+        r = result[0]
+        assert (r.added_start_layer, r.added_end_layer) == (0, 3)
+        assert (r.new_start_layer, r.new_end_layer) == (0, 7)
+        assert r.requires_weight_load is True
 
     def test_dead_count_zero(self):
         result = compute_redistributions(5, 3, {"n1": (0, 3)})
@@ -109,18 +117,24 @@ class TestCapacityAware:
         assert len(result) == 1
 
     def test_proportional_allocation(self):
-        """Node with more free memory gets more layers."""
+        """Capacity-aware: the orphan goes to the adjacent ELIGIBLE survivor.
+
+        C3 fix: only adjacency slots may absorb (a farther-out absorber
+        would swallow intermediate survivors' layers).  n2 is adjacent to
+        the failed range and has 3x free memory, but n1 sits between it
+        and the orphan, so n2 can never absorb without overlapping n1.
+        """
         result = compute_redistributions_capacity_aware(
             0, 5,  # 6 layers to redistribute
             {"n1": (6, 7), "n2": (8, 9)},
             survivor_memory_gb={"n1": 10.0, "n2": 30.0},
             min_memory_per_layer_gb=1.0,
         )
-        assert len(result) == 2
-        # n2 has 3x free memory → should get more layers
-        c0 = result[0].added_end_layer - result[0].added_start_layer + 1
-        c1 = result[1].added_end_layer - result[1].added_start_layer + 1
-        assert c1 >= c0
+        # Only the adjacent eligible survivor absorbs.
+        assert [r.surviving_node_id for r in result] == ["n1"]
+        r = result[0]
+        assert (r.added_start_layer, r.added_end_layer) == (0, 5)
+        assert (r.new_start_layer, r.new_end_layer) == (0, 7)
 
     def test_skip_insufficient_memory(self):
         """Node with no free memory is skipped."""

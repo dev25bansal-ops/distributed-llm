@@ -109,7 +109,7 @@ class TestArgumentParsing:
         assert "--host" in result.stdout or "-m" in result.stdout
 
     def test_validate_config_help(self):
-        result = runner.invoke(app, ["validate-config", "--help"])
+        result = runner.invoke(app, ["config", "validate", "--help"])
         assert result.exit_code == 0
 
     def test_status_help(self):
@@ -184,19 +184,19 @@ class TestValidateConfig:
     def test_validate_config_default_valid(self):
         with patch("distllm.config.settings.DistLLMSettings.validate_startup") as mock:
             mock.return_value = MagicMock()
-            result = runner.invoke(app, ["validate-config"])
+            result = runner.invoke(app, ["config", "validate"])
             assert result.exit_code == 0
 
     def test_validate_config_invalid_temperature(self):
         with patch("distllm.config.settings.DistLLMSettings.validate_startup") as mock:
-            mock.side_effect = ValueError("generation.temperature: value out of range")
-            result = runner.invoke(app, ["validate-config"])
+            mock.side_effect = SystemExit(1)
+            result = runner.invoke(app, ["config", "validate"])
             assert result.exit_code == 1
 
     def test_validate_config_invalid_port(self):
         with patch("distllm.config.settings.DistLLMSettings.validate_startup") as mock:
-            mock.side_effect = ValueError("coordinator.port: port out of range")
-            result = runner.invoke(app, ["validate-config"])
+            mock.side_effect = SystemExit(1)
+            result = runner.invoke(app, ["config", "validate"])
             assert result.exit_code == 1
 
 

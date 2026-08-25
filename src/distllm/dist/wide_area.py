@@ -21,6 +21,12 @@ from loguru import logger
 from distllm.config.loader import NodeRole
 from distllm.core.kv_cache import KVCache
 from distllm.dist.pipeline import PipelineOrchestrator
+from distllm.dist import node_pb2
+from distllm.dist.pipeline.serialization import (
+    process_forward_response_pb,
+    set_kv_cache_proto,
+    to_proto_tensor,
+)
 from distllm.dist.config import WideAreaConfig
 
 if TYPE_CHECKING:
@@ -30,6 +36,28 @@ from distllm.errors.types import (
     NodeUnreachableError,
     OOMError,
 )
+
+
+class _NullResourceManager:
+    """No-op stand-in when no ResourceManager is configured.
+
+    Matches the subset of ResourceManager used by
+    ``process_forward_response_pb`` so the shared helper works unchanged
+    for pipelines constructed without a manager (parent guards every use
+    with ``if self._resource_mgr:``).
+    """
+
+    def record_success(self, node_id: str) -> None:  # noqa: D102
+        pass
+
+    def record_failure(self, node_id: str) -> None:  # noqa: D102
+        pass
+
+    def check_circuit_breaker(self, node_id: str) -> bool:  # noqa: D102
+        return False
+
+
+_null_resource_mgr = _NullResourceManager()
 
 
 class WideAreaPipeline(PipelineOrchestrator):
@@ -65,6 +93,13 @@ class WideAreaPipeline(PipelineOrchestrator):
         self._link_latencies: dict[tuple[str, str], list[float]] = {}
         self._measuring_lock = threading.Lock()
 
+        # Topology snapshot lock for the async WAN path.  Distinct from the
+        # parent's ``_lock`` so run_pipeline_async_p2p can take a consistent
+        # node/order snapshot without contending with sync-path mutations;
+        # RLock because _discovery_loop registers nodes while holding it and
+        # register_node itself acquires the parent lock.
+        self._topology_lock = threading.RLock()
+
         self._current_window = self.wan.accumulation_window
         self._last_adjustment = time.time()
 
@@ -74,6 +109,20 @@ class WideAreaPipeline(PipelineOrchestrator):
         # Auto-initialize QUIC transport for WAN if configured
         if self._quic_transport is None and self.wan.enabled:
             self._auto_init_quic()
+
+    @property
+    def resource_mgr(self) -> Any:
+        """ResourceManager for circuit-breaker state.
+
+        The parent stores it as ``_resource_mgr`` (private); the WAN path
+        reads circuit-breaker state per hop, so expose a read/write view
+        (tests assign ``pipeline.resource_mgr = rm`` to swap managers).
+        """
+        return self._resource_mgr
+
+    @resource_mgr.setter
+    def resource_mgr(self, value: Any) -> None:
+        self._resource_mgr = value
 
     def _auto_init_quic(self) -> None:
         """Auto-initialize QUIC transport based on WAN config.
@@ -120,6 +169,23 @@ class WideAreaPipeline(PipelineOrchestrator):
     def quic_transport(self, qt: Any | None) -> None:
         self._quic_transport = qt
 
+    def _use_quic(self) -> bool:
+        """Whether a usable QUIC transport is attached for this hop.
+
+        Injected doubles may expose an ``is_available`` flag; the real
+        :class:`QuicTransportClient` reports connectivity via
+        ``is_connected``.
+        """
+        qt = self._quic_transport
+        if qt is None:
+            return False
+        if isinstance(qt, str):  # test double sentinel values
+            return False
+        available = getattr(qt, "is_available", None)
+        if available is not None:
+            return bool(available)
+        return bool(getattr(qt, "is_connected", True))
+
     def get_estimated_link_rtt_ms(self, from_node: str, to_node: str) -> float:
         key = (from_node, to_node)
         with self._measuring_lock:
@@ -136,7 +202,8 @@ class WideAreaPipeline(PipelineOrchestrator):
         if now - self._last_adjustment < self.wan.latency_sample_interval:
             return self._current_window
 
-        # H-04: PipelineOrchestrator uses self._lock, not self._topology_lock
+        # H-04: use the WAN topology lock (defined in __init__ above);
+        # fall back to the parent's _lock for any legacy subclass.
         lock = getattr(self, '_topology_lock', None) or getattr(self, '_lock', None)
         if lock is None:
             node_ids = list(self.node_order)
@@ -208,7 +275,8 @@ class WideAreaPipeline(PipelineOrchestrator):
 
         for node_id in node_order_snapshot:
             node = nodes_snapshot[node_id]
-            if self.resource_mgr.check_circuit_breaker(node_id):
+            rm = self.resource_mgr
+            if rm is not None and rm.check_circuit_breaker(node_id):
                 fallback = self._find_fallback_node(node_id, node)
                 if fallback is not None:
                     continue
@@ -225,6 +293,23 @@ class WideAreaPipeline(PipelineOrchestrator):
 
         for i, node_id in enumerate(node_order_snapshot):
             node = nodes_snapshot[node_id]
+            # Route around hops whose circuit breaker opened between the
+            # pre-flight check and execution.  The pre-flight loop above
+            # guarantees a covering fallback exists here (otherwise it
+            # already raised or fell back to local).
+            rm = self.resource_mgr
+            if rm is not None and rm.check_circuit_breaker(node_id):
+                fallback = self._find_fallback_node(node_id, node)
+                if fallback is None:
+                    raise NodeUnreachableError(
+                        node_id=node_id, host=node.host, port=node.port,
+                        original_error=Exception(f"Circuit breaker open for {node_id}"),
+                    )
+                logger.info(
+                    f"WAN pipeline: rerouting stage for {node_id} "
+                    f"through fallback {fallback.node_id}"
+                )
+                node = fallback
             past_kv = node_kv_caches.get(node_id)
             is_first = (i == 0)
             is_last = (i == total_nodes - 1)
@@ -237,6 +322,39 @@ class WideAreaPipeline(PipelineOrchestrator):
             )
 
         return current_hidden
+
+    def _find_fallback_node(
+        self, node_id: str, node: "NodeRegistration",
+    ) -> "NodeRegistration | None":
+        """Find a healthy node whose layer range fully covers ``node``'s.
+
+        Used when a hop's circuit breaker is open: if a redundant copy of
+        the same layers exists on another healthy node, the pipeline can
+        route around the failed stage.  Returns None when no substitute
+        exists (the caller then degrades to local inference or raises).
+        """
+        if self._resource_mgr is None:
+            return None
+        with self._topology_lock:
+            candidates = [
+                n for nid, n in self._nodes.items()
+                if nid != node_id
+                and getattr(n, "is_healthy", True)
+                and not (
+                    hasattr(self._resource_mgr, "check_circuit_breaker")
+                    and self._resource_mgr.check_circuit_breaker(nid)
+                )
+                and n.start_layer <= node.start_layer
+                and n.end_layer >= node.end_layer
+            ]
+        if not candidates:
+            return None
+        # Prefer the candidate with the tightest fit (smallest span), then
+        # lowest measured latency.
+        return min(
+            candidates,
+            key=lambda n: ((n.end_layer - n.start_layer), n.latency_ms),
+        )
 
     async def _async_execute_node(
         self,
@@ -262,13 +380,17 @@ class WideAreaPipeline(PipelineOrchestrator):
 
         try:
             # QUIC transport (alternative to gRPC for WAN links)
-            if self._quic_transport is not None and self._quic_transport.is_available:
+            if self._use_quic():
+                qt = self._quic_transport
                 serialized_data = request.SerializeToString()
+                # Injected transports expose send_forward_pass(); the real
+                # QuicTransportClient names it forward_pass().
+                send = getattr(qt, "send_forward_pass", None) or qt.forward_pass
                 response_data = await asyncio.wait_for(
-                    self._quic_transport.send_forward_pass(serialized_data),
+                    send(serialized_data),
                     timeout=timeout,
                 )
-                response_pb = type(request).Response()
+                response_pb = node_pb2.ForwardPassResponse()
                 response_pb.ParseFromString(response_data)
                 return self._process_forward_response(response_pb, node_id, node, node_kv_caches)
 
@@ -285,14 +407,114 @@ class WideAreaPipeline(PipelineOrchestrator):
                 )
             return self._process_forward_response(response, node_id, node, node_kv_caches)
         except asyncio.TimeoutError as e:
-            self.resource_mgr.record_failure(node_id)
-            node.healthy = False
+            if self.resource_mgr is not None:
+                self.resource_mgr.record_failure(node_id)
+            # PipelineNode's health field is ``is_healthy``; setting
+            # ``healthy`` would create a dead attribute that no routing
+            # filter reads.
+            node.is_healthy = False
             node_kv_caches.pop(node_id, None)
             raise NodeUnreachableError(
                 node_id=node_id, host=node.host, port=node.port, original_error=e
             ) from e
         except (NodeUnreachableError, OOMError, InputValidationError):
             node_kv_caches.pop(node_id, None)
+            raise
+
+    def _prepare_forward_request(
+        self,
+        node_id: str,
+        node: "NodeRegistration",
+        is_first: bool,
+        is_last: bool,
+        seq_len: int,
+        batch_size: int,
+        current_hidden: torch.Tensor | None,
+        past_kv: list | None,
+        request_id: str,
+        draft_tokens: list[int] | None,
+        input_ids: torch.Tensor,
+    ):
+        """Build the ForwardPassRequest proto for one WAN hop.
+
+        Mirrors the sync path's wire format (node_client.forward_request):
+        first hop carries input_ids, later hops carry hidden_states; KV
+        cache rides along when present so the worker can use_cache.
+
+        Raises:
+            InputValidationError: On a non-first hop without hidden states
+                (the pipeline chain is broken) or a malformed shape.
+        """
+        request = node_pb2.ForwardPassRequest(
+            request_id=request_id,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            use_cache=past_kv is not None,
+            is_first_pass=is_first,
+            is_last_pass=is_last,
+        )
+
+        if is_first:
+            # First hop sends token ids flattened to 1-D per proto spec.
+            ids = input_ids.detach().to("cpu").reshape(-1).tolist()
+            if not ids:
+                raise InputValidationError(
+                    "input_ids must be non-empty", field="input_ids",
+                )
+            request.input_ids.extend(int(t) for t in ids)
+        else:
+            if current_hidden is None:
+                raise InputValidationError(
+                    f"pipeline chain broken at node {node_id}: "
+                    "no hidden states from previous hop",
+                    field="hidden_states",
+                )
+            if current_hidden.dim() < 2:
+                raise InputValidationError(
+                    f"hidden_states must be at least 2-D, got shape "
+                    f"{tuple(current_hidden.shape)}",
+                    field="hidden_states",
+                )
+            request.hidden_states.CopyFrom(to_proto_tensor(current_hidden))
+
+        if past_kv:
+            set_kv_cache_proto(request.kv_cache, past_kv)
+
+        if draft_tokens:
+            request.draft_tokens.extend(int(t) for t in draft_tokens)
+
+        logger.debug(
+            f"WAN forward request for {node_id}: first={is_first} "
+            f"last={is_last} seq_len={seq_len} batch_size={batch_size} "
+            f"kv_layers={len(past_kv) if past_kv else 0}"
+        )
+        return request
+
+    def _process_forward_response(
+        self,
+        response,
+        node_id: str,
+        node: "NodeRegistration",
+        node_kv_caches: dict[str, list | None],
+    ) -> torch.Tensor:
+        """Handle a ForwardPassResponse from one WAN hop.
+
+        Delegates to the shared serialization helper
+        (``process_forward_response_pb``) so error handling, circuit
+        breaker accounting, and KV-cache extraction match the sync
+        pipeline exactly.  Also flips the real ``is_healthy`` field —
+        the shared helper writes ``node.healthy``, which no routing
+        filter on PipelineNode reads.
+        """
+        try:
+            return process_forward_response_pb(
+                response, node_id, node, node_kv_caches,
+                _null_resource_mgr if self.resource_mgr is None else self.resource_mgr,
+            )
+        except NodeUnreachableError:
+            # process_forward_response_pb sets ``node.healthy = False``
+            # (a dead attribute on PipelineNode); mirror onto is_healthy.
+            node.is_healthy = False
             raise
 
     async def _run_local_fallback(
@@ -503,7 +725,7 @@ class WideAreaPipeline(PipelineOrchestrator):
         with self._measuring_lock:
             for (a, b), samples in self._link_latencies.items():
                 if len(samples) > 0:
-                    stats[f"{a}\u2192{b}"] = {
+                    stats[f"{a}→{b}"] = {
                         "median_ms": round(statistics.median(samples[-20:]), 1),
                         "min_ms": round(min(samples[-20:]), 1),
                         "max_ms": round(max(samples[-20:]), 1),

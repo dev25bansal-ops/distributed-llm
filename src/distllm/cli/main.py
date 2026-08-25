@@ -380,14 +380,14 @@ def system_run(
 
 
 @config_app.command("validate")
-def config_validate():
-    """Validate configuration and exit."""
-    from distllm.config.settings import DistLLMSettings
-    try:
-        DistLLMSettings.validate_startup()
-        console.print("[green]Config validation passed[/green]")
-    except SystemExit:
-        raise typer.Exit(1) from None
+def config_validate(
+    config: str | None = typer.Option(
+        None, "--config", "-c", help="Path to config.yaml (default: auto-discover)"
+    ),
+):
+    """Validate configuration (config.yaml + env vars) and exit."""
+    from distllm.cli.config_commands import run_config_validate
+    run_config_validate(config_path=config, out=console)
 
 
 @config_app.command("reference")

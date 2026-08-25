@@ -54,7 +54,6 @@ try:
         StreamDataReceived,
         HandshakeCompleted,
         ConnectionTerminated,
-        SessionTicketReceived,
     )
     from aioquic.asyncio import connect as _quic_connect
     from aioquic.asyncio import serve as _quic_serve
@@ -69,11 +68,141 @@ except ImportError:  # pragma: no cover
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-# Wire format: [1-byte priority][4-byte length][payload]
-_MESSAGE_HEADER_FMT = "!BI"
-_HEADER_SIZE = struct.calcsize(_MESSAGE_HEADER_FMT)
+# Wire format per stream: a message is split into ``frame_count`` chunks.
+# Each frame is laid out as:
+#   [1-byte priority][4-byte index][4-byte count][4-byte chunk length]
+#   [chunk bytes]
+# The explicit chunk length makes frames self-delimiting: aioquic delivers
+# stream bytes in packet-sized ``StreamDataReceived`` events whose boundaries
+# bear no relation to frame boundaries, so the receiver must parse frames
+# greedily out of a per-stream byte buffer rather than assuming one event ==
+# one frame.
+_CHUNK_HEADER_FMT = "!BIII"
+_CHUNK_HEADER_SIZE = struct.calcsize(_CHUNK_HEADER_FMT)
+# Keep each frame small enough that it fits within a single QUIC packet
+# (default max_datagram_size=1200 leaves ~1195 bytes of payload capacity).
+_MAX_FRAME_PAYLOAD = 1024
 _DEFAULT_TIMEOUT = 30.0
 _SENTINEL_PRIORITY = 255  # Lowest possible priority for close sentinel
+
+
+def _frame_chunks(priority: StreamPriority | int, data: bytes) -> list[bytes]:
+    """Frame *data* for transmission at the given *priority*.
+
+    Splits the payload into ``_MAX_FRAME_PAYLOAD``-byte chunks and returns
+    fully-framed pieces (header + chunk).  An empty message produces exactly
+    one zero-payload frame so it still round-trips.
+    """
+    chunks = [
+        data[i : i + _MAX_FRAME_PAYLOAD]
+        for i in range(0, len(data), _MAX_FRAME_PAYLOAD)
+    ] or [b""]
+    total = len(chunks)
+    prio = int(priority)
+    return [
+        struct.pack(_CHUNK_HEADER_FMT, prio, idx, total, len(c)) + c
+        for idx, c in enumerate(chunks)
+    ]
+
+
+class _StreamAssembler:
+    """Byte-level per-stream reassembly for chunked messages.
+
+    Feed every ``StreamDataReceived`` payload into :meth:`feed`; it returns
+    the list of fully-received ``(priority, payload)`` messages (usually zero
+    or one).  Frames are self-delimiting, so events may split or coalesce
+    frames arbitrarily.  QUIC streams are ordered, so frames arrive strictly
+    sequentially.
+    """
+
+    __slots__ = ("_buf", "_priority", "_count", "_chunks", "_next_index")
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self._priority: StreamPriority | None = None
+        self._count: int | None = None
+        self._chunks: dict[int, bytes] = {}
+        self._next_index = 0
+
+    def feed(self, data: bytes) -> list[tuple[StreamPriority, bytes]]:
+        self._buf.extend(data)
+        messages: list[tuple[StreamPriority, bytes]] = []
+        while True:
+            done, msg = self._try_parse()
+            if not done:
+                break  # need more bytes
+            if msg is not None:
+                messages.append(msg)
+        return messages
+
+    def _try_parse(self) -> tuple[bool, tuple[StreamPriority, bytes] | None]:
+        """Attempt to consume one frame from the buffer.
+
+        Returns ``(progressed, message)``: ``progressed`` is ``True`` when a
+        full frame was consumed (``message`` set only if that completed a
+        message); ``False`` means more bytes are needed.
+        """
+        buf = self._buf
+        if len(buf) < _CHUNK_HEADER_SIZE:
+            return False, None
+        priority_byte, frame_index, frame_count, chunk_len = struct.unpack_from(
+            _CHUNK_HEADER_FMT, buf
+        )
+        frame_total = _CHUNK_HEADER_SIZE + chunk_len
+        if len(buf) < frame_total:
+            return False, None  # partial frame — wait for more bytes
+
+        chunk = bytes(buf[_CHUNK_HEADER_SIZE:frame_total])
+        del buf[:frame_total]
+
+        try:
+            priority = StreamPriority(priority_byte)
+        except ValueError:
+            priority = StreamPriority.DATA
+
+        if (
+            frame_index < self._next_index
+            or (frame_count <= 0 or frame_index >= frame_count)
+            or (self._count is not None and frame_count != self._count)
+        ):
+            # Out-of-sequence or malformed frame on this stream: the stream
+            # is unrecoverable (ordered delivery guarantees sequence), so
+            # reset the assembler — buffer included — and discard whatever
+            # message was being built.
+            logger.warning(
+                "Discarding malformed frame (index=%d count=%d expected>=%d)",
+                frame_index,
+                frame_count,
+                self._next_index,
+            )
+            self._buf = bytearray()
+            self._reset_state()
+            return True, None
+
+        if self._count is None:
+            self._count = frame_count
+            self._priority = priority
+
+        self._chunks[frame_index] = chunk
+        self._next_index = frame_index + 1
+
+        if frame_index == frame_count - 1:
+            payload = b"".join(
+                self._chunks[i] for i in range(frame_count)
+            )
+            result_priority = self._priority or priority
+            # Reset per-message state but KEEP the buffer: any residual
+            # bytes were coalesced into the same event and belong to the
+            # next message on this stream.
+            self._reset_state()
+            return True, (result_priority, payload)
+        return True, None
+
+    def _reset_state(self) -> None:
+        self._priority = None
+        self._count = None
+        self._chunks = {}
+        self._next_index = 0
 
 
 class StreamPriority(enum.IntEnum):
@@ -119,6 +248,49 @@ class Timeout(QuicTransportError):
     """Raised when a recv operation times out."""
 
 
+def _generate_self_signed_cert() -> tuple[Any, Any]:
+    """Generate an ephemeral self-signed certificate + private key.
+
+    Used when a QUIC *server* is started without explicit TLS material
+    (P2P convention: peers authenticate via ``DISTLLM_QUIC_CA`` or accept
+    unverified connections).  Returns ``(certificate, private_key)`` in
+    the cryptography-object form aioquic's ``QuicConfiguration`` expects.
+    """
+    try:
+        import datetime
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+    except ImportError as exc:  # pragma: no cover - defensive
+        raise QuicTransportError(
+            "QUIC server requires a certificate.  Set DISTLLM_QUIC_CERT/"
+            "DISTLLM_QUIC_KEY or install 'cryptography' to auto-generate "
+            "an ephemeral self-signed one."
+        ) from exc
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name(
+        [x509.NameAttribute(x509.oid.NameOID.COMMON_NAME, "distllm-p2p-node")]
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=30))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName("localhost")]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return cert, key
+
+
 # ===================================================================
 # QUIC Protocol Handler  (aioquic integration)
 # ===================================================================
@@ -128,9 +300,9 @@ if HAS_AIOQUIC:
         """Internal QUIC protocol handler with priority-based receive queuing.
 
         Each protocol instance corresponds to one QUIC connection to/from
-        a single peer.  Incoming stream data is tagged with its priority
-        and pushed into an ``asyncio.PriorityQueue`` so consumers always
-        receive the highest-priority message first.
+        a single peer.  Incoming stream data is reassembled per stream and
+        pushed into an ``asyncio.PriorityQueue`` so consumers always receive
+        the highest-priority message first.
         """
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -139,6 +311,20 @@ if HAS_AIOQUIC:
             self._connected_event = asyncio.Event()
             self._closed_event = asyncio.Event()
             self._session_ticket: SessionTicket | None = None
+            # Per-stream byte-level reassemblers for chunked messages
+            self._stream_assemblers: dict[Any, _StreamAssembler] = {}
+            # Monotonic sequence for stable FIFO ordering within a priority
+            # (PriorityQueue compares tuples; without a sequence tiebreaker
+            # equal-priority entries would be ordered by payload bytes).
+            self._recv_seq: int = 0
+            # Optional callback fired for every completed message (used by
+            # QuicTransport to feed the transport-wide receive queue).
+            self.completion_callback: Any = None
+
+        def _next_seq(self) -> int:
+            seq = self._recv_seq
+            self._recv_seq += 1
+            return seq
 
         # ---- aioquic event callbacks ----
 
@@ -149,34 +335,66 @@ if HAS_AIOQUIC:
                 self._handle_stream_data(event)
             elif isinstance(event, ConnectionTerminated):
                 self._signal_closed()
-            elif isinstance(event, SessionTicketReceived):
-                self._session_ticket = event.ticket
+
+        def connection_ticket_received(self, ticket: SessionTicket) -> None:
+            """TLS session-ticket callback (wired via ``connect()``)."""
+            self._session_ticket = ticket
+
+        def datagram_received(self, data: Any, addr: Any = None) -> None:
+            """Capture the remote peer address before processing the datagram.
+
+            aioquic does not expose the peer address on ``QuicConnection``
+            objects; the server only sees it here.
+            """
+            if addr is not None:
+                try:
+                    host, port = addr[0], addr[1]
+                except (TypeError, IndexError):
+                    host, port = str(addr), 0
+                self._remote_addr = f"{host}:{port}"
+            super().datagram_received(data, addr)
+
+        @property
+        def remote_addr(self) -> str | None:
+            """The remote ``host:port`` learned from received datagrams."""
+            return getattr(self, "_remote_addr", None)
 
         def _handle_stream_data(self, event: StreamDataReceived) -> None:
-            """Parse the priority header and enqueue payload."""
-            data = event.data
-            if len(data) < _HEADER_SIZE:
-                logger.warning(
-                    "Dropping stream data: header too short (%d bytes)", len(data)
-                )
-                return
-            priority_byte, payload_len = struct.unpack(
-                _MESSAGE_HEADER_FMT, data[:_HEADER_SIZE]
-            )
-            # Clamp priority to valid range
-            try:
-                priority = StreamPriority(priority_byte)
-            except ValueError:
-                priority = StreamPriority.DATA
+            """Reassemble chunked stream data and enqueue complete messages.
 
-            payload = data[_HEADER_SIZE : _HEADER_SIZE + payload_len]
-            self._recv_queue.put_nowait((int(priority), payload))
+            The wire format is a sequence of self-delimiting frames per
+            stream::
+
+                [1B priority][4B index][4B count][4B chunk length][chunk]
+
+            aioquic delivers stream bytes in packet-sized
+            ``StreamDataReceived`` events whose boundaries do not align with
+            frame boundaries, so a byte-level per-stream assembler parses
+            frames greedily and emits each message once its final frame has
+            arrived.
+            """
+            assembler = self._stream_assemblers.get(event.stream_id)
+            if assembler is None:
+                assembler = _StreamAssembler()
+                self._stream_assemblers[event.stream_id] = assembler
+
+            for priority, payload in assembler.feed(event.data):
+                self._recv_queue.put_nowait(
+                    (int(priority), self._next_seq(), payload)
+                )
+                if self.completion_callback is not None:
+                    try:
+                        self.completion_callback(priority, payload)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning("completion callback failed: %s", exc)
 
         def _signal_closed(self) -> None:
             """Mark the connection as closed and unblock consumers."""
             self._closed_event.set()
             # Push a sentinel (lowest priority so pending messages drain first)
-            self._recv_queue.put_nowait((_SENTINEL_PRIORITY, None))
+            self._recv_queue.put_nowait(
+                (_SENTINEL_PRIORITY, self._next_seq(), None)
+            )
 
         # ---- helpers ----
 
@@ -236,9 +454,10 @@ if HAS_AIOQUIC:
         async def send(self, priority: StreamPriority, data: bytes) -> None:
             """Send *data* on a new stream at the given *priority*.
 
-            A small header (1 byte priority + 4 byte length) is prepended
-            so the receiver can dispatch the payload to the correct queue
-            without inspecting the content.
+            The payload is split into self-delimiting frames (priority,
+            index/count and chunk length headers) so arbitrarily large
+            messages survive aioquic's packet-sized stream delivery; the
+            receiver reassembles them transparently.
 
             Raises:
                 ConnectionClosed: If the underlying QUIC connection is gone.
@@ -249,10 +468,11 @@ if HAS_AIOQUIC:
                 )
 
             stream_id = self._protocol._quic.get_next_available_stream_id()
-            header = struct.pack(_MESSAGE_HEADER_FMT, int(priority), len(data))
-            self._protocol._quic.send_stream_data(
-                stream_id, header + data, end_stream=True
-            )
+            frames = _frame_chunks(priority, data)
+            for i, frame in enumerate(frames):
+                self._protocol._quic.send_stream_data(
+                    stream_id, frame, end_stream=(i == len(frames) - 1)
+                )
             self._protocol.transmit()
 
         async def recv(self, timeout: float | None = None) -> tuple[StreamPriority, bytes]:
@@ -266,7 +486,7 @@ if HAS_AIOQUIC:
                 Timeout: If *timeout* seconds elapse without data.
             """
             try:
-                prio_int, payload = await asyncio.wait_for(
+                prio_int, _, payload = await asyncio.wait_for(
                     self._protocol._recv_queue.get(),
                     timeout=timeout,
                 )
@@ -385,6 +605,9 @@ if HAS_AIOQUIC:
             self._server_task: asyncio.Task | None = None
             self._accept_queue: asyncio.Queue[QuicConnection] = asyncio.Queue()
             self._session_tickets: dict[str, SessionTicket] = {}
+            # Global receive queue entries are (priority, seq, payload, peer);
+            # the sequence tiebreaker preserves FIFO order within a priority.
+            self._global_recv_seq: int = 0
             self._global_recv_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
             self._closed = False
 
@@ -400,6 +623,12 @@ if HAS_AIOQUIC:
             )
             if self._cert_file and self._key_file:
                 config.load_cert_chain(self._cert_file, self._key_file)
+            elif not is_client:
+                # QUIC requires a server certificate.  For P2P deployments
+                # without explicit TLS material, generate an ephemeral
+                # self-signed cert (peers should set DISTLLM_QUIC_CA to
+                # authenticate; see the CERT_NONE warning above).
+                config.certificate, config.private_key = _generate_self_signed_cert()
             if is_client:
                 if self._ca_file:
                     # Verify the peer's certificate against the configured CA
@@ -411,31 +640,31 @@ if HAS_AIOQUIC:
                     # cannot verify, so fall back to CERT_NONE (warned loudly at
                     # construction).  Configure DISTLLM_QUIC_CA to verify peers.
                     config.verify_mode = ssl.CERT_NONE
+            else:
+                # Servers present their own certificate but never verify
+                # clients at the TLS layer (client auth, when needed, happens
+                # at the application layer).
+                config.verify_mode = ssl.CERT_NONE
             return config
 
         def _on_new_protocol(self, protocol: _QuicProtocol, peer_key: str) -> None:
-            """Wire a newly created protocol into the transport."""
+            """Wire a newly created protocol into the transport.
 
-            def _put_to_global(event: Any) -> None:
-                if isinstance(event, StreamDataReceived):
-                    data = event.data
-                    if len(data) >= _HEADER_SIZE:
-                        priority_byte, payload_len = struct.unpack(
-                            _MESSAGE_HEADER_FMT, data[:_HEADER_SIZE]
-                        )
-                        payload = data[_HEADER_SIZE : _HEADER_SIZE + payload_len]
-                        self._global_recv_queue.put_nowait(
-                            (priority_byte, payload, peer_key)
-                        )
+            Completed messages are routed into the transport-wide priority
+            queue via the protocol's ``completion_callback``; the per-message
+            priority is carried in each frame's header, so the global
+            ``recv_stream()`` preserves the same prioritisation semantics as
+            per-connection ``recv()``.
+            """
 
-            # Monkey-patch the protocol to also feed the global queue
-            original_handler = protocol.quic_event_received
+            def _on_complete(priority: StreamPriority, payload: bytes) -> None:
+                seq = self._global_recv_seq
+                self._global_recv_seq += 1
+                self._global_recv_queue.put_nowait(
+                    (int(priority), seq, payload, peer_key)
+                )
 
-            def _patched_handler(event: Any) -> None:
-                original_handler(event)
-                _put_to_global(event)
-
-            protocol.quic_event_received = _patched_handler  # type: ignore[method-assign]
+            protocol.completion_callback = _on_complete
 
         # ---- connect / listen ----
 
@@ -464,6 +693,13 @@ if HAS_AIOQUIC:
             ready = asyncio.Event()
             connection_ref: list[QuicConnection | None] = [None]
             error_ref: list[Exception | None] = [None]
+            protocol_ref: list[_QuicProtocol | None] = [None]
+
+            def _ticket_handler(ticket: SessionTicket) -> None:
+                """TLS callback: cache the ticket for 0-RTT reconnection."""
+                proto = protocol_ref[0]
+                if proto is not None:
+                    proto.connection_ticket_received(ticket)
 
             async def _run_connection() -> None:
                 try:
@@ -471,10 +707,12 @@ if HAS_AIOQUIC:
                         host,
                         port,
                         configuration=config,
-                        create_protocol=lambda: _QuicProtocol(  # noqa: F821
-                            _QuicConn(configuration=config)
+                        session_ticket_handler=_ticket_handler,
+                        create_protocol=lambda *args, **kwargs: _QuicProtocol(  # noqa: F821
+                            *args, **kwargs
                         ),
                     ) as protocol:
+                        protocol_ref[0] = protocol
                         # Wait for handshake (or use 0-RTT immediately)
                         await protocol.wait_connected()
 
@@ -517,23 +755,25 @@ if HAS_AIOQUIC:
             config = self._build_config(is_client=False)
             transport_ref = self  # capture for closure
 
-            def _create_protocol() -> _QuicProtocol:
+            def _create_protocol(*args: Any, **kwargs: Any) -> _QuicProtocol:
                 """Factory called by ``_quic_serve`` per new QUIC connection.
 
-                We monkey-patch the protocol's ``quic_event_received`` to
-                detect when the handshake completes, then register the
-                connection with the transport so that ``accept()`` can
-                deliver it and ``recv_stream()`` can read from it.
+                aioquic supplies the ``QuicConnection`` and ``stream_handler``
+                as arguments.  We monkey-patch the protocol's
+                ``quic_event_received`` to detect when the handshake
+                completes, then register the connection with the transport so
+                that ``accept()`` can deliver it and ``recv_stream()`` can
+                read from it.
                 """
-                proto = _QuicProtocol(_QuicConn(configuration=config))
+                proto = _QuicProtocol(*args, **kwargs)
                 _original_handler = proto.quic_event_received
 
                 def _connected_handler(event: Any) -> None:
                     _original_handler(event)
                     # Register the connection once the handshake finishes
                     if isinstance(event, HandshakeCompleted):
-                        # Derive peer address from the QUIC connection
-                        peer_addr = f"{proto._quic.host}:{proto._quic.port}"
+                        # Derive peer address from captured datagrams
+                        peer_addr = proto.remote_addr or "unknown"
                         if peer_addr not in transport_ref._connections:
                             conn = QuicConnection(peer_addr, proto)
                             transport_ref._on_new_protocol(proto, peer_addr)
@@ -598,7 +838,7 @@ if HAS_AIOQUIC:
             Returns:
                 ``(priority, payload, peer_id)``.
             """
-            prio_int, payload, peer_id = await self._global_recv_queue.get()
+            prio_int, _, payload, peer_id = await self._global_recv_queue.get()
             if payload is None:  # sentinel
                 return await self.recv_stream()
             return (StreamPriority(prio_int), payload, peer_id)

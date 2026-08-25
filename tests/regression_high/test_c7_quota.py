@@ -54,8 +54,17 @@ def _load_module(qualified: str, filename: str):
     fpath = _REPO_SRC / filename
     spec = importlib.util.spec_from_file_location(qualified, fpath)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[qualified] = module
-    spec.loader.exec_module(module)
+    # Register ONLY under a throwaway namespace during exec (dataclass
+    # processing needs sys.modules[cls.__module__]), then drop it.  Leaving
+    # the fresh copy under the canonical name used to shadow the real module
+    # for every test module imported afterwards, breaking singleton injection
+    # and class-identity assertions depending purely on collection order.
+    ns_key = "_c7_isolated." + qualified
+    sys.modules[ns_key] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(ns_key, None)
     return module
 
 

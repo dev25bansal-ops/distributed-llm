@@ -28,8 +28,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from ..auth_deps import require_coordinator
+from ..auth_deps import require_coordinator, require_role
 from ..persistent_store import get_store
+from distllm.core.webhook_manager import is_safe_webhook_url
 
 # Lazy import — the webhook engine is only needed for the test endpoint
 # and the delivery is triggered by event producers, not by this route file.
@@ -37,7 +38,14 @@ from ..persistent_store import get_store
 router = APIRouter(
     prefix="/v1/webhooks",
     tags=["webhooks"],
-    dependencies=[Depends(require_coordinator)],
+    dependencies=[
+        Depends(require_coordinator),
+        # Webhook registration is a privileged operation: a webhook turns the
+        # coordinator into an authenticated outbound POSTer of signed event
+        # payloads to caller-chosen URLs.  Without this gate any low-privilege
+        # key could aim it at internal services (SEC-A4).
+        Depends(require_role("admin", "user-admin")),
+    ],
 )
 
 
@@ -78,9 +86,9 @@ class WebhookObject(BaseModel):
     events: list[str]
     description: str | None = None
     active: bool = True
-    created_at: int
-    last_success_at: int | None = None
-    last_failure_at: int | None = None
+    created_at: float
+    last_success_at: float | None = None
+    last_failure_at: float | None = None
     consecutive_failures: int = 0
 
 
@@ -139,6 +147,24 @@ def _get_cached_webhook(webhook_id: str) -> dict | None:
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
+def _validate_webhook_url(url: str) -> str:
+    """Reject webhook URLs that fail the SSRF guard (SEC-A4).
+
+    Blocks cloud metadata endpoints, loopback, private/link-local ranges,
+    non-http(s) schemes, and hosts resolving to those — unless explicitly
+    allowlisted via ``DISTLLM_WEBHOOK_ALLOWLIST``.  Returns the URL or
+    raises HTTP 400.
+    """
+    if not is_safe_webhook_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook URL rejected: private, loopback, link-local, or "
+                   "metadata targets are not allowed unless the host is in "
+                   "DISTLLM_WEBHOOK_ALLOWLIST.",
+        )
+    return url
+
+
 @router.post(
     "",
     response_model=WebhookObject,
@@ -148,6 +174,8 @@ def _get_cached_webhook(webhook_id: str) -> dict | None:
 )
 async def create_webhook(body: WebhookCreate):
     """Register a new webhook endpoint."""
+    _validate_webhook_url(body.url)
+
     # Validate events
     for ev in body.events:
         if ev not in VALID_EVENTS:
@@ -219,6 +247,7 @@ async def update_webhook(webhook_id: str, body: WebhookUpdate):
 
     update_dict: dict[str, Any] = {}
     if body.url is not None:
+        _validate_webhook_url(body.url)
         update_dict["url"] = body.url
     if body.secret is not None:
         update_dict["secret"] = body.secret

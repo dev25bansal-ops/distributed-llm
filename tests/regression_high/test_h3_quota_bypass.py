@@ -73,28 +73,49 @@ def _fresh_manager():
 
 
 def _load_quota_middleware():
-    """Load the real QuotaMiddleware (and its billing manager import)."""
-    for pkg, real in (
-        ("distllm", os.path.join(_SRC, "distllm")),
-        ("distllm.api", os.path.join(_SRC, "distllm", "api")),
-        ("distllm.core", os.path.join(_SRC, "distllm", "core")),
-        ("distllm.errors", os.path.join(_SRC, "distllm", "errors")),
-    ):
+    """Load an isolated copy of QuotaMiddleware for direct dispatch tests.
+
+    The loader previously left freshly-exec'd copies of
+    ``distllm.core.usage_meter`` / ``distllm.api.quota_middleware``
+    registered under their canonical sys.modules names.  Test modules
+    imported *after* this one then bound those orphan copies while modules
+    imported *before* it held the originals — so ``_meter`` singleton
+    injection and class-identity assertions failed depending purely on
+    collection order.  We now exec into throwaway module objects registered
+    under ``_h3_isolated.*`` names only; the loaded copy binds its own
+    UsageMeter at exec time, keeping this file self-consistent while the
+    canonical import namespace stays untouched.
+    """
+    # Ensure parent packages are importable for spec resolution.
+    for pkg in ("distllm", "distllm.api", "distllm.core"):
         if pkg not in sys.modules:
             m = types.ModuleType(pkg)
-            m.__path__ = [real]
+            m.__path__ = [os.path.join(_SRC, *pkg.split("."))]
             sys.modules[pkg] = m
-    for sub, rel in (
-        ("distllm.core.usage_meter", "distllm/core/usage_meter.py"),
-        ("distllm.api.quota_middleware", "distllm/api/quota_middleware.py"),
-    ):
-        spec = importlib.util.spec_from_file_location(
-            sub, os.path.join(_SRC, rel)
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[sub] = module
-        spec.loader.exec_module(module)
-    return sys.modules["distllm.api.quota_middleware"]
+
+    loaded = {}
+    # Throwaway namespace so canonical imports are never shadowed.  The
+    # modules must be registered under these names during exec (dataclass
+    # processing looks up sys.modules[cls.__module__]).
+    ns = "_h3_isolated"
+    try:
+        for sub, rel in (
+            ("distllm.core.usage_meter", "distllm/core/usage_meter.py"),
+            ("distllm.api.quota_middleware", "distllm/api/quota_middleware.py"),
+        ):
+            spec = importlib.util.spec_from_file_location(
+                f"{ns}.{sub}", os.path.join(_SRC, rel)
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"{ns}.{sub}"] = module
+            spec.loader.exec_module(module)
+            loaded[sub] = module
+    finally:
+        sys.modules.pop(f"{ns}.distllm.api.quota_middleware", None)
+        sys.modules.pop(f"{ns}.distllm.core.usage_meter", None)
+
+    return loaded["distllm.api.quota_middleware"]
 
 
 _qm = _load_quota_middleware()

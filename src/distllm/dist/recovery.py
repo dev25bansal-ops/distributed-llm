@@ -60,13 +60,26 @@ def _tensor_size_bytes(obj: Any) -> int:
 
 @dataclass
 class LayerRedistribution:
-    """How a failed node's layers are reassigned to survivors."""
+    """How a failed node's layers are reassigned to survivors.
+
+    ``new_start_layer``/``new_end_layer`` describe the survivor's final
+    (contiguous, non-overlapping) range after absorbing
+    ``added_start_layer``..``added_end_layer``.
+
+    Weight-transfer honesty: this planner is *metadata-only*.  It cannot
+    move model weights over the network; the operator/coordinator must
+    pull the added layers onto each survivor before traffic is routed to
+    them (e.g. via ``TransferWeightsStream``).  Ownership-changing
+    entries carry ``requires_weight_load=True`` so downstream consumers
+    never mistake relabeled nodes for loaded ones.
+    """
 
     surviving_node_id: str
     added_start_layer: int
     added_end_layer: int
     new_start_layer: int
     new_end_layer: int
+    requires_weight_load: bool = True
 
 @dataclass
 class NodeRecoveryPlan:
@@ -78,6 +91,121 @@ class NodeRecoveryPlan:
     total_sequences_lost: int = 0
     recovery_time_ms: float = 0.0
     drain_time_ms: float = 0.0
+    # Honest limitation marker: computing a plan does NOT transfer model
+    # weights.  Consumers must check per-redistribution
+    # ``LayerRedistribution.requires_weight_load`` and drive an actual
+    # weight pull before routing traffic to reassigned nodes.
+    weights_transferred: bool = False
+
+# ── Partition helpers ──────────────────────────────────────────────────
+
+
+def _sort_key(nid: str) -> str:
+    """Deterministic ordering for node ids (numeric-aware when possible)."""
+
+    try:
+        return f"{int(nid):020d}"
+    except ValueError:
+        return nid
+
+
+def _largest_remainder_split(total: int, weights: dict[str, float]) -> dict[str, int]:
+    """Apportion ``total`` units across keys proportionally to weight.
+
+    Largest-remainder method: leftovers go to the largest fractional
+    remainders (deterministic tie-break on numeric-aware key order).
+    Returns counts summing exactly to ``total`` (keys may receive 0).
+    """
+
+    if not weights:
+        return {}
+    total_weight = sum(max(0.0, w) for w in weights.values())
+    if total_weight <= 0:
+        # Equal split.
+        base = total // len(weights)
+        extra = total % len(weights)
+        return {
+            nid: base + (1 if i < extra else 0)
+            for i, nid in enumerate(sorted(weights))
+        }
+
+    exact = {nid: total * max(0.0, w) / total_weight for nid, w in weights.items()}
+    floors = {nid: int(v) for nid, v in exact.items()}
+    deficit = total - sum(floors.values())
+    # Hand out the remaining units to the biggest fractional parts.
+    order = sorted(
+        weights,
+        key=lambda nid: (exact[nid] - floors[nid], _sort_key(nid)),
+        reverse=True,
+    )
+    for i in range(deficit):
+        floors[order[i % len(order)]] += 1
+    return floors
+
+
+def _is_clean_tiling(
+    ordered: list[tuple[str, tuple[int, int]]],
+    failed_start_layer: int,
+    failed_end_layer: int,
+) -> bool:
+    """True iff survivor ranges are pairwise disjoint AND none of them
+    intersects the orphaned range — the precondition for neighbor
+    absorption to preserve disjointness."""
+
+    for i, (_nid, (s, e)) in enumerate(ordered):
+        # Overlaps the orphan?
+        if not (e < failed_start_layer or s > failed_end_layer):
+            return False
+        # Disjoint from the next range?
+        if i + 1 < len(ordered):
+            ns, _ne = ordered[i + 1][1]
+            if e >= ns:
+                return False
+    return True
+
+
+def _retiling_redistributions(
+    survivors: list[tuple[str, tuple[int, int]]],
+    span_start: int,
+    span_end: int,
+    weights: dict[str, float] | None = None,
+) -> list[LayerRedistribution]:
+    """Recompute a fresh clean partition of [span_start, span_end].
+
+    Used when neighbor absorption cannot produce a valid result
+    (overlapping survivors, survivors inside the orphaned range, or no
+    adjacent neighbor on either side).  Layers are apportioned across
+    survivors by ``weights`` (equal if None), laid out contiguously in
+    survivor order, and emitted as LayerRedistribution entries whose
+    ``new_*`` range is the survivor's full final range.  Survivors that
+    receive zero layers are skipped entirely.
+    """
+
+    total = span_end - span_start + 1
+    w = (
+        {nid: float(e - s + 1) for nid, (s, e) in survivors}
+        if weights is None
+        else {nid: max(1.0, float(weights.get(nid, 1.0))) for nid, _ in survivors}
+    )
+    counts = _largest_remainder_split(total, w)
+
+    rds: list[LayerRedistribution] = []
+    cursor = span_start
+    for nid, (_cur_s, _cur_e) in survivors:
+        c = counts.get(nid, 0)
+        if c <= 0:
+            continue
+        new_s, new_e = cursor, cursor + c - 1
+        cursor = new_e + 1
+        rds.append(LayerRedistribution(
+            surviving_node_id=nid,
+            added_start_layer=new_s,
+            added_end_layer=new_e,
+            new_start_layer=new_s,
+            new_end_layer=new_e,
+            requires_weight_load=True,
+        ))
+    return rds
 
 def compute_redistributions(
     failed_start_layer: int,
@@ -85,6 +213,26 @@ def compute_redistributions(
     surviving_nodes: dict[str, tuple[int, int]],
 ) -> list[LayerRedistribution]:
     """Compute how to redistribute a failed node's layers across survivors.
+
+    The orphaned range ``[failed_start_layer, failed_end_layer]`` is split
+    between its *adjacent* neighbors: the closest survivor ending below
+    the orphan absorbs the left portion (extending rightward), the
+    closest survivor starting above absorbs the rest (extending
+    leftward).  Survivors not adjacent to the orphan are untouched, so
+    every output range stays contiguous and no layer index is claimed by
+    two nodes.
+
+    If the input is not a clean layout (survivor ranges overlap each
+    other or intersect the orphaned range), neighbor absorption cannot
+    produce a valid partition; the function then falls back to a full
+    re-partition of the whole span across survivors.
+
+    Note — metadata only: the returned plan relabels layer ownership but
+    does NOT transfer model weights.  Entries that change ownership have
+    ``requires_weight_load=True``; the caller must pull the added
+    layers' weights onto each survivor (e.g. via
+    ``TransferWeightsStream``) before routing traffic there.  See also
+    :attr:`NodeRecoveryPlan.weights_transferred`.
 
     Args:
         failed_start_layer: First layer of the failed node.
@@ -102,31 +250,85 @@ def compute_redistributions(
     if dead_count <= 0:
         return []
 
-    n = len(surviving_nodes)
-    layers_per = dead_count // n
-    remainder = dead_count % n
+    ordered = sorted(surviving_nodes.items(), key=lambda x: (x[1][0], x[1][1]))
 
-    redistributions = []
+    if not _is_clean_tiling(ordered, failed_start_layer, failed_end_layer):
+        span_start = min(ordered[0][1][0], failed_start_layer)
+        span_end = max(ordered[-1][1][1], failed_end_layer)
+        logger.warning(
+            "Survivor topology is not a clean tiling around failed layers "
+            f"[{failed_start_layer}, {failed_end_layer}] — falling back to "
+            "full re-partition"
+        )
+        return _retiling_redistributions(ordered, span_start, span_end)
+
+    # Left absorbent neighbor: survivor ending just below the orphan.
+    left = None
+    for nid, (_s, e) in ordered:
+        if e < failed_start_layer:
+            left = nid
+    # Right absorbent neighbor: survivor starting just above the orphan.
+    right = None
+    for nid, (s, _e) in reversed(ordered):
+        if s > failed_end_layer:
+            right = nid
+
+    if left is None and right is None:
+        # No adjacent survivor on either side — re-tile the whole span so
+        # every orphan layer still lands on exactly one live node.
+        span_start = min(ordered[0][1][0], failed_start_layer)
+        span_end = max(ordered[-1][1][1], failed_end_layer)
+        return _retiling_redistributions(ordered, span_start, span_end)
+
+    # Split the orphan between the two absorbing neighbors (either may be
+    # absent).  Give the larger share to whichever neighbor holds more
+    # layers already (cheap load balance); tie goes to the left.
+    left_size = 0
+    right_size = 0
+    if left is not None:
+        ls, le = surviving_nodes[left]
+        left_size = le - ls + 1
+    if right is not None:
+        rs, re_ = surviving_nodes[right]
+        right_size = re_ - rs + 1
+
+    if right is None:
+        left_share = dead_count
+    elif left is None:
+        left_share = 0
+    else:
+        left_share = dead_count * left_size // (left_size + right_size)
+
+    redistributions: list[LayerRedistribution] = []
     offset = 0
-    for i, (nid, (cur_start, cur_end)) in enumerate(
-        sorted(surviving_nodes.items(), key=lambda x: x[1][0])
-    ):
-        extra = 1 if i < remainder else 0
-        added_count = layers_per + extra
+
+    if left is not None:
+        count = left_share
+        cur_s, cur_e = surviving_nodes[left]
         added_start = failed_start_layer + offset
-        added_end = added_start + added_count - 1
-        offset += added_count
-
-        # Surviving node's new range extends to cover added layers
-        new_start = min(cur_start, added_start)
-        new_end = max(cur_end, added_end)
-
+        added_end = added_start + count - 1
+        offset += count
         redistributions.append(LayerRedistribution(
-            surviving_node_id=nid,
+            surviving_node_id=left,
             added_start_layer=added_start,
             added_end_layer=added_end,
-            new_start_layer=new_start,
-            new_end_layer=new_end,
+            new_start_layer=cur_s,
+            new_end_layer=max(cur_e, added_end),
+            requires_weight_load=count > 0,
+        ))
+
+    if right is not None:
+        count = dead_count - offset
+        cur_s, cur_e = surviving_nodes[right]
+        added_start = failed_start_layer + offset
+        added_end = added_start + count - 1
+        redistributions.append(LayerRedistribution(
+            surviving_node_id=right,
+            added_start_layer=added_start,
+            added_end_layer=added_end,
+            new_start_layer=min(cur_s, added_start),
+            new_end_layer=cur_e,
+            requires_weight_load=count > 0,
         ))
 
     return redistributions
@@ -140,9 +342,22 @@ def compute_redistributions_capacity_aware(
 ) -> list[LayerRedistribution]:
     """Compute layer redistributions respecting survivor GPU capacity.
 
-    Like :func:`compute_redistributions`, but skips survivors that don't
-    have enough free GPU memory to handle additional layers.  Nodes with
-    more free memory receive proportionally more layers.
+    Like :func:`compute_redistributions`, but splits the failed node's
+    orphaned layers among *adjacent eligible* survivors proportionally to
+    free GPU memory (largest-remainder apportionment, so counts always
+    sum exactly to the orphan size).  Adjacency is computed over ALL
+    survivors — not just eligible ones — because an absorber farther out
+    than the nearest neighbor would necessarily swallow the intermediate
+    survivor's layers.  Survivors without enough free memory are
+    excluded; if neither adjacent neighbor qualifies, falls back to even
+    distribution.
+
+    Output guarantees match :func:`compute_redistributions`: contiguous,
+    non-overlapping ranges covering every orphaned layer.
+
+    Note — metadata only: ownership-changing entries carry
+    ``requires_weight_load=True``; weights must be pulled onto each
+    survivor before it serves the added layers.
 
     Args:
         failed_start_layer: First layer of the failed node.
@@ -189,37 +404,115 @@ def compute_redistributions_capacity_aware(
             failed_start_layer, failed_end_layer, surviving_nodes
         )
 
-    # Distribute layers proportionally to capacity weights
-    total_weight = sum(w for _, _, w in eligible.values())
-    redistributions = []
+    ordered_eligible = sorted(
+        eligible.items(), key=lambda x: (x[1][0], x[1][1])
+    )
+
+    # If the layout is not clean (a survivor overlaps another or
+    # intersects the orphan itself), adjacency absorption cannot produce
+    # a valid partition — re-tile the whole span with capacity weights.
+    all_ordered_pre = sorted(
+        ((nid, rng) for nid, rng in surviving_nodes.items()),
+        key=lambda x: (x[1][0], x[1][1]),
+    )
+    if not _is_clean_tiling(all_ordered_pre, failed_start_layer, failed_end_layer):
+        span_start = min(all_ordered_pre[0][1][0], failed_start_layer)
+        span_end = max(all_ordered_pre[-1][1][1], failed_end_layer)
+        weights = {nid: w for nid, (_s, _e, w) in ordered_eligible}
+        logger.warning(
+            "Survivor topology is not a clean tiling around failed layers "
+            f"[{failed_start_layer}, {failed_end_layer}] — falling back to "
+            "capacity-weighted full re-partition"
+        )
+        return _retiling_redistributions(
+            all_ordered_pre, span_start, span_end, weights,
+        )
+
+    # Adjacency slots computed over ALL live survivors; keep only those
+    # that are ALSO capacity-eligible, normalized to
+    # (nid, (start, end), weight).
+    all_ordered = all_ordered_pre
+    left_entry = None
+    for entry in all_ordered:
+        if entry[1][1] < failed_start_layer:
+            left_entry = entry
+    right_entry = None
+    for entry in reversed(all_ordered):
+        if entry[1][0] > failed_end_layer:
+            right_entry = entry
+
+    eligible_by_id = {nid: w for nid, (_s, _e, w) in ordered_eligible}
+    absorbers = [
+        (e[0], e[1], eligible_by_id[e[0]])
+        for e in (left_entry, right_entry)
+        if e is not None and e[0] in eligible_by_id
+    ]
+
+    if not absorbers:
+        if left_entry is None and right_entry is None:
+            # No live node adjacent to the orphan on either side — re-tile
+            # the whole span with capacity weights so coverage stays complete.
+            span_start = min(all_ordered[0][1][0], failed_start_layer)
+            span_end = max(all_ordered[-1][1][1], failed_end_layer)
+            weights = {nid: w for nid, (_s, _e, w) in ordered_eligible}
+            return _retiling_redistributions(
+                all_ordered, span_start, span_end, weights,
+            )
+        # Adjacent neighbors exist but lack capacity — best-effort even
+        # split (documented fallback), which preserves disjointness.
+        logger.warning(
+            "Adjacent survivors lack GPU capacity for redistribution — "
+            "falling back to even distribution"
+        )
+        return compute_redistributions(
+            failed_start_layer, failed_end_layer, surviving_nodes
+        )
+
+    if len(absorbers) == 2:
+        cap_weights = {nid: w for nid, (_s, _e), w in absorbers}
+        counts = _largest_remainder_split(dead_count, cap_weights)
+    elif left_entry is not None and absorbers[0][0] == left_entry[0]:
+        counts = {left_entry[0]: dead_count}
+    else:
+        counts = {right_entry[0]: dead_count}
+
+    redistributions: list[LayerRedistribution] = []
     offset = 0
-
-    sorted_eligible = sorted(eligible.items(), key=lambda x: x[1][0])
-    for i, (nid, (cur_start, cur_end, weight)) in enumerate(sorted_eligible):
-        if i == len(sorted_eligible) - 1:
-            # Last node gets all remaining layers
-            added_count = dead_count - offset
-        else:
-            added_count = max(1, int(dead_count * (weight / total_weight)))
-            added_count = min(added_count, dead_count - offset)
-
+    for nid, (cur_start, cur_end), _w in absorbers:
+        added_count = min(counts.get(nid, 0), dead_count - offset)
+        if added_count <= 0:
+            continue
         added_start = failed_start_layer + offset
         added_end = added_start + added_count - 1
         offset += added_count
-
-        new_start = min(cur_start, added_start)
-        new_end = max(cur_end, added_end)
-
         redistributions.append(LayerRedistribution(
             surviving_node_id=nid,
             added_start_layer=added_start,
             added_end_layer=added_end,
-            new_start_layer=new_start,
-            new_end_layer=new_end,
+            new_start_layer=min(cur_start, added_start),
+            new_end_layer=max(cur_end, added_end),
+            requires_weight_load=True,
         ))
 
-        if offset >= dead_count:
-            break
+    # Safety net: exact apportionment should always cover the orphan, but
+    # never emit an uncovered tail if rounding ever misbehaves.
+    if offset < dead_count:
+        nid, (cur_start, cur_end), _w = absorbers[0]
+        existing = next(
+            (r for r in redistributions if r.surviving_node_id == nid), None
+        )
+        if existing is not None:
+            existing.added_end_layer = failed_end_layer
+            existing.new_end_layer = max(existing.new_end_layer, cur_end)
+        else:
+            redistributions.append(LayerRedistribution(
+                surviving_node_id=nid,
+                added_start_layer=failed_start_layer + offset,
+                added_end_layer=failed_end_layer,
+                new_start_layer=min(cur_start, failed_start_layer + offset),
+                new_end_layer=max(cur_end, failed_end_layer),
+                requires_weight_load=True,
+            ))
 
     return redistributions
 
@@ -265,6 +558,10 @@ class NodeRecoveryManager:
         self._checkpoints: dict[str, SequenceCheckpoint] = {}
         self._seq_to_node: dict[str, str] = {}
         self._recovered_requests: set[str] = set()
+        # Survivors whose layer ranges were relabeled by redistribution but
+        # whose model weights have NOT yet been pulled onto the node (the
+        # planner is metadata-only).  Cleared via mark_weights_loaded().
+        self._pending_weight_reload: set[str] = set()
         self._lock = threading.Lock()
         self._dry_run = dry_run
 
@@ -295,6 +592,7 @@ class NodeRecoveryManager:
             "sequences_lost": 0,
             "checkpoint_count": 0,
             "total_recovery_time_ms": 0,
+            "pending_weight_reloads": 0,
         }
 
         self._init_prometheus()
@@ -691,18 +989,39 @@ class NodeRecoveryManager:
                 logger.error(f"Mark-dead callback failed: {e}")
 
         # Step 5: Layer redistribution (parallel across survivors)
-        if self._on_redistribute and not self._dry_run:
-            # Plan redistributions from the registered topology (if any).
-            assignments = self._layer_assignments
-            if assignments and failed_node_id in assignments:
-                survivors = {
-                    nid: rng for nid, rng in assignments.items()
-                    if nid != failed_node_id
-                }
-                start_l, end_l = assignments[failed_node_id]
-                plan.redistributions = compute_redistributions(
-                    start_l, end_l, survivors,
+        # Planning also happens during dry runs (recovery drills need the
+        # redistribution count); only dispatch/side effects are skipped.
+        assignments = self._layer_assignments
+        if assignments and failed_node_id in assignments:
+            survivors = {
+                nid: rng for nid, rng in assignments.items()
+                if nid != failed_node_id
+            }
+            start_l, end_l = assignments[failed_node_id]
+            plan.redistributions = compute_redistributions(
+                start_l, end_l, survivors,
+            )
+            if plan.redistributions and not self._dry_run:
+                self._flag_weight_reloads(plan)
+                logger.warning(
+                    f"Layer redistribution for {failed_node_id} is "
+                    "METADATA-ONLY: no model weights were transferred. "
+                    "Survivors "
+                    f"{sorted(rd.surviving_node_id for rd in plan.redistributions if rd.requires_weight_load)} "
+                    "must pull their new layers (e.g. via TransferWeightsStream) "
+                    "before serving them — see nodes_needing_weight_reload(). "
+                    "plan.weights_transferred remains False."
                 )
+                # Refresh the cached topology so a subsequent failure
+                # plans against the post-recovery ranges.
+                refreshed = dict(assignments)
+                del refreshed[failed_node_id]
+                for rd in plan.redistributions:
+                    refreshed[rd.surviving_node_id] = (
+                        rd.new_start_layer, rd.new_end_layer,
+                    )
+                self.set_layer_assignments(refreshed)
+        if self._on_redistribute and not self._dry_run:
             self._redistribute_parallel(failed_node_id, plan)
 
         # Step 6: Record metrics
@@ -734,6 +1053,7 @@ class NodeRecoveryManager:
             "sequences_lost": plan.total_sequences_lost,
             "redistributions": len(plan.redistributions),
             "duration_ms": total_time,
+            "weights_transferred": plan.weights_transferred,
         })
 
         logger.info(
@@ -758,6 +1078,35 @@ class NodeRecoveryManager:
 
     # ── Parallel redistribution ─────────────────────────────────────────────
 
+    def _flag_weight_reloads(self, plan: NodeRecoveryPlan) -> None:
+        """Record survivors whose new layers still need a weight pull."""
+
+        with self._lock:
+            for rd in plan.redistributions:
+                if rd.requires_weight_load and rd.added_end_layer >= rd.added_start_layer:
+                    self._pending_weight_reload.add(rd.surviving_node_id)
+            self._metrics["pending_weight_reloads"] = len(self._pending_weight_reload)
+
+    def nodes_needing_weight_reload(self) -> list[str]:
+        """Survivors relabeled by redistribution whose weights are not loaded.
+
+        The redistribution planner is metadata-only — it cannot move model
+        weights.  Until the coordinator pulls each survivor's added layers
+        (e.g. via ``TransferWeightsStream``) and calls
+        :meth:`mark_weights_loaded`, that node must not serve its added
+        layers.
+        """
+
+        with self._lock:
+            return sorted(self._pending_weight_reload)
+
+    def mark_weights_loaded(self, node_id: str) -> None:
+        """Clear the pending-weight-reload flag after a successful pull."""
+
+        with self._lock:
+            self._pending_weight_reload.discard(node_id)
+            self._metrics["pending_weight_reloads"] = len(self._pending_weight_reload)
+
     def _redistribute_parallel(self, failed_node_id: str, plan: NodeRecoveryPlan) -> None:
         """Redistribute layers across surviving nodes in parallel.
 
@@ -765,6 +1114,12 @@ class NodeRecoveryManager:
         thread pool so that redistributions happen concurrently rather
         than sequentially, reducing total recovery time proportional to
         the number of survivors.
+
+        C3 fix: each callback invocation receives a single-redistribution
+        plan scoped to ONE survivor.  The previous code passed the full
+        multi-survivor plan on every call, so consumers applying the whole
+        plan (e.g. ``core/coordinator.py:_on_node_redistribute``) applied
+        every redistribution N times.
         """
 
         redistributions = plan.redistributions
@@ -773,13 +1128,17 @@ class NodeRecoveryManager:
             return
 
         def _redistribute_one(rd: LayerRedistribution) -> bool:
-            """Load a single redistribution on a survivor node."""
+            """Dispatch one redistribution to its survivor node."""
 
             try:
                 if self._on_redistribute:
-                    # We fire the callback once per redistribution so each
-                    # survivor can load its new layers concurrently.
-                    self._on_redistribute(failed_node_id, plan)
+                    # Single-redistribution plan: this callback applies
+                    # exactly this survivor's new range, nothing else.
+                    per_node_plan = NodeRecoveryPlan(
+                        failed_node_id=failed_node_id,
+                        redistributions=[rd],
+                    )
+                    self._on_redistribute(failed_node_id, per_node_plan)
                 return True
             except Exception as e:
                 logger.error(

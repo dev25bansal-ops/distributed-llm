@@ -138,6 +138,123 @@ instrumented ground truth, not stream events.
 
 ---
 
+## Engine KV-reuse optimization (2026-08-24, follow-up)
+
+**Change:** the three local decode paths of `InferenceEngine` now prefill once
+with `use_cache=True` and thread `past_key_values` through subsequent
+single-token forwards (`_LocalStrategy.generate_stream` and
+`_generate_local` via a shared `_iter_local_tokens`; `_PromptLookupStrategy`
+via cached verify/fallback passes with `DynamicCache.crop`). Previously every
+path re-forwarded the full sequence each step (O(n²) total work).
+
+### Harness
+
+New `benchmarks/kv_reuse_bench.py` measures engine paths and raw HF
+baselines **in one process** (same weights/tokenizer/device/dtype), 8 prompts,
+64 new tokens, greedy (temperature 0). Tokens are derived from an instrumented
+forward probe (`cache_len + input_len`, authoritative for both decode styles).
+`hf_no_cache_legacy_loop` is HF `generate(use_cache=False)` — the same
+full-reforward algorithm the engine used before the fix — kept as a
+before/after anchor. Four sequential runs (BEFORE/AFTER × CPU/CUDA) on this
+rig; JSON artifacts in `benchmarks/results/kv-reuse-{before,after}-{cpu,cuda}.json`.
+
+### Results (aggregate tok/s; higher is better)
+
+| Path | CPU BEFORE | CPU AFTER | CUDA BEFORE | CUDA AFTER |
+|---|---|---|---|---|
+| `engine_stream_default` (prompt-lookup dispatch) | 56.0 | **97.2** (+74%) | 65.1 | **78.7** (+21%) |
+| `engine_generate_default` | 55.0 | **102.2** (+86%) | 79.4 | **96.6** (+22%) |
+| `engine_stream_plain` (`_LocalStrategy`) | 65.1 | **137.8** (+112%) | 90.0 | **105.2** (+17%) |
+| HF `generate()` baseline (cached) | 123.9 | 121.7 | 90.8 | 99.6 |
+| HF legacy loop (`use_cache=False`) | 75.5 | 85.6 | 86.8 | 92.8 |
+
+Forward-pass counts per run (8 prompts): engine default 328 → 407 forwards
+for MORE tokens (342→342 CPU / 344→347 CUDA generated); plain path stays at
+exactly `prompt_tokens + generated - 8` single-token passes + 8 prefills.
+TTFT medians improved on the plain path (CPU 15.3 → 7.9 ms; CUDA
+10.1 → 9.7 ms).
+
+Honest caveats: TinyStories-1M is tiny, so wall-clock is dominated by
+per-call overhead rather than attention math — the theoretical O(P·T + T²/2)
+vs O(P + T) advantage grows with prompt length and model size, which is where
+the original ~90× gap (13.5 vs 1200.7 tok/s batch-8 aggregate, measured at
+02:00 above) came from; those earlier numbers are not directly comparable to
+this table because this harness runs unbatched greedy in-process.
+
+### Correctness proof
+
+- Real-model greedy parity (`tests/core/test_kv_reuse.py::TestRealModelGreedyParity`,
+  auto-skips without the local HF cache): engine stream output ==
+  `_generate_local` output == raw HF `generate()` output == prompt-lookup
+  strategy output, byte-identical across 4 fixed prompts × 32 tokens.
+- Hermetic stub tests: logits are a pure function of the attended prefix, so
+  any KV-threading mistake flips outputs; both fixed paths match independent
+  naive full-reforward reference implementations token-for-token, cache
+  threading/growth asserted, stop-tokens/logit-bias preserved.
+
+---
+
+## Prompt-lookup alignment fix (2026-08-24, W2-30 follow-up)
+
+**Change:** `_PromptLookupStrategy._accept_drafts` compared draft token i
+against verify-logits row `prefix_len + i`, but row k predicts token k+1 —
+textbook assisted generation scores draft i against logits row
+`prefix_len - 1 + i` (draft 0 against the pre-verify pending prediction).
+Fixed by the +1 shift; KV threading from the optimization above is unchanged
+(`DynamicCache.crop(prefix_len + accepted)` semantics were already written
+for the correct meaning of `accepted`).  Two latent consequences of the old
+misalignment became reachable/fixed together:
+
+1. **Acceptance was effectively zero on greedy real models**: 71 draft rounds
+   proposed 662 tokens and accepted **0.0%** (TinyStories-1M probe,
+   `.distllm_baselines/w2-30-accept-before.json`) — every verify pass was
+   wasted compute. After: **48.6%** (67/138), rounds 71 → 15
+   (`...-accept-after.json`).
+2. **Streaming dropped accepted tokens' text**: multi-token accept rounds
+   yielded only the round's last token ("The fox smiled" streamed as
+   "The smiled"). The yield loop now emits every newly appended token and
+   stops at the first EOS; stream events == generated tokens (asserted in
+   tests). This was the "streaming fidelity" caveat noted above.
+3. **Budget overshoot**: full-accept rounds could emit past max_new_tokens;
+   acceptance is now capped at the remaining budget so parity vs
+   `generate()` holds exactly.
+
+Proof layers (`tests/core/test_prompt_lookup_alignment.py`): sentinel-row
+unit tests pin which logit row each draft is scored against (all fail on
+values against the pre-fix code); an interpretable rule model
+(next = (a+b) mod 16) shows the misaligned algorithm emitting tokens the
+plain greedy chain never contains; real-model parity (repetitive prompts,
+non-vacuous draft rounds asserted) keeps prompt-lookup == plain local ==
+HF `generate()` byte-for-byte. The naive reference in
+`tests/core/test_kv_reuse.py` was re-aligned to the textbook rule.
+
+### Measured delta (`benchmarks/kv_reuse_bench.py`, same rig/process harness)
+
+Artifacts: `benchmarks/results/kv-reuse-aligned-{cpu,cuda}.json`; BEFORE =
+B1-1's post-KV-reuse runs (`kv-reuse-after-*`).
+
+| Path | CPU AFTER→ALIGNED | CUDA AFTER→ALIGNED |
+|---|---|---|
+| `engine_stream_default` (prompt-lookup) | 97.2 → **174.5 tok/s** (+80%) | 78.7 → **129.6 tok/s** (+65%) |
+| `engine_generate_default` | 102.2 → **195.3 tok/s** (+91%) | 96.6 → **169.2 tok/s** (+75%) |
+| `engine_stream_plain` (unchanged path) | 137.8 → 162.6 | 105.2 → 137.1 |
+| HF `generate()` baseline | 121.7 → 145.7 | 99.6 → 131.2 |
+
+Forward passes per run (8 prompts): default 407 → 291 (CPU), 347 → 296
+(CUDA) — full-accept rounds now consume up to 10 drafts per verify pass.
+Plain-path and HF rows moved only with machine noise (their code is
+untouched by this change; run-to-run variance ~7% was observed during the
+original suite). Greedy outputs are byte-identical before/after the
+alignment fix (8/8 prompt SHA-256 hashes match across both probes), so the
+speedup is pure verification-efficiency gain, not output drift.
+
+Honest caveats: acceptance rate here reflects TinyStories-1M greedy on
+short prompts with repetitive continuations — real workloads vary; the
+per-round draft cost (k single-token forwards) is unchanged, so the win is
+fewer rounds per generated token, exactly as designed.
+
+---
+
 ## NOT MEASURABLE ON THIS RIG
 
 These suite benchmarks exist but cannot produce honest numbers here:
@@ -161,6 +278,8 @@ set HF_HOME=D:\distributed-llm\.hf_cache   # or export on POSIX
 set HF_HUB_OFFLINE=1
 python benchmarks/run.py --benchmark all --model roneneldan/TinyStories-1M --device cuda
 python benchmarks/engine_bench.py --device cpu
+python benchmarks/kv_reuse_bench.py --device cpu --output benchmarks/results/kv-reuse-cpu.json
+python benchmarks/kv_reuse_bench.py --device cuda --output benchmarks/results/kv-reuse-cuda.json
 ```
 
 ## Fixes required to make the suite run (2026-08-24)

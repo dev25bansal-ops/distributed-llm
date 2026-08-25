@@ -26,7 +26,7 @@ WebhookFormatter = Callable[[str, dict[str, Any]], tuple[dict[str, Any], dict[st
 from loguru import logger
 
 
-def _is_safe_webhook_url(url: str, allowlist: set[str] | None = None) -> bool:
+def is_safe_webhook_url(url: str, allowlist: set[str] | None = None) -> bool:
     """Return True only for http(s) URLs that cannot hit metadata/private targets.
 
     Server-Side Request Forgery guard: rejects non-http(s) schemes, cloud
@@ -57,7 +57,8 @@ def _is_safe_webhook_url(url: str, allowlist: set[str] | None = None) -> bool:
     # A literal IP literal: reject private/loopback/link-local directly.
     try:
         ip = ipaddress.ip_address(host)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
             return False
         return True  # literal public IP is safe
     except ValueError:
@@ -76,9 +77,13 @@ def _is_safe_webhook_url(url: str, allowlist: set[str] | None = None) -> bool:
         except ValueError:
             continue
         if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast):
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
             return False
     return True
+
+
+# Backward-compatible alias (original private name).
+_is_safe_webhook_url = is_safe_webhook_url
 
 
 def _is_private_webhook_url(url: str) -> bool:
@@ -148,6 +153,9 @@ class WebhookTarget:
     consecutive_failures: int = 0
     label: str = ""
     formatter: WebhookFormatter | None = None
+    # Explicit registration-time opt-in for loopback/private targets;
+    # honored by the delivery-time SSRF re-validation below.
+    allow_private: bool = False
 
 
 @dataclass
@@ -225,7 +233,7 @@ class WebhookManager:
         Returns:
             True if registered successfully.
         """
-        if not _is_safe_webhook_url(url) and not (allow_private and _is_private_webhook_url(url)):
+        if not is_safe_webhook_url(url) and not (allow_private and _is_private_webhook_url(url)):
             logger.warning(f"Invalid webhook URL (unsafe/unsupported): {url}")
             return False
 
@@ -249,6 +257,7 @@ class WebhookManager:
                 created_at=time.time(),
                 label=label or url,
                 formatter=formatter,
+                allow_private=bool(allow_private and _is_private_webhook_url(url)),
             )
             self._targets.append(target)
             logger.info(f"Registered webhook: {target.label} ({len(target.events)} events)")
@@ -351,6 +360,28 @@ class WebhookManager:
     ) -> WebhookDelivery:
         """Deliver a single webhook with retry logic."""
         import httpx
+
+        # Re-validate at delivery time: a URL that was safe at registration
+        # could have been mutated afterwards (store tampering, update path
+        # bypassing the guard).  Fail closed — deactivate the target.
+        # Targets that explicitly opted in to a private URL at registration
+        # (allow_private=True) keep that allowance here.
+        if not is_safe_webhook_url(target.url) and not (
+            target.allow_private and _is_private_webhook_url(target.url)
+        ):
+            logger.warning(
+                "Webhook %s URL failed delivery-time SSRF re-validation; "
+                "deactivating: %s", target.label, target.url,
+            )
+            target.active = False
+            delivery = WebhookDelivery(
+                event=event.value, url=target.url,
+                status_code=0, success=False,
+                duration_ms=0.0, attempt=1,
+                error="URL blocked by delivery-time SSRF re-validation",
+            )
+            self._log_delivery(delivery)
+            return delivery
 
         if target.formatter is not None:
             formatted_body, extra_headers = target.formatter(event.value, payload)

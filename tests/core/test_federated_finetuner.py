@@ -97,10 +97,15 @@ class TestConstruction:
         assert finetuner._num_rounds == 10
         assert finetuner._lr == 1e-4
         assert finetuner._algorithm == "fedavg"
+        # A-C2: honest DP defaults.
+        assert finetuner._dp_mode == "clip_only"
         assert finetuner._dp_epsilon == 1.0
         assert finetuner._dp_delta == 1e-5
         assert finetuner._dp_max_grad_norm == 1.0
         assert finetuner._dp_noise_multiplier == 0.0
+        assert finetuner.stats["dp_mode"] == "clip_only"
+        assert finetuner.stats["dp_cumulative_epsilon"] == 0.0
+        assert finetuner.stats["dp_sigma"] is None
         assert finetuner._round == 0
         assert finetuner._peers == set()
 
@@ -183,21 +188,77 @@ class TestGradientClipping:
 
 class TestNoiseAddition:
     def test_noise_added_when_multiplier_set(self, finetuner):
+        finetuner._dp_mode = "enabled"
         finetuner._dp_noise_multiplier = 0.5
         grads = [torch.zeros(10)]
         noisy = finetuner._add_dp_noise(grads)
         assert not torch.allclose(noisy[0], grads[0])
         assert finetuner._stats["dp_noise_added"] is True
 
-    def test_no_noise_when_multiplier_zero(self, finetuner):
-        finetuner._dp_noise_multiplier = 0.0
+    def test_no_noise_when_multiplier_zero_and_clip_only(self, finetuner):
+        """Default mode is clip_only: no noise, no privacy claim (A-C2)."""
+        finetuner._dp_mode = "clip_only"
+        finetuner._dp_epsilon = float("inf")  # silence constructor warning path
         grads = [torch.zeros(10)]
-        # Should compute noise from epsilon/delta
         noisy = finetuner._add_dp_noise(grads)
-        assert not torch.allclose(noisy[0], grads[0])
+        assert torch.allclose(noisy[0], grads[0])
+        assert finetuner._stats["dp_noise_added"] is False
+
+    def test_zero_multiplier_enabled_derives_sigma_from_budget(self, finetuner):
+        """In enabled mode, multiplier 0 auto-derives calibrated sigma."""
+        import math as _math
+
+        finetuner._dp_mode = "enabled"
+        finetuner._dp_epsilon = 1.0
+        finetuner._dp_delta = 1e-5
+        finetuner._num_rounds = 10
+        finetuner._per_round_epsilon = 1.0 / 10
+        finetuner._dp_max_grad_norm = 1.0
+
+        grads = [torch.zeros(100)]
+        noisy = finetuner._add_dp_noise(grads)
+        # sigma = max_grad_norm * sqrt(2 ln(1.25/delta)) / eps_round,
+        # with eps_round = total_eps / num_rounds = 0.1 here.
+        expected_sigma = _math.sqrt(2 * _math.log(1.25 / 1e-5)) / 0.1
+        # Empirical std of the added noise over a large tensor should be
+        # close to sigma.
+        empirical_std = (noisy[0] - grads[0]).std().item()
+        assert abs(empirical_std - expected_sigma) < 0.2 * expected_sigma
         assert finetuner._stats["dp_noise_added"] is True
+        assert finetuner._stats["dp_sigma"] == pytest.approx(expected_sigma)
+
+    def test_disabled_when_epsilon_infinite_even_in_enabled_mode(
+        self, finetuner
+    ):
+        finetuner._dp_mode = "enabled"
+        finetuner._dp_epsilon = float("inf")
+        grads = [torch.zeros(10)]
+        noisy = finetuner._add_dp_noise(grads)
+        assert torch.allclose(noisy[0], grads[0])
+        assert finetuner._stats["dp_noise_added"] is False
+
+    def test_enabled_output_differs_across_runs(self):
+        """Statistical check: calibrated noise makes runs differ (A-C2)."""
+        applied_sets = []
+        for _ in range(3):
+            seen = []
+            fft = FederatedFineTuner(
+                node_id="n1",
+                local_steps=1,
+                num_rounds=1,
+                dp_mode="enabled",
+                dp_epsilon=8.0,
+                dp_delta=1e-5,
+                dp_max_grad_norm=1.0,
+                apply_gradients=lambda g, lr: seen.append(g[0].clone()),
+            )
+            fft.train_round(lambda steps: [torch.zeros(64)])
+            applied_sets.append(seen[0])
+        assert not torch.allclose(applied_sets[0], applied_sets[1])
+        assert not torch.allclose(applied_sets[1], applied_sets[2])
 
     def test_noise_scale_reasonable(self, finetuner):
+        finetuner._dp_mode = "enabled"
         finetuner._dp_noise_multiplier = 0.1
         grads = [torch.zeros(1000)]
         noisy = finetuner._add_dp_noise(grads)
@@ -416,3 +477,259 @@ class TestStats:
         s1["rounds_completed"] = 99
         s2 = finetuner.stats
         assert s2["rounds_completed"] == 0  # not mutated
+
+
+# ======================================================================
+# A-C2: honest DP contract (mode gating, warnings, budget accounting)
+# ======================================================================
+
+
+class _WarningSink:
+    """Loguru sink that captures WARNING+ messages."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def __call__(self, message):
+        if message.record["level"].name in ("WARNING", "ERROR", "CRITICAL"):
+            self.messages.append(message.record["message"])
+
+
+class TestHonestDPContract:
+    """dp_mode='clip_only' must never imply a privacy guarantee."""
+
+    def test_clip_only_with_epsilon_warns_loudly(self):
+        from loguru import logger
+
+        sink = _WarningSink()
+        handler_id = logger.add(sink, level="WARNING")
+        try:
+            FederatedFineTuner(node_id="n1", dp_epsilon=1.0)
+        finally:
+            logger.remove(handler_id)
+        assert any(
+            "no" in m.lower() and "guarantee" in m.lower() for m in sink.messages
+        ), f"default config must warn that no DP guarantee holds, got: {sink.messages}"
+
+    def test_clip_only_with_infinite_epsilon_no_warning(self):
+        from loguru import logger
+
+        sink = _WarningSink()
+        handler_id = logger.add(sink, level="WARNING")
+        try:
+            FederatedFineTuner(
+                node_id="n1", dp_epsilon=float("inf")
+            )
+        finally:
+            logger.remove(handler_id)
+        # Declared non-private: honest, no warning needed.
+        assert sink.messages == []
+
+    def test_enabled_mode_no_warning(self):
+        from loguru import logger
+
+        sink = _WarningSink()
+        handler_id = logger.add(sink, level="WARNING")
+        try:
+            FederatedFineTuner(
+                node_id="n1", dp_mode="enabled", dp_epsilon=1.0
+            )
+        finally:
+            logger.remove(handler_id)
+        assert sink.messages == []
+
+    def test_invalid_mode_rejected(self):
+        with pytest.raises(ValueError, match="dp_mode"):
+            FederatedFineTuner(node_id="n1", dp_mode="on_please")
+
+    def test_invalid_delta_rejected(self):
+        for bad in (0.0, 1.0, -0.5, 2.0):
+            with pytest.raises(ValueError, match="dp_delta"):
+                FederatedFineTuner(node_id="n1", dp_delta=bad)
+
+    def test_negative_multiplier_rejected(self):
+        with pytest.raises(ValueError, match="dp_noise_multiplier"):
+            FederatedFineTuner(node_id="n1", dp_noise_multiplier=-1.0)
+
+    def test_explicit_positive_multiplier_implies_enabled(self):
+        fft = FederatedFineTuner(
+            node_id="n1",
+            dp_noise_multiplier=1.0,
+            dp_epsilon=8.0,
+        )
+        assert fft._dp_mode == "enabled"
+
+    def test_default_path_applies_clipping_but_no_noise(self):
+        """The shipped default clips and does NOT claim to add noise."""
+        fft = FederatedFineTuner(
+            node_id="n1",
+            local_steps=1,
+            num_rounds=1,
+            apply_gradients=_FakeFn(),
+        )
+        assert fft._dp_mode == "clip_only"
+        local_fn = _FakeFn(return_value=[torch.tensor([10.0])])
+        fft.train_round(local_fn)
+        assert fft._stats["dp_clips"] >= 1
+        assert fft._stats["dp_noise_added"] is False
+        assert fft._stats["dp_cumulative_epsilon"] == 0.0
+
+    def test_default_path_is_deterministic_across_runs(self):
+        """Clip-only default adds no randomness (convergence preserved)."""
+        results = []
+        for _ in range(3):
+            seen = []
+            fft = FederatedFineTuner(
+                node_id="n1",
+                local_steps=1,
+                num_rounds=1,
+                apply_gradients=lambda g, lr: seen.append(g[0].clone()),
+            )
+            fft.train_round(lambda steps: [torch.tensor([4.0])])
+            results.append(seen[0])
+        assert torch.allclose(results[0], results[1])
+        assert torch.allclose(results[1], results[2])
+
+
+class TestBudgetAccounting:
+    """Cumulative epsilon accounting reflects reality (A-C2/A-C3)."""
+
+    def test_per_round_budget_split(self):
+        fft = FederatedFineTuner(
+            node_id="n1",
+            num_rounds=5,
+            dp_mode="enabled",
+            dp_epsilon=2.0,
+            dp_delta=1e-5,
+            apply_gradients=_FakeFn(),
+        )
+        assert fft._per_round_epsilon == pytest.approx(0.4)
+
+    def test_auto_derived_sigma_scales_with_round_count(self):
+        sigmas = {}
+        for rounds in (2, 10):
+            fft = FederatedFineTuner(
+                node_id=f"n{rounds}",
+                num_rounds=rounds,
+                dp_mode="enabled",
+                dp_epsilon=1.0,
+                dp_delta=1e-5,
+                apply_gradients=_FakeFn(),
+            )
+            fft.train_round(lambda steps: [torch.zeros(32)])
+            sigmas[rounds] = fft.stats["dp_sigma"]
+        # Same total budget over more rounds -> larger per-round sigma.
+        assert sigmas[10] > sigmas[2]
+
+    def test_cumulative_epsilon_composition_within_budget(self):
+        """N rounds of auto-derived noise charge at most the full budget."""
+        import math as _math
+
+        total_eps = 2.0
+        rounds = 10
+        ft = FederatedFineTuner(
+            node_id="n1",
+            local_steps=1,
+            num_rounds=rounds,
+            dp_mode="enabled",
+            dp_epsilon=total_eps,
+            dp_delta=1e-5,
+            dp_max_grad_norm=1.0,
+            apply_gradients=_FakeFn(),
+        )
+
+        def fake_train(steps):
+            return [torch.zeros(2, 2) for _ in range(2)]
+
+        stats = ft.run(fake_train)
+        used = stats["dp_cumulative_epsilon"]
+        assert used <= total_eps + 1e-9, (
+            f"cumulative epsilon {used} exceeded budget {total_eps}"
+        )
+        assert used > 0.0
+        assert _math.isclose(
+            used, total_eps, rel_tol=1e-9
+        ), f"expected naive composition {total_eps}, got {used}"
+        assert stats["dp_noise_added"] is True
+        assert stats["dp_sigma"] is not None
+
+    def test_run_stops_when_budget_exhausted(self):
+        """Explicit-multiplier cost above the budget share stops the loop."""
+        from loguru import logger
+
+        calls = {"train": 0}
+
+        def train_fn(steps):
+            calls["train"] += 1
+            return [torch.zeros(4)]
+
+        # Budget share is 1.0/4 = 0.25 per round, but sigma=1.0 Gaussian
+        # queries cost ~5.3 each -- run() must stop after the first round.
+        fft = FederatedFineTuner(
+            node_id="n1",
+            local_steps=1,
+            num_rounds=6,
+            dp_mode="enabled",
+            dp_epsilon=1.0,
+            dp_delta=1e-5,
+            dp_max_grad_norm=1.0,
+            dp_noise_multiplier=1.0,
+            apply_gradients=_FakeFn(),
+        )
+        sink = _WarningSink()
+        handler_id = logger.add(sink, level="WARNING")
+        try:
+            stats = fft.run(train_fn)
+        finally:
+            logger.remove(handler_id)
+
+        assert stats["rounds_completed"] == 1
+        assert stats["dp_cumulative_epsilon"] > 1.0
+        assert any("budget" in m.lower() for m in sink.messages), (
+            f"early stop must warn loudly, got: {sink.messages}"
+        )
+
+    def test_train_round_raises_once_budget_spent(self):
+        from distllm.core.federated_finetuner import DPBudgetExhausted
+
+        fft = FederatedFineTuner(
+            node_id="n1",
+            local_steps=1,
+            num_rounds=1,  # single round consumes the entire budget
+            dp_mode="enabled",
+            dp_epsilon=0.05,
+            dp_delta=1e-5,
+            apply_gradients=_FakeFn(),
+        )
+        fft.train_round(lambda steps: [torch.zeros(4)])
+        assert fft.stats["dp_cumulative_epsilon"] == pytest.approx(0.05)
+        with pytest.raises(DPBudgetExhausted, match="budget exhausted"):
+            fft.train_round(lambda steps: [torch.zeros(4)])
+
+    def test_budget_check_noop_when_disabled_or_infinite(self):
+        fft = FederatedFineTuner(
+            node_id="n1", dp_mode="enabled", dp_epsilon=float("inf")
+        )
+        fft._check_budget()  # must not raise
+        fft2 = FederatedFineTuner(node_id="n1")  # clip_only
+        fft2._stats["dp_cumulative_epsilon"] = 99.0
+        fft2._check_budget()  # must not raise
+
+    def test_rdp_accountant_used_for_explicit_multiplier(self):
+        """Explicit multiplier path measures cost with RDP accountant."""
+        fft2 = FederatedFineTuner(
+            node_id="n1",
+            local_steps=1,
+            num_rounds=1,
+            dp_mode="enabled",
+            dp_epsilon=100.0,
+            dp_delta=1e-5,
+            dp_max_grad_norm=1.0,
+            dp_noise_multiplier=1.0,
+            apply_gradients=_FakeFn(),
+        )
+        fft2.train_round(lambda steps: [torch.zeros(8)])
+        spent = fft2.stats["dp_cumulative_epsilon"]
+        # sigma=1.0, delta=1e-5 single Gaussian query: known bound ~5.3
+        # (matches the demo output's first-round figure).
+        assert 4.0 < spent < 7.0, f"unexpected epsilon {spent}"

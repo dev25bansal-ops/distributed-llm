@@ -120,15 +120,23 @@ class Rebalancer:
 
         for i, node_id in enumerate(sorted_nodes):
             if i == len(sorted_nodes) - 1:
+                # Last node absorbs whatever remains so coverage is exact.
                 layers = remaining_layers
             else:
                 share = inverse[node_id] / total_inverse
                 layers = max(1, int(share * total_layers))
-                remaining_layers -= layers
+                # Never claim more than what remains (degenerate inputs).
+                layers = min(layers, remaining_layers)
+
+            if layers <= 0:
+                # Degenerate case (more nodes than layers): this node gets
+                # no layers.  Skip instead of emitting an inverted range.
+                continue
 
             end = start + layers - 1
             recommendations.append(PartitionRecommendation(node_id, start, end))
             start = end + 1
+            remaining_layers -= layers
 
         return recommendations
 

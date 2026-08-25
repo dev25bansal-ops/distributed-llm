@@ -64,14 +64,26 @@ class FastInjectionClassifier:
     For ML-based classification, see ``MLInjectionClassifier`` below.
     """
 
-    # High-confidence injection patterns
+    # High-confidence injection patterns.
+    #
+    # SEC-A1/B3 discipline for these tables:
+    #   * Short ambiguous tokens (e.g. "dan") must never appear unanchored —
+    #     a bare ``dan`` matched inside "abundant", "dance", "Jordan",
+    #     "dandelion", hard-blocking ordinary prompts at the BLOCK threshold.
+    #     Jailbreak vocabulary is matched via word-bounded multi-word phrases
+    #     ("do anything now", "DAN mode", "jailbreak") instead.
+    #   * Dual-use developer/sysadmin vocabulary ("bypass CORS", "encrypt a
+    #     file", "leaky pipe", "base64 encode this") is matched only inside
+    #     injection-shaped phrases, never as a bare keyword.
+    # All patterns are searched against a lowercased prompt (see ``classify``),
+    # so matching is case-insensitive by construction.
     _PATTERNS: list[tuple[str, float]] = [
         # Direct injection
         (r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions", 0.95),
         (r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+directives", 0.95),
         (r"disregard\s+(?:all\s+)?(?:previous|above|prior)\s+instructions", 0.95),
         (r"forget\s+(?:all\s+)?(?:previous|above|prior)", 0.90),
-        (r"you\s+(?:are\s+)?(?:now|will\s+now)\s+(?:an?\s+)?(?:AI|assistant|model|GPT)", 0.85),
+        (r"you\s+(?:are\s+)?(?:now|will\s+now)\s+(?:an?\s+\w+\s+)?(?:ai|assistant|model|gpt)\b", 0.85),
         (r"pretend\s+(?:that\s+)?you\s+are", 0.80),
         (r"act\s+as\s+(?:if\s+)?(?:though\s+)?you\s+are", 0.80),
         (r"you\s+must\s+respond\s+with", 0.70),
@@ -83,23 +95,37 @@ class FastInjectionClassifier:
         (r"override\s+(?:mode|setting|instruction)", 0.85),
         (r"you\s+have\s+been\s+(?:hacked|compromised)", 0.95),
 
-        # Jailbreak patterns
-        (r"dan|jailbreak|jail\s*break", 0.90),
-        (r"you\s+are\s+free\s+from\s+(?:all\s+)?(?:restrictions|constraints)", 0.90),
-        (r"no\s+(?:rules|restrictions|boundaries|limitations)", 0.80),
-        (r"do\s+(?:not\s+)?(?:have\s+to|need\s+to)\s+follow", 0.85),
-        (r"bypass|circumvent|evade", 0.75),
+        # Fake system-role delimiters pasted into the user turn
+        (r"(?:^|\n)\s*(?:system\s*prompt|developer\s*message|assistant\s*prefill)\s*:", 0.85),
 
-        # Encoding / obfuscation
-        (r"base64|rot13|hex\s*encode|hex\s*decode", 0.70),
-        (r"caesar|cipher|encrypt|decrypt", 0.60),
+        # Jailbreak patterns — word-bounded phrases only (SEC-A1/B3)
+        (r"\bdo\s+anything\s+now\b", 0.95),
+        (r"\bdan\s+mode\b", 0.90),
+        (r"\bjailbreak\b|\bjail\s*break\b", 0.90),
+        (r"you\s+are\s+free\s+from\s+(?:all\s+)?(?:restrictions|constraints)", 0.90),
+        # Model-directed rule-removal framing only — a bare "no rules" also
+        # occurs in ordinary prose ("there are no rules in improv").
+        (r"(?:you\s+(?:now\s+)?have\s+no|no)\s+(?:rules|restrictions|boundaries|limitations)", 0.80),
+        (r"do\s+(?:not\s+)?(?:have\s+to|need\s+to)\s+follow\s+(?:any\s+|all\s+|these\s+|the\s+|my\s+|your\s+|its\s+|our\s+)?(?:previous\s+|prior\s+|above\s+|given\s+|stated\s+|established\s+)?(?:rules|instructions|directives|orders|policies|guidelines|constraints|commands|protocols)", 0.85),
+        # Guardrail-defeat intent, not bare "bypass"/"evade" (dual-use verbs)
+        (r"(?:bypass|circumvent|evade|defeat)\s+(?:all\s+|any\s+|your\s+|the\s+|these\s+|their\s+)?(?:safety|content|security|alignment|ethical|responsible\s+ai)\s+(?:restrictions|constraints|filters?|guardrails?|measures|guidelines|policies)", 0.85),
+
+        # Encoding / obfuscation — tied to model-directed imperatives
+        (r"base64\s+(?:encoded\s+)?payload", 0.70),
+        (r"(?:respond|reply|answer|output)\s+(?:only\s+|exclusively\s+)?(?:in|with|using|as)\s+(?:base64|rot13|hex|ciphertext)", 0.75),
+        (r"caesar\s+cipher", 0.60),
 
         # Prompt leakage
-        (r"(?:what|tell|show|reveal|print|output)\s+(?:are|is|were)\s+(?:your|the)\s+(?:instructions|prompt|system\s+prompt)", 0.85),
-        (r"leak|leaked|leaking|reveal\s+(?:system|prompt)", 0.85),
+        (r"(?:what|tell|show|reveal|print|output)\s+(?:me\s+)?(?:(?:are|is|were)\s+)?(?:your|the|its)\s+(?:initial\s+|original\s+|first\s+|starting\s+|hidden\s+|secret\s+|verbatim\s+)?(?:system\s+|developer\s+)?(?:prompt|instructions?|directives?|message)", 0.85),
+        (r"reveal\s+(?:your\s+|the\s+|its\s+)?(?:initial\s+|original\s+|first\s+|starting\s+)?(?:system\s+)?(?:prompt|instructions?)", 0.85),
+        (r"(?:leaks?|leaked|leaking)\s+(?:your\s+|the\s+|its\s+)?(?:system\s+)?(?:prompt|instructions?)", 0.85),
         (r"output\s+(?:your|the)\s+(?:initial|first|starting)\s+(?:prompt|instruction|message)", 0.85),
-        (r"repeat\s+(?:after|back|the\s+words)", 0.70),
         (r"what\s+is\s+your\s+(?:system\s+)?prompt", 0.80),
+        # Exfiltration-by-echo framing ("repeat after me" is a common
+        # children's game / classroom phrase — require the echo-everything
+        # imperative instead).
+        (r"repeat\s+(?:everything|all|each|whatever)\s+(?:of\s+)?(?:the\s+)?(?:above|before|earlier|previous)", 0.75),
+        (r"repeat\s+(?:the\s+)?(?:words|text|message|instructions?)\s+above", 0.75),
 
         # Delimiter / injection markers
         (r"```\s*\n\s*(?:system|user|assistant)", 0.75),
@@ -107,7 +133,10 @@ class FastInjectionClassifier:
         (r"\"\"\"\s*(?:system|assistant)", 0.70),
     ]
 
-    # Lower-confidence suspicious indicators
+    # Lower-confidence suspicious indicators.
+    # Same SEC-A1/B3 discipline: word boundaries on short tokens, and
+    # SQL keywords anchored to statement shape so prose like "update the
+    # table of contents" or "delete the table row" does not score.
     _SUSPICIOUS_PATTERNS: list[tuple[str, float]] = [
         (r"\b(?:sudo|chmod|chown|rm\s+-rf|mkfs|dd\s+if)\b", 0.50),
         (r"(?:SELECT|DROP|INSERT|UPDATE|DELETE|ALTER)\s+\w+\s+(?:FROM|INTO|TABLE)", 0.50),

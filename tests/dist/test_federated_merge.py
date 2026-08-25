@@ -11,10 +11,12 @@ import os
 import tempfile
 import threading
 import uuid
+from itertools import combinations
 
 import pytest
 import torch
 from cryptography.hazmat.primitives.asymmetric import ed25519
+from loguru import logger
 
 from distllm.dist.byzantine import _sign_bytes
 from distllm.dist.federated_merge import (
@@ -562,157 +564,446 @@ class TestFederatedMergeCoordinatorGetStatus:
 
 
 # =========================================================================
-# SecureAggregator
+# SecureAggregator — pairwise-cancelling masks (SecAgg correctness)
+#
+# Regression tests for audit finding A-C1: the original implementation
+# summed each party's own gradient with pure-random peer shares, so the
+# masks NEVER cancelled and the "aggregate" was wrong by construction.
+# These tests pin the corrected invariant: with full participation, every
+# party recovers the exact global sum/mean of all gradients.
 # =========================================================================
 
 
-class TestSecureAggregator:
-    """Secure gradient aggregation using additive secret sharing."""
+def _full_mesh_keys(parties: list[str]) -> dict[tuple[str, str], bytes]:
+    """One 32-byte symmetric key per unordered party pair."""
+    return {pair: os.urandom(32) for pair in combinations(sorted(parties), 2)}
 
-    def test_split_returns_correct_number_of_peers(self):
-        """split_gradients returns a dict with entries for each peer."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2", "n3"])
-        grads = [torch.tensor([1.0, 2.0, 3.0])]
-        shares = agg.split_gradients(grads)
-        assert set(shares.keys()) == {"n2", "n3"}
 
-    def test_split_each_share_is_tensor_list(self):
-        """Each peer entry is a list of tensors matching the input length."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2"])
-        grads = [torch.tensor([1.0]), torch.tensor([2.0])]
-        shares = agg.split_gradients(grads)
-        assert len(shares["n2"]) == 2
+def _make_aggregators(
+    parties: list[str],
+    round_nonce: bytes = b"",
+) -> list[SecureAggregator]:
+    """Build one SecureAggregator per party over a full mesh + shared keys."""
+    keys = _full_mesh_keys(parties)
+    aggs = []
+    for pid in parties:
+        peers = [q for q in parties if q != pid]
+        aggs.append(
+            SecureAggregator(
+                node_id=pid,
+                peer_ids=peers,
+                pairwise_keys=keys,
+                round_nonce=round_nonce,
+            )
+        )
+    return aggs
 
-    def test_aggregate_empty_received_shares(self):
-        """With empty received_shares, aggregate returns self_gradients unchanged."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2"])
-        grads = [torch.tensor([10.0, 20.0])]
+
+class _CaptureWarnings:
+    """Collect loguru records at WARNING level inside a with-block."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def __enter__(self):
+        self._hid = logger.add(self._sink, level="WARNING")
+        return self
+
+    def __exit__(self, *exc):
+        logger.remove(self._hid)
+        return False
+
+    def _sink(self, message):
+        self.messages.append(str(message))
+
+
+class TestSecureAggregatorExactness:
+    """Core property: masks cancel, so the aggregate is the exact sum."""
+
+    @pytest.mark.parametrize("num_parties", [2, 3, 4, 5, 7])
+    def test_sum_recovered_exactly_integer_gradients(self, num_parties):
+        """Each party recovers the bit-exact SUM of all gradients.
+
+        Odd and even party counts both covered. Small integer values keep
+        float32 arithmetic exact, making torch.equal legitimate.
+        """
+        parties = [f"n{i}" for i in range(num_parties)]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+
+        grads = [
+            [
+                torch.tensor([float(k + j), -float(k * j + 1)])
+                for j in range(num_parties)
+            ]
+            for k in range(num_parties)
+        ]
+
+        sent = [aggs[k].split_gradients(grads[k]) for k in range(num_parties)]
+
+        expected_total = [
+            torch.zeros_like(grads[0][j]) for j in range(len(grads[0]))
+        ]
+        for k in range(num_parties):
+            for j in range(len(grads[0])):
+                expected_total[j] = expected_total[j] + grads[k][j]
+
+        for k, agg in enumerate(aggs):
+            received = {q: sent[idx[q]][agg._node_id] for q in agg._peer_ids}
+            result = agg.aggregate_received_shares(grads[k], received)
+            for j in range(len(expected_total)):
+                assert torch.equal(result[j], expected_total[j]), (
+                    f"party {k} slot {j}: got {result[j]}, "
+                    f"want exact {expected_total[j]}"
+                )
+
+    def test_three_peers_hand_computed_values(self):
+        """Hand-computed: g_a=[1,2], g_b=[10,20], g_c=[100,200] → [111,222].
+
+        Each of the three parties independently recovers the same exact
+        total despite random per-party masks.
+        """
+        parties = ["a", "b", "c"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        grads = {
+            "a": [torch.tensor([1.0, 2.0])],
+            "b": [torch.tensor([10.0, 20.0])],
+            "c": [torch.tensor([100.0, 200.0])],
+        }
+
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in parties}
+        expected = torch.tensor([111.0, 222.0])
+
+        for p in parties:
+            agg = aggs[idx[p]]
+            received = {q: sent[q][p] for q in agg._peer_ids}
+            result = agg.aggregate_received_shares(grads[p], received)
+            assert torch.equal(result[0], expected), (
+                f"party {p} did not recover the exact sum"
+            )
+
+    def test_mean_of_gradients_bit_exact(self):
+        """mean(gradients) recovered exactly when a party divides by N."""
+        parties = ["a", "b", "c"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        grads = {
+            "a": [torch.tensor([3.0, 6.0])],
+            "b": [torch.tensor([6.0, 12.0])],
+            "c": [torch.tensor([9.0, 18.0])],
+        }
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in parties}
+
+        expected_mean = torch.tensor([6.0, 12.0])
+        for p in parties:
+            agg = aggs[idx[p]]
+            received = {q: sent[q][p] for q in agg._peer_ids}
+            total = agg.aggregate_received_shares(grads[p], received)
+            assert torch.equal(total[0] / len(parties), expected_mean)
+
+    def test_float_gradients_within_tolerance(self):
+        """Arbitrary floats recover the sum within fp rounding tolerance.
+
+        Uses a small mask_bound so mask magnitudes stay far below gradient
+        scale: float32 addition of grad + mask rounds at ulp(mask), so
+        smaller masks mean tighter reconstruction (documented trade-off —
+        see class docstring).
+        """
+        parties = ["n0", "n1", "n2", "n3"]
+        keys = _full_mesh_keys(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        aggs = [
+            SecureAggregator(
+                node_id=p,
+                peer_ids=[q for q in parties if q != p],
+                pairwise_keys=keys,
+                round_nonce=b"float-test",
+                mask_bound=256,
+            )
+            for p in parties
+        ]
+
+        base = [0.123456789, -987.654321e-3, 42.000001]
+        grads = [[torch.tensor(base) + k * 0.25] for k in range(len(parties))]
+
+        sent = [aggs[k].split_gradients(grads[k]) for k in range(len(parties))]
+
+        expected_total = sum(
+            (grads[k][0] for k in range(len(parties))), torch.zeros(3)
+        )
+        for k, agg in enumerate(aggs):
+            received = {q: sent[idx[q]][agg._node_id] for q in agg._peer_ids}
+            result = agg.aggregate_received_shares(grads[k], received)
+            assert torch.allclose(result[0], expected_total, rtol=1e-3, atol=1e-3)
+
+    def test_multiple_gradient_slots_all_cancel(self):
+        """Every tensor slot (per-layer gradient) cancels independently."""
+        parties = ["a", "b", "c"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        vals = {"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0], "c": [7.0, 8.0, 9.0]}
+        grads = {p: [torch.tensor([v]) for v in vals[p]] for p in parties}
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in parties}
+        expected = [torch.tensor([12.0]), torch.tensor([15.0]), torch.tensor([18.0])]
+        for p in parties:
+            agg = aggs[idx[p]]
+            received = {q: sent[q][p] for q in agg._peer_ids}
+            result = agg.aggregate_received_shares(grads[p], received)
+            for j in range(3):
+                assert torch.equal(result[j], expected[j])
+
+    def test_no_party_view_equals_any_single_gradient(self):
+        """A party's output is the SUM, not own-gradient-plus-noise.
+
+        Guards the A-C1 failure mode where the result carried no trace of
+        the other parties' actual gradients.
+        """
+        parties = ["a", "b", "c"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        grads = {
+            "a": [torch.tensor([1000.0])],
+            "b": [torch.tensor([1.0])],
+            "c": [torch.tensor([2.0])],
+        }
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in parties}
+
+        agg_a = aggs[0]
+        received_a = {q: sent[q]["a"] for q in agg_a._peer_ids}
+        out_a = agg_a.aggregate_received_shares(grads["a"], received_a)
+        assert not torch.allclose(out_a[0], grads["a"][0])
+        assert not torch.allclose(out_a[0], grads["b"][0])
+        assert not torch.allclose(out_a[0], grads["c"][0])
+        assert torch.equal(out_a[0], torch.tensor([1003.0]))
+
+    def test_masks_vary_by_round_nonce_and_pair(self):
+        """Different nonces give different masked vectors; same keys + nonce
+        reproduce identical output (deterministic); per-pair masks differ
+        even though every peer receives the same masked vector."""
+        keys = _full_mesh_keys(["a", "b"])
+        outs = []
+        for nonce in (b"round-1", b"round-2"):
+            agg = SecureAggregator(
+                node_id="a",
+                peer_ids=["b"],
+                pairwise_keys=keys,
+                round_nonce=nonce,
+            )
+            outs.append(agg.split_gradients([torch.tensor([1.0])])["b"][0])
+        assert not torch.equal(outs[0], outs[1])
+
+        replay = SecureAggregator(
+            node_id="a", peer_ids=["b"], pairwise_keys=keys, round_nonce=b"round-1"
+        ).split_gradients([torch.tensor([1.0])])["b"][0]
+        assert torch.equal(replay, outs[0])
+
+        # Same masked vector goes to every peer (clones), but the
+        # underlying per-pair masks are pairwise-distinct streams.
+        tri_keys = _full_mesh_keys(["a", "b", "c"])
+        agg_a = SecureAggregator(
+            node_id="a",
+            peer_ids=["b", "c"],
+            pairwise_keys=tri_keys,
+            round_nonce=b"r",
+        )
+        shares = agg_a.split_gradients([torch.tensor([5.0])])
+        assert torch.equal(shares["b"][0], shares["c"][0])  # same payload...
+        m_ab = agg_a._pairwise_mask("b", torch.zeros(1))
+        m_ac = agg_a._pairwise_mask("c", torch.zeros(1))
+        assert not torch.equal(m_ab, m_ac)  # ...distinct pair masks
+
+
+class TestSecureAggregatorDropout:
+    """Documented behavior when a participant never delivers."""
+
+    def test_dropout_residual_is_shared_and_warned(self):
+        """With a dropped peer, dead-edge mask terms cannot cancel.
+
+        Documented semantics (see SecureAggregator docstring):
+          1. The dropped party contributes nothing and leaks nothing.
+          2. Every SURVIVING party computes the IDENTICAL residual-shifted
+             sum (they all miss the same cancellation terms).
+          3. Exactness therefore requires full participation; a WARNING
+             naming the dropped peer is emitted.
+        Production deployments wanting exactness under dropout need the
+        Bonawitz-style Shamir seed-recovery round (not implemented here).
+        """
+        parties = ["a", "b", "c"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        grads = {
+            "a": [torch.tensor([1.0])],
+            "b": [torch.tensor([10.0])],
+            "c": [torch.tensor([100.0])],  # c drops: sends nothing
+        }
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in ("a", "b")}
+
+        with _CaptureWarnings() as cap:
+            out_a = aggs[0].aggregate_received_shares(
+                grads["a"], {"b": sent["b"]["a"]}
+            )
+            out_b = aggs[1].aggregate_received_shares(
+                grads["b"], {"a": sent["a"]["b"]}
+            )
+
+        # Both survivors agree on the same shifted total...
+        assert torch.equal(out_a[0], out_b[0])
+        # ...which is NOT the participant sum (dead-edge residual) and is
+        # not influenced by c's actual gradient value.
+        assert not torch.equal(out_a[0], torch.tensor([11.0]))
+        assert not torch.allclose(out_a[0], torch.tensor([111.0]))
+        # The dropout is called out loudly, not swallowed silently.
+        assert any("c" in m for m in cap.messages), cap.messages
+
+    def test_all_participants_present_emits_no_dropout_warning(self):
+        parties = ["a", "b"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        grads = {"a": [torch.tensor([1.0])], "b": [torch.tensor([2.0])]}
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in parties}
+
+        with _CaptureWarnings() as cap:
+            aggs[0].aggregate_received_shares(grads["a"], {"b": sent["b"]["a"]})
+        assert not any("dropout" in m.lower() for m in cap.messages)
+
+
+class TestSecureAggregatorContract:
+    """Input validation and API-shape contracts."""
+
+    def test_missing_pairwise_keys_rejected(self):
+        """Peers without key material fail at construction (fail closed)."""
+        with pytest.raises(ValueError, match="pairwise key"):
+            SecureAggregator(node_id="n1", peer_ids=["n2"])
+
+    def test_wrong_key_length_rejected(self):
+        keys = {("n1", "n2"): b"short"}
+        with pytest.raises(ValueError, match="32 bytes"):
+            SecureAggregator(node_id="n1", peer_ids=["n2"], pairwise_keys=keys)
+
+    def test_self_pair_key_rejected(self):
+        keys = {("n1", "n1"): os.urandom(32)}
+        with pytest.raises(ValueError, match="itself"):
+            SecureAggregator(node_id="n1", peer_ids=["n1"], pairwise_keys=keys)
+
+    def test_node_listed_as_own_peer_rejected(self):
+        keys = _full_mesh_keys(["n1"])
+        with pytest.raises(ValueError, match="contains the node itself"):
+            SecureAggregator(node_id="n1", peer_ids=["n1"], pairwise_keys=keys)
+
+    def test_single_party_without_peers_needs_no_keys(self):
+        """Degenerate single-party aggregator: aggregate = own gradient."""
+        agg = SecureAggregator(node_id="solo", peer_ids=[])
+        grads = [torch.tensor([7.0, 8.0])]
+        assert agg.split_gradients(grads) == {}
         result = agg.aggregate_received_shares(grads, {})
         assert len(result) == 1
         assert torch.equal(result[0], grads[0])
+        # Returned tensors are fresh objects, not aliases of the inputs.
+        assert result[0] is not grads[0]
 
-    def test_aggregate_with_received_shares(self):
-        """Aggregate adds received shares to self gradient."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2"])
-        grads = [torch.tensor([5.0, 5.0])]
-        received = {"n2": [torch.tensor([3.0, 7.0])]}
-        result = agg.aggregate_received_shares(grads, received)
-        # aggregate = grad + sum of received shares = [5,5] + [3,7] = [8,12]
-        expected = torch.tensor([8.0, 12.0])
-        assert torch.allclose(result[0], expected)
-
-    def test_split_and_aggregate_roundtrip(self):
-        """Split then aggregate: each party sees own_grad + sum(received_shares).
-
-        In this simplified SecAgg, split_gradients creates random peer shares
-        and a self-share = grad - sum(sent_shares). aggregate_received_shares
-        returns grad + sum(received_shares). This test verifies the operation
-        is consistent: after splitting, aggregating with the other party's
-        shares yields the expected addition.
-        """
-        g1 = [torch.tensor([10.0, 20.0, 30.0])]
-        g2 = [torch.tensor([1.0, 2.0, 3.0])]
-
-        agg1 = SecureAggregator(node_id="n1", peer_ids=["n2"])
-        agg2 = SecureAggregator(node_id="n2", peer_ids=["n1"])
-
-        # Split
-        shares_from_1 = agg1.split_gradients(g1)  # {"n2": [share]}
-        shares_from_2 = agg2.split_gradients(g2)  # {"n1": [share]}
-
-        # Each aggregate receives the other's share
-        n1_result = agg1.aggregate_received_shares(g1, shares_from_2)
-        n2_result = agg2.aggregate_received_shares(g2, shares_from_1)
-
-        # n1_result = g1 + shares_from_2["n1"] (the random share n2 created for n1)
-        # n2_result = g2 + shares_from_1["n2"] (the random share n1 created for n2)
-        assert torch.allclose(n1_result[0], g1[0] + shares_from_2["n1"][0])
-        assert torch.allclose(n2_result[0], g2[0] + shares_from_1["n2"][0])
-
-    def test_split_single_gradient(self):
-        """split_gradients works with a single gradient tensor."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2"])
-        grads = [torch.tensor([42.0])]
-        shares = agg.split_gradients(grads)
-        assert "n2" in shares
-        # The self share (kept internally) is grad - sum_of_peer_shares
-        # We can verify by: grad = self_share + sum(peer_shares)
-        # Since aggregate = grad + received_shares, the tensor should be
-        # reconstructable
-        received = {"n2": shares["n2"]}
-        result = agg.aggregate_received_shares(grads, received)
-        # This should be grad + received = grad + (grad - self_share) ... not quite
-        # Actually: aggregate = self_share + received_shares
-        # And self_share is stored inside grads, so aggregate_received_shares does:
-        # aggregated = sum(received_shares) + grad
-        # This yields: grad_shares_from_n2_to_n1 + n1_grad
-        # In the 2-party case: n1_grad = self_share + share_to_n2
-        # n2 sends its share of n1's grad back -- wait these are independent gradients.
-        # Let's just verify the operation composes properly:
-        assert torch.allclose(result[0], grads[0] + received["n2"][0])
-
-    def test_split_multiple_gradients(self):
-        """split_gradients works with multiple gradient tensors."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2", "n3"])
+    def test_split_returns_one_entry_per_peer_with_matching_lengths(self):
+        agg = SecureAggregator(
+            node_id="n1",
+            peer_ids=["n2", "n3"],
+            pairwise_keys=_full_mesh_keys(["n1", "n2", "n3"]),
+        )
         grads = [torch.tensor([1.0]), torch.tensor([2.0]), torch.tensor([3.0])]
         shares = agg.split_gradients(grads)
+        assert set(shares.keys()) == {"n2", "n3"}
         assert len(shares["n2"]) == 3
         assert len(shares["n3"]) == 3
 
-    def test_aggregate_more_shares_than_gradients(self):
-        """Extra received shares beyond num_gradients are safely ignored."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2"])
-        grads = [torch.tensor([1.0])]
-        received = {"n2": [torch.tensor([2.0]), torch.tensor([3.0])]}
-        result = agg.aggregate_received_shares(grads, received)
-        assert torch.allclose(result[0], torch.tensor([3.0]))
+    def test_positional_construction_still_binds(self):
+        """Backward-compatible positional (node_id, peer_ids) signature —
+        though keys are mandatory whenever peers exist (tested above)."""
+        agg = SecureAggregator("solo", [])
+        assert agg._node_id == "solo"
+        assert agg._peer_ids == []
 
-    def test_split_each_share_is_unique(self):
-        """Each peer receives a different random share."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2", "n3"])
+    def test_extra_received_slots_beyond_own_gradients_ignored(self):
+        parties = ["a", "b"]
+        aggs = _make_aggregators(parties)
+        grads_a = [torch.tensor([1.0])]
+        masked_b = aggs[1].split_gradients([torch.tensor([2.0])])["a"]
+        # b accidentally appends a junk extra slot
+        received = {"b": masked_b + [torch.tensor([999.0])]}
+        result = aggs[0].aggregate_received_shares(grads_a, received)
+        assert torch.equal(result[0], torch.tensor([3.0]))
+
+    def test_shape_mismatch_rejected(self):
+        parties = ["a", "b"]
+        aggs = _make_aggregators(parties)
         grads = [torch.tensor([1.0, 2.0])]
-        shares = agg.split_gradients(grads)
-        # Two peers should have different shares
-        assert not torch.equal(shares["n2"][0], shares["n3"][0])
+        bad = {"b": [torch.tensor([[1.0, 2.0]])]}  # wrong rank
+        with pytest.raises(ValueError, match="shape"):
+            aggs[0].aggregate_received_shares(grads, bad)
 
-    def test_split_sums_reconstruct_gradient(self):
-        """The sum of all shares (peer + self) equals the original gradient.
+    def test_dtype_mismatch_rejected(self):
+        parties = ["a", "b"]
+        aggs = _make_aggregators(parties)
+        grads = [torch.tensor([1.0])]
+        bad = {"b": [torch.tensor([1.0], dtype=torch.float64)]}
+        with pytest.raises(ValueError, match="dtype"):
+            aggs[0].aggregate_received_shares(grads, bad)
 
-        The self-share is implicitly stored as grad - sum(sent_shares).
-        After aggregate_received_shares with zero received_shares,
-        the result should equal the original gradient.
-        """
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2", "n3"])
-        grads = [torch.tensor([7.0, 11.0, 13.0])]
-        shares = agg.split_gradients(grads)
+    def test_integer_dtype_unsupported_with_clear_error(self):
+        """Integer tensors need modular arithmetic for exact cancellation;
+        not implemented — fail loudly instead of producing wrong results."""
+        agg = SecureAggregator(
+            node_id="a",
+            peer_ids=["b"],
+            pairwise_keys=_full_mesh_keys(["a", "b"]),
+        )
+        with pytest.raises(NotImplementedError, match="[Ii]nteger"):
+            agg.split_gradients([torch.tensor([1, 2], dtype=torch.int64)])
 
-        # Compute sum of all peer shares
-        sum_peer = shares["n2"][0] + shares["n3"][0]
+    def test_unknown_peer_contribution_skipped_with_warning(self):
+        """Data from a non-peer is excluded from the total (which stays
+        exact over the configured participants) and warned about."""
+        parties = ["a", "b", "c"]
+        aggs = _make_aggregators(parties)
+        idx = {p: i for i, p in enumerate(parties)}
+        grads = {
+            "a": [torch.tensor([1.0])],
+            "b": [torch.tensor([10.0])],
+            "c": [torch.tensor([100.0])],
+        }
+        sent = {p: aggs[idx[p]].split_gradients(grads[p]) for p in parties}
+        stranger = torch.tensor([500.0])  # garbage from non-peer "z"
 
-        # aggregate_received_shares with no received = grad = self_share
-        # But self_share = grad - sum_peer, so the sum of all shares = grad
-        # Verify: aggregate of received (from peers) + self gradient = grad + sum_peer
-        # And we know self_share internally is grad - sum_peer
-        # After aggregate_received_shares with empty received:
-        # aggregated[i] = aggregated[i] + grad = grad
-        result = agg.aggregate_received_shares(grads, {})
-        assert torch.allclose(result[0], grads[0])
+        with _CaptureWarnings() as cap:
+            result = aggs[0].aggregate_received_shares(
+                grads["a"],
+                {"b": sent["b"]["a"], "c": sent["c"]["a"], "z": [stranger]},
+            )
+        assert torch.equal(result[0], torch.tensor([111.0]))
+        assert any("z" in m for m in cap.messages), cap.messages
 
-        # Full aggregate: includes peer shares
-        # aggregated = grad + sum(received)
-        full = agg.aggregate_received_shares(grads, {"n2": [shares["n2"][0]], "n3": [shares["n3"][0]]})
-        assert torch.allclose(full[0], grads[0] + sum_peer)
-
-    def test_aggregate_does_not_mutate_input(self):
-        """aggregate_received_shares does not modify input tensors."""
-        agg = SecureAggregator(node_id="n1", peer_ids=["n2"])
+    def test_aggregate_does_not_mutate_inputs(self):
+        parties = ["a", "b"]
+        aggs = _make_aggregators(parties)
         grads = [torch.tensor([10.0])]
-        received = {"n2": [torch.tensor([5.0])]}
+        masked_b = aggs[1].split_gradients([torch.tensor([5.0])])["a"]
+        received = {"b": [masked_b[0].clone()]}
         grad_before = grads[0].clone()
-        received_before = received["n2"][0].clone()
-        agg.aggregate_received_shares(grads, received)
+        received_before = received["b"][0].clone()
+        aggs[0].aggregate_received_shares(grads, received)
         assert torch.equal(grads[0], grad_before)
-        assert torch.equal(received["n2"][0], received_before)
+        assert torch.equal(received["b"][0], received_before)
+
+    def test_split_outputs_are_per_peer_clones(self):
+        """Split outputs must not alias shared storage (A-C10 aliasing
+        pattern): mutating one peer's share never corrupts another's."""
+        agg = SecureAggregator(
+            node_id="a",
+            peer_ids=["b", "c"],
+            pairwise_keys=_full_mesh_keys(["a", "b", "c"]),
+        )
+        shares = agg.split_gradients([torch.tensor([1.0])])
+        snapshot_c = shares["c"][0].clone()
+        shares["b"][0].add_(100.0)
+        assert torch.equal(shares["c"][0], snapshot_c)
 
 
 # =========================================================================

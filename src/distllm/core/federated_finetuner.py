@@ -13,20 +13,70 @@ Architecture::
     Node B (data_b) ── LoRA grads ──┼── P2P All-Reduce ──▸ Unified LoRA weights
     Node C (data_c) ── LoRA grads ──┘
 
-Privacy:
-- Gradient clipping bounds sensitivity
-- Gaussian noise addition for differential privacy
+Privacy (honest contract — audit A-C2):
+- Gradient clipping bounds gradient sensitivity.  This is the DEFAULT
+  (``dp_mode="clip_only"``) and clipping alone is **not** differential
+  privacy: without calibrated noise no (epsilon, delta) guarantee holds,
+  so a WARNING is logged whenever this mode runs with a finite epsilon.
+- Real DP requires opting in with ``dp_mode="enabled"``: every round adds
+  Gaussian noise calibrated to that round's share of the (epsilon, delta)
+  budget, spend accumulates in ``stats["dp_cumulative_epsilon"]``, and
+  ``run()`` stops when the budget is exhausted.
 - Secure aggregation via additive secret sharing (see federated_merge.py)
 """
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any, Callable
 
 import torch
 from loguru import logger
+
+
+class DPBudgetExhausted(RuntimeError):
+    """Raised when another round would exceed the stated (epsilon, delta) budget.
+
+    Fail-closed by design: broadcasting gradients whose noise no longer
+    corresponds to an honest privacy claim is worse than stopping.
+    """
+
+
+def _load_rdp_accounting() -> Any | None:
+    """Return a fresh RDPAccounting instance, or None if unavailable.
+
+    Tries the normal dotted import first; falls back to loading
+    ``dp_inference/accounting.py`` directly from disk.  The fallback keeps
+    privacy accounting working in test/embedded contexts where the package
+    ``__init__`` chain is stubbed or partially initialized.
+    """
+    try:
+        from distllm.core.dp_inference.accounting import RDPAccounting
+
+        return RDPAccounting()
+    except Exception:
+        pass
+    try:
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        accounting_path = Path(__file__).resolve().parent / "dp_inference" / "accounting.py"
+        dotted = "distllm.core.dp_inference.accounting"
+        mod = sys.modules.get(dotted)
+        spec = None
+        if mod is None or getattr(mod, "RDPAccounting", None) is None:
+            spec = importlib.util.spec_from_file_location(dotted, str(accounting_path))
+            if spec is not None:
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[dotted] = mod
+                spec.loader.exec_module(mod)
+        cls = getattr(mod, "RDPAccounting", None)
+        return cls() if cls is not None else None
+    except Exception:
+        return None
 
 
 class FederatedFineTuner:
@@ -49,6 +99,22 @@ class FederatedFineTuner:
         local_steps: Training steps per round.
         num_rounds: Total federated rounds.
         learning_rate: SGD learning rate for gradient updates.
+        dp_mode: ``"clip_only"`` (default) or ``"enabled"``.  Clipping-only
+            bounds gradient sensitivity but provides **no** (epsilon, delta)
+            differential-privacy guarantee; a WARNING is emitted whenever it
+            runs while a finite epsilon is configured.  ``"enabled"`` adds
+            Gaussian noise calibrated to the per-round privacy budget and
+            tracks cumulative spend in ``stats["dp_cumulative_epsilon"]``.
+        dp_epsilon: Total (epsilon, delta) budget.  In ``"enabled"`` mode the
+            budget is divided across ``num_rounds`` so per-round sigma grows
+            with round count (composition-safe by construction).  Set to
+            ``float("inf")`` in either mode to disable DP entirely.
+        dp_delta: Delta target of the DP guarantee; must lie in (0, 1).
+        dp_max_grad_norm: L2 clip bound; also scales the noise
+            (sigma = max_grad_norm * noise_multiplier).
+        dp_noise_multiplier: Explicit noise multiplier (> 0).  When left at
+            0.0, sigma is auto-derived from the per-round share of
+            (dp_epsilon, dp_delta).
     """
 
     def __init__(
@@ -61,6 +127,7 @@ class FederatedFineTuner:
         local_steps: int = 100,
         num_rounds: int = 10,
         learning_rate: float = 1e-4,
+        dp_mode: str = "clip_only",
         dp_epsilon: float = 1.0,
         dp_delta: float = 1e-5,
         dp_max_grad_norm: float = 1.0,
@@ -93,11 +160,52 @@ class FederatedFineTuner:
         self._fedprox_mu = fedprox_mu  # FedProx proximal term coefficient
         self._global_model_params = global_model_params  # Global model for FedProx
 
-        # Differential privacy settings
+        # Differential privacy settings (audit A-C2: honest contract).
+        mode = dp_mode.lower()
+        if mode not in ("clip_only", "enabled"):
+            raise ValueError(
+                f"dp_mode must be 'clip_only' or 'enabled', got {dp_mode!r}"
+            )
+        if not (0.0 < dp_delta < 1.0):
+            raise ValueError(f"dp_delta must be in (0, 1), got {dp_delta}")
+        if math.isfinite(dp_epsilon) and dp_epsilon <= 0:
+            raise ValueError(
+                f"dp_epsilon must be > 0 (or float('inf') to disable DP), "
+                f"got {dp_epsilon}"
+            )
+        if dp_noise_multiplier < 0:
+            raise ValueError(
+                f"dp_noise_multiplier must be >= 0 (0 auto-derives sigma "
+                f"from dp_epsilon/dp_delta), got {dp_noise_multiplier}"
+            )
+        # An explicitly positive multiplier is itself an opt-in to noise;
+        # honor it (with a note) instead of silently discarding the setting,
+        # so configurations written against the pre-A-C2 docs keep adding
+        # calibrated noise.  The DEFAULT configuration (no mode, no
+        # multiplier) stays clip-only -- that is the dishonest case this
+        # fix targets.
+        if mode == "clip_only" and dp_noise_multiplier > 0:
+            logger.info(
+                f"[{self._node_id}] dp_noise_multiplier="
+                f"{dp_noise_multiplier} given without dp_mode='enabled'; "
+                f"resolving dp_mode to 'enabled'."
+            )
+            mode = "enabled"
+        self._dp_mode = mode
         self._dp_epsilon = dp_epsilon
         self._dp_delta = dp_delta
         self._dp_max_grad_norm = dp_max_grad_norm
         self._dp_noise_multiplier = dp_noise_multiplier
+        # Per-round budget share used to calibrate sigma when the multiplier
+        # is not given explicitly.  Dividing the budget across rounds makes
+        # the loop composition-safe by construction: more rounds means a
+        # larger sigma per round, and run() never exceeds the total.
+        rounds_for_budget = max(1, num_rounds)
+        self._per_round_epsilon = (
+            dp_epsilon / rounds_for_budget
+            if math.isfinite(dp_epsilon)
+            else float("inf")
+        )
 
         self._stats = {
             "rounds_completed": 0,
@@ -107,7 +215,27 @@ class FederatedFineTuner:
             "dp_noise_added": False,
             "algorithm": self._algorithm,
             "fedprox_proximal_terms": 0,
+            "dp_mode": self._dp_mode,
+            "dp_sigma": None,
+            "dp_cumulative_epsilon": 0.0,
         }
+
+        # Fail loud when the configuration implies a privacy guarantee it
+        # does not deliver (audit A-C2).  A WARNING (not an error) keeps
+        # existing convergence behavior working while making the gap visible.
+        if (
+            self._dp_mode == "clip_only"
+            and math.isfinite(self._dp_epsilon)
+            and self._dp_epsilon > 0
+        ):
+            logger.warning(
+                f"[{self._node_id}] DP NOT ENABLED: dp_mode='clip_only' adds "
+                f"gradient clipping only -- NO calibrated noise is added, so "
+                f"NO (epsilon={self._dp_epsilon}, delta={self._dp_delta}) "
+                f"guarantee holds. Pass dp_mode='enabled' for real "
+                f"differential privacy, or dp_epsilon=float('inf') to "
+                f"declare non-private training and silence this warning."
+            )
 
     def _clip_gradients(self, grads: list[torch.Tensor]) -> list[torch.Tensor]:
         """Clip gradients to max_grad_norm for differential privacy.
@@ -125,25 +253,91 @@ class FederatedFineTuner:
     def _add_dp_noise(self, grads: list[torch.Tensor]) -> list[torch.Tensor]:
         """Add calibrated Gaussian noise for differential privacy.
 
-        Noise scale: sigma = max_grad_norm * noise_multiplier
-        where noise_multiplier = sqrt(2 * ln(1.25/delta)) / epsilon
+        Only runs in ``dp_mode="enabled"``; in ``"clip_only"`` mode gradients
+        pass through untouched (that mode provides NO privacy guarantee).
+
+        Noise scale ``sigma = max_grad_norm * noise_multiplier`` when an
+        explicit positive multiplier was configured; otherwise sigma is
+        derived from this round's share of the (epsilon, delta) budget::
+
+            eps_round = dp_epsilon / num_rounds
+            sigma = max_grad_norm * sqrt(2 * ln(1.25 / delta)) / eps_round
+
+        Dividing the budget across rounds makes the loop composition-safe by
+        construction: more rounds means larger sigma per round.
         """
-        if self._dp_noise_multiplier <= 0:
-            # Explicit 0 means "deterministic, no noise" (matches the
-            # dp_max_grad_norm-only clipping contract).  Callers wanting
-            # auto-derived noise pass a negative multiplier.
-            if self._dp_noise_multiplier < 0:
-                import math
-                sigma = self._dp_max_grad_norm * math.sqrt(
-                    2 * math.log(1.25 / self._dp_delta)
-                ) / self._dp_epsilon
-                return [g + torch.randn_like(g) * sigma for g in grads]
+        if self._dp_mode != "enabled" or not math.isfinite(self._dp_epsilon):
             self._stats["dp_noise_added"] = False
             return grads
-        sigma = self._dp_max_grad_norm * self._dp_noise_multiplier
 
+        if self._dp_noise_multiplier > 0:
+            sigma = self._dp_max_grad_norm * self._dp_noise_multiplier
+            # The true (epsilon, delta) cost of this explicitly-sized
+            # mechanism is measured with the RDP accountant below rather
+            # than assumed.
+            round_cost: float | None = None
+        else:
+            eps_round = max(self._per_round_epsilon, 1e-12)
+            sigma = (
+                self._dp_max_grad_norm
+                * math.sqrt(2.0 * math.log(1.25 / self._dp_delta))
+                / eps_round
+            )
+            # Sigma was calibrated so one round costs AT MOST eps_round
+            # under the classic Gaussian bound; charging exactly eps_round
+            # per round therefore yields a valid (conservative)
+            # naive-composition total that sums to dp_epsilon.
+            round_cost = eps_round
+
+        self._stats["dp_sigma"] = float(sigma)
         self._stats["dp_noise_added"] = True
+        self._record_privacy_spend(sigma, round_cost)
+
         return [g + torch.randn_like(g) * sigma for g in grads]
+
+    def _record_privacy_spend(
+        self, sigma: float, round_cost: float | None
+    ) -> None:
+        """Accumulate this round's privacy cost into the stats ledger.
+
+        ``round_cost`` is the known per-round charge (auto-derived path).
+        When None (explicit multiplier configured), the actual
+        (epsilon, delta) cost of one Gaussian query with noise ``sigma`` is
+        computed with the RDP accountant; if that module cannot be loaded a
+        conservative fallback charges the full per-round budget share.
+        """
+        if round_cost is None:
+            accountant = _load_rdp_accounting()
+            if accountant is not None:
+                accountant.add_query(sigma)
+                round_cost = accountant.get_epsilon(self._dp_delta)
+            else:
+                logger.warning(
+                    f"[{self._node_id}] RDP accountant unavailable; "
+                    f"charging full per-round budget share "
+                    f"{self._per_round_epsilon:.6f} -- total may be "
+                    f"inaccurate."
+                )
+                round_cost = self._per_round_epsilon
+        self._stats["dp_cumulative_epsilon"] = (
+            self._stats["dp_cumulative_epsilon"] + round_cost
+        )
+
+    def _check_budget(self) -> None:
+        """Raise :class:`DPBudgetExhausted` when the budget is spent.
+
+        Fail-closed: continuing would broadcast gradients whose noise no
+        longer corresponds to any honest privacy claim.
+        """
+        if self._dp_mode != "enabled" or not math.isfinite(self._dp_epsilon):
+            return
+        if self._stats["dp_cumulative_epsilon"] >= self._dp_epsilon:
+            raise DPBudgetExhausted(
+                f"[{self._node_id}] DP privacy budget exhausted: spent "
+                f"{self._stats['dp_cumulative_epsilon']:.6f} of "
+                f"(epsilon={self._dp_epsilon}, delta={self._dp_delta}). "
+                f"Refusing to run another round with stale calibration."
+            )
 
     def add_peer(self, peer_id: str) -> None:
         self._peers.add(peer_id)
@@ -161,7 +355,12 @@ class FederatedFineTuner:
 
         Returns:
             Dict with round metrics.
+
+        Raises:
+            DPBudgetExhausted: If ``dp_mode="enabled"`` and the accumulated
+                privacy spend already meets or exceeds ``dp_epsilon``.
         """
+        self._check_budget()
         self._round += 1
         round_start = time.time()
 
@@ -182,8 +381,10 @@ class FederatedFineTuner:
         local_grads = local_train_fn(self._local_steps)
         self._stats["total_local_steps"] += self._local_steps
 
-        # Step 1.5: Apply differential privacy (clip + noise)
-        if self._dp_epsilon < float("inf"):
+        # Step 1.5: Apply differential privacy (clip, then noise).
+        # Clipping bounds sensitivity in both modes; noise is added ONLY in
+        # dp_mode="enabled" (audit A-C2: clip_only is not DP).
+        if math.isfinite(self._dp_epsilon):
             local_grads = self._clip_gradients(local_grads)
             local_grads = self._add_dp_noise(local_grads)
 
@@ -362,11 +563,17 @@ class FederatedFineTuner:
                 a list of LoRA gradient tensors per round.
 
         Returns:
-            Final training stats.
+            Final training stats.  When ``dp_mode="enabled"`` the loop stops
+            early (with a WARNING) if the (epsilon, delta) budget is
+            exhausted before ``num_rounds`` complete.
         """
         for round_idx in range(self._num_rounds):
             logger.info(f"Federated round {round_idx + 1}/{self._num_rounds}")
-            metrics = self.train_round(local_train_fn)
+            try:
+                metrics = self.train_round(local_train_fn)
+            except DPBudgetExhausted as e:
+                logger.warning(f"Stopping federated training early: {e}")
+                break
             logger.info(f"  Round complete: {metrics['elapsed_s']}s, "
                          f"{metrics['gradients_received']} peer gradients")
 

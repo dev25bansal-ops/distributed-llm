@@ -231,25 +231,30 @@ class TestRecoveryManagerHistory:
 class TestLayerRedistribution:
 
     def test_even_split(self):
+        """Head-edge failure with a single adjacent survivor.
+
+        C3 fix: only the ADJACENT survivor absorbs; the pre-fix code
+        split across all survivors, producing overlapping ranges.
+        """
         redistributions = compute_redistributions(
             failed_start_layer=0,
             failed_end_layer=5,
             surviving_nodes={"n1": (6, 11), "n2": (12, 17)},
         )
-        assert len(redistributions) == 2
-        total_added = sum(
-            r.added_end_layer - r.added_start_layer + 1
-            for r in redistributions
-        )
-        assert total_added == 6
+        assert [r.surviving_node_id for r in redistributions] == ["n1"]
+        r = redistributions[0]
+        assert (r.added_start_layer, r.added_end_layer) == (0, 5)
+        assert (r.new_start_layer, r.new_end_layer) == (0, 11)
 
     def test_uneven_split_with_remainder(self):
+        """Adjacent survivor absorbs the whole orphan when it is the only
+        neighbor on that side of the failed range."""
         redistributions = compute_redistributions(
             failed_start_layer=0,
             failed_end_layer=4,
             surviving_nodes={"n1": (5, 9), "n2": (10, 14)},
         )
-        assert len(redistributions) == 2
+        assert [r.surviving_node_id for r in redistributions] == ["n1"]
         total_added = sum(
             r.added_end_layer - r.added_start_layer + 1
             for r in redistributions

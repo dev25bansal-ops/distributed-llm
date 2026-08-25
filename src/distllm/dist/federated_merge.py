@@ -16,11 +16,13 @@ Features:
 from __future__ import annotations
 
 import copy
+import hashlib
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import torch
 from loguru import logger
 
@@ -465,96 +467,274 @@ class FederatedMergeCoordinator:
 
 
 class SecureAggregator:
-    """Secure aggregation for federated learning using additive secret sharing.
+    """Secure aggregation for federated learning via pairwise-cancelling masks.
 
-    Each node splits its gradient into N random shares (one per peer),
-    sends share_i to peer_i, and sums the received shares. The result
-    is that no single node sees any other node's raw gradient — only
-    the aggregate is revealed.
+    Protocol (simplified SecAgg, Bonawitz et al. 2017, mask phase only):
 
-    This implements a simplified version of the SecAgg protocol
-    (Bonawitz et al. 2017) without the masking/unmasking phase.
+    Every unordered pair of parties (i, j) shares a symmetric 32-byte key.
+    For a given round nonce, party i derives ``m_ij = PRF(key_ij, nonce)``
+    as an integer-valued float tensor and adds
+
+        mask_i = Σ_{j>i} m_ij − Σ_{j<i} m_ij
+
+    to its gradient before sending it anywhere.  Because each pairwise mask
+    appears exactly once with a + sign and exactly once with a − sign across
+    the whole party set, the masks cancel **by construction**:
+
+        Σ_i (g_i + mask_i) = Σ_i g_i
+
+    Any party that collects every participant's masked vector — including
+    its own masked vector, which ``aggregate_received_shares`` recomputes —
+    recovers the exact global sum (and hence the mean).  No individual
+    gradient is revealed: what leaves a party is its gradient plus a
+    deterministic pseudorandom mask that no single peer can strip alone.
+
+    Trust model / documented limitations (read before shipping):
+      * Full participation is required for exactness.  If a peer drops out,
+        the dead edge's mask terms cannot cancel and every survivor computes
+        the same residual-shifted sum.  A WARNING naming the missing peer is
+        logged.  Recovering exactness under dropout requires the Shamir
+        seed-recovery phase of full SecAgg (not implemented here).
+      * Masks are integer-valued floats bounded by ``mask_bound`` so they
+        cancel bit-exact on the float32 mantissa; arbitrary float gradients
+        aggregate within fp rounding tolerance.  True finite-field arithmetic
+        (exact for any magnitude) is future work.
+      * Integer-dtype gradients are rejected: they need modular arithmetic.
+      * Keys must come from an authenticated channel (e.g. X25519-derived);
+        this class consumes key material, it does not establish it.
+      * The coordinator/aggregator sees masked vectors only; it must not
+        learn any party's pairwise keys.
 
     Usage::
 
-        aggregator = SecureAggregator(node_id="node-1", peer_ids=["node-2", "node-3"])
-        shares = aggregator.split_gradients(local_gradients)
-        # Send shares[i] to peer_i
-        received = aggregator.receive_shares(peer_shares)
-        aggregate = aggregator.aggregate(received)
+        # Once per pair, over an authenticated channel:
+        keys = {("node-1", "node-2"): shared_secret_32_bytes, ...}
+
+        aggregator = SecureAggregator(
+            node_id="node-1",
+            peer_ids=["node-2", "node-3"],
+            pairwise_keys=keys,
+            round_nonce=b"round-17",
+        )
+        masked = aggregator.split_gradients(local_gradients)
+        # Send masked[peer] to that peer (or to the collector) ...
+        aggregate = aggregator.aggregate_received_shares(
+            local_gradients, received_masked_vectors
+        )
+        mean = [t / num_parties for t in aggregate]
     """
 
-    def __init__(self, node_id: str, peer_ids: list[str]):
+    #: Per-element upper bound for mask magnitude.  Masks are integer-valued
+    #: floats in (-bound, bound); float32 represents integers exactly up to
+    #: 2**24, so a pair of cancelling masks plus typical gradient values stay
+    #: exactly representable and cancel bit-exact.
+    _MASK_BOUND = 1 << 17
+
+    def __init__(
+        self,
+        node_id: str,
+        peer_ids: list[str],
+        pairwise_keys: dict[tuple[str, str], bytes] | None = None,
+        round_nonce: bytes = b"",
+        mask_bound: int | None = None,
+    ):
         self._node_id = node_id
         self._peer_ids = list(peer_ids)
-        self._num_parties = len(peer_ids) + 1  # Including self
+
+        if node_id in self._peer_ids:
+            raise ValueError(
+                f"peer list for node {node_id!r} contains the node itself"
+            )
+
+        if self._peer_ids:
+            if not pairwise_keys:
+                raise ValueError(
+                    f"SecureAggregator for {node_id!r} requires a pairwise key "
+                    f"for every peer; got no key material. Refusing to run "
+                    f"mask-less 'secure' aggregation (fail closed)."
+                )
+            normalized: dict[tuple[str, str], bytes] = {}
+            for pair, key in pairwise_keys.items():
+                a, b = sorted(pair[:2])
+                if a == b:
+                    raise ValueError(
+                        f"pairwise key entry {pair!r} pairs a node with itself"
+                    )
+                if len(key) != 32:
+                    raise ValueError(
+                        f"pairwise key for {pair!r} must be exactly 32 bytes, "
+                        f"got {len(key)}"
+                    )
+                normalized[(a, b)] = key
+            self._pair_keys = normalized
+
+            missing = [
+                p for p in self._peer_ids
+                if tuple(sorted((node_id, p))) not in self._pair_keys
+            ]
+            if missing:
+                raise ValueError(
+                    f"missing pairwise key(s) between {node_id!r} and "
+                    f"{missing}: secure aggregation cannot run without them"
+                )
+        else:
+            self._pair_keys = {}
+
+        self._round_nonce = bytes(round_nonce)
+        self._mask_bound = (
+            mask_bound if mask_bound is not None else self._MASK_BOUND
+        )
+        if self._mask_bound <= 0 or self._mask_bound > (1 << 23):
+            raise ValueError(
+                f"mask_bound must be in (0, 2**23], got {self._mask_bound}"
+            )
+
+    # ── Mask derivation ─────────────────────────────────────────────────
+
+    def _pairwise_mask(self, other_id: str, like: torch.Tensor) -> torch.Tensor:
+        """Derive this node's signed pairwise mask toward ``other_id``.
+
+        Sign convention: positive when ``self._node_id < other_id``,
+        negative otherwise — this is what makes Σ_i mask_i ≡ 0: the edge
+        (i, j) contributes +m_ij to party i's total and −m_ij to party j's.
+        """
+        pair = tuple(sorted((self._node_id, other_id)))
+        key = self._pair_keys[pair]
+        material = (
+            key + len(self._round_nonce).to_bytes(4, "big") + self._round_nonce
+        )
+        digest = hashlib.sha256(material).digest()
+
+        # Expand the digest into enough uniform bytes to cover the tensor
+        # (SHA-256 in counter mode).
+        need = like.numel() * 4
+        stream = bytearray()
+        counter = 0
+        while len(stream) < need:
+            stream.extend(
+                hashlib.sha256(digest + counter.to_bytes(4, "big")).digest()
+            )
+            counter += 1
+
+        words = np.frombuffer(bytes(stream[:need]), dtype="<u4").reshape(
+            like.shape
+        )
+
+        bound = self._mask_bound
+        vals = (words.astype(np.int64) % (2 * bound)) - bound
+        mask = torch.from_numpy(vals.astype(np.float32)).reshape(like.shape).to(
+            like.dtype
+        )
+        if other_id < self._node_id:
+            mask = -mask
+        return mask
+
+    def _own_mask_sum(self, like: torch.Tensor) -> torch.Tensor:
+        """Total mask this node adds to every gradient tensor."""
+        total = torch.zeros_like(like)
+        for peer in self._peer_ids:
+            total = total + self._pairwise_mask(peer, like)
+        return total
+
+    # ── Public API ──────────────────────────────────────────────────────
 
     def split_gradients(
         self, gradients: list[torch.Tensor]
     ) -> dict[str, list[torch.Tensor]]:
-        """Split gradients into additive shares for each peer.
+        """Return each peer's copy of this node's masked gradients.
 
-        Returns a dict mapping peer_id -> list of share tensors.
-        The caller keeps the self-share internally.
+        With pairwise cancelling masks every participant sends the SAME
+        masked vector to all peers (the mask is the node's own), so the
+        returned lists are independent clones of one masked vector — one
+        entry per peer, never shared storage.
         """
-        shares: dict[str, list[torch.Tensor]] = {}
-        self_shares: list[torch.Tensor] = []
+        if not self._peer_ids:
+            return {}
 
         for grad in gradients:
-            # Generate random shares for each peer
-            peer_shares = {}
-            running_sum = torch.zeros_like(grad)
+            if not grad.dtype.is_floating_point:
+                raise NotImplementedError(
+                    f"SecureAggregator supports floating-point tensors only; "
+                    f"got {grad.dtype}. Integer gradients require modular "
+                    f"(finite-field) arithmetic, which is not implemented."
+                )
 
-            for peer_id in self._peer_ids:
-                share = torch.randn_like(grad)
-                peer_shares[peer_id] = share
-                running_sum += share
+        masked_vecs = [grad + self._own_mask_sum(grad) for grad in gradients]
 
-            # Self share = gradient - sum of peer shares
-            self_share = grad - running_sum
-            self_shares.append(self_share)
-
-            for peer_id, share in peer_shares.items():
-                if peer_id not in shares:
-                    shares[peer_id] = []
-                shares[peer_id].append(share)
-
-        return shares
+        out: dict[str, list[torch.Tensor]] = {}
+        for peer_id in self._peer_ids:
+            out[peer_id] = [m.clone() for m in masked_vecs]
+        return out
 
     def aggregate_received_shares(
         self,
         self_gradients: list[torch.Tensor],
         received_shares: dict[str, list[torch.Tensor]],
     ) -> list[torch.Tensor]:
-        """Aggregate received shares with self-gradients to get the sum.
+        """Combine own masked gradient with peers' masked vectors.
 
         Args:
-            self_gradients: Own gradients (used to compute self-shares).
-            received_shares: Dict of peer_id -> list of share tensors.
+            self_gradients: Own raw gradients (one tensor per slot).
+            received_shares: Dict of peer_id -> list of that peer's masked
+                gradient tensors (same slot order and shapes).
 
         Returns:
-            Aggregated gradient tensors (sum of all parties' gradients).
+            Aggregated tensors — the exact SUM over all participants'
+            gradients when every configured peer contributed (full
+            participation).  Divide by the participant count for the mean.
+
+        Dropout behavior (documented): a missing peer's dead-edge mask terms
+        cannot cancel, so the result shifts by a residual shared by all
+        survivors; a WARNING names each dropped peer.  Contributions from
+        ids outside the configured peer list are excluded with a WARNING.
         """
-        if not received_shares:
-            return self_gradients
+        expected_peers = set(self._peer_ids)
+        delivered = {
+            pid: shares
+            for pid, shares in received_shares.items()
+            if pid in expected_peers
+        }
+        for stranger in sorted(set(received_shares) - expected_peers):
+            logger.warning(
+                f"SecureAggregator[{self._node_id}]: ignoring contribution "
+                f"from non-peer id {stranger!r}"
+            )
 
-        num_grads = len(self_gradients)
-        aggregated = [torch.zeros_like(g) for g in self_gradients]
+        dropped = sorted(p for p in expected_peers if p not in delivered)
+        if dropped:
+            logger.warning(
+                f"SecureAggregator[{self._node_id}]: dropout detected — no "
+                f"masked vector from peer(s) {dropped}; the aggregate is "
+                f"shifted by their dead-edge mask residual and will NOT "
+                f"equal the sum over delivered participants."
+            )
 
-        # Add received shares
-        for peer_id, peer_shares in received_shares.items():
-            for i, share in enumerate(peer_shares):
-                if i < num_grads:
-                    aggregated[i] += share
-
-        # Add self shares (gradient - sum_of_peer_shares)
+        aggregated: list[torch.Tensor] = []
         for i, grad in enumerate(self_gradients):
-            if i < num_grads:
-                # Self share = grad - sum(peer_shares_sent_to_peers)
-                # But we need to add back the self share which is grad - sum(sent)
-                # Actually: aggregate = sum(all_shares) = self_share + sum(received_shares)
-                # self_share = grad - sum(shares_sent), so aggregate = grad
-                # The protocol ensures aggregate = sum of all gradients
-                aggregated[i] = aggregated[i] + grad
-
+            if not grad.dtype.is_floating_point:
+                raise NotImplementedError(
+                    f"SecureAggregator supports floating-point tensors only; "
+                    f"got {grad.dtype}. Integer gradients require modular "
+                    f"(finite-field) arithmetic, which is not implemented."
+                )
+            # Self term must be this node's MASKED vector (grad + own mask) —
+            # the same vector split_gradients distributes — so all N masks
+            # enter the sum and cancel to zero:
+            #   Σ_i (g_i + mask_i) = Σ_i g_i + Σ_i mask_i = Σ_i g_i.
+            total = grad + self._own_mask_sum(grad)
+            for pid, shares in delivered.items():
+                if i < len(shares):
+                    share = shares[i]
+                    if share.shape != grad.shape:
+                        raise ValueError(
+                            f"shape mismatch from peer {pid!r} at slot {i}: "
+                            f"{tuple(share.shape)} vs {tuple(grad.shape)}"
+                        )
+                    if share.dtype != grad.dtype:
+                        raise ValueError(
+                            f"dtype mismatch from peer {pid!r} at slot {i}: "
+                            f"{share.dtype} vs {grad.dtype}"
+                        )
+                    total = total + share
+            aggregated.append(total)
         return aggregated

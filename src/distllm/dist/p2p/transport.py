@@ -228,6 +228,27 @@ class GossipTransport:
         msg["_hmac"] = signature
         return msg
 
+    def _verify_message(self, data: dict) -> bool:
+        """Verify an incoming message's HMAC signature.
+
+        Returns ``True`` when no key is configured (legacy unauthenticated
+        mode — callers log their own loud warning at construction time).
+        With a configured key, missing/malformed/invalid signatures all
+        fail closed in constant time.
+        """
+        if self._hmac_key is None:
+            return True
+        signature = data.get("_hmac")
+        if not isinstance(signature, str):
+            return False
+        unsigned = dict(data)
+        unsigned.pop("_hmac", None)
+        serialized = json.dumps(unsigned, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        expected = hmac.new(
+            self._hmac_key.encode(), msg=serialized, digestmod=hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(signature, expected)
+
     def _get_session(self):
         if self._session is None:
             import httpx
@@ -321,6 +342,26 @@ class GossipTransport:
 
             if response.status_code == 200:
                 result = json.loads(response.text)
+                # SECURITY (area-analysis H7): the fetch response carries
+                # peer-controlled cache entries.  When this node signs its
+                # gossip traffic, verify the peer's response signature before
+                # handing any entry data to callers.  Unsigned responses are
+                # rejected here too — a shared-key deployment must not accept
+                # unauthenticated fetch data from a legacy/compromised peer.
+                if self._hmac_key is not None and "_hmac" not in result:
+                    logger.warning(
+                        f"KV fetch from {peer_id}: response missing HMAC "
+                        "signature — rejecting"
+                    )
+                    self._transfer.record_transfer(0, success=False)
+                    return None
+                if not self._verify_message(result):
+                    logger.warning(
+                        f"KV fetch from {peer_id}: response failed HMAC "
+                        "verification — rejecting"
+                    )
+                    self._transfer.record_transfer(0, success=False)
+                    return None
                 total_size = sum(
                     len(e.get("data", b"")) if isinstance(e, dict) else len(str(e).encode())
                     for e in result.get("cache_entries", {}).values()

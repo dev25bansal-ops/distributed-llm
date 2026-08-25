@@ -758,6 +758,20 @@ app.add_middleware(DedupMiddleware)
 # PluginHookMiddleware on the way in).
 app.add_middleware(PluginHookMiddleware)
 
+# QuotaMiddleware — per-tenant quota enforcement (tokens/day, req/min,
+# concurrency) via UsageMeter.  MUST run after auth so request.state carries
+# tenant identity: add_middleware prepends, so registering BEFORE
+# AuthMiddleware makes it INNER — it executes after auth on the way in.
+# Tenant attribution: SSO requests carry request.state.tenant_id; API-key
+# requests fall back to api_key_id (AuthMiddleware sets no tenant_id).
+# Gated by DISTLLM_QUOTA_ENABLED (default "1" = on); only tracked inference
+# paths (/v1/chat/completions, /v1/completions, /v1/embeddings) are metered.
+if os.environ.get("DISTLLM_QUOTA_ENABLED", "1") == "1":
+    from distllm.api.quota_middleware import QuotaMiddleware
+    app.add_middleware(QuotaMiddleware)
+    logger.info("QuotaMiddleware registered (per-tenant quotas active)")
+
+
 # AuthMiddleware registered AFTER PluginHookMiddleware so it runs first
 # (outermost) and populates request.state before plugin hooks dispatch.
 app.add_middleware(AuthMiddleware)

@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from loguru import logger
 
 from distllm.dist.p2p.gossip import (
     GossipProtocol,
@@ -1280,3 +1281,307 @@ class TestProcessResponse:
         assert req["requester_id"] == "test-node"
         assert req["target_node_id"] == "target-peer"
         assert req["requested_prefixes"] == ["h1", "h2"]
+
+
+# =========================================================================
+# 14. Signed KV lookup/fetch (Wave 2 item 3)
+#
+# Advertisements were always HMAC-authenticated; the fetch path (lookup
+# + response merge) previously accepted anything from anyone.  These
+# tests pin the closed gap: lookups signed with the existing shared-key
+# scheme are authorized, tampered/unsigned ones rejected, and legacy
+# (no shared key) deployments keep working with a loud warning.
+# =========================================================================
+
+
+class TestSignedKVFetch:
+    """HMAC authorization of the gossip KV fetch path."""
+
+    KEY = "wave2-fetch-shared-secret-abcdef0123456789"
+
+    @pytest.fixture
+    def receiver(self):
+        """Node holding cache entries, under the shared deployment key."""
+        return GossipProtocol(node_id="receiver", hmac_key=self.KEY)
+
+    @pytest.fixture
+    def sender(self):
+        """Legitimate peer under the same shared deployment key."""
+        return GossipProtocol(node_id="sender", hmac_key=self.KEY)
+
+    # ------------------------------------------------------------------
+    # authorize_fetch_request — signed / tampered / unsigned
+    # ------------------------------------------------------------------
+
+    def test_signed_lookup_accepted(self, receiver, sender):
+        """A correctly-signed fetch is authorized."""
+        request = sender.sign_fetch_request(
+            {"requester_id": "sender", "prefix_hashes": ["h1"]}
+        )
+        ok, reason = receiver.authorize_fetch_request(request)
+        assert ok is True
+        assert reason == ""
+
+    def test_signed_lookup_survives_json_roundtrip(self, receiver, sender):
+        """Authorization works after serialize/deserialize (wire fidelity)."""
+        request = sender.sign_fetch_request(
+            {"requester_id": "sender", "prefix_hashes": ["h1", "h2"]}
+        )
+        wire = json.loads(json.dumps(request))
+        ok, _ = receiver.authorize_fetch_request(wire)
+        assert ok is True
+
+    def test_tampered_signature_rejected(self, receiver, sender):
+        """Modifying content after signing invalidates the signature."""
+        request = sender.sign_fetch_request(
+            {"requester_id": "sender", "prefix_hashes": ["h1"]}
+        )
+        request["prefix_hashes"] = ["victim-only-entry"]
+        ok, reason = receiver.authorize_fetch_request(request)
+        assert ok is False
+        assert reason == "invalid_signature"
+
+    def test_unsigned_rejected_when_secret_configured(self, receiver):
+        """Fail closed: no _hmac field -> rejected under a shared key."""
+        ok, reason = receiver.authorize_fetch_request(
+            {"requester_id": "anyone", "prefix_hashes": ["h1"]}
+        )
+        assert ok is False
+        assert reason == "missing_signature"
+
+    def test_missing_signature_value_rejected_when_secret_configured(self, receiver):
+        ok, reason = receiver.authorize_fetch_request(
+            {"requester_id": "anyone", "_hmac": None}
+        )
+        assert ok is False
+
+    def test_non_string_signature_rejected(self, receiver):
+        """Hostile non-str _hmac must be rejected, not raise TypeError
+        out of hmac.compare_digest."""
+        ok, reason = receiver.authorize_fetch_request(
+            {"requester_id": "anyone", "_hmac": 12345}
+        )
+        assert ok is False
+        assert reason in ("missing_signature", "invalid_signature")
+
+    def test_none_request_rejected_when_secret_configured(self, receiver):
+        ok, reason = receiver.authorize_fetch_request(None)
+        assert ok is False
+        assert reason == "missing_request"
+
+    def test_wrong_key_signature_rejected(self, receiver):
+        """Signature produced under a different secret fails verification."""
+        attacker = GossipProtocol(node_id="attacker", hmac_key="different-key")
+        request = attacker.sign_fetch_request(
+            {"requester_id": "attacker", "prefix_hashes": ["h1"]}
+        )
+        ok, reason = receiver.authorize_fetch_request(request)
+        assert ok is False
+        assert reason == "invalid_signature"
+
+    def test_verify_message_non_string_hmac_is_false_not_crash(self):
+        """Regression guard: verify_message on hostile types returns False."""
+        p = GossipProtocol(node_id="n1", hmac_key=self.KEY)
+        assert p.verify_message({"data": "x", "_hmac": 42}) is False
+        assert p.verify_message({"data": "x", "_hmac": b"bytes"}) is False
+        assert p.verify_message({"data": "x", "_hmac": {"a": 1}}) is False
+
+    # ------------------------------------------------------------------
+    # Legacy mode — no shared key configured
+    # ------------------------------------------------------------------
+
+    def test_legacy_mode_accepts_unsigned_with_warning(self, monkeypatch, tmp_path):
+        """No shared secret -> unsigned fetch served for backward compat,
+        with a loud one-time warning (kademlia_dht.py convention)."""
+        # Isolate the persistent-key fallback from the developer's machine.
+        monkeypatch.setenv(
+            "DISTLLM_GOSSIP_KEY_FILE", str(tmp_path / "gossip_hmac.key")
+        )
+        records: list = []
+        handler_id = logger.add(lambda m: records.append(m.record), level="WARNING")
+        try:
+            legacy = GossipProtocol(node_id="legacy-node")
+            assert legacy.has_shared_hmac_key is False
+            request = {"requester_id": "p", "prefix_hashes": ["h1"]}  # unsigned
+            ok, reason = legacy.authorize_fetch_request(request)
+            assert ok is True
+            assert reason == ""
+            # Signed-by-nobody content still passes in legacy mode.
+            ok2, _ = legacy.authorize_fetch_request(dict(request))
+            assert ok2 is True
+        finally:
+            logger.remove(handler_id)
+
+        warnings = [r for r in records if "cache lookup requests" in r["message"]]
+        assert len(warnings) >= 1
+        assert "NOT authenticated" in warnings[0]["message"]
+
+    def test_legacy_mode_warns_only_once(self, monkeypatch, tmp_path):
+        """The unauthenticated-fetch warning fires once per protocol."""
+        monkeypatch.setenv(
+            "DISTLLM_GOSSIP_KEY_FILE", str(tmp_path / "gossip_hmac.key")
+        )
+        records: list = []
+        handler_id = logger.add(lambda m: records.append(m.record), level="WARNING")
+        try:
+            legacy = GossipProtocol(node_id="legacy-node-2")
+            legacy.authorize_fetch_request({"prefix_hashes": []})
+            legacy.authorize_fetch_request({"prefix_hashes": []})
+            legacy.authorize_fetch_request({"prefix_hashes": []})
+        finally:
+            logger.remove(handler_id)
+
+        warnings = [r for r in records if "cache lookup requests" in r["message"]]
+        assert len(warnings) == 1
+
+    def test_shared_mode_does_not_emit_legacy_warning(self, receiver):
+        """Under a shared key, authorization paths reject instead of
+        warning about unauthenticated mode."""
+        request = {
+            "requester_id": "s",
+            "prefix_hashes": ["h1"],
+            "_hmac": "f" * 64,
+        }
+        ok, reason = receiver.authorize_fetch_request(request)
+        assert ok is False
+        assert reason == "invalid_signature"
+        assert not getattr(receiver, "_fetch_warning_logged", False)
+
+    # ------------------------------------------------------------------
+    # process_response — forged cache-index entries (area-analysis H7)
+    # ------------------------------------------------------------------
+
+    def test_process_response_accepts_validly_signed_entries(self, receiver, sender):
+        payload = sender.sign_message({
+            "success": True,
+            "cache_entries": {"h1": "ref-1"},
+        })
+        count = receiver.process_response(payload)
+        assert count == 1
+        assert any(
+            nid == "unknown" and ref == "ref-1"
+            for nid, ref, _ in receiver.state.cache_index["h1"]
+        )
+
+    def test_process_response_rejects_forged_entries(self, receiver):
+        """Tampered/unsigned-with-bad-sig response merges nothing."""
+        forged = {
+            "success": True,
+            "cache_entries": {"evil": "forged-ref"},
+            "_hmac": "a" * 64,
+        }
+        count = receiver.process_response(forged)
+        assert count == 0
+        assert "evil" not in receiver.state.cache_index
+
+    def test_process_response_unsigned_still_merges_in_dev_mode(self, monkeypatch, tmp_path):
+        """Legacy mode (no key): unsigned responses merge as before."""
+        monkeypatch.setenv(
+            "DISTLLM_GOSSIP_KEY_FILE", str(tmp_path / "gossip_hmac.key")
+        )
+        dev = GossipProtocol(node_id="dev-node")
+        resp = {"success": True, "cache_entries": {"h1": "r1"}}
+        assert dev.process_response(resp) == 1
+        assert "h1" in dev.state.cache_index
+
+    # ------------------------------------------------------------------
+    # handle_bloom_exchange — response signing under shared key
+    # ------------------------------------------------------------------
+
+    def test_bloom_exchange_response_is_signed_under_shared_key(self, receiver, sender):
+        msg = sender.sign_message({
+            "node_id": "sender",
+            "type": "bloom_exchange",
+            "bloom_filter": sender.build_bloom_filter(),
+        })
+        resp = receiver.handle_bloom_exchange(msg)
+        assert resp["success"] is True
+        assert "_hmac" in resp
+        assert receiver.verify_message(resp) is True
+
+
+class TestTransportFetchResponseVerification:
+    """GossipTransport verifies fetch responses before returning them."""
+
+    KEY = "transport-fetch-key-0123456789abcdef"
+
+    @staticmethod
+    def _make_transport(hmac_key=None):
+        """Transport with a resolver pointing at a dummy address (the
+        session is mocked, so no real network I/O happens)."""
+        from distllm.dist.p2p.transport import GossipTransport
+
+        return GossipTransport(
+            node_id="t-node",
+            peer_resolver=lambda pid: ("127.0.0.1", 50052),
+            hmac_key=hmac_key,
+        )
+
+    @staticmethod
+    def _sign(payload: dict, key: str) -> dict:
+        serialized = json.dumps(
+            payload, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        sig = hmac.new(key.encode(), msg=serialized, digestmod=hashlib.sha256)
+        out = dict(payload)
+        out["_hmac"] = sig.hexdigest()
+        return out
+
+    def test_unsigned_response_rejected_when_key_configured(self):
+        transport = self._make_transport(hmac_key=self.KEY)
+        # Patch session.post to return an unsigned 200 response.
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.text = json.dumps({"success": True, "cache_entries": {"h1": "r"}})
+        session = MagicMock()
+        session.post.return_value = fake_resp
+        transport._session = session
+
+        result = transport.request_kv_cache("peer-1", ["h1"])
+        assert result is None  # unsigned data must not reach callers
+
+    def test_validly_signed_response_accepted(self):
+        transport = self._make_transport(hmac_key=self.KEY)
+        body = self._sign(
+            {"success": True, "cache_entries": {"h1": "r"}}, self.KEY
+        )
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.text = json.dumps(body)
+        session = MagicMock()
+        session.post.return_value = fake_resp
+        transport._session = session
+
+        result = transport.request_kv_cache("peer-1", ["h1"])
+        assert result is not None
+        assert result["cache_entries"]["h1"] == "r"
+
+    def test_tampered_response_rejected(self):
+        transport = self._make_transport(hmac_key=self.KEY)
+        body = self._sign(
+            {"success": True, "cache_entries": {"h1": "benign"}}, self.KEY
+        )
+        body["cache_entries"]["h2"] = "injected"  # tamper post-signature
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.text = json.dumps(body)
+        session = MagicMock()
+        session.post.return_value = fake_resp
+        transport._session = session
+
+        result = transport.request_kv_cache("peer-1", ["h1"])
+        assert result is None
+
+    def test_no_key_legacy_mode_accepts_unsigned(self):
+        """Without a key, behavior is unchanged (legacy open mode)."""
+        transport = self._make_transport(hmac_key=None)
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.text = json.dumps({"success": True, "cache_entries": {"h1": "r"}})
+        session = MagicMock()
+        session.post.return_value = fake_resp
+        transport._session = session
+
+        result = transport.request_kv_cache("peer-1", ["h1"])
+        assert result is not None
+        assert result["success"] is True

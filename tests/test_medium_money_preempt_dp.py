@@ -104,6 +104,7 @@ def test_dp_epsilon_composition():
         node_id="n1",
         local_steps=1,
         num_rounds=10,
+        dp_mode="enabled",  # M4 tests the real-DP path (A-C2)
         dp_epsilon=total_eps,
         dp_delta=total_delta,
         dp_max_grad_norm=1.0,
@@ -125,6 +126,9 @@ def test_dp_epsilon_composition():
     # a smaller epsilon denominator -> larger noise. Sanity: per-round eps < total.
     per_round_eps = total_eps / 10
     assert per_round_eps < total_eps
+    # Noise was actually added and calibrated to the per-round share.
+    assert ft._stats["dp_noise_added"] is True
+    assert ft._stats["dp_sigma"] is not None
 
 
 # ── M6: radix LRU eviction correctness + no O(n^2) blowup ──────────────────

@@ -27,13 +27,17 @@ import threading
 import torch
 
 from distllm.core.dp_inference.accounting import RDPAccounting
-from distllm.core.federated_finetuner import FederatedFineTuner
+from distllm.core.federated_finetuner import DPBudgetExhausted, FederatedFineTuner
 
 # ── Privacy / training configuration ────────────────────────────────────────
 NUM_ROUNDS = 4
 LOCAL_STEPS = 10
 LEARNING_RATE = 0.3
-DP_EPSILON = 8.0           # target privacy budget (any finite value enables DP)
+# Budget must cover the whole run: one sigma=1.0 Gaussian query costs
+# ~5.3 epsilon at delta=1e-5, so four rounds cost ~21.2.  Set the budget
+# lower (e.g. 8.0) to watch training STOP when privacy runs out -- the
+# tuner refuses to broadcast gradients it can no longer account for.
+DP_EPSILON = 25.0
 DP_DELTA = 1e-5
 DP_MAX_GRAD_NORM = 1.0     # L2 clip bound -> bounds gradient sensitivity
 DP_NOISE_MULTIPLIER = 1.0  # sigma = max_grad_norm * noise_multiplier = 1.0
@@ -137,7 +141,12 @@ def main():
         results: dict[str, dict] = {}
 
         def run_round(tuner, node, node_id):
-            results[node_id] = tuner.train_round(node.local_train)
+            try:
+                results[node_id] = tuner.train_round(node.local_train)
+            except DPBudgetExhausted as e:
+                # The tuner fails closed when the (epsilon, delta) budget
+                # is spent: no more noised broadcasts.
+                results[node_id] = {"stopped": str(e)}
 
         threads = [
             threading.Thread(target=run_round, args=(tuner_a, node_a, "laptop-a")),
@@ -147,6 +156,11 @@ def main():
             t.start()
         for t in threads:
             t.join()
+
+        if any("stopped" in m for m in results.values()):
+            print(f"round {round_idx + 1}: privacy budget exhausted -- "
+                  f"training stopped fail-closed.")
+            break
 
         # Each round exposes one Gaussian-noise query per node; compose them.
         accountant.add_query(sigma)
