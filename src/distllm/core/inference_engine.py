@@ -83,16 +83,17 @@ class _LocalStrategy:
         )
 
     def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        """Yield tokens one at a time from local model."""
+        """Yield tokens one at a time from local model.
+
+        Prefills once with ``use_cache=True`` and threads ``past_key_values``
+        through subsequent single-token forwards (KV-cache reuse), so each
+        decode step costs one O(1)-length forward instead of re-forwarding
+        the whole sequence every step.
+        """
         engine = self._engine
         input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
         device = next(engine.local_partitioner.full_model.parameters()).device
         input_ids = input_ids.to(device)
-        prompt_len = input_ids.shape[-1]
-        total_len = prompt_len + max_new_tokens
-        generated = torch.zeros(1, total_len, dtype=torch.long, device=device)
-        generated[:, :prompt_len] = input_ids
-        pos = prompt_len
 
         stop_token_ids: set[int] = set()
         stop_tokens = kwargs.get("stop_tokens")
@@ -101,42 +102,17 @@ class _LocalStrategy:
         if engine.tokenizer.eos_token_id is not None:
             stop_token_ids.add(engine.tokenizer.eos_token_id)
 
-        logit_bias = kwargs.get("logit_bias")
-        constraint = kwargs.get("constraint")
-
-        with torch.no_grad():
-            for _ in range(max_new_tokens):
-                outputs = engine.local_partitioner.full_model(generated[:, :pos])
-                logits = outputs.logits[:, -1, :]
-
-                if logit_bias:
-                    for token_id, bias in logit_bias.items():
-                        if token_id < logits.shape[-1]:
-                            logits[0, token_id] += bias
-
-                if constraint is not None:
-                    mask = constraint.get_logits_mask(logits.shape[-1], engine.tokenizer)
-                    logits = logits.masked_fill(~mask, float("-inf"))
-
-                next_token = engine._token_gen.sample(
-                    logits, temperature=temperature, top_p=top_p, top_k=top_k,
-                )[0]
-                if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0)
-                if next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)
-                token_id = next_token.item()
-                generated[:, pos:pos+1] = next_token
-                pos += 1
-
-                if constraint is not None:
-                    token_str = engine.tokenizer.decode([token_id])
-                    constraint.update(token_str)
-
-                yield engine.tokenizer.decode([token_id], skip_special_tokens=True)
-
-                if token_id in stop_token_ids:
-                    break
+        for token_id in engine._iter_local_tokens(
+            input_ids,
+            max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            logit_bias=kwargs.get("logit_bias"),
+            constraint=kwargs.get("constraint"),
+            stop_token_ids=stop_token_ids,
+        ):
+            yield engine.tokenizer.decode([token_id], skip_special_tokens=True)
 
 
 class _SpeculativeStrategy:
@@ -415,11 +391,17 @@ class _DistributedStrategy:
 
 class _PromptLookupStrategy:
     """Prompt-lookup speculative decoding — reuse matched n-grams from the
-    KV cache prefix as draft tokens, requiring no separate draft model.
+    generated prefix as draft tokens, requiring no separate draft model.
 
     When generating, the current suffix (last N tokens) is searched in the
     prefix.  If a match is found, the tokens *following* that match are used
-    as draft candidates and verified in a single target forward pass.
+    as draft candidates and verified in a single cached forward pass.
+
+    The sequence is prefilled ONCE with ``use_cache=True``; every subsequent
+    verification / fallback pass forwards only the new tokens with
+    ``past_key_values`` threaded through.  Previously this strategy
+    re-forwarded the entire sequence on every round (O(n²) total work), which
+    made it dramatically slower than plain generation.
     """
 
     def __init__(self, engine: "InferenceEngine") -> None:
@@ -430,13 +412,15 @@ class _PromptLookupStrategy:
         self._max_draft: int = 10
 
     def _find_match(
-        self, input_ids: torch.Tensor, min_match: int = 4,
+        self, seq: list[int], min_match: int = 4,
     ) -> tuple[int, int] | None:
-        """Find the longest suffix match of *input_ids* in its own prefix.
+        """Find the longest suffix match of *seq* in its own prefix.
 
-        Returns ``(match_start, match_end)`` or ``None``.
+        ``seq`` is a CPU-side mirror of the generated ids (kept incrementally
+        so no GPU->CPU sync is needed per lookup round).
+
+        Returns ``(match_end, num_draft)`` or ``None``.
         """
-        seq = input_ids[0].tolist()
         n = len(seq)
         if n < min_match + 1:
             return None
@@ -451,74 +435,183 @@ class _PromptLookupStrategy:
                     return match_end, min(available, self._max_draft)
         return None
 
+    def _accept_drafts(
+        self,
+        prev_logits: torch.Tensor,
+        verify_logits: torch.Tensor,
+        draft_ids: torch.Tensor,
+        temperature: float,
+    ) -> int:
+        """Number of leading draft tokens accepted.
+
+        Textbook assisted-generation alignment: a causal LM's logits row at
+        absolute position ``p`` predicts the token at position ``p + 1``.
+        Draft token ``i`` occupies absolute position ``prefix_len + i``, so
+        the model's opinion of it lives one row *earlier*: draft 0 is scored
+        against ``prev_logits`` (the pending prediction that was available
+        before the verify pass), and draft ``i >= 1`` against verify-pass
+        row ``i - 1``.
+
+        Greedy mode is fully batched (one GPU->CPU sync for all k positions);
+        sampled mode keeps a per-position draw order of one ``torch.rand`` +
+        ``multinomial``-free comparison per position.
+        """
+        k = draft_ids.shape[1]
+        # Candidate predictions for positions prefix_len .. prefix_len+k-1:
+        # the pending row followed by verify rows 0..k-2.  Only the first k
+        # rows are consumed.
+        predicted = torch.cat(
+            [prev_logits.unsqueeze(1), verify_logits], dim=1,
+        )[0][:k]
+        accepted = 0
+        if temperature == 0:
+            predicted = predicted.argmax(dim=-1)  # [k]
+            matches = (predicted == draft_ids[0]).tolist()  # one sync
+            for ok in matches:
+                if not ok:
+                    break
+                accepted += 1
+            return accepted
+
+        for i in range(k):
+            probs = torch.softmax(predicted[i : i + 1] / temperature, dim=-1)
+            p = probs[0, draft_ids[0, i]].item()
+            if torch.rand(1).item() >= p:
+                break
+            accepted += 1
+        return accepted
+
     def _generate_tokens(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
         engine = self._engine
+        model = engine.local_partitioner.full_model
         input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
-        device = next(engine.local_partitioner.full_model.parameters()).device
+        device = next(model.parameters()).device
         input_ids = input_ids.to(device)
-        generated = input_ids.clone()
-        prompt_len = generated.shape[1]
+        prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
 
-        while generated.shape[1] < target_len:
-            # 1. Find a matching n-gram suffix in the prefix
-            match = self._find_match(generated, min_match=4)
-            if match is not None:
-                match_end, num_draft = match
-                # Draft tokens = the tokens that followed the matched n-gram
-                draft_ids = generated[0, match_end:match_end + num_draft].unsqueeze(0)
-            else:
-                draft_ids = None
+        # CPU mirror of the generated ids.  Maintained incrementally instead
+        # of calling .tolist() on the device tensor every round (a full
+        # GPU->CPU sync per lookup round in the old implementation).
+        gen_cpu: list[int] = input_ids[0].tolist()
 
-            if draft_ids is not None and draft_ids.shape[1] > 0:
-                # 2. Verify draft tokens with a single target forward pass
-                full_input = torch.cat([generated, draft_ids], dim=1)
-                outputs = engine.local_partitioner.full_model(full_input)
-                target_logits = outputs.logits
-                prefix_len = generated.shape[1]
+        with torch.no_grad():
+            # Prefill once; thread past_key_values through every later pass.
+            outputs = model(input_ids, use_cache=True)
+            past = getattr(outputs, "past_key_values", None)
+            # Invariant: pending_logits holds the logits at absolute position
+            # cache_len - 1, i.e. the prediction for whatever token comes next.
+            pending_logits = outputs.logits[:, -1, :]
 
-                accepted = 0
-                for i in range(draft_ids.shape[1]):
-                    pos = prefix_len + i
-                    if temperature == 0:
-                        if target_logits[:, pos, :].argmax().item() != draft_ids[0, i].item():
-                            break
+            while len(gen_cpu) < target_len:
+                # Tokens appended to gen_cpu THIS round; every one of them
+                # must be yielded so streamed/collected text matches the
+                # true token sequence (multi-token accept rounds included).
+                new_tokens: list[int] = []
+
+                # 1. Find a matching n-gram suffix in the prefix
+                match = self._find_match(gen_cpu, min_match=4)
+                draft_list: list[int] | None = None
+                if match is not None:
+                    match_end, num_draft = match
+                    draft_list = gen_cpu[match_end:match_end + num_draft]
+
+                if draft_list:
+                    # 2. Verify draft tokens with a single cached forward
+                    # pass over just the drafts.  Row i of the verify logits
+                    # covers absolute position prefix_len + i and PREDICTS
+                    # the token at prefix_len + i + 1 — so the opinion on
+                    # draft i comes from one row earlier (see
+                    # _accept_drafts), with draft 0 scored against the
+                    # pre-verify pending prediction.
+                    draft_ids = torch.tensor(
+                        [draft_list], dtype=torch.long, device=device,
+                    )
+                    v_out = model(
+                        draft_ids, use_cache=True, past_key_values=past,
+                    )
+                    verify_logits = v_out.logits
+                    prefix_len = len(gen_cpu)
+
+                    accepted = self._accept_drafts(
+                        pending_logits, verify_logits, draft_ids, temperature,
+                    )
+                    # Respect the caller's token budget: drafts verified
+                    # beyond the remaining allowance are treated as rejected
+                    # (the crop below discards their KV entries), so the
+                    # strategy never emits more than max_new_tokens.
+                    accepted = min(accepted, target_len - prefix_len)
+
+                    past = getattr(v_out, "past_key_values", None)
+                    if accepted == len(draft_list):
+                        # All drafts verified: keep the appended KV entries.
+                        gen_cpu.extend(draft_list)
+                        new_tokens.extend(draft_list)
+                        pending_logits = verify_logits[:, -1, :]
                     else:
-                        probs = torch.softmax(target_logits[:, pos, :] / temperature, dim=-1)
-                        p = probs[0, draft_ids[0, i]].item()
-                        if torch.rand(1).item() >= p:
-                            break
-                    accepted += 1
-
-                generated = torch.cat([generated, draft_ids[:, :accepted]], dim=1)
-                if accepted < draft_ids.shape[1]:
-                    correction = target_logits[:, generated.shape[1] - 1, :]
+                        # Drop rejected tail's KV entries; keep accepted ones.
+                        # ``accepted`` counts drafts whose prediction (one
+                        # row earlier) matched, so the cache must retain
+                        # exactly prefix_len + accepted entries and the
+                        # correction row for the NEXT token is verify row
+                        # accepted - 1 (it predicts position
+                        # prefix_len + accepted).
+                        if past is not None and hasattr(past, "crop"):
+                            past.crop(prefix_len + accepted)
+                        gen_cpu.extend(draft_list[:accepted])
+                        new_tokens.extend(draft_list[:accepted])
+                        if len(gen_cpu) < target_len:
+                            # Budget remains for the replacement token.
+                            if accepted > 0:
+                                correction = verify_logits[:, accepted - 1, :]
+                            else:
+                                # Nothing accepted: prediction for position
+                                # prefix_len still lives in the previous
+                                # state's last-row logits.
+                                correction = pending_logits
+                            next_token = engine._token_gen.sample(
+                                correction, temperature=temperature,
+                                top_p=top_p, top_k=top_k,
+                            )[0]
+                            if next_token.dim() == 0:
+                                next_token = next_token.unsqueeze(0)
+                            if next_token.dim() == 1:
+                                next_token = next_token.unsqueeze(-1)
+                            tok_id = int(next_token.item())
+                            gen_cpu.append(tok_id)
+                            new_tokens.append(tok_id)
+                            # Append the correction token to the KV cache.
+                            c_out = model(
+                                next_token, use_cache=True,
+                                past_key_values=past,
+                            )
+                            past = getattr(c_out, "past_key_values", None)
+                            pending_logits = c_out.logits[:, -1, :]
+                else:
+                    # 3. No draft match — standard single-token cached step.
                     next_token = engine._token_gen.sample(
-                        correction, temperature=temperature, top_p=top_p, top_k=top_k,
+                        pending_logits, temperature=temperature, top_p=top_p,
+                        top_k=top_k,
                     )[0]
                     if next_token.dim() == 0:
                         next_token = next_token.unsqueeze(0)
                     if next_token.dim() == 1:
                         next_token = next_token.unsqueeze(-1)
-                    generated = torch.cat([generated, next_token], dim=1)
-            else:
-                # 3. No draft match — standard single-token step
-                outputs = engine.local_partitioner.full_model(generated)
-                logits = outputs.logits[:, -1, :]
-                next_token = engine._token_gen.sample(
-                    logits, temperature=temperature, top_p=top_p, top_k=top_k,
-                )[0]
-                if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0)
-                if next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)
-                generated = torch.cat([generated, next_token], dim=1)
+                    tok_id = int(next_token.item())
+                    gen_cpu.append(tok_id)
+                    new_tokens.append(tok_id)
+                    s_out = model(
+                        next_token, use_cache=True, past_key_values=past,
+                    )
+                    past = getattr(s_out, "past_key_values", None)
+                    pending_logits = s_out.logits[:, -1, :]
 
-            yield engine.tokenizer.decode(
-                [generated[0, -1].item()], skip_special_tokens=True,
-            )
-            if generated[0, -1].item() == engine.tokenizer.eos_token_id:
-                break
+                for tok_id in new_tokens:
+                    yield engine.tokenizer.decode(
+                        [tok_id], skip_special_tokens=True,
+                    )
+                    if tok_id == engine.tokenizer.eos_token_id:
+                        return
 
     def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
         """Return the joined generation string (non-streaming contract).
@@ -737,6 +830,79 @@ class InferenceEngine:
             logger.warning(f"Model warmup failed after {elapsed_ms:.0f}ms: {e}")
             return elapsed_ms
 
+    def _iter_local_tokens(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int,
+        *,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        logit_bias=None,
+        constraint=None,
+        stop_token_ids,
+    ):
+        """Prefill-once, KV-cached incremental local decode.
+
+        Yields generated token ids.  The prompt is forwarded a single time
+        with ``use_cache=True``; every following step forwards exactly one
+        token with the persistent ``past_key_values``, turning per-step cost
+        from O(prompt + steps) re-forwards into one O(1) forward.
+
+        Output is numerically equivalent to the previous full-reforward loop
+        (a causal LM's next-token logits depend only on the prefix, which the
+        cache encodes exactly).
+        """
+        model = self.local_partitioner.full_model
+        prompt_len = input_ids.shape[-1]
+        generated = torch.zeros(
+            1, prompt_len + max(1, max_new_tokens), dtype=torch.long,
+            device=input_ids.device,
+        )
+        generated[:, :prompt_len] = input_ids
+        pos = prompt_len
+
+        past = None
+        step_input = input_ids
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                outputs = model(step_input, use_cache=True, past_key_values=past)
+                past = getattr(outputs, "past_key_values", None)
+                logits = outputs.logits[:, -1, :]
+
+                # Apply logit biases
+                if logit_bias:
+                    for bias_id, bias in logit_bias.items():
+                        if bias_id < logits.shape[-1]:
+                            logits[0, bias_id] += bias
+
+                # Apply constraint mask (structured output)
+                if constraint is not None:
+                    mask = constraint.get_logits_mask(logits.shape[-1], self.tokenizer)
+                    logits = logits.masked_fill(~mask, float("-inf"))
+
+                next_token = self._token_gen.sample(
+                    logits, temperature=temperature, top_p=top_p, top_k=top_k,
+                )[0]
+                if next_token.dim() == 0:
+                    next_token = next_token.unsqueeze(0)
+                if next_token.dim() == 1:
+                    next_token = next_token.unsqueeze(-1)
+                token_id = next_token.item()
+                generated[:, pos:pos + 1] = next_token
+                pos += 1
+
+                # Advance structured output constraint
+                if constraint is not None:
+                    token_str = self.tokenizer.decode([token_id])
+                    constraint.update(token_str)
+
+                yield token_id
+
+                if token_id in stop_token_ids:
+                    break
+                step_input = generated[:, pos - 1:pos]
+
     def _select_strategy(self) -> GenerationStrategy:
         """Select the generation strategy based on current engine configuration."""
         # Prompt-lookup speculative decoding: enabled by default for
@@ -950,11 +1116,6 @@ class InferenceEngine:
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
         device = next(self.local_partitioner.full_model.parameters()).device
         input_ids = input_ids.to(device)
-        prompt_len = input_ids.shape[-1]
-        total_len = prompt_len + max_new_tokens
-        generated = torch.zeros(1, total_len, dtype=torch.long, device=device)
-        generated[:, :prompt_len] = input_ids
-        pos = prompt_len
 
         stop_token_ids = set()
         if stop_tokens:
@@ -963,44 +1124,21 @@ class InferenceEngine:
             stop_token_ids.add(self.tokenizer.eos_token_id)
 
         token_counts: dict[int, int] = {}
+        out_ids: list[int] = []
+        for token_id in self._iter_local_tokens(
+            input_ids,
+            max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            logit_bias=logit_bias,
+            constraint=constraint,
+            stop_token_ids=stop_token_ids,
+        ):
+            token_counts[token_id] = token_counts.get(token_id, 0) + 1
+            out_ids.append(token_id)
 
-        with torch.no_grad():
-            for _ in range(max_new_tokens):
-                outputs = self.local_partitioner.full_model(generated[:, :pos])
-                logits = outputs.logits[:, -1, :]
-
-                # Apply logit biases
-                if logit_bias:
-                    for token_id, bias in logit_bias.items():
-                        if token_id < logits.shape[-1]:
-                            logits[0, token_id] += bias
-
-                # Apply constraint mask (structured output)
-                if constraint is not None:
-                    mask = constraint.get_logits_mask(logits.shape[-1], self.tokenizer)
-                    logits = logits.masked_fill(~mask, float('-inf'))
-
-                next_token = self._token_gen.sample(
-                    logits, temperature=temperature, top_p=top_p, top_k=top_k,
-                )[0]
-                if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0)
-                if next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)
-                token_id = next_token.item()
-                token_counts[token_id] = token_counts.get(token_id, 0) + 1
-                generated[:, pos:pos+1] = next_token
-                pos += 1
-
-                # Advance structured output constraint
-                if constraint is not None:
-                    token_str = self.tokenizer.decode([token_id])
-                    constraint.update(token_str)
-
-                if token_id in stop_token_ids:
-                    break
-
-        return self.tokenizer.decode(generated[0, prompt_len:pos], skip_special_tokens=True)
+        return self.tokenizer.decode(out_ids, skip_special_tokens=True)
 
     def _generate_distributed(self, prompt, max_new_tokens, temperature, top_p, top_k,
                               request_id: str | None = None,
