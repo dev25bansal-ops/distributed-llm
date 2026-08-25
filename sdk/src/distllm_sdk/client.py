@@ -517,8 +517,19 @@ class DistLLMClient(_BaseClient):
             kw["timeout"] = timeout
         async with self._client.stream("POST", "/v1/completions", json=payload, **kw) as response:
             response.raise_for_status()
-            async for chunk in parse_sse_stream_async(response):
-                yield chunk
+            # Yield text STRINGS matching chat_completions_stream (W2-39 /
+            # A2-8): the parser emits full SSE event dicts, but callers
+            # expect the same item type from both stream methods. The server
+            # puts completion text at choices[0].text; also tolerate the
+            # documented delta.text shape.
+            async for event in parse_sse_stream_async(response):
+                if "choices" in event and event["choices"]:
+                    choice = event["choices"][0]
+                    text = choice.get("text")
+                    if not text:
+                        text = choice.get("delta", {}).get("text")
+                    if text:
+                        yield text
 
     async def list_models(self) -> ModelList:
         data = await self._request("GET", "/v1/models")
@@ -785,7 +796,20 @@ class DistLLMClientSync(_BaseClient):
             kw["timeout"] = timeout
         with self._client.stream("POST", "/v1/completions", json=payload, **kw) as response:
             response.raise_for_status()
-            yield from parse_sse_stream_sync(response)
+            # Yield text STRINGS matching chat_completions_stream (W2-39 /
+            # A2-8): the parser emits full SSE event dicts, but callers
+            # expect the same item type from both stream methods (see the
+            # sync chat path's F-036 note). The server puts completion text
+            # at choices[0].text; also tolerate the documented delta.text
+            # shape.
+            for event in parse_sse_stream_sync(response):
+                if "choices" in event and event["choices"]:
+                    choice = event["choices"][0]
+                    text = choice.get("text")
+                    if not text:
+                        text = choice.get("delta", {}).get("text")
+                    if text:
+                        yield text
 
     def list_models(self) -> ModelList:
         data = self._request("GET", "/v1/models")

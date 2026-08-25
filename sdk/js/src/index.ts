@@ -135,9 +135,32 @@ export interface ApiError {
 export interface ClientOptions {
   baseUrl?: string;
   apiKey?: string;
+  /**
+   * Timeout in milliseconds.
+   *
+   * - Non-streaming requests: bounds the WHOLE exchange (connection,
+   *   response headers, and body read).
+   * - Streaming (SSE) requests: bounds connection + response headers, then
+   *   acts as an IDLE timeout that re-arms between chunks. A stream that
+   *   keeps producing chunks may legally run longer than this value; a
+   *   stream that goes silent for longer is aborted.
+   *
+   * @default 120_000
+   */
   timeout?: number;
   maxRetries?: number;
   headers?: Record<string, string>;
+}
+
+/**
+ * Thrown when a request exceeds `timeout`, or a stream exceeds the idle
+ * gap between chunks. Distinguishable from network failures via `name`.
+ */
+export class DistLLMTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DistLLMTimeoutError';
+  }
 }
 
 /**
@@ -181,18 +204,21 @@ export class DistLLMClient {
 
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+      // The timeout bounds the WHOLE exchange (connect + headers + body),
+      // not just the pre-header phase.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(
+        () => controller.abort(new DistLLMTimeoutError(`Request to ${path} timed out after ${this.timeout}ms`)),
+        this.timeout,
+      );
 
+      try {
         const response = await fetch(url, {
           method,
           headers,
           body: body ? JSON.stringify(body) : undefined,
           signal: controller.signal,
         });
-
-        clearTimeout(timeoutId);
 
         if (!response.ok) {
           const errorBody = await response.json().catch(() => ({}));
@@ -210,15 +236,38 @@ export class DistLLMClient {
         if (error instanceof DistLLMApiError && error.statusCode < 500) {
           throw error;
         }
+        // Abortions we scheduled ourselves are timeouts, not transient
+        // network faults: surface them instead of retrying.
+        if (
+          error instanceof DistLLMTimeoutError ||
+          controller.signal.aborted
+        ) {
+          throw error instanceof DistLLMTimeoutError
+            ? error
+            : new DistLLMTimeoutError(`Request to ${path} timed out after ${this.timeout}ms`);
+        }
         if (attempt < this.maxRetries) {
           await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 30_000)));
         }
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
     throw lastError;
   }
 
-  /** @internal */
+  /**
+   * Streaming SSE request.
+   *
+   * Timeout semantics differ from {@link DistLLMClient.request}: the
+   * configured timeout bounds CONNECTION + RESPONSE HEADERS only. After
+   * headers arrive, the deadline is replaced by an IDLE TIMER that re-arms
+   * before every chunk read — long-lived generations that keep trickling
+   * data are never killed mid-stream, but a silent/dead server cannot hang
+   * the consumer forever.
+   *
+   * @internal
+   */
   async *stream(method: string, path: string, body: object): AsyncGenerator<string> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -229,38 +278,90 @@ export class DistLLMClient {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    // Phase 1: bound connection establishment + time-to-first-byte.
+    let timerId = setTimeout(
+      () => controller.abort(),
+      this.timeout,
+    );
 
-    if (!response.ok) {
-      throw new DistLLMApiError(`HTTP ${response.status}`, response.status);
-    }
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
 
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') return;
-        try {
-          const parsed = JSON.parse(data);
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch {}
+      if (!response.ok) {
+        throw new DistLLMApiError(`HTTP ${response.status}`, response.status);
       }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      // Phase 2: swap the whole-stream deadline for an idle timer that
+      // re-arms around every read. A productive stream runs indefinitely;
+      // silence longer than `timeout` kills it.
+      clearTimeout(timerId);
+      timerId = setTimeout(
+        () => controller.abort(new DistLLMTimeoutError(`Stream idle for over ${this.timeout}ms`)),
+        this.timeout,
+      );
+
+      while (true) {
+        let chunk: Awaited<ReturnType<typeof reader.read>>;
+        try {
+          chunk = await reader.read();
+        } catch (error) {
+          if (controller.signal.aborted) {
+            throw new DistLLMTimeoutError(
+              `Stream idle: no data received for ${this.timeout}ms`,
+            );
+          }
+          throw error;
+        }
+        const { done, value } = chunk;
+        if (done) break;
+
+        // Got bytes — re-arm the idle window for the next gap.
+        clearTimeout(timerId);
+        timerId = setTimeout(
+          () => controller.abort(new DistLLMTimeoutError(`Stream idle for over ${this.timeout}ms`)),
+          this.timeout,
+        );
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) yield content;
+          } catch {}
+        }
+      }
+    } catch (error) {
+      // The connect-phase abort carries no reason (older runtimes drop it),
+      // so map any post-abort failure to the connect-timeout variant.
+      if (
+        !(error instanceof DistLLMApiError) &&
+        !(error instanceof DistLLMTimeoutError) &&
+        controller.signal.aborted
+      ) {
+        throw new DistLLMTimeoutError(
+          `Connection timed out after ${this.timeout}ms waiting for response headers from ${path}`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timerId);
     }
   }
 }

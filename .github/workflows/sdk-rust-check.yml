@@ -1,0 +1,58 @@
+name: Rust SDK CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'sdk/rust/**'
+      - '.github/workflows/sdk-rust-check.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'sdk/rust/**'
+      - '.github/workflows/sdk-rust-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-check:
+    name: cargo check / clippy / test (sdk/rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/index
+            ~/.cargo/git
+            sdk/rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('sdk/rust/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets --locked || cargo check --all-targets
+
+      - name: cargo clippy (advisory)
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+
+      - name: cargo test (includes doc tests)
+        run: cargo test --locked || cargo test
+
+      - name: Verify crate metadata is publishable
+        run: cargo package --list --locked || cargo package --list

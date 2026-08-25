@@ -200,6 +200,13 @@ class Models:
 
 
 # ── Response Objects ──────────────────────────────────────────────────────
+#
+# Parsing contract (Wave-2 item 38): DistLLM extends the OpenAI schemas with
+# native extras — top-level ``generation_time``, v2 ``system_fingerprint`` /
+# ``api_version``, and extended ``usage`` objects (cost summaries,
+# ``processing_time``).  Unknown fields are IGNORED (ignore-extra semantics);
+# required structure (objects/lists/string content) is still validated with
+# clear ValueErrors so callers get actionable errors on malformed payloads.
 
 
 @dataclass
@@ -222,6 +229,47 @@ class Usage:
     total_tokens: int = 0
 
 
+def _require_dict(value: Any, what: str) -> dict:
+    """Validate that ``value`` is a JSON object."""
+    if not isinstance(value, dict):
+        raise ValueError(f"{what} must be an object, got {type(value).__name__}")
+    return value
+
+
+def _require_list(value: Any, what: str) -> list:
+    """Validate that ``value`` is a JSON array."""
+    if not isinstance(value, list):
+        raise ValueError(f"{what} must be a list, got {type(value).__name__}")
+    return value
+
+
+def _token_count(value: Any) -> int:
+    """Coerce a usage counter to int; unknown/non-numeric values count as 0."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _parse_usage(data: Any) -> Usage:
+    """Parse a ``usage`` object with ignore-extra semantics.
+
+    DistLLM merges cost summaries into the usage object (see
+    ``core/streaming_cost.to_final_summary`` / ``api/streaming.py``) and adds
+    ``processing_time`` on embeddings.  Unknown keys are ignored instead of
+    crashing; the three standard counters are coerced to ints.
+    """
+    if data is None:
+        return Usage()
+    _require_dict(data, "usage")
+    return Usage(
+        prompt_tokens=_token_count(data.get("prompt_tokens")),
+        completion_tokens=_token_count(data.get("completion_tokens")),
+        total_tokens=_token_count(data.get("total_tokens")),
+    )
+
+
 @dataclass
 class ChatCompletion:
     id: str = ""
@@ -233,25 +281,42 @@ class ChatCompletion:
 
     @classmethod
     def from_dict(cls, data: dict) -> ChatCompletion:
+        _require_dict(data, "chat completion")
+        raw_choices = _require_list(data.get("choices", []), "choices")
         choices = []
-        for c in data.get("choices", []):
-            msg = c.get("message", {})
+        for c in raw_choices:
+            _require_dict(c, "choice")
+            msg = c.get("message")
+            if msg is None:
+                msg = {}
+            _require_dict(msg, "message")
+            role = msg.get("role", "assistant")
+            if role is None:
+                role = "assistant"
+            if not isinstance(role, str):
+                raise ValueError(
+                    f"message.role must be a string, got {type(role).__name__}"
+                )
+            content = msg.get("content")
+            # Server sends content=null when tool_calls are present.
+            if content is None:
+                content = ""
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"message.content must be a string, got "
+                    f"{type(content).__name__}"
+                )
             choices.append(Choice(
                 index=c.get("index", 0),
-                message=Message(role=msg.get("role", "assistant"), content=msg.get("content", "")),
+                message=Message(role=role, content=content),
                 finish_reason=c.get("finish_reason", "stop"),
             ))
-        usage = data.get("usage", {})
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             created=data.get("created", int(time.time())),
             model=data.get("model", ""),
             choices=choices,
-            usage=Usage(
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
-            ),
+            usage=_parse_usage(data.get("usage")),
         )
 
 
@@ -259,13 +324,25 @@ class ChatCompletion:
 class ChatCompletionChunk:
     id: str = ""
     object: str = "chat.completion.chunk"
+    created: int = 0
+    model: str = ""
     choices: list[dict] = field(default_factory=list)
+    usage: Usage | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ChatCompletionChunk:
+        _require_dict(data, "chunk")
+        choices = _require_list(data.get("choices", []), "choices")
+        for c in choices:
+            _require_dict(c, "chunk choice")
+        usage_data = data.get("usage")
         return cls(
             id=data.get("id", ""),
-            choices=data.get("choices", []),
+            object=data.get("object", "chat.completion.chunk"),
+            created=data.get("created", 0),
+            model=data.get("model", ""),
+            choices=choices,
+            usage=_parse_usage(usage_data) if usage_data is not None else None,
         )
 
 
@@ -278,11 +355,12 @@ class Completion:
 
     @classmethod
     def from_dict(cls, data: dict) -> Completion:
-        usage = data.get("usage", {})
+        _require_dict(data, "completion")
         return cls(
             id=data.get("id", ""),
-            choices=data.get("choices", []),
-            usage=Usage(**usage) if usage else Usage(),
+            object=data.get("object", "text_completion"),
+            choices=_require_list(data.get("choices", []), "choices"),
+            usage=_parse_usage(data.get("usage")),
         )
 
 
@@ -294,11 +372,11 @@ class EmbeddingResponse:
 
     @classmethod
     def from_dict(cls, data: dict) -> EmbeddingResponse:
-        usage = data.get("usage", {})
+        _require_dict(data, "embedding response")
         return cls(
-            data=data.get("data", []),
+            data=_require_list(data.get("data", []), "data"),
             model=data.get("model", ""),
-            usage=Usage(**usage) if usage else Usage(),
+            usage=_parse_usage(data.get("usage")),
         )
 
 
@@ -309,7 +387,8 @@ class ModelList:
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelList:
+        _require_dict(data, "model list")
         return cls(
             object=data.get("object", "list"),
-            data=data.get("data", []),
+            data=_require_list(data.get("data", []), "data"),
         )

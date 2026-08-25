@@ -5,7 +5,7 @@ edition = "2021"
 description = "Rust SDK for Distributed LLM inference"
 license = "Apache-2.0"
 repository = "https://github.com/distributed-llm/distributed-llm"
-homepage = "https://github.com/distributed-llm/distributed-llm/tree/main/sdk/rust"
+homepage = "https://github.com/distributed-llm/distributed-llm/tree/master/sdk/rust"
 keywords = ["llm", "inference", "distributed", "openai"]
 categories = ["api-bindings", "web-programming::http-client"]
 
@@ -15,7 +15,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
-futures = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
