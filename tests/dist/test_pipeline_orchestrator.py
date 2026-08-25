@@ -22,6 +22,7 @@ import pytest
 import torch
 
 from distllm.dist.pipeline.orchestrator import (
+    PipelineError,
     PipelineNode,
     PipelineOrchestrator,
 )
@@ -884,26 +885,30 @@ class TestErrorHandling:
     async def test_all_batches_fail(
         self, orch: PipelineOrchestrator, kv_default: dict
     ) -> None:
-        """All RPCs raise → stage-0 never signals stage-1 → TimeoutError."""
+        """All RPCs raise at stage 0 → downstream cascades (no RPC) →
+        PipelineError covering every sequence.  No dependency stall."""
         fast = PipelineOrchestrator(pipeline_timeout=0.5)
         register_two_nodes(fast)
         with patch(
             "distllm.dist.node_client.forward_request_async",
             side_effect=RuntimeError("node failure"),
         ):
-            with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            with pytest.raises(
+                PipelineError, match="All micro-batches failed"
+            ):
                 await fast.run_pipeline_microbatched(
                     torch.randn(4, 128), kv_default, "r1", micro_batch_size=2,
                 )
         assert fast.stats()["errors"] > 0
 
     @pytest.mark.asyncio
-    async def test_partial_failure_still_succeeds(
+    async def test_partial_failure_raises_naming_failed_rows(
         self, orch: PipelineOrchestrator, kv_default: dict
     ) -> None:
-        """One micro-batch fails at the last stage but the other completes
-        → output is returned.  Uses request_id to deterministically target
-        only stage-1 batch-0 regardless of event-loop ordering."""
+        """One micro-batch fails at the last stage; the run must raise
+        PipelineError naming the failed input rows instead of silently
+        returning the surviving batch (legacy behaviour asserted a
+        shape-(2,128) result here — that hid data loss from callers)."""
         register_two_nodes(orch)
 
         async def flaky_fwd(**kwargs: object) -> torch.Tensor:
@@ -917,12 +922,14 @@ class TestErrorHandling:
             "distllm.dist.node_client.forward_request_async",
             side_effect=flaky_fwd,
         ):
-            result = await orch.run_pipeline_microbatched(
-                torch.randn(4, 128), kv_default, "r1", micro_batch_size=2,
-            )
-        assert result is not None
-        # One batch failed → only the other batch's output (shape (2, 128))
-        assert result.shape == (2, 128)
+            with pytest.raises(PipelineError) as exc_info:
+                await orch.run_pipeline_microbatched(
+                    torch.randn(4, 128), kv_default, "r1", micro_batch_size=2,
+                )
+        exc = exc_info.value
+        assert exc.failed_micro_batches == [0]
+        assert exc.failed_sequences == [0, 1]
+        assert orch.stats()["last_failed_sequences"] == [0, 1]
 
     @pytest.mark.asyncio
     async def test_timeout(
@@ -949,37 +956,40 @@ class TestErrorHandling:
     async def test_microbatch_records_failure(
         self, orch: PipelineOrchestrator, kv_default: dict
     ) -> None:
-        """All RPCs crash → TimeoutError, but resource_mgr.record_failure
-        should have been called before the timeout."""
+        """All RPCs crash → PipelineError, but resource_mgr.record_failure
+        should have been called before the raise."""
         fast = PipelineOrchestrator(pipeline_timeout=0.5, resource_mgr=MagicMock())
         register_two_nodes(fast)
         with patch(
             "distllm.dist.node_client.forward_request_async",
             side_effect=RuntimeError("crash"),
         ):
-            with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            with pytest.raises(PipelineError):
                 await fast.run_pipeline_microbatched(
                     torch.randn(4, 128), kv_default, "r1", micro_batch_size=2,
                 )
         fast._resource_mgr.record_failure.assert_called()
 
     @pytest.mark.asyncio
-    async def test_single_microbatch_with_multi_stage_fails(
+    async def test_single_microbatch_with_multi_stage_succeeds(
         self, orch: PipelineOrchestrator, kv_default: dict
     ) -> None:
-        """With num_batches < num_stages the schedule never schedules the
-        last stage → outputs remain None → RuntimeError.
+        """num_batches < num_stages must still run EVERY stage on batch 0.
 
         Use total_tokens=1 so the clamp (max(1, …, total_tokens//2=0))
-        yields micro_batch_size=1 → num_batches=1.  With 2 stages and
-        1 batch, the warmup loop runs min(2,1)=1 → only stage 0 is
-        scheduled, so stage 1 never produces output."""
+        yields micro_batch_size=1 → num_batches=1.  The warmup loop
+        schedules all num_stages steps for batch 0 (regression guard for
+        the old bug where capping stages by num_batches skipped the
+        output-producing final stage), so the pipeline succeeds.
+        """
         register_two_nodes(orch)
         with patch(
             "distllm.dist.node_client.forward_request_async",
             side_effect=_async_echo,
-        ):
-            with pytest.raises(RuntimeError, match="All micro-batches failed"):
-                await orch.run_pipeline_microbatched(
-                    torch.randn(1, 128), kv_default, "r1", micro_batch_size=2,
-                )
+        ) as fwd:
+            result = await orch.run_pipeline_microbatched(
+                torch.randn(1, 128), kv_default, "r1", micro_batch_size=2,
+            )
+        # Warmup: (0,0),(1,0); steady loop empty → both stages ran.
+        assert fwd.call_count == 2
+        assert result.shape == (1, 128)
