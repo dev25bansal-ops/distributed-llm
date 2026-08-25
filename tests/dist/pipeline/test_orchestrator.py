@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from distllm.dist.pipeline.orchestrator import (
+    PipelineError,
     PipelineNode,
     PipelineOrchestrator,
 )
@@ -725,11 +726,11 @@ class TestMicrobatchedPipeline:
         orchestrator: PipelineOrchestrator,
         kv_caches_default: dict[str, None],
     ) -> None:
-        """Some micro-batches fail but at least one succeeds.
+        """Partial failure must not silently shrink the returned batch.
 
-        Failure must occur in the last stage only, because
-        execute_pipeline_step does not signal downstream stages
-        when an earlier stage fails, causing a deadlock.
+        Default policy ("raise") raises PipelineError naming the failed
+        input rows.  (Legacy "drop" behaviour is pinned in
+        tests/dist/pipeline/test_microbatch_integrity.py.)
         """
         register_two_nodes(orchestrator)
         input_tensor = torch.randn(4, 128)  # 2 micro-batches of size 2
@@ -748,13 +749,14 @@ class TestMicrobatchedPipeline:
             "distllm.dist.node_client.forward_request_async",
             side_effect=mock_fwd,
         ):
-            result = await orchestrator.run_pipeline_microbatched(
-                input_tensor, kv_caches_default, "req-1", micro_batch_size=2,
-            )
+            with pytest.raises(PipelineError, match="sequences \\[0, 1\\]"):
+                await orchestrator.run_pipeline_microbatched(
+                    input_tensor, kv_caches_default, "req-1", micro_batch_size=2,
+                )
 
-        # Even with some failures, valid outputs should concatenate
-        assert result is not None
-        assert result.shape[0] > 0
+        assert (
+            orchestrator.stats()["last_failed_sequences"] == [0, 1]
+        )
 
     @pytest.mark.asyncio
     async def test_microbatched_with_resource_mgr(

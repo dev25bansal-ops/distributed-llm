@@ -56,6 +56,34 @@ class PipelineNode:
     kv_cache: Any = None  # replicated KV state (set on standby promotion)
 
 
+class PipelineError(RuntimeError):
+    """One or more micro-batches failed during a pipeline run.
+
+    Raised by ``run_pipeline_microbatched`` (default
+    ``on_partial_failure="raise"``) instead of silently returning a
+    shrunken response batch.  Subclasses ``RuntimeError`` so broad
+    existing handlers keep working.
+
+    Attributes:
+        failed_sequences: Input row indices (batch dimension) that
+            produced no output, in ascending order.
+        failed_micro_batches: Micro-batch indices that failed.
+        errors: Micro-batch index -> underlying error message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        failed_sequences: list[int] | None = None,
+        failed_micro_batches: list[int] | None = None,
+        errors: dict[int, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failed_sequences = list(failed_sequences or [])
+        self.failed_micro_batches = list(failed_micro_batches or [])
+        self.errors = dict(errors or {})
+
+
 class PipelineOrchestrator:
     """Coordinates distributed inference across pipeline-parallel nodes.
 
@@ -67,7 +95,16 @@ class PipelineOrchestrator:
         pipeline_timeout: Timeout for the full pipeline pass in seconds.
         redundancy: Number of redundant copies per layer (for fault tolerance).
         default_micro_batch_size: Default batch size for micro-batched execution.
+        on_partial_failure: What to do when some (not all) micro-batches
+            fail in the micro-batched path.  ``"raise"`` (default) raises
+            :class:`PipelineError` naming the failed sequences;
+            ``"drop"`` preserves the legacy behaviour of returning only
+            the successful rows but attaches explicit
+            ``failed_sequences`` metadata to the returned tensor (and to
+            ``stats()["last_failed_sequences"]``) so callers must see it.
     """
+
+    _PARTIAL_FAILURE_POLICIES = ("raise", "drop")
 
     def __init__(
         self,
@@ -79,7 +116,13 @@ class PipelineOrchestrator:
         use_tls: bool = False,
         ca_cert: str | None = None,
         total_layers: int = 0,
+        on_partial_failure: str = "raise",
     ):
+        if on_partial_failure not in self._PARTIAL_FAILURE_POLICIES:
+            raise ValueError(
+                f"on_partial_failure must be one of "
+                f"{self._PARTIAL_FAILURE_POLICIES}, got {on_partial_failure!r}"
+            )
         self._resource_mgr = resource_mgr
         self._timeout = pipeline_timeout
         self._redundancy = redundancy
@@ -89,6 +132,7 @@ class PipelineOrchestrator:
         # Enable via DISTLLM_PIPELINE_TLS=1 and point DISTLLM_TLS_CA_CERT(_FILE)
         # at the cluster CA.
         self._use_tls = use_tls or os.environ.get("DISTLLM_PIPELINE_TLS", "0") == "1"
+        self._on_partial_failure = on_partial_failure
         self._ca_cert = (
             ca_cert
             or os.environ.get("DISTLLM_TLS_CA_CERT_FILE")
@@ -110,6 +154,7 @@ class PipelineOrchestrator:
             "avg_micro_batch_size": 0.0,
             "micro_batch_count_total": 0,
             "dynamic_batch_adjustments": [],
+            "last_failed_sequences": [],
         }
 
     @property
@@ -426,65 +471,6 @@ class PipelineOrchestrator:
             [None] * num_batches for _ in range(num_stages)
         ]
 
-        async def run_stage(
-            stage_idx: int,
-            batch_idx: int,
-            input_tensor: torch.Tensor,
-        ) -> torch.Tensor | None:
-            """Execute one micro-batch through one pipeline stage."""
-            node = ordered_nodes[stage_idx]
-            kv_cache = node_kv_caches.get(node.node_id)
-            try:
-                # Prefer an injected per-node client (tests / pooled
-                # connections).  Sync clients are invoked directly; async
-                # clients return the response proto.
-                injected_sync = getattr(node, "client", None)
-                if injected_sync is not None and hasattr(injected_sync, "forward"):
-                    return injected_sync.forward(
-                        hidden_states=input_tensor,
-                        kv_cache=kv_cache,
-                        request_id=request_id,
-                    )
-                import asyncio as _asyncio
-
-                injected_async = getattr(node, "async_client", None)
-                _fp = getattr(injected_async, "forward_pass", None)
-                if injected_async is not None and _asyncio.iscoroutinefunction(_fp):
-                    from distllm.dist.pipeline.serialization import (
-                        from_proto_tensor as _from_proto,
-                    )
-
-                    resp = await injected_async.forward_pass(
-                        hidden_states=input_tensor, kv_cache=kv_cache,
-                    )
-                    if not resp.success:
-                        raise RuntimeError(
-                            f"Node {node.node_id} forward failed: "
-                            f"{resp.error_message}"
-                        )
-                    return _from_proto(resp.output)
-
-                result = await forward_request_async(
-                    host=node.host,
-                    port=node.port,
-                    hidden_states=input_tensor,
-                    kv_cache=kv_cache,
-                    use_tls=self._use_tls,
-                    ca_cert=self._ca_cert,
-                )
-                if self._resource_mgr:
-                    self._resource_mgr.record_success(node.node_id)
-                return result
-            except Exception as e:
-                logger.error(
-                    f"Micro-batch error: stage {stage_idx}, "
-                    f"batch {batch_idx}, node {node.node_id}: {e}"
-                )
-                self._stats["errors"] += 1
-                if self._resource_mgr:
-                    self._resource_mgr.record_failure(node.node_id)
-                return None
-
         # ── 1F1B Pipeline scheduling (bubble-optimal) ──────────────────
         #
         # Three phases:
@@ -510,6 +496,13 @@ class PipelineOrchestrator:
 
         outputs: list[torch.Tensor | None] = [None] * num_batches
 
+        # Failure registry for this run: batch_idx -> first error message.
+        # A failed batch is cascaded to downstream stages via their ready
+        # events so they unwind immediately instead of blocking until the
+        # pipeline timeout — and instead of invoking workers with a missing
+        # input tensor.
+        step_failures: dict[int, str] = {}
+
         async def execute_pipeline_step(
             stage_idx: int,
             batch_idx: int,
@@ -518,6 +511,10 @@ class PipelineOrchestrator:
 
             Waits until the previous stage has produced output for this batch,
             then runs the forward pass and signals the next stage.
+
+            Step failures are recorded in ``step_failures`` (never silently
+            dropped) and propagated to the next stage, whose step returns
+            without issuing an RPC.
             """
             try:
                 await asyncio.wait_for(
@@ -525,10 +522,25 @@ class PipelineOrchestrator:
                     timeout=self._timeout,
                 )
             except asyncio.TimeoutError:
+                # Genuine hang upstream (neither output nor failure arrived):
+                # keep the loud, immediate TimeoutError rather than blocking
+                # on siblings that may never finish.
                 raise TimeoutError(
                     f"Pipeline stage {stage_idx} batch {batch_idx} timed out "
                     f"waiting for previous stage output"
                 )
+
+            node = ordered_nodes[stage_idx]
+
+            def _cascade() -> None:
+                if stage_idx + 1 < num_stages:
+                    stage_batch_ready[stage_idx + 1][batch_idx].set()
+
+            # An earlier stage already failed this batch: unwind without an
+            # RPC so workers never receive a missing input.
+            if batch_idx in step_failures:
+                _cascade()
+                return
 
             input_tensor: torch.Tensor
             if stage_idx == 0:
@@ -537,13 +549,15 @@ class PipelineOrchestrator:
                 # Wait for previous stage's output (may already be set)
                 prev = results[stage_idx - 1][batch_idx]
                 if prev is None:
-                    raise RuntimeError(
+                    step_failures.setdefault(
+                        batch_idx,
                         f"Pipeline dependency broken: "
-                        f"stage {stage_idx - 1} batch {batch_idx} not ready"
+                        f"stage {stage_idx - 1} batch {batch_idx} not ready",
                     )
+                    _cascade()
+                    return
                 input_tensor = prev
 
-            node = ordered_nodes[stage_idx]
             kv_cache = node_kv_caches.get(node.node_id)
             try:
                 # Prefer an injected per-node client (tests / pooled
@@ -586,9 +600,13 @@ class PipelineOrchestrator:
                     f"Pipeline step error: stage {stage_idx}, "
                     f"batch {batch_idx}, node {node.node_id}: {e}"
                 )
+                step_failures.setdefault(batch_idx, str(e))
                 self._stats["errors"] += 1
                 if self._resource_mgr:
                     self._resource_mgr.record_failure(node.node_id)
+                # Wake the next stage so it cascades instead of stalling
+                # until the pipeline timeout.
+                _cascade()
 
         # Semaphore to cap in-flight micro-batches (backpressure).
         # Prevents OOM when a slow downstream stage causes micro-batches
@@ -637,15 +655,65 @@ class PipelineOrchestrator:
         # while still allowing interleaving
         await asyncio.gather(*tasks)
 
-        # Filter out failures
+        # ── Result assembly with explicit failure semantics ────────────
+        #
+        # Partial failures are never silent: default policy raises
+        # PipelineError naming the failed input rows; the opt-in "drop"
+        # policy keeps legacy shapes but attaches machine-readable
+        # failed_sequences metadata callers must acknowledge.
+        failed_micro_batches = sorted(step_failures)
+        failed_sequences = sorted(
+            row
+            for b in failed_micro_batches
+            for row in range(
+                b * micro_batch_size,
+                min((b + 1) * micro_batch_size, total_tokens),
+            )
+        )
+        self._stats["last_failed_sequences"] = list(failed_sequences)
+
         valid_outputs = [o for o in outputs if o is not None]
+
+        if failed_micro_batches:
+            if self._on_partial_failure == "drop":
+                if not valid_outputs:
+                    raise RuntimeError("All micro-batches failed in pipeline")
+                logger.warning(
+                    f"Micro-batch partial failures dropped for "
+                    f"{request_id}: rows {failed_sequences}"
+                )
+            else:
+                if len(failed_micro_batches) == num_batches:
+                    raise PipelineError(
+                        f"All micro-batches failed in pipeline "
+                        f"(request {request_id}); failed sequences "
+                        f"{failed_sequences}",
+                        failed_sequences=failed_sequences,
+                        failed_micro_batches=failed_micro_batches,
+                        errors=dict(step_failures),
+                    )
+                raise PipelineError(
+                    f"Pipeline partial failure (request {request_id}): "
+                    f"{len(failed_micro_batches)}/{num_batches} micro-batches "
+                    f"failed — sequences {failed_sequences}. First error: "
+                    f"{step_failures[failed_micro_batches[0]]}",
+                    failed_sequences=failed_sequences,
+                    failed_micro_batches=failed_micro_batches,
+                    errors=dict(step_failures),
+                )
+
         if not valid_outputs:
             raise RuntimeError("All micro-batches failed in pipeline")
 
         total_ms = (time.time() - start_time) * 1000
         self._stats["total_latency_ms"] += total_ms
 
-        return torch.cat(valid_outputs, dim=0)
+        result = torch.cat(valid_outputs, dim=0)
+        if failed_micro_batches and self._on_partial_failure == "drop":
+            # Attach to the FINAL tensor (cat builds a new one) so the
+            # shrinkage is explicit and machine-readable at the call site.
+            result.failed_sequences = tuple(failed_sequences)
+        return result
 
     # ── Utility ───────────────────────────────────────────────────────
 
