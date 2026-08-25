@@ -314,7 +314,10 @@ class GossipProtocol:
 
     def verify_message(self, message: dict) -> bool:
         signature = message.get("_hmac")
-        if signature is None:
+        # Guard against non-string signatures: hmac.compare_digest raises
+        # TypeError on mixed types, which would turn a malformed/malicious
+        # message into an unhandled 500 instead of a clean rejection.
+        if not isinstance(signature, str):
             return False
         unsigned = dict(message)
         unsigned.pop("_hmac", None)
@@ -539,10 +542,93 @@ class GossipProtocol:
             "requested_prefixes": missing_prefixes,
         }
 
+    # ------------------------------------------------------------------
+    # Signed KV lookup / fetch requests
+    #
+    # Advertisements have always been HMAC-authenticated, but cache
+    # *lookups* (the fetch path that serves actual cache entry data) were
+    # not: any peer could enumerate another node's local cache index.
+    # The same shared-key scheme used for advertisements covers fetches:
+    #   - senders sign via sign_message()/sign_fetch_request()
+    #   - receivers verify via authorize_fetch_request() before serving
+    #     any cache data (fail-closed when a shared key is configured)
+    # ------------------------------------------------------------------
+
+    @property
+    def has_shared_hmac_key(self) -> bool:
+        """True when a deployment-wide shared HMAC key is configured."""
+        return bool(getattr(self, "_shared_hmac_key", False))
+
+    def sign_fetch_request(self, request: dict) -> dict:
+        """Sign an outgoing KV lookup/fetch request with the gossip HMAC key.
+
+        Thin alias over :meth:`sign_message` kept for call-site clarity at
+        fetch boundaries.  When no key is configured the request is returned
+        unsigned (legacy mode; receivers log a loud warning instead of
+        rejecting).
+        """
+        return self.sign_message(request)
+
+    def authorize_fetch_request(self, request: dict | None) -> tuple[bool, str]:
+        """Verify an incoming KV lookup/fetch request before serving data.
+
+        Policy:
+          - Shared key configured (production): fail closed.  Missing,
+            malformed, or invalid ``_hmac`` signatures are rejected.
+          - No shared key (legacy dev/test mode): requests are accepted for
+            backward compatibility, but a loud one-time warning is logged
+            (same convention as ``kademlia_dht.py``'s unauthenticated STORE
+            mode).  Node-local keys differ per node, so cross-node
+            signatures cannot be verified meaningfully in this mode.
+
+        Returns:
+            ``(authorized, reason)`` — reason is "" on success, otherwise
+            a short machine-readable rejection cause for logging/HTTP.
+        """
+        if not self.has_shared_hmac_key:
+            # Legacy unauthenticated mode (warned once, below).
+            self._warn_legacy_fetch_mode()
+            return True, ""
+        if request is None:
+            return False, "missing_request"
+        if not isinstance(request.get("_hmac"), str):
+            return False, "missing_signature"
+        if not self.verify_message_any_key(request):
+            return False, "invalid_signature"
+        return True, ""
+
+    def _warn_legacy_fetch_mode(self) -> None:
+        """Log the unauthenticated-fetch warning once per process."""
+        if getattr(self, "_fetch_warning_logged", False):
+            return
+        self._fetch_warning_logged = True
+        logger.warning(
+            "Gossip KV fetch: no shared HMAC key configured — incoming "
+            "cache lookup requests are NOT authenticated and any reachable "
+            "peer can read this node's cache index. "
+            "Set DISTLLM_GOSSIP_HMAC_KEY to the same value on all nodes "
+            "for authenticated lookups."
+        )
+
     def process_response(self, response: dict | None) -> int:
         if response is None:
             return 0
         if not response.get("success", False):
+            return 0
+
+        # SECURITY (area-analysis H7): fetch responses carry peer-supplied
+        # cache-index entries.  Verify the signature whenever one is present
+        # and reject tampered payloads outright.  Enforcement of
+        # signature *presence* happens at the network boundaries (the
+        # /gossip/fetch route and GossipTransport.request_kv_cache), which
+        # are the only paths untrusted data can reach this method through;
+        # this internal layer stays callable with already-authenticated
+        # local data.
+        if "_hmac" in response and not self.verify_message_any_key(response):
+            logger.warning(
+                "Gossip fetch response failed HMAC verification — ignoring "
+                f"{len(response.get('cache_entries', {}))} cache entries"
+            )
             return 0
 
         cache_entries = response.get("cache_entries", {})
@@ -790,12 +876,18 @@ class GossipProtocol:
         our_bf = self.build_bloom_filter()
         self.add_peer(msg.get("node_id", ""))
 
-        return {
+        response = {
             "success": True,
             "cache_entries": push_entries,
             "bloom_filter": our_bf,
             "node_id": self.state.node_id,
         }
+        # Sign only when a shared deployment key exists: node-local dev/test
+        # keys differ per node, so attaching an unverifiable signature would
+        # make every peer drop these entries at verification time.
+        if self.has_shared_hmac_key:
+            return self.sign_message(response)
+        return response
 
     # ------------------------------------------------------------------
     # DH-based HMAC key distribution & rotation
@@ -927,7 +1019,7 @@ class GossipProtocol:
         overlap_start = getattr(self, "_overlap_start", 0.0)
         if overlap_key is not None and (time.time() - overlap_start) < self._key_overlap_period:
             signature = message.get("_hmac")
-            if signature is None:
+            if not isinstance(signature, str):
                 return False
             unsigned = dict(message)
             unsigned.pop("_hmac", None)
