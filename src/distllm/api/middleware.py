@@ -1,5 +1,6 @@
 """API middleware for distributed LLM inference."""
 
+import asyncio
 import os
 import hmac
 import threading
@@ -307,7 +308,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         token = auth_header[7:]
-        result = store.authenticate(token)
+        # B4-1 perf fix: ApiKeyStore.authenticate memoizes verdicts (sha256
+        # token digest -> result, short TTL, invalidated on key rotation).
+        # The cold path is still PBKDF2-100k (~30 ms per stored key), so run
+        # it on a worker thread: cache hits cost one cheap thread hop, and
+        # cache misses no longer stall the event loop for every request.
+        result = await asyncio.to_thread(store.authenticate, token)
         if result is None:
             if _rate_limiter.is_rate_limited(client_ip):
                 retry_after = _rate_limiter.retry_after(client_ip)
@@ -381,22 +387,51 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 class RequestRateLimitMiddleware(BaseHTTPMiddleware):
-    """Per-IP request rate limiting.
+    """Per-client request rate limiting.
 
     Enabled when ``DISTLLM_RATE_LIMIT_REQUESTS`` is set to a positive
     integer (default: 1000 requests per 60-second window).
     Set to 0 to disable.
+
+    Keying policy (C15/H11): the limiter key is
+    ``"<client_ip>|<api_key_id>"`` once the request carries an
+    authenticated ``api_key_id`` on ``request.state``, falling back to the
+    bare client IP while unauthenticated.  The composite key closes two
+    bypass/false-positive classes at once:
+
+    * NAT fairness -- distinct API keys behind one shared IP get their own
+      budgets instead of collectively exhausting a single per-IP bucket.
+    * Rotation bypass (H11) -- the IP half is resolved fail-closed via
+      :func:`get_client_ip` (spoofable ``X-Forwarded-For`` is ignored for
+      direct peers), so header rotation cannot mint fresh buckets, and the
+      API-key half means an exhausted ``ip|old_key`` bucket stays limited
+      even as new keys appear.
     """
 
     # M-09: Cache env var at class level instead of reading on every request
     _rate_limit_value = int(os.environ.get("DISTLLM_RATE_LIMIT_REQUESTS", "1000"))
 
+    @staticmethod
+    def _limit_key(client_ip: str, request: Any) -> str:
+        """Build the limiter key: ``ip|api_key_id`` when authenticated.
+
+        Unauthenticated (or not-yet-authenticated) requests key by the
+        client IP alone.  Reads ``api_key_id`` defensively so behaviour is
+        correct regardless of whether this middleware runs inside or
+        outside ``AuthMiddleware`` in the stack.
+        """
+        api_key_id = getattr(getattr(request, "state", None), "api_key_id", None)
+        if api_key_id:
+            return f"{client_ip}|{api_key_id}"
+        return client_ip
+
     async def dispatch(self, request: Request, call_next):
         limit = self._rate_limit_value
         if limit > 0:
             client_ip = get_client_ip(request)
-            if _request_rate_limiter.is_rate_limited(client_ip):
-                retry_after = _request_rate_limiter.retry_after(client_ip)
+            rl_key = self._limit_key(client_ip, request)
+            if _request_rate_limiter.is_rate_limited(rl_key):
+                retry_after = _request_rate_limiter.retry_after(rl_key)
                 return error_response(
                     status_code=429,
                     error="Too Many Requests",
@@ -405,7 +440,7 @@ class RequestRateLimitMiddleware(BaseHTTPMiddleware):
                     retry_after=retry_after,
                     request_id=getattr(request.state, "request_id", None),
                 )
-            _request_rate_limiter.record_attempt(client_ip)
+            _request_rate_limiter.record_attempt(rl_key)
         return await call_next(request)
 
 

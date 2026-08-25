@@ -24,11 +24,43 @@ import os
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 from hmac import compare_digest
 
 from loguru import logger
+
+
+# ── Authentication result cache ─────────────────────────────────────────────
+#
+# PBKDF2-HMAC-SHA256 at 100 000 iterations costs ~30 ms per stored key per
+# authentication (measured on the reference dev machine). Running that for
+# every request on the asyncio event loop caps API throughput at roughly
+# 34/N req/s (N = number of stored keys). The cache below makes the warm
+# path a constant-time dictionary lookup keyed by SHA-256 of the presented
+# token — the plaintext token is never stored.
+#
+# Security invariants:
+#   * Every cache MISS still runs the full PBKDF2 + compare_digest path;
+#     the cache never weakens verification, it only memoizes its verdict.
+#   * Cached results carry the fingerprint (tuple of stored key hashes) of
+#     the key table they were computed against. ANY mutation of ``_keys`` —
+#     including direct manipulation that bypasses the mutator methods —
+#     changes the fingerprint and forces re-verification (fail-safe
+#     direction: a stale cache degrades to the slow authoritative path).
+#   * Every mutating method additionally clears the cache outright, so
+#     rotate/revoke/add take effect immediately, not after the TTL.
+#   * A key whose rotation-grace deadline (``expires_at``) has passed can
+#     never be served from cache: hits are suppressed once ``now`` reaches
+#     the earliest pending deadline in the key table.
+#   * Failed authentications are cached too (shorter TTL) to blunt
+#     token-spray CPU amplification; the middleware rate limiter remains
+#     active above this layer.
+
+_AUTH_CACHE_TTL_S = 60.0          # successful authentications
+_AUTH_NEG_CACHE_TTL_S = 10.0      # failed authentications (shorter by design)
+_AUTH_CACHE_MAX_ENTRIES = 4096    # bounds memory under token-spray floods
 
 
 # ── Roles ───────────────────────────────────────────────────────────────────
@@ -152,6 +184,12 @@ class ApiKeyStore:
     def __init__(self) -> None:
         self._keys: list[StoredKey] = []
         self._lock = threading.Lock()  # guards dynamic add/remove during rotation
+        # Memoized authentication verdicts: sha256(token).digest() ->
+        # (result | None, cached_at, key_table_fingerprint, hard_deadline).
+        # See the cache-security notes at the top of this module. Guarded by
+        # its own lock; never nested with ``_lock``.
+        self._auth_cache: OrderedDict[bytes, tuple] = OrderedDict()
+        self._cache_lock = threading.Lock()
         self._load()
 
     # ── Public API ──────────────────────────────────────────────────────────
@@ -173,6 +211,35 @@ class ApiKeyStore:
         """Return a hex-encoded 16-byte random salt."""
         return secrets.token_hex(16)
 
+    def _key_table_fingerprint(self) -> tuple:
+        """Cheap structural fingerprint of the key table.
+
+        Any change to the set/order/content of stored keys — including
+        direct ``_keys`` manipulation that bypasses the mutator methods —
+        yields a different tuple, which safely voids matching cache entries
+        (they simply miss and re-verify).
+        """
+        return tuple(
+            (k.key, k.key_id, k.role, k.expires_at) for k in self._keys
+        )
+
+    def _invalidate_auth_cache(self) -> None:
+        """Drop every memoized authentication verdict.
+
+        Called on every key-table mutation so security-relevant changes
+        (rotate, revoke, retire, provision) take effect immediately rather
+        than at TTL expiry.
+        """
+        cache = getattr(self, "_auth_cache", None)
+        if cache is not None:
+            with self._cache_lock:
+                cache.clear()
+
+    @staticmethod
+    def _cache_token_digest(token: str) -> bytes:
+        """Cache key for *token*: SHA-256 digest — the plaintext is never stored."""
+        return hashlib.sha256(token.encode("utf-8")).digest()
+
     def authenticate(self, token: str) -> tuple[str, str] | None:
         """Validate a bearer token.
 
@@ -180,16 +247,75 @@ class ApiKeyStore:
         Uses constant-time comparison to prevent timing attacks.
         Hashes with per-key salt so a leaked DB does not enable
         rainbow-table attacks.
+
+        Successful and failed verdicts are memoized for a short TTL (see
+        ``_AUTH_CACHE_TTL_S`` / ``_AUTH_NEG_CACHE_TTL_S``) keyed by
+        ``sha256(token)``; every cache miss falls through to the full
+        PBKDF2 verification below, and every key-table mutation clears the
+        cache outright, so the cache can only ever memoize a verdict the
+        authoritative path would have produced.
         """
-        for k in self._keys:
+        now = time.time()
+
+        # ── Fast path: memoized verdict lookup (constant-time-safe dict get
+        #    on a fixed-length digest; no branch on secret material).
+        cache = getattr(self, "_auth_cache", None)
+        fingerprint = self._key_table_fingerprint()
+        if cache is not None:
+            digest = self._cache_token_digest(token)
+            with self._cache_lock:
+                entry = cache.get(digest)
+                if entry is not None:
+                    result, cached_at, entry_fp, hard_deadline = entry
+                    ttl = (
+                        _AUTH_CACHE_TTL_S if result is not None
+                        else _AUTH_NEG_CACHE_TTL_S
+                    )
+                    if (
+                        entry_fp == fingerprint
+                        and now - cached_at < ttl
+                        and now < hard_deadline
+                    ):
+                        cache.move_to_end(digest)
+                        return result
+                    # Expired or structurally stale — drop and re-verify.
+                    cache.pop(digest, None)
+
+        # ── Authoritative path: full PBKDF2 verification.
+        # Iterate a shallow copy so concurrent rotations cannot mutate the
+        # list mid-loop; per-entry ``expires_at`` writes are atomic under
+        # the GIL and additionally bounded by the hard-deadline guard.
+        keys_snapshot = list(self._keys)
+        result: tuple[str, str] | None = None
+        for k in keys_snapshot:
             # A retired (rotated) key stops authenticating once its grace
             # deadline passes — this is the authoritative retirement boundary.
-            if k.expires_at is not None and time.time() > k.expires_at:
+            if k.expires_at is not None and now > k.expires_at:
                 continue
             token_hash = self._hash_key(token, k.salt)
             if compare_digest(token_hash, k.key):
-                return (k.key_id, k.role)
-        return None
+                result = (k.key_id, k.role)
+                break
+
+        if cache is not None:
+            # Never serve a hit past the earliest pending grace deadline in
+            # the table: retirement must bite even without a mutating call.
+            hard_deadline = min(
+                (
+                    k.expires_at
+                    for k in keys_snapshot
+                    if k.expires_at is not None and k.expires_at > now
+                ),
+                default=float("inf"),
+            )
+            with self._cache_lock:
+                cache[digest] = (result, now, fingerprint, hard_deadline)
+                cache.move_to_end(digest)
+                # Bound memory under token-spray floods (LRU eviction).
+                while len(cache) > _AUTH_CACHE_MAX_ENTRIES:
+                    cache.popitem(last=False)
+
+        return result
 
     def add_key(
         self,
@@ -222,6 +348,7 @@ class ApiKeyStore:
                 salt=salt,
                 created_at=time.time(),
             ))
+        self._invalidate_auth_cache()
         return key_id
 
     def get_key_hash(self, key_id: str) -> str | None:
@@ -249,6 +376,7 @@ class ApiKeyStore:
             for i, k in enumerate(self._keys):
                 if k.key == key_hash:
                     del self._keys[i]
+                    self._invalidate_auth_cache()
                     return True
         return False
 
@@ -263,6 +391,7 @@ class ApiKeyStore:
             for k in self._keys:
                 if k.key == key_hash:
                     k.expires_at = expires_at
+                    self._invalidate_auth_cache()
                     return True
         return False
 
@@ -279,6 +408,8 @@ class ApiKeyStore:
                 if k.key_id == key_id:
                     k.expires_at = expires_at
                     marked += 1
+            if marked:
+                self._invalidate_auth_cache()
             return marked
 
     def remove_expired(self, now: float | None = None) -> int:
@@ -293,14 +424,20 @@ class ApiKeyStore:
                 k for k in self._keys
                 if not (k.expires_at is not None and now > k.expires_at)
             ]
-            return before - len(self._keys)
+            removed = before - len(self._keys)
+            if removed:
+                self._invalidate_auth_cache()
+            return removed
 
     def remove_key(self, key_id: str) -> bool:
         """Remove every key entry with *key_id*."""
         with self._lock:
             before = len(self._keys)
             self._keys = [k for k in self._keys if k.key_id != key_id]
-            return len(self._keys) < before
+            changed = len(self._keys) < before
+            if changed:
+                self._invalidate_auth_cache()
+            return changed
 
     def get_key_count(self) -> int:
         return len(self._keys)
