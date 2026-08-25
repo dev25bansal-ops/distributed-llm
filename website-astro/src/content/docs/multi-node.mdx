@@ -1,9 +1,27 @@
 ---
 title: Multi-Node Setup
 description: A complete two-machine walkthrough.
-group: Architecture
+group: "Architecture"
 order: 4
 ---
+
+DistLLM's core idea is pipeline parallelism: instead of one machine holding an
+entire model, each machine holds a contiguous slice of its layers, and tokens
+flow between machines during generation. This page walks through the smallest
+useful cluster — a coordinator (which serves the API and schedules work) and
+one worker node — on two laptops on the same network. The same steps scale to
+more nodes by giving each a distinct, non-overlapping layer range.
+
+## Prerequisites
+
+- The `distributed-llm[cli,self-hosted]` package installed on **both** machines
+  (see [Installation](/docs/installation/)).
+- Both machines on a network where they can reach each other; you need to know
+  the coordinator machine's LAN IP.
+- The model identifier you want to serve. Layer ranges below assume a 32-layer
+  model such as Llama 3.1 8B; adjust for your model's depth.
+- Know which ports are in play: TCP 8000 is the coordinator's REST API and
+  TCP 50051 is its gRPC endpoint (both configurable).
 
 ## Coordinator machine (laptop 1)
 
@@ -17,6 +35,9 @@ set API_KEY=share-this-key
 distllm system api --model meta-llama/Llama-3.1-8B --host 0.0.0.0 --port 8000
 ```
 
+Without `--local`, the coordinator starts with no weights loaded and waits for
+workers to supply capacity. It still answers health probes immediately.
+
 ## Worker machine (laptop 2)
 
 ```bash
@@ -29,8 +50,17 @@ distllm-node --node-id laptop-2 \
   --port 55052
 ```
 
-The worker registers itself via `POST /admin/v1/nodes/register` and appears in
-the coordinator's node list with its layer assignment.
+The worker loads layers 20–31 of the 32-layer model into memory, opens its own
+gRPC server on port 55052, then registers itself via
+`POST /admin/v1/nodes/register` and appears in the coordinator's node list with
+its layer assignment. Registration authenticates with the shared key: pass it
+via `--cluster-key` or set `API_KEY`/`DISTLLM_API_KEY` in the worker's
+environment. If the coordinator's API runs on a non-default port, set
+`DISTLLM_API_PORT` on the worker.
+
+Useful extras: `--device cuda|mps|cpu` to pin hardware,
+`--dtype float16|float32|bfloat16`, and TLS flags (`--tls-cert`, `--tls-key`,
+`--tls-ca`) when gRPC should be encrypted across an untrusted network.
 
 ## Verify
 
@@ -38,3 +68,37 @@ the coordinator's node list with its layer assignment.
 curl -H "Authorization: Bearer share-this-key" \
   http://<coordinator-ip>:8000/admin/v1/nodes
 ```
+
+The response lists every node with `healthy` and `draining` flags, GPU name and
+memory, and its layer range. Once `healthy_count` includes your worker,
+send a chat request as usual — requests now flow laptop 1 → laptop 2 mid-model.
+
+## Troubleshooting
+
+- **Worker logs "Could not register with coordinator"** — the worker could not
+  reach the coordinator's *HTTP* port (default 8000), not its gRPC port. Check
+  the firewall rule for 8000, the IP you passed as `--coordinator-host`, and
+  `DISTLLM_API_PORT` if the API moved.
+- **Registration returns 401/403** — the shared key didn't match. Pass the
+  coordinator's `API_KEY` value to workers via `--cluster-key` or the
+  `API_KEY` env var; keys must match exactly.
+- **Worker appears in `/admin/v1/nodes` but stays unhealthy/not ready** — the
+  node registered before finishing its model load, or its layer range overlaps
+  another node's. Check worker logs for load errors and confirm ranges tile
+  0..total-layers without gaps or overlap.
+- **Request hangs after the first node finishes** — usually a blocked path from
+  coordinator to the worker's gRPC port. Remember the *worker* listens on
+  `--port` (55052 above); that inbound direction needs its own firewall rule on
+  the worker's machine.
+- **TLS mismatch errors at connect time** — by default workers use TLS for
+  gRPC. For isolated dev networks only, add `--insecure` on the worker (and
+  configure matching TLS settings everywhere else). Mixing a TLS coordinator
+  with a plaintext worker fails the handshake.
+- **Unsure what's wrong?** Run `distllm system doctor --network --nodes <ip>` on
+  either machine to measure connectivity and latency between them.
+
+## Next Steps
+
+- [Pipeline Parallelism](/docs/pipeline-parallelism/) — how layer-split inference works.
+- [Auto-Discovery](/docs/auto-discovery/) — letting nodes find the cluster without manual registration.
+- [Health Checks](/docs/health-checks/) — monitoring node state in production.

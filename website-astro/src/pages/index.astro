@@ -33,6 +33,18 @@ const jsonLd = [
   },
 ];
 
+// FAQPage JSON-LD generated from the same FAQ array the <FaqAccordion /> below
+// renders, so the visible questions and the structured data cannot diverge.
+const faqJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: FAQ.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a },
+  })),
+};
+
 const INSTALL_TABS = [
   { label: "pip", code: 'pip install "distributed-llm[cli,self-hosted]"\n\ndistllm system api --model TinyStories-1M --local --host 0.0.0.0' },
   { label: "docker", code: `docker run -d -p 8000:8000 \\\n  -e API_KEY=your-key-here \\\n  distributed-llm/server:latest` },
@@ -50,7 +62,7 @@ const BENEFITS = [
 <PageLayout
   title={SITE.name}
   description={SITE.description}
-  jsonLd={jsonLd}
+  jsonLd={[...jsonLd, faqJsonLd]}
 >
   <!-- Hero -->
   <section class="relative overflow-hidden">

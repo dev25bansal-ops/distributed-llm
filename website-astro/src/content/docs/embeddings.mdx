@@ -1,9 +1,28 @@
 ---
 title: Embeddings
 description: Generate embeddings via the OpenAI-compatible endpoint.
-group: API
+group: "API"
 order: 2
 ---
+
+Embeddings turn text into fixed-size vectors so you can build semantic search,
+clustering, retrieval-augmented generation (RAG), and deduplication on top of a
+numerical representation of meaning. DistLLM exposes an OpenAI-compatible
+`POST /v1/embeddings` endpoint, plus reranking endpoints that score documents
+against a query — the two halves of a typical RAG pipeline. Depending on
+configuration, the endpoint either uses a dedicated embedding model or derives
+vectors from the loaded generation model's hidden states, so you can get useful
+vectors even without a second model installed.
+
+## Prerequisites
+
+- A running DistLLM server with a model loaded (start it with `--local` for
+  single-machine use; see [Quick Start](/docs/quick-start/)).
+- An API key: all `/v1/*` routes require `Authorization: Bearer <key>`.
+- Optional but recommended: configure a dedicated embedding model under the
+  `embedding` section of your YAML config (`embedding_model`,
+  `rerank_model`, plus `normalize`, `max_length`, and `batch_size` tuning).
+  Without one, vectors come from the generation model's last hidden state.
 
 ## Endpoint
 
@@ -19,6 +38,18 @@ Authorization: Bearer <api-key>
 }
 ```
 
+`model` is accepted for OpenAI compatibility; the server uses whichever
+embedding path is configured. Request fields beyond `input`:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `encoding_format` | `"float"` | `"float"` (JSON array) or `"base64"` |
+| `dimensions` | full | Truncate vectors to the first N dimensions |
+| `normalize` | `true` | L2-normalize each vector |
+| `user` | null | End-user identifier for metering |
+
+`input` accepts up to 1024 texts per request.
+
 ## Response
 
 ```json
@@ -32,6 +63,46 @@ Authorization: Bearer <api-key>
 }
 ```
 
-`input` accepts a single string or an array. Embedding models load through the
-same registry as generative models — switch with the standard model-load admin
-endpoints.
+The `usage` object also carries a `processing_time` field. With
+`encoding_format: "base64"`, each `embedding` value is a base64 string of
+little-endian 32-bit floats instead of a JSON array.
+
+## Reranking
+
+Two companion endpoints reorder documents by relevance to a query:
+
+```json
+POST /v1/rerank
+{
+  "query": "What is machine learning?",
+  "documents": ["ML is a subset of AI.", "The weather is nice today."],
+  "top_n": 2
+}
+```
+
+Returns `results` with original `index`, the `document` text, and a
+`relevance_score` (higher = more relevant). `POST /v1/rerank/hybrid` combines
+embedding similarity and cross-encoder scores via Reciprocal Rank Fusion,
+with an `rrf_k` constant (default 60).
+
+## Troubleshooting
+
+- **503 "No model loaded"** — nothing has been loaded yet. Restart the server
+  with `--local`, load a model through the admin model-load endpoint, or wait
+  for workers to register in distributed mode.
+- **503 "Embedding generation requires a local model"** — you are running
+  distributed-only (no dedicated embedding model configured), so there are no
+  hidden states on this machine to embed with. Add an embedding model to your
+  config or start the coordinator with `--local`.
+- **503 "Tokenizer not available"** — the loaded model has no usable tokenizer;
+  check the server log at startup for tokenizer download failures.
+- **401 errors** — missing or wrong `Authorization: Bearer <key>` header.
+- **429 rate-limit errors** — `/v1/embeddings` has its own timeout budget and
+  the auth middleware rate-limits per key; back off using the interval in the
+  error body.
+
+## Next Steps
+
+- [Chat Completions](/docs/chat-completions/) — the generation side of RAG pipelines.
+- [YAML Config](/docs/configuration/) — configuring embedding and rerank models.
+- [Health Checks](/docs/health-checks/) — verifying the service before batch jobs.

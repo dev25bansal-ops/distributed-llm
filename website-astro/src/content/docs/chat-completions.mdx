@@ -1,9 +1,23 @@
 ---
 title: Chat Completions
 description: The OpenAI-compatible chat endpoint and its parameters.
-group: API
+group: "API"
 order: 1
 ---
+
+`POST /v1/chat/completions` is DistLLM's primary endpoint: you send a list of
+conversation turns, the server runs them through the (possibly distributed)
+model, and returns generated text in the same JSON shape as OpenAI's Chat
+Completions API. Because the contract is identical, existing OpenAI SDKs,
+LangChain chains, and other tooling work against a DistLLM cluster by changing
+only the base URL and API key. Beyond plain generation it supports streaming,
+structured output constraints, tool calling, LoRA adapter routing, and
+priority-based scheduling.
+
+## Prerequisites
+
+- A running server with a loaded model — see [Quick Start](/docs/quick-start/).
+- An API key for the `Authorization: Bearer <key>` header.
 
 ## Endpoint
 
@@ -23,18 +37,61 @@ Authorization: Bearer <api-key>
 | `top_p` | float | 0.9 | Nucleus sampling threshold |
 | `top_k` | int | 0 | Top-k sampling (0 = disabled) |
 | `stream` | bool | false | Server-Sent Events streaming |
+| `stream_options` | object | null | e.g. `{"include_usage": true}` to get a final usage chunk |
+| `stop` | list | null | Stop sequences that halt generation |
+| `n` | int | 1 | Number of completions (1–128) |
 | `response_format` | object | null | `json_object` or `json_schema` constraint |
-| `tools` | array | null | Tool definitions for tool-calling |
+| `tools` / `tool_choice` | array/string | null | Tool definitions and calling mode |
+| `adapter` | string | null | LoRA adapter ID for this request |
 | `priority` | int | 2 | 0=critical … 3=low |
+
+Additional fields: `presence_penalty`, `frequency_penalty`, `seed`, `logprobs`,
+`user`, and an SLA hint `max_latency_ms`.
 
 ## Streaming
 
 With `stream: true` the response is a sequence of `chat.completion.chunk`
 SSE events, each carrying a `delta.content` fragment, terminated by a
-`finish_reason: "stop"` chunk and a `data: [DONE]` line.
+`finish_reason: "stop"` chunk and a `data: [DONE]` line. Add
+`"stream_options": {"include_usage": true}` to receive token counts in a final
+chunk. Generation parameters can even be steered mid-stream via
+`POST /v1/update-params/{request_id}` (temperature/top_p/top_k).
+
+## Structured output
+
+Set `"response_format": {"type": "json_object"}`
+(or `json_schema` with a schema) to constrain generation toward valid JSON.
+The server builds the constraint from your schema before generation and
+validates the result afterward, logging a warning if validation fails — check
+server logs if you see malformed payloads despite the constraint.
 
 ## Tool calling
 
-Pass OpenAI-format tool definitions; if the model emits a tool call, the
-response carries `tool_calls` and `finish_reason: "tool_calls"` — the same
-contract as OpenAI.
+Pass OpenAI-format tool definitions; if the model emits a tool call (as a JSON
+block or `<tool_call>` XML tag), the response carries `tool_calls` with parsed
+arguments and `finish_reason: "tool_calls"` — the same contract as OpenAI.
+Use `tool_choice: "none"` to suppress calls or `"required"` to force one.
+
+## Troubleshooting
+
+- **503 "No model loaded"** — the coordinator has no capacity yet: start with
+  `--local` or wait until `/admin/v1/nodes` shows healthy workers
+  (see [Health Checks](/docs/health-checks/)).
+- **400 "Model 'xyz' not found"** — the model string isn't in the registry;
+  the error body lists available models. Use `GET /v1/models` to enumerate.
+- **400 "Adapter 'xyz' not found"** — per-request LoRA routing references an
+  adapter that isn't loaded; the body lists what is.
+- **401 Unauthorized** — missing/wrong Bearer key; see auth docs.
+- **429 rate limited** — the token bucket applies per key/IP; back off by the
+  stated interval or raise limits in config.
+- **Empty or truncated output** — remember `max_tokens` defaults to 256 and is
+  capped at 8192; also check whether a `stop` sequence matches early output.
+- **Streaming client times out mid-stream** — some HTTP clients buffer SSE;
+  disable response buffering or use a stream-aware client (the Python/OpenAI
+  SDKs work out of the box).
+
+## Next Steps
+
+- [Embeddings](/docs/embeddings/) — vector search and reranking endpoints.
+- [Quick Start](/docs/quick-start/) — minimal working example end-to-end.
+- [Observability](/docs/observability/) — tracing request latency and errors.

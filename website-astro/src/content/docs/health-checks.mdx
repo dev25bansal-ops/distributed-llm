@@ -1,19 +1,55 @@
 ---
 title: Health Checks
 description: Liveness, readiness, and cluster health endpoints.
-group: API
+group: "API"
 order: 3
 ---
+
+Health endpoints are how load balancers, Kubernetes, and your own scripts
+decide whether the server is alive and whether it should receive traffic. The
+distinction matters for inference servers: a process can be *alive* but not
+*ready* — for example, while model weights are still downloading or after all
+worker nodes have dropped off. DistLLM therefore splits probes into liveness
+(is the process responsive?), readiness (can it serve requests right now?),
+and richer health/metrics views that report per-node state. All probe
+endpoints are unauthenticated so orchestrators can call them without secrets.
+
+## Prerequisites
+
+- A running DistLLM API server (see [Quick Start](/docs/quick-start/)).
+- For cluster views: an admin-role API key. Probes themselves need no key.
 
 ## Endpoints (no auth required — designed for load balancers)
 
 | Path | Purpose |
 |------|---------|
 | `GET /health` | Liveness + model state (503 until a model loads) |
-| `GET /v1/health` | Same, alternate path |
+| `GET /v1/health` | Same, OpenAI-compatible path |
 | `GET /ready` | Readiness for traffic |
-| `GET /live` | Process liveness |
-| `GET /healthz`, `/readyz` | Kubernetes conventions |
+| `GET /live` | Process liveness + uptime |
+| `GET /healthz` | Plugin-based liveness |
+| `GET /readyz` | Plugin-based readiness with failure reasons |
+
+Versioned aliases `/v1/health/readiness` and `/v1/health/liveness` mirror
+`/ready` and `/live` for Kubernetes manifest conventions.
+
+A healthy `/v1/health` response looks like:
+
+```json
+{
+  "status": "healthy",
+  "model": "TinyStories-1M",
+  "nodes": 2,
+  "node_health": {}
+}
+```
+
+`/ready` returns `{"status": "ready"}` only when the coordinator is loaded,
+the service is not shutting down, and at least one worker node is healthy in
+distributed mode; otherwise it returns 503 with a reason.
+`/readyz` goes further when the HealthPlugin is loaded — checking error rate,
+GPU/system memory limits, and circuit-breaker state — and returns
+`{"status": "not_ready", "reasons": [...]}` on failure.
 
 ## Cluster health
 
@@ -22,9 +58,45 @@ GET /admin/v1/nodes        # requires admin key
 ```
 
 Returns every node with health state, draining status, GPU capability, and
-layer assignment.
+layer assignment, plus aggregate counts (`total_nodes`, `healthy_count`,
+`draining_count`, `total_layers`). Companion actions exist to drain, offline,
+and recover individual nodes under `/admin/v1/nodes/{node_id}/...`. You can
+also warm a freshly loaded model with
+`POST /v1/models/{model_id}/warmup` (model-admin role) to cut first-token
+latency before traffic arrives.
 
 ## Metrics
 
 `GET /metrics` serves Prometheus-format RED metrics:
-`distllm_requests_total`, `distllm_request_latency`, error counters, and more.
+`distllm_requests_total`, `distllm_request_latency_seconds`,
+`distllm_tokens_generated_total`, node-health gauges, error counters, and more
+— each labeled by method, status, model, and tenant where applicable. Even with
+no coordinator loaded, the endpoint reports `distllm_service_up 0`, so scrapers
+see an explicit down rather than a connection refused. Scrape it with any
+Prometheus-compatible collector; see [Observability](/docs/observability/) for
+dashboards and tracing.
+
+## Troubleshooting
+
+- **`/ready` returns 503 "No model loaded"** — expected before weights finish
+  loading or in distributed-only mode with no workers. Check
+  `/admin/v1/nodes`; once a node is healthy, readiness flips.
+- **`/health` 503 but `/live` 200** — the process is fine but no model is
+  loaded yet (or the tokenizer failed). This is exactly the alive-vs-ready
+  split: keep restarting pods only if `/live` fails.
+- **`/readyz` says `not_ready` with reasons** — read the `reasons` array
+  (e.g. memory above threshold, circuit breaker open) and address each;
+  reasons map directly to plugin checks.
+- **Kubernetes restarts the pod repeatedly** — you probably pointed
+  `livenessProbe` at `/health` instead of `/live`: during long weight downloads
+  `/health` returns 503 and kubelet kills a perfectly healthy process.
+- **Prometheus scrape gets JSON instead of text** — ensure you're scraping
+  `/metrics` on the API port and that your client sends `Accept:
+  text/plain`; the endpoint always serves the exposition format regardless of
+  auth settings.
+
+## Next Steps
+
+- [Observability](/docs/observability/) — metrics, dashboards, and tracing.
+- [Multi-Node Setup](/docs/multi-node/) — interpreting per-node health across a cluster.
+- [Quick Start](/docs/quick-start/) — getting a server running to probe.

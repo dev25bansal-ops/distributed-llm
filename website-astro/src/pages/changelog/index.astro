@@ -1,11 +1,19 @@
 ---
-import { getCollection } from "astro:content";
+import { getCollection, render } from "astro:content";
 import PageLayout from "../../layouts/PageLayout.astro";
 import SectionHeading from "../../components/SectionHeading.astro";
 import { formatDate } from "../../lib/format";
 
+// SECURITY GUARD (WAVE2-PLAN item 43): NEVER render collection bodies with
+// `<Fragment set:html={entry.body} />`. `entry.body` is RAW markdown source —
+// it renders as plain text AND is an unsanitized HTML injection surface.
+// Banned pattern; always compile first: `const { Content } = await render(entry)`
+// and render `<Content />`. Enforced by review; see docs/WAVE2-PLAN.md #43.
 const entries = (await getCollection("changelog")).sort(
   (a, b) => b.data.releaseDate.valueOf() - a.data.releaseDate.valueOf(),
+);
+const rendered = await Promise.all(
+  entries.map(async (entry) => ({ entry, Content: (await render(entry)).Content })),
 );
 ---
 
@@ -22,7 +30,7 @@ const entries = (await getCollection("changelog")).sort(
     />
     <div class="mx-auto mt-12 max-w-3xl">
       <ol class="relative space-y-10 border-l-2 border-line pl-8">
-        {entries.map((entry) => (
+        {rendered.map(({ entry, Content }) => (
           <li class="relative">
             <span class="absolute -left-[41px] top-1 h-5 w-5 rounded-full border-[3px] border-bg bg-brand-500" aria-hidden="true" />
             <div class="flex flex-wrap items-center gap-3">
@@ -45,8 +53,8 @@ const entries = (await getCollection("changelog")).sort(
                 ))}
               </ul>
             )}
-            <div class="prose-doc mt-4">
-              <Fragment set:html={entry.body} />
+            <div class="prose-doc prose-doc-changelog mt-4">
+              <Content />
             </div>
             <a href={`/changelog/${entry.id}/`} class="mt-3 inline-block text-sm font-medium text-brand-700 hover:underline">
               Full release notes →
@@ -57,3 +65,33 @@ const entries = (await getCollection("changelog")).sort(
     </div>
   </section>
 </PageLayout>
+
+<style>
+  /* prose-doc styles are scoped to DocsLayout (data-astro-cid) and do NOT apply
+     on PageLayout pages. Mirror the compact subset needed for changelog previews
+     here so rendered markdown is actually styled. See docs/WAVE2-PLAN.md #43. */
+  @reference "../../styles/global.css";
+  .prose-doc-changelog :global(h3),
+  .prose-doc-changelog :global(h4) {
+    @apply mt-6 text-lg font-bold;
+  }
+  .prose-doc-changelog :global(p) {
+    @apply my-3 leading-relaxed text-muted;
+  }
+  .prose-doc-changelog :global(ul),
+  .prose-doc-changelog :global(ol) {
+    @apply my-3 list-disc space-y-1.5 pl-6 text-muted;
+  }
+  .prose-doc-changelog :global(a) {
+    @apply font-medium text-brand-700 underline decoration-brand-300 underline-offset-2 hover:text-brand-800;
+  }
+  .prose-doc-changelog :global(code) {
+    @apply rounded-md bg-sunken px-1.5 py-0.5 font-mono text-[0.85em] text-brand-800;
+  }
+  .prose-doc-changelog :global(pre) {
+    @apply my-4 overflow-x-auto rounded-xl border border-line bg-[#080d0a] p-4 font-mono text-sm leading-relaxed text-[#d5f5e3];
+  }
+  .prose-doc-changelog :global(pre code) {
+    @apply bg-transparent p-0 text-inherit;
+  }
+</style>

@@ -5,14 +5,30 @@ group: "Getting Started"
 order: 2
 ---
 
+This walkthrough takes you from a working installation to your first generated
+tokens, then shows how to scale from one machine to a small cluster. DistLLM
+exposes an OpenAI-compatible REST API, so any OpenAI SDK or HTTP client works
+unchanged — the difference is that the model may be sharded across several of
+your own devices rather than sitting on one GPU.
+
+## Prerequisites
+
+- DistLLM installed (see [Installation](/docs/installation/))
+- An `API_KEY` environment variable for authenticating requests. If you start
+  the server without one, a random key is generated and printed once to stdout.
+- A model identifier. The examples use the tiny `roneneldan/TinyStories-1M`
+  so the download is quick; larger Hugging Face models work the same way.
+
 ## 1. Start a server
 
 ```bash
 distllm system api --model TinyStories-1M --local --host 0.0.0.0 --port 8000
 ```
 
-`--local` loads the model weights on this machine. The first run downloads
-weights from Hugging Face (pinned to a safe revision).
+`--local` loads the model weights on this machine instead of waiting for worker
+nodes. The first run downloads weights from Hugging Face (pinned to a safe
+revision). Other useful flags: `--dtype float16|float32|bfloat16` to control
+precision and `--debug` to enable tensor-shape logging.
 
 ## 2. Send a request
 
@@ -44,6 +60,9 @@ for chunk in stream:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
+The stream ends with a chunk whose `finish_reason` is `"stop"`, followed by a
+`data: [DONE]` sentinel line.
+
 ## 4. Add more machines
 
 On any other machine with the package installed:
@@ -55,4 +74,33 @@ distllm-node --node-id worker-1 --model TinyStories-1M \
   --port 55052
 ```
 
-The node registers itself and appears in `/admin/v1/nodes`.
+Each node owns a contiguous slice of the model's layers (`--start-layer` through
+`--end-layer`, exclusive of `--total-layers`). The node registers itself over
+the coordinator's HTTP API and appears in `/admin/v1/nodes`. Set
+`DISTLLM_API_PORT` on workers if your coordinator's API runs somewhere other
+than port 8000.
+
+## Troubleshooting
+
+- **401 Unauthorized** — every route except health probes requires a Bearer key.
+  Make sure the client's `Authorization: Bearer <key>` matches the server's
+  `API_KEY` (or the random key printed at startup if none was set).
+- **503 with body "No model loaded"** — you started `distllm system api`
+  without `--local` and no workers have registered yet. Either add `--local`,
+  start workers as in step 4, or check `/admin/v1/nodes` to see what joined.
+- **First request hangs for a long time** — weights are downloading from
+  Hugging Face on first use. Watch the server logs; subsequent starts reuse the
+  local cache (redirect it with `--model-cache-dir` on workers).
+- **Worker registers but never becomes ready** — the node sends a second
+  "ready" signal after loading its layers; until then it stays out of request
+  routing. Check the worker's log for model-load errors, and confirm the layer
+  range doesn't overlap another node's.
+- **Connection refused between machines** — open TCP ports 8000 (API) and
+  50051 (gRPC) in the host firewall, and make sure the coordinator was started
+  with `--host 0.0.0.0` so it accepts LAN traffic.
+
+## Next Steps
+
+- [Multi-Node Setup](/docs/multi-node/) — a full two-machine walkthrough.
+- [Chat Completions](/docs/chat-completions/) — every request parameter explained.
+- [Health Checks](/docs/health-checks/) — probe endpoints and metrics.

@@ -1,5 +1,6 @@
 ---
 import { DOCS_NAV, getDocNeighbors } from "../config/docs-nav";
+import { SITE } from "../config/site";
 import PageLayout from "./PageLayout.astro";
 
 interface Props {
@@ -14,9 +15,43 @@ interface Props {
 
 const { frontmatter, slug, toc = [] } = Astro.props;
 const { prev, next } = getDocNeighbors(slug);
+
+// BreadcrumbList JSON-LD: Home > Docs > [group] > [page].
+// A group has no standalone page on this site; like the sidebar "Browse"
+// list, it is represented by its first item's URL.
+const abs = (path: string) => new URL(path, SITE.url).href;
+const crumbs: { name: string; item: string }[] = [
+  { name: "Home", item: abs("/") },
+  { name: "Docs", item: abs("/docs/") },
+];
+if (slug) {
+  const navGroup = DOCS_NAV.find((g) => g.items.some((i) => i.slug === slug));
+  const navItem = navGroup?.items.find((i) => i.slug === slug);
+  if (navGroup && navGroup.items[0]) {
+    crumbs.push({ name: navGroup.group, item: abs(`/docs/${navGroup.items[0].slug}/`) });
+  }
+  crumbs.push({
+    name: navItem?.label ?? frontmatter.title,
+    item: abs(`/docs/${slug}/`),
+  });
+}
+const breadcrumbJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  itemListElement: crumbs.map((c, i) => ({
+    "@type": "ListItem",
+    position: i + 1,
+    name: c.name,
+    item: c.item,
+  })),
+};
 ---
 
-<PageLayout title={frontmatter.title} description={frontmatter.description}>
+<PageLayout
+  title={frontmatter.title}
+  description={frontmatter.description}
+  jsonLd={breadcrumbJsonLd}
+>
   <div class="container-site grid gap-10 py-10 lg:grid-cols-[240px_minmax(0,1fr)_200px]">
     <!-- Mobile nav: same groups/items as the sidebar, collapsible below lg -->
     <details class="lg:hidden rounded-xl border border-line bg-surface" data-mobile-docs-nav>

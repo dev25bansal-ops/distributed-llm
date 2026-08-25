@@ -5,11 +5,22 @@ group: "Getting Started"
 order: 1
 ---
 
+DistLLM splits large language models across everyday machines — laptops, desktops,
+consumer GPUs — using pipeline parallelism, so you can run models that would not
+fit on any single device. This page covers the three supported ways to get the
+package onto your machine. Pick **pip install** if you just want to try it out,
+**Docker** if you prefer containerized deployments, or **from source** if you
+plan to hack on the code itself.
+
 ## Requirements
 
 - Python **3.10+**
 - 4 GB RAM minimum (models load lazily)
 - Optional: NVIDIA GPU for accelerated inference
+
+CPU-only machines work fine for small models and for coordinating a cluster;
+acceleration is used automatically when a compatible GPU and torch build are
+present.
 
 ## pip install
 
@@ -17,12 +28,19 @@ order: 1
 pip install distributed-llm[cli,self-hosted]
 ```
 
-The `self-hosted` extra pulls in torch, transformers, and Hugging Face Hub.
-For API-only clients, the base package is enough:
+The `self-hosted` extra pulls in torch, transformers, accelerate, safetensors,
+Hugging Face Hub, sentencepiece, and nvidia-ml-py — everything needed to load
+and run weights locally. The `cli` extra adds the Typer-based command-line
+interface. For API-only clients (you call someone else's DistLLM server), the
+base package is enough:
 
 ```bash
 pip install distributed-llm
 ```
+
+Other extras exist for optional subsystems: `observability` (Prometheus and
+OpenTelemetry exporters), `ray`, `backends`, and `ui`. Combine them as needed,
+e.g. `pip install "distributed-llm[cli,self-hosted,observability]"`.
 
 ## Docker
 
@@ -30,6 +48,10 @@ pip install distributed-llm
 docker pull distributed-llm/server:latest
 docker run -d -p 8000:8000 -e API_KEY=your-key distributed-llm/server:latest
 ```
+
+The image exposes the same OpenAI-compatible REST API as a pip install. If you
+omit `API_KEY`, the server generates a random key at startup and prints it once
+to stdout, so authentication is never silently disabled.
 
 ## From source
 
@@ -39,9 +61,43 @@ cd distributed-llm
 pip install -e ".[cli,self-hosted]"
 ```
 
+An editable install picks up local changes immediately — useful when
+contributing patches or testing unreleased fixes.
+
 ## Verify
 
 ```bash
 distllm --help          # CLI is available
 python -c "import distllm"   # library import works
 ```
+
+Four console entry points are installed: `distllm` (the main CLI),
+`distllm-coordinator` (gRPC coordinator facade), `distllm-api` (standalone API
+server), and `distllm-node` (worker nodes).
+
+## Troubleshooting
+
+- **`No matching distribution found` during pip install** — your Python is
+  older than 3.10. Check `python --version` and upgrade, or use a virtualenv
+  backed by a newer interpreter.
+- **`ModuleNotFoundError: typer` or `rich` after installing the base package**
+  — you skipped the `cli` extra. Reinstall with
+  `pip install "distributed-llm[cli]"`; the bare package intentionally ships
+  without CLI dependencies.
+- **torch wheel download stalls or OOMs on install** — the `self-hosted` extra
+  downloads multi-gigabyte CUDA wheels. On metered connections install CPU-only
+  torch first (`pip install torch --index-url https://download.pytorch.org/whl/cpu`),
+  then add the extra; pip will reuse the existing torch.
+- **`import torch` fails with a DLL/symbol error** — usually a mismatched
+  torch/CUDA pair. Install a torch build matching your driver, or fall back to
+  the CPU wheel above.
+- **Unsure whether your machine is ready?** Run `distllm system doctor`. It
+  checks CUDA, port availability, config validity, disk space, and the Python
+  environment, and exits non-zero if anything critical fails. Use `--gpu`,
+  `--network`, or `--json` to scope the output.
+
+## Next Steps
+
+- [Quick Start](/docs/quick-start/) — first request in five minutes.
+- [YAML Config](/docs/configuration/) — configure TLS, clustering, and batching.
+- [Docker](/docs/docker/) — production container deployment details.

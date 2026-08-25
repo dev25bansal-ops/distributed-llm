@@ -3,6 +3,12 @@ import { getCollection, render } from "astro:content";
 import PageLayout from "../../layouts/PageLayout.astro";
 import { formatDate } from "../../lib/format";
 
+// SECURITY GUARD (WAVE2-PLAN item 43): NEVER render collection bodies with
+// `<Fragment set:html={entry.body} />`. `entry.body` is RAW markdown source —
+// it renders as plain text AND is an unsanitized HTML injection surface.
+// Banned pattern; always compile first: `const { Content } = await render(entry)`
+// and render `<Content />`. Enforced by review; see docs/WAVE2-PLAN.md #43.
+
 export async function getStaticPaths() {
   const entries = await getCollection("changelog");
   return entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
@@ -23,8 +29,55 @@ const { Content } = await render(entry);
         {formatDate(entry.data.releaseDate)}
       </time>
     </div>
-    <div class="prose-doc mt-8" data-pagefind-body data-pagefind-filter="section: Changelog">
+    <div class="prose-doc prose-doc-changelog mt-8" data-pagefind-body data-pagefind-filter="section: Changelog">
       <Content />
     </div>
   </article>
 </PageLayout>
+
+<style>
+  /* prose-doc styles are scoped to DocsLayout (data-astro-cid) and do NOT apply
+     on PageLayout pages. Mirror the full DocsLayout subset here so rendered
+     markdown is actually styled. See docs/WAVE2-PLAN.md #43. */
+  @reference "../../styles/global.css";
+  .prose-doc-changelog :global(h2) {
+    @apply mt-12 scroll-mt-24 text-3xl;
+  }
+  .prose-doc-changelog :global(h3),
+  .prose-doc-changelog :global(h4) {
+    @apply mt-8 scroll-mt-24 text-xl;
+  }
+  .prose-doc-changelog :global(p) {
+    @apply my-4 leading-relaxed text-muted;
+  }
+  .prose-doc-changelog :global(ul),
+  .prose-doc-changelog :global(ol) {
+    @apply my-4 list-disc space-y-1.5 pl-6 text-muted;
+  }
+  .prose-doc-changelog :global(a) {
+    @apply font-medium text-brand-700 underline decoration-brand-300 underline-offset-2 hover:text-brand-800;
+  }
+  .prose-doc-changelog :global(code) {
+    @apply rounded-md bg-sunken px-1.5 py-0.5 font-mono text-[0.85em] text-brand-800;
+  }
+  .prose-doc-changelog :global(pre) {
+    @apply my-5 overflow-x-auto rounded-xl border border-line bg-[#080d0a] p-4 font-mono text-sm leading-relaxed text-[#d5f5e3];
+  }
+  .prose-doc-changelog :global(pre code) {
+    @apply bg-transparent p-0 text-inherit;
+  }
+  .prose-doc-changelog :global(table) {
+    @apply my-6 w-full border-collapse text-left text-sm;
+    display: block;
+    overflow-x: auto;
+  }
+  .prose-doc-changelog :global(th) {
+    @apply border-b-2 border-line px-3 py-2 font-semibold;
+  }
+  .prose-doc-changelog :global(td) {
+    @apply border-b border-line px-3 py-2 align-top text-muted;
+  }
+  .prose-doc-changelog :global(blockquote) {
+    @apply my-5 rounded-r-xl border-l-4 border-brand-400 bg-brand-50 px-4 py-3 text-muted;
+  }
+</style>

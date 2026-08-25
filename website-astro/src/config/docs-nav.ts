@@ -22,6 +22,7 @@ export const DOCS_NAV: DocsNavGroup[] = [
       { slug: "pipeline-parallelism", label: "Pipeline Parallelism" },
       { slug: "auto-discovery", label: "Auto-Discovery" },
       { slug: "multi-node", label: "Multi-Node Setup" },
+      { slug: "federated-training", label: "Federated Training" },
     ],
   },
   {
@@ -65,4 +66,26 @@ export function getDocNeighbors(slug: string): {
     prev: idx > 0 ? flat[idx - 1] : undefined,
     next: idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : undefined,
   };
+}
+
+/**
+ * Build-time guard: every docs collection entry must appear in DOCS_NAV,
+ * otherwise it is unreachable from the sidebar (an "orphan" page).
+ * Call this from the docs route's getStaticPaths() so `npm run build`
+ * fails loudly when a new .mdx file is added without a nav entry.
+ */
+export function assertDocsNavCoverage(slugs: string[]): void {
+  const navList = DOCS_NAV.flatMap((g) => g.items.map((i) => i.slug));
+  const navSet = new Set(navList);
+  const orphans = slugs.filter((s) => !navSet.has(s));
+  if (orphans.length > 0) {
+    throw new Error(
+      `DOCS_NAV is missing entries for docs content (unreachable from sidebar): ${orphans.join(", ")}. ` +
+        "Add each slug to src/config/docs-nav.ts.",
+    );
+  }
+  const dupes = navList.filter((s, i) => navList.indexOf(s) !== i);
+  if (dupes.length > 0) {
+    throw new Error(`DOCS_NAV contains duplicate slugs: ${dupes.join(", ")}.`);
+  }
 }
