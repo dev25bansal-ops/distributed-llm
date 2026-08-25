@@ -492,6 +492,50 @@ def request_layer_weights(
         return None
 
 
+# ---------------------------------------------------------------------------
+# Sync forward-path RPC timeout
+#
+# The sync ForwardPass call previously ran WITHOUT a deadline: a worker that
+# accepted the connection but never replied blocked the pipeline forever.
+# Every sync gRPC invocation now carries a deadline, resolved as
+#     explicit argument > DISTLLM_RPC_TIMEOUT_S env > DEFAULT_RPC_TIMEOUT_S
+# and a DEADLINE_EXCEEDED status is converted into a typed GRPCTimeoutError
+# carrying the node identity instead of leaking a raw grpc.RpcError.
+# ---------------------------------------------------------------------------
+
+DEFAULT_RPC_TIMEOUT_S = 30.0
+
+
+def resolve_rpc_timeout(timeout_s: float | None) -> float:
+    """Resolve the effective sync-RPC timeout in seconds.
+
+    Precedence: explicit argument, then the ``DISTLLM_RPC_TIMEOUT_S``
+    environment variable, then :data:`DEFAULT_RPC_TIMEOUT_S` (30 s).
+    Invalid or non-positive env values fall back to the default with a
+    warning rather than silently disabling the deadline (fail-safe).
+    """
+    if timeout_s is not None:
+        return timeout_s
+    raw = os.environ.get("DISTLLM_RPC_TIMEOUT_S", "").strip()
+    if raw:
+        parsed: float | None = None
+        try:
+            parsed = float(raw)
+        except ValueError:
+            logger.warning(
+                f"Invalid DISTLLM_RPC_TIMEOUT_S={raw!r} — "
+                f"using default {DEFAULT_RPC_TIMEOUT_S}s"
+            )
+        if parsed is not None:
+            if parsed > 0:
+                return parsed
+            logger.warning(
+                f"DISTLLM_RPC_TIMEOUT_S={raw!r} is not positive — "
+                f"using default {DEFAULT_RPC_TIMEOUT_S}s"
+            )
+    return DEFAULT_RPC_TIMEOUT_S
+
+
 def forward_request(
     host: str,
     port: int,
@@ -499,7 +543,7 @@ def forward_request(
     kv_cache: list | None = None,
     request_id: str = "",
     cluster_key: str | None = None,
-    timeout_s: float = 30.0,
+    timeout_s: float | None = None,
     use_tls: bool = False,
     ca_cert: str | None = None,
 ) -> torch.Tensor:
@@ -515,7 +559,11 @@ def forward_request(
         kv_cache: Optional KV cache list of (key, value) tensor pairs.
         request_id: Request ID for tracking.
         cluster_key: Optional shared cluster auth key.
-        timeout_s: RPC timeout in seconds.
+        timeout_s: RPC timeout in seconds.  When ``None`` (default),
+            resolved from ``DISTLLM_RPC_TIMEOUT_S``, falling back to a
+            30 s default.  Applied BOTH to connection establishment and
+            as the gRPC deadline on the ForwardPass call itself, so a
+            hung worker cannot block the pipeline indefinitely.
         use_tls: Encrypt the channel (activations/KV travel over the wire).
         ca_cert: Optional CA cert path for verifying the node's certificate.
 
@@ -523,15 +571,19 @@ def forward_request(
         Output tensor from the remote node.
 
     Raises:
+        GRPCTimeoutError: If the remote node does not respond within
+            the effective timeout (gRPC DEADLINE_EXCEEDED).
         RuntimeError: If the remote node returns an error or no output.
     """
     from distllm.dist import node_pb2
+    from distllm.errors.types import GRPCTimeoutError
     import time
 
+    effective_timeout = resolve_rpc_timeout(timeout_s)
     client = create_node_client(
         host, port,
         use_tls=use_tls, ca_cert=ca_cert,
-        timeout_s=timeout_s, cluster_key=cluster_key,
+        timeout_s=effective_timeout, cluster_key=cluster_key,
     )
     try:
         kv_cache_pb = node_pb2.KVCacheProto()
@@ -548,7 +600,19 @@ def forward_request(
             cluster_key=cluster_key or "",
         )
         t0 = time.monotonic()
-        resp, _ = client.stub.ForwardPass.with_call(req)
+        try:
+            resp, _ = client.stub.ForwardPass.with_call(
+                req, timeout=effective_timeout,
+            )
+        except grpc.RpcError as e:
+            if e.code() is grpc.StatusCode.DEADLINE_EXCEEDED:
+                raise GRPCTimeoutError(
+                    node_id=f"{host}:{port}",
+                    timeout=effective_timeout,
+                    host=host,
+                    port=port,
+                ) from e
+            raise
         elapsed = (time.monotonic() - t0) * 1000
 
         if not resp.success:

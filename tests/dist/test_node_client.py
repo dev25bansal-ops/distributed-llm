@@ -7,12 +7,17 @@ very short timeouts against an unreachable target.
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import grpc
 import pytest
 import torch
 
-from distllm.dist import node_pb2_grpc
+from distllm.dist import node_pb2, node_pb2_grpc
 from distllm.dist.node_client import (
+    DEFAULT_RPC_TIMEOUT_S,
     AsyncNodeClient,
     ChannelPool,
     NodeClient,
@@ -24,7 +29,10 @@ from distllm.dist.node_client import (
     request_layer_weights,
     request_layer_weights_stream,
     reset_channel_pool,
+    resolve_rpc_timeout,
 )
+from distllm.dist.pipeline.serialization import from_proto_tensor, to_proto_tensor
+from distllm.errors.types import GRPCTimeoutError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -354,3 +362,166 @@ class TestChannelPool:
         client = NodeClient(channel=channel, stub=stub)
         client.close()
         assert len(channel_pool) == 0
+
+
+# ---------------------------------------------------------------------------
+# Sync forward_request RPC timeout (W2-2)
+# ---------------------------------------------------------------------------
+
+
+class _HungForwardServicer(node_pb2_grpc.NodeServiceServicer):
+    """Servicer whose ForwardPass never replies — simulates a hung worker."""
+
+    def __init__(self) -> None:
+        # Never set by ForwardPass: each call parks its handler thread.
+        # With no client-side deadline the caller would block forever;
+        # with one, grpc raises DEADLINE_EXCEEDED.  release() in fixture
+        # teardown unblocks the server's worker threads so pytest exits.
+        self._block = threading.Event()
+
+    def release(self) -> None:
+        self._block.set()
+
+    def ForwardPass(self, request, context):  # noqa: N802
+        self._block.wait()
+
+
+class _EchoForwardServicer(node_pb2_grpc.NodeServiceServicer):
+    """Servicer that returns a valid ForwardPassResponse immediately."""
+
+    def ForwardPass(self, request, context):  # noqa: N802
+        output = from_proto_tensor(request.hidden_states)
+        return node_pb2.ForwardPassResponse(
+            request_id=request.request_id,
+            output=to_proto_tensor(output * 2.0),
+            success=True,
+            processing_time_ms=0.0,
+        )
+
+
+class TestResolveRpcTimeout:
+    """Precedence rules for the sync-RPC timeout resolver."""
+
+    def test_explicit_argument_wins_over_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISTLLM_RPC_TIMEOUT_S", "99")
+        assert resolve_rpc_timeout(1.5) == 1.5
+
+    def test_default_when_nothing_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DISTLLM_RPC_TIMEOUT_S", raising=False)
+        assert resolve_rpc_timeout(None) == DEFAULT_RPC_TIMEOUT_S
+        assert DEFAULT_RPC_TIMEOUT_S == 30.0
+
+    def test_env_override_respected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISTLLM_RPC_TIMEOUT_S", "7")
+        assert resolve_rpc_timeout(None) == 7.0
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-5"])
+    def test_invalid_env_falls_back_to_default(
+        self, bad: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISTLLM_RPC_TIMEOUT_S", bad)
+        assert resolve_rpc_timeout(None) == DEFAULT_RPC_TIMEOUT_S
+
+
+class TestSyncRpcTimeoutEnforcement:
+    """forward_request must enforce its deadline against hung workers."""
+
+    @pytest.fixture()
+    def hung_server(self):
+        servicer = _HungForwardServicer()
+        server = grpc.server(ThreadPoolExecutor(max_workers=2))
+        node_pb2_grpc.add_NodeServiceServicer_to_server(servicer, server)
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        yield ("127.0.0.1", port)
+        # Unblock parked handler threads BEFORE stopping the server so the
+        # executor's atexit join cannot hang pytest.
+        servicer.release()
+        server.stop(grace=0)
+
+    @pytest.fixture()
+    def echo_server(self):
+        server = grpc.server(ThreadPoolExecutor(max_workers=2))
+        node_pb2_grpc.add_NodeServiceServicer_to_server(
+            _EchoForwardServicer(), server
+        )
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        yield ("127.0.0.1", port)
+        server.stop(grace=0)
+
+    def test_hung_server_raises_within_timeout(self, hung_server) -> None:
+        host, port = hung_server
+        tensor = torch.randn(1, 4)
+        start = time.monotonic()
+        with pytest.raises(GRPCTimeoutError) as excinfo:
+            forward_request(host, port, tensor, timeout_s=0.5)
+        elapsed = time.monotonic() - start
+
+        # Must fail well before any "forever" hang; allow generous slack
+        # for slow CI machines.
+        assert elapsed < 10.0
+        err = excinfo.value
+        assert f"{host}:{port}" in str(err)
+        assert err.node_id == f"{host}:{port}"
+        assert err.timeout == 0.5
+        assert err.host == host and err.port == port
+
+    def test_hung_server_uses_env_override_deadline(
+        self, hung_server, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        host, port = hung_server
+        # Env picks a short deadline even though no explicit timeout passed.
+        monkeypatch.setenv("DISTLLM_RPC_TIMEOUT_S", "0.3")
+        start = time.monotonic()
+        with pytest.raises(GRPCTimeoutError):
+            forward_request(host, port, torch.randn(1, 4))
+        assert time.monotonic() - start < 10.0
+
+    def test_fast_server_unaffected(self, echo_server) -> None:
+        host, port = echo_server
+        tensor = torch.randn(2, 8)
+        out = forward_request(host, port, tensor, timeout_s=5.0)
+        assert out.shape == tensor.shape
+        assert torch.allclose(out, tensor * 2.0, atol=1e-6)
+
+    def test_fast_server_with_default_timeout(self, echo_server) -> None:
+        """No timeout argument at all — default resolution path still works."""
+        host, port = echo_server
+        out = forward_request(host, port, torch.randn(1, 4))
+        assert out.shape == (1, 4)
+
+    def test_timeout_applies_per_call_not_connection_only(
+        self, hung_server
+    ) -> None:
+        """The connection succeeds quickly; only the RPC deadline fires.
+
+        Guards against a regression where timeout_s is consumed solely by
+        create_node_client's channel-ready wait.
+        """
+        import distllm.dist.node_client as nc
+
+        host, port = hung_server
+        calls: list[float] = []
+
+        real_create = nc.create_node_client
+
+        def spy_create(*args, **kwargs):
+            result = real_create(*args, **kwargs)
+            calls.append(kwargs.get("timeout_s", -1))
+            return result
+
+        nc.create_node_client = spy_create  # type: ignore[assignment]
+        try:
+            with pytest.raises(GRPCTimeoutError):
+                forward_request(host, port, torch.randn(1, 4), timeout_s=0.4)
+        finally:
+            nc.create_node_client = real_create  # type: ignore[assignment]
+
+        assert calls == [0.4]
