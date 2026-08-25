@@ -87,6 +87,29 @@ def accept_token(
     return torch.rand(1).item() < acceptance
 
 
+def eos_cutoff(tokens: list[int] | torch.Tensor, eos_token_id: int | None) -> int:
+    """Length of the leading span of *tokens* that may be emitted before EOS.
+
+    C14 shared kernel: returns the number of tokens up to and including the
+    first ``eos_token_id`` occurrence, or ``len(tokens)`` when no EOS is
+    configured (``None``) or absent.  Decoders truncate each round's newly
+    produced tokens with this and end generation when it cuts anything off,
+    so post-EOS hallucinations never reach the output.
+
+    Accepts a list of ints or a 1-D/2-D token tensor (2-D uses row 0).
+    """
+    if eos_token_id is None:
+        return len(tokens)
+    if isinstance(tokens, torch.Tensor):
+        flat = tokens.reshape(-1).tolist()
+    else:
+        flat = list(tokens)
+    for i, t in enumerate(flat):
+        if int(t) == int(eos_token_id):
+            return i + 1  # include EOS itself
+    return len(flat)
+
+
 def verify_chain(
     prefix: torch.Tensor,
     draft_tokens: torch.Tensor,

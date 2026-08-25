@@ -47,6 +47,8 @@ import torch
 import torch.nn.functional as F
 from loguru import logger
 
+from distllm.core.spec_verify import eos_cutoff
+
 
 @dataclass
 class TreeNode:
@@ -124,6 +126,7 @@ class TreeSpeculativeDecoder:
         temperature: float = 1.0,
         top_k: int = 20,
         device: str = "cuda",
+        eos_token_id: int | None = None,
     ):
         self._target = target_forward
         self._draft = draft_forward
@@ -132,6 +135,7 @@ class TreeSpeculativeDecoder:
         self._temperature = temperature
         self._top_k = top_k
         self._device = torch.device(device)
+        self._eos_token_id = eos_token_id
 
         self._stats = TreeSpecStats()
 
@@ -152,6 +156,7 @@ class TreeSpeculativeDecoder:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using tree-based speculative decoding.
@@ -159,6 +164,9 @@ class TreeSpeculativeDecoder:
         Args:
             input_ids: (1, seq_len) input token IDs.
             max_new_tokens: Maximum tokens to generate.
+            eos_token_id: End-of-text token id (C14). Generation stops at the
+                first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
             **kwargs: Additional arguments passed to target/draft forward.
 
         Returns:
@@ -167,6 +175,17 @@ class TreeSpeculativeDecoder:
         generated = input_ids.clone()
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
+
+        def _maybe_cut() -> torch.Tensor | None:
+            """C14: truncate at first EOS in this round's new tokens, if any."""
+            if eos_token_id is None:
+                return None
+            cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+            if cut < generated.shape[1] - prompt_len:
+                return generated[:, :prompt_len + cut]
+            return None
 
         while generated.shape[1] < target_len:
             remaining = target_len - generated.shape[1]
@@ -212,6 +231,10 @@ class TreeSpeculativeDecoder:
                 generated = torch.cat([generated, next_token], dim=1)
 
             self._stats.total_calls += 1
+
+            cut = _maybe_cut()
+            if cut is not None:
+                return cut
 
         return generated
 

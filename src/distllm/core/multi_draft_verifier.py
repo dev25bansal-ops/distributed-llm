@@ -21,6 +21,8 @@ import torch
 import torch.nn.functional as F
 from loguru import logger
 
+from distllm.core.spec_verify import eos_cutoff
+
 
 class MultiDraftVerifier:
     """Speculative decoding with multiple draft models.
@@ -40,12 +42,14 @@ class MultiDraftVerifier:
         num_candidates_per_draft: int = 3,
         temperature: float = 1.0,
         device: str = "cuda",
+        eos_token_id: int | None = None,
     ):
         self._target = target_forward
         self._drafts = draft_forwards
         self._num_candidates = num_candidates_per_draft
         self._temperature = temperature
         self._device = torch.device(device)
+        self._eos_token_id = eos_token_id
 
         self._stats = {
             "target_calls": 0,
@@ -67,6 +71,7 @@ class MultiDraftVerifier:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using multi-draft speculative decoding.
@@ -78,10 +83,29 @@ class MultiDraftVerifier:
 
         This avoids the mathematically incorrect flattening of independent
         autoregressive chains into a single sequence for verification.
+
+        Args:
+            input_ids: Prompt token IDs, shape ``(1, seq_len)``.
+            max_new_tokens: Maximum tokens to generate.
+            eos_token_id: End-of-text token id (C14). Generation stops at the
+                first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
+            **kwargs: Additional arguments passed to forward functions.
         """
         generated = input_ids.clone()
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
+
+        def _maybe_cut() -> torch.Tensor | None:
+            """C14: truncate at first EOS in this round's new tokens, if any."""
+            if eos_token_id is None:
+                return None
+            cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+            if cut < generated.shape[1] - prompt_len:
+                return generated[:, :prompt_len + cut]
+            return None
 
         while generated.shape[1] < target_len:
             remaining = target_len - generated.shape[1]
@@ -166,21 +190,26 @@ class MultiDraftVerifier:
                     self._stats["accepted_by_draft"][best_draft_idx] += best_accepted
 
             # Sample correction token from target (use the best chain's target logits)
-            if best_draft_idx >= 0:
-                full_input = torch.cat([generated[:, :-best_accepted] if best_accepted > 0 else generated,
-                                        draft_chains[best_draft_idx]], dim=1)
-                target_logits = self._target(full_input, **kwargs)
-                if best_accepted < num_draft:
-                    next_logits = target_logits[:, generated.shape[1] - 1, :]
+            if generated.shape[1] < target_len:
+                if best_draft_idx >= 0:
+                    full_input = torch.cat([generated[:, :-best_accepted] if best_accepted > 0 else generated,
+                                            draft_chains[best_draft_idx]], dim=1)
+                    target_logits = self._target(full_input, **kwargs)
+                    if best_accepted < num_draft:
+                        next_logits = target_logits[:, generated.shape[1] - 1, :]
+                    else:
+                        next_logits = target_logits[:, -1, :]
                 else:
+                    # No draft accepted; fallback to target-only sample
+                    target_logits = self._target(generated, **kwargs)
                     next_logits = target_logits[:, -1, :]
-            else:
-                # No draft accepted; fallback to target-only sample
-                target_logits = self._target(generated, **kwargs)
-                next_logits = target_logits[:, -1, :]
 
-            next_token = self._sample(next_logits)
-            generated = torch.cat([generated, next_token], dim=1)
+                next_token = self._sample(next_logits)
+                generated = torch.cat([generated, next_token], dim=1)
+
+            cut = _maybe_cut()
+            if cut is not None:
+                return cut
 
         return generated
 
@@ -241,6 +270,7 @@ class TreeMultiDraftVerifier:
         depth: int = 4,
         temperature: float = 1.0,
         device: str = "cuda",
+        eos_token_id: int | None = None,
     ):
         from distllm.core.draft_tree import DraftTree
 
@@ -257,6 +287,7 @@ class TreeMultiDraftVerifier:
         ]
         self._temperature = temperature
         self._device = torch.device(device)
+        self._eos_token_id = eos_token_id
 
         self._stats = {
             "target_calls": 0,
@@ -276,12 +307,33 @@ class TreeMultiDraftVerifier:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Generate tokens using tree-based multi-draft verification."""
+        """Generate tokens using tree-based multi-draft verification.
+
+        Args:
+            input_ids: Prompt token IDs, shape ``(1, seq_len)``.
+            max_new_tokens: Maximum tokens to generate.
+            eos_token_id: End-of-text token id (C14). Generation stops at the
+                first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
+            **kwargs: Additional arguments passed to forward functions.
+        """
         generated = input_ids.clone()
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
+
+        def _maybe_cut() -> torch.Tensor | None:
+            """C14: truncate at first EOS in this round's new tokens, if any."""
+            if eos_token_id is None:
+                return None
+            cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+            if cut < generated.shape[1] - prompt_len:
+                return generated[:, :prompt_len + cut]
+            return None
 
         while generated.shape[1] < target_len:
             remaining = target_len - generated.shape[1]
@@ -292,11 +344,11 @@ class TreeMultiDraftVerifier:
             all_roots = []
             for tree in self._trees:
                 root = tree.generate_tree(generated)
-                all_roots.append(root)
+                all_roots.append((tree, root))
 
             # Collect all candidate paths from all trees
             all_paths = []
-            for root in all_roots:
+            for _, root in all_roots:
                 all_paths.extend(root.flatten())
 
             if not all_paths:
@@ -314,12 +366,15 @@ class TreeMultiDraftVerifier:
             target_logits = self._target(full_input, **kwargs)
             self._stats["target_calls"] += 1
 
-            # Phase 3: Verify each tree and find best result
+            # Phase 3: Verify each tree and find best result.
+            # verify_tree is a DraftTree method, not TreeNode — pair each
+            # root with the tree that produced it (previously crashed with
+            # AttributeError on every call).
             best_accepted = 0
             best_tokens: list[int] = []
 
-            for root in all_roots:
-                result = root.verify_tree(generated, root, target_logits)
+            for tree, root in all_roots:
+                result = tree.verify_tree(generated, root, target_logits)
                 if result.accepted_count > best_accepted:
                     best_accepted = result.accepted_count
                     best_tokens = result.accepted_tokens
@@ -336,6 +391,10 @@ class TreeMultiDraftVerifier:
                 next_logits = target_logits[:, generated.shape[1] - 1, :]
                 next_token = self._sample(next_logits)
                 generated = torch.cat([generated, next_token], dim=1)
+
+            cut = _maybe_cut()
+            if cut is not None:
+                return cut
 
         return generated
 

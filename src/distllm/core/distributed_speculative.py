@@ -54,6 +54,8 @@ import torch.nn.functional as F
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
+from distllm.core.spec_verify import eos_cutoff
+
 # Module-level lazy httpx import cache
 _httpx: Any = None
 _httpx_async: Any = None
@@ -798,6 +800,7 @@ class DistributedSpeculativeDecoder:
         top_k: int = 20,
         device: str = "cuda",
         fallback_batch: int = 3,
+        eos_token_id: int | None = None,
     ):
         self._target = target_forward
         self._fleet = draft_fleet
@@ -823,6 +826,7 @@ class DistributedSpeculativeDecoder:
         self._temperature = temperature
         self._top_k = top_k
         self._device = torch.device(device)
+        self._eos_token_id = eos_token_id
 
         self._stats: dict[str, Any] = {
             "draft_calls": 0,
@@ -873,6 +877,7 @@ class DistributedSpeculativeDecoder:
         max_new_tokens: int = 256,
         past_key_values: Any = None,
         fallback_batch: int | None = None,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using distributed speculative decoding.
@@ -885,6 +890,9 @@ class DistributedSpeculativeDecoder:
             fallback_batch: Number of target-only tokens to generate
                 when the draft model fails (avoids 1-token-per-step
                 degradation).
+            eos_token_id: End-of-text token id (C14). Generation stops at the
+                first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
             **kwargs: Forwarded to ``target_forward``.
 
         Returns:
@@ -905,6 +913,17 @@ class DistributedSpeculativeDecoder:
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
         actual_draft_tokens = 0
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
+
+        def _maybe_cut() -> torch.Tensor | None:
+            """C14: truncate at first EOS in this round's new tokens, if any."""
+            if eos_token_id is None:
+                return None
+            cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+            if cut < generated.shape[1] - prompt_len:
+                return generated[:, :prompt_len + cut]
+            return None
 
         while generated.shape[1] < target_len:
             remaining = target_len - generated.shape[1]
@@ -938,6 +957,9 @@ class DistributedSpeculativeDecoder:
                     next_token = self._sample(target_logits[:, -1, :])
                     generated = torch.cat([generated, next_token], dim=1)
                     actual_draft_tokens += 1
+                    cut = _maybe_cut()
+                    if cut is not None:
+                        return cut
                 continue
 
             # Cap draft tokens to the remaining budget.  A misbehaving
@@ -993,6 +1015,9 @@ class DistributedSpeculativeDecoder:
                     total=len(draft_token_ids),
                 )
 
+            cut = _maybe_cut()
+            if cut is not None:
+                return cut
         # Track stats: proposed = draft tokens only, accepted = generated
         # minus prompt (includes bonused correction token).  Cap to prevent
         # acceptance rate > 1.0 when non-draft tokens inflate accepted.
@@ -1008,6 +1033,7 @@ class DistributedSpeculativeDecoder:
         max_new_tokens: int = 256,
         past_key_values: Any = None,
         fallback_batch: int | None = None,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Async generation with draft/verify overlap.
@@ -1028,6 +1054,9 @@ class DistributedSpeculativeDecoder:
             max_new_tokens: Maximum tokens to generate.
             past_key_values: Optional KV cache passthrough.
             fallback_batch: Target-only tokens on draft failure.
+            eos_token_id: End-of-text token id (C14). Generation stops at
+                the first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
             **kwargs: Forwarded to ``target_forward``.
 
         Returns:
@@ -1040,7 +1069,8 @@ class DistributedSpeculativeDecoder:
         """
         with torch.no_grad():
             return await self._agenerate_impl(
-                input_ids, max_new_tokens, past_key_values, fallback_batch, **kwargs,
+                input_ids, max_new_tokens, past_key_values, fallback_batch,
+                eos_token_id=eos_token_id, **kwargs,
             )
 
     async def _agenerate_impl(
@@ -1049,6 +1079,7 @@ class DistributedSpeculativeDecoder:
         max_new_tokens: int,
         past_key_values: Any,
         fallback_batch: int | None,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Internal async generation loop with draft/verify overlap."""
@@ -1064,6 +1095,17 @@ class DistributedSpeculativeDecoder:
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
         actual_draft_tokens = 0
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
+
+        def _maybe_cut() -> torch.Tensor | None:
+            """C14: truncate at first EOS in this round's new tokens, if any."""
+            if eos_token_id is None:
+                return None
+            cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+            if cut < generated.shape[1] - prompt_len:
+                return generated[:, :prompt_len + cut]
+            return None
 
         draft_model = self._get_draft_model()
 
@@ -1101,6 +1143,9 @@ class DistributedSpeculativeDecoder:
                     next_token = self._sample(target_logits[:, -1, :])
                     generated = torch.cat([generated, next_token], dim=1)
                     actual_draft_tokens += 1
+                    cut = _maybe_cut()
+                    if cut is not None:
+                        return cut
             else:
                 # Cap draft tokens to the remaining budget.  A misbehaving
                 # draft model can return more tokens than requested.
@@ -1157,6 +1202,9 @@ class DistributedSpeculativeDecoder:
                                 top_k=self._top_k,
                             )
                         )
+                    cut = _maybe_cut()
+                    if cut is not None:
+                        return cut
                     continue
 
             # Launch next draft if we didn't already
@@ -1173,6 +1221,11 @@ class DistributedSpeculativeDecoder:
                         top_k=self._top_k,
                     )
                 )
+
+            # C14: full-acceptance path also appended tokens this round.
+            cut = _maybe_cut()
+            if cut is not None:
+                return cut
 
         # Track stats: proposed = draft tokens only, accepted = generated
         # minus prompt (includes bonused correction token).  Cap to prevent
