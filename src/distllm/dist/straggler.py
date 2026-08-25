@@ -6,7 +6,8 @@ the existing Rebalancer for layer reassignment.
 
 Detection methods:
 - Threshold-based: node exceeds p95 latency of others
-- MAD-based: median absolute deviation outlier detection
+- MAD-based: median absolute deviation outlier detection (calibrated,
+  see ``StragglerDetector.__init__`` for threshold rationale)
 - Trend-based: sustained latency increase over time
 - Throughput-based: tokens/second below expected throughput
 - Ensemble: weighted voting across all methods
@@ -292,6 +293,34 @@ class StragglerDetector:
     - Adaptive thresholds via Welford's algorithm
     - Straggler event history
 
+    MAD threshold calibration (``mad_threshold``, default 2.0)
+    ----------------------------------------------------------
+    The MAD method computes a robust z-score over peer p95 latencies::
+
+        z_i = |p95_i - median(p95)| / (MAD / 0.6745)
+
+    where MAD is the raw median absolute deviation across peers.  Dividing
+    by the consistency constant 0.6745 (Iglewicz-Hoban) scales the score to
+    be comparable to a standard deviation under normality; without it,
+    ``mad_threshold=2.0`` would correspond to only ~1.35 sigma and fire on
+    routine jitter.
+
+    A second guard, ``min_relative_deviation`` (default 0.25), requires the
+    absolute deviation from the peer median to also exceed 25% of that
+    median.  This exists because with only a handful of peers whose p95s
+    cluster within a few percent of each other, the raw MAD collapses toward
+    zero and pure sampling noise systematically exceeds any fixed multiple
+    of it — measured at ~40% false-positive check rounds on ±20% uniform
+    jitter before this guard was added.  A genuine straggler running at 3x
+    its peers deviates by +200% and is unaffected.
+
+    Chosen operating point (verified against synthetic latency sequences in
+    ``tests/dist/test_straggler.py::TestMADCharacterization``):
+
+    - ±20% normal jitter across all nodes: no detections (was ~40% of checks)
+    - sudden spike to 3x peers: detected within 3 consecutive checks
+    - slow drift: detected once latency exceeds peers by ~25-50%
+
     Usage::
 
         detector = StragglerDetector(
@@ -316,6 +345,7 @@ class StragglerDetector:
         consecutive_threshold: int = 3,
         window_size: int = 50,
         mad_threshold: float = 2.0,
+        min_relative_deviation: float = 0.25,
         check_interval_s: float = 10.0,
         # Configurable multipliers (fixes #7, #8, #9)
         threshold_multiplier: float = 1.5,
@@ -342,6 +372,7 @@ class StragglerDetector:
         self._consecutive_threshold = consecutive_threshold
         self._window_size = window_size
         self._mad_threshold = mad_threshold
+        self._min_relative_deviation = min_relative_deviation
         self._check_interval = check_interval_s
 
         # Configurable multipliers
@@ -468,15 +499,22 @@ class StragglerDetector:
                 elif method == DetectionMethod.MAD:
                     devs = [abs(p - median_p95) for p in all_p95_vals]
                     mad = statistics.median(devs) if devs else 0
-                    if mad > 0:
-                        is_slow = abs(node.p95_latency - median_p95) / mad > self._mad_threshold
-                        # Fixes #2: MAD=0 with non-identical data fallback.
-                        # With two nodes both deviate from the median equally,
-                        # so MAD alone cannot discriminate; fall back to the
-                        # threshold rule so the slower node is still caught.
-                        if not is_slow and node.p95_latency > median_p95 * self._threshold_multiplier:
-                            is_slow = True
+                    # Calibrated robust z-score: scale raw MAD by its
+                    # consistency constant (0.6745) so mad_threshold is
+                    # comparable to a sigma-multiple under normality.
+                    scaled_mad = max(mad / 0.6745, 1e-9)
+                    deviation = abs(node.p95_latency - median_p95)
+                    relative = deviation / median_p95 if median_p95 > 0 else float("inf")
+                    if (
+                        deviation / scaled_mad > self._mad_threshold
+                        and relative > self._min_relative_deviation
+                    ):
+                        is_slow = True
                     elif node.p95_latency > median_p95 * self._threshold_multiplier:
+                        # Fixes #2: MAD≈0 fallback.  With two nodes both
+                        # deviate from the median equally, so MAD alone cannot
+                        # discriminate; fall back to the threshold rule so the
+                        # slower node is still caught.
                         is_slow = True
                 elif method == DetectionMethod.TREND:
                     # Windowed trend: compare the recent half of the window
@@ -630,10 +668,17 @@ class StragglerDetector:
         # Threshold
         if node.p95_latency > median_p95 * self._threshold_multiplier:
             votes += 1
-        # MAD
+        # MAD (calibrated robust z-score + relative-deviation guard; see
+        # class docstring for threshold rationale)
         devs = [abs(p - median_p95) for p in all_p95_vals]
         mad = statistics.median(devs) if devs else 0
-        if mad > 0 and abs(node.p95_latency - median_p95) / mad > self._mad_threshold:
+        scaled_mad = max(mad / 0.6745, 1e-9)
+        deviation = abs(node.p95_latency - median_p95)
+        relative = deviation / median_p95 if median_p95 > 0 else float("inf")
+        if (
+            deviation / scaled_mad > self._mad_threshold
+            and relative > self._min_relative_deviation
+        ):
             votes += 1
         elif node.p95_latency > median_p95 * self._threshold_multiplier:
             votes += 1

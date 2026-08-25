@@ -99,6 +99,10 @@ class TestThresholdSensitivity:
         for _ in range(5):
             d.record_latency("n3", 30)  # 3x baseline
 
+        # Two consecutive checks are required: consecutive_threshold=2 and a
+        # single check() can only ever increment consecutive_slow to 1.
+        d.check()
+        d._last_check = 0
         reports = d.check()
         detected = any(r.node_id == "n3" for r in reports)
         assert detected == expected_detect

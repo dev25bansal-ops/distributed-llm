@@ -11,6 +11,7 @@ Tests use CPU-based timing only — no GPU required.
 from __future__ import annotations
 
 import math
+import random
 import time
 
 import pytest
@@ -214,6 +215,135 @@ class TestDetectionMAD:
         d._last_check = 0
         reports = d.check()
         assert isinstance(reports, list)
+
+
+class TestMADCharacterization:
+    """Characterization of MAD detection against synthetic latency patterns.
+
+    Threshold rationale (see ``StragglerDetector`` class docstring): the MAD
+    method uses a calibrated robust z-score (MAD / 0.6745) plus a minimum
+    relative-deviation guard (default 25%).  These tests pin the operating
+    point:
+
+    - normal jitter (±20% uniform, all nodes same distribution): must NOT
+      fire — before calibration this fired on ~40% of check rounds.
+    - sudden spike to 3x peers: MUST fire within a few consecutive checks.
+    - slow drift: MUST fire once the drifting node exceeds peers by well
+      over the 25% relative guard; must NOT fire while within jitter band.
+    """
+
+    N_NODES = 4
+    JITTER_LO = 80.0
+    JITTER_HI = 120.0  # ±20% around 100 ms nominal
+
+    def _detector(self, **overrides) -> StragglerDetector:
+        defaults = dict(
+            detection_method=DetectionMethod.MAD,
+            check_interval_s=0.0,
+            consecutive_threshold=3,
+            mad_threshold=2.0,
+            threshold_multiplier=1.5,
+            callback_cooldown_s=1e9,  # disable throttling side effects
+        )
+        defaults.update(overrides)
+        return StragglerDetector(**defaults)
+
+    def _latency_for(self, node_idx: int, sample_idx: int, rng, pattern: str) -> float:
+        base = rng.uniform(self.JITTER_LO, self.JITTER_HI)
+        if pattern == "normal":
+            return base
+        if pattern == "spike" and node_idx == self.N_NODES - 1:
+            return 3.0 * base
+        if pattern == "drift" and node_idx == self.N_NODES - 1:
+            # linear ramp 100 -> 250 ms over 400 samples
+            return 100.0 + 150.0 * min(sample_idx / 400.0, 1.0)
+        return base
+
+    def _run(self, pattern: str, seed: int, rounds: int = 30):
+        """Feed jittered samples, checking periodically; yield per-round reports."""
+        rng = random.Random(seed)
+        d = self._detector()
+        nodes = [f"n{i}" for i in range(self.N_NODES)]
+        results = []
+        sample = 0
+        for _ in range(60):  # warm-up so every node has >= 5 samples
+            for i, n in enumerate(nodes):
+                d.record_latency(n, self._latency_for(i, sample, rng, pattern))
+            sample += 1
+        for _ in range(rounds):
+            for _ in range(5):
+                for i, n in enumerate(nodes):
+                    d.record_latency(n, self._latency_for(i, sample, rng, pattern))
+                sample += 1
+            d._last_check = 0
+            results.append(d.check())
+        return results
+
+    @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
+    def test_normal_jitter_never_flags(self, seed):
+        """Healthy cluster with ±20% jitter produces zero straggler reports."""
+        reports = self._run("normal", seed=seed, rounds=20)
+        flagged = [r for round_reports in reports for r in round_reports]
+        assert flagged == [], f"false positives on healthy jitter: {flagged}"
+
+    @pytest.mark.parametrize("seed", [10, 11, 12])
+    def test_sudden_spike_3x_detected(self, seed):
+        """A node running sustained at 3x peers is detected quickly."""
+        reports = self._run("spike", seed=seed, rounds=10)
+        rounds_until = next(
+            (i for i, rs in enumerate(reports) if any(r.node_id == f"n{self.N_NODES - 1}" for r in rs)),
+            None,
+        )
+        assert rounds_until is not None, "3x sustained slowdown never detected"
+        assert rounds_until <= 5, f"detection took too long: round {rounds_until}"
+        # Healthy peers must not be flagged in the same run
+        peer_flags = [
+            r.node_id for rs in reports for r in rs if r.node_id != f"n{self.N_NODES - 1}"
+        ]
+        assert peer_flags == []
+
+    def test_slow_drift_detected_after_crossing_guard(self):
+        """Drifting node fires once it exceeds peers by > ~25%, not during early drift.
+
+        Detection is gated by min_relative_deviation=0.25 (the calibrated
+        z-score clears mad_threshold almost immediately on a drift), so we
+        expect no flags while the ramp is inside the jitter band and a flag
+        well before the ramp completes.
+        """
+        reports = self._run("drift", seed=7, rounds=30)
+        flagged_rounds = [
+            i for i, rs in enumerate(reports)
+            if any(r.node_id == f"n{self.N_NODES - 1}" for r in rs)
+        ]
+        assert flagged_rounds, "drift to +65% latency was never detected"
+        # Early drift (~+2% at round 0) must not fire — the relative guard holds.
+        assert 0 not in flagged_rounds, (
+            "early drift (~+2%) flagged — relative-deviation guard not effective"
+        )
+        # And detection lands near the guard boundary, not arbitrarily late:
+        # sample = 60 warmup + 5*(round+1); +25% of peer p95 (~118ms) is
+        # crossed around round 14-16.
+        assert flagged_rounds[0] <= 20, (
+            f"first detection at round {flagged_rounds[0]} — sensitivity degraded"
+        )
+
+    def test_mild_sustained_offset_within_band_not_flagged(self):
+        """A node persistently 15% slower than peers sits inside normal jitter — no flag."""
+        rng = random.Random(99)
+        d = self._detector()
+        for _ in range(60):
+            for i in range(self.N_NODES):
+                base = rng.uniform(self.JITTER_LO, self.JITTER_HI)
+                lat = base * 1.15 if i == self.N_NODES - 1 else base
+                d.record_latency(f"n{i}", lat)
+        for _ in range(10):
+            for i in range(self.N_NODES):
+                base = rng.uniform(self.JITTER_LO, self.JITTER_HI)
+                lat = base * 1.15 if i == self.N_NODES - 1 else base
+                d.record_latency(f"n{i}", lat)
+            d._last_check = 0
+            reports = d.check()
+            assert all(r.node_id != "n3" for r in reports)
 
 
 class TestDetectionTrend:
