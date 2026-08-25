@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import random
 import time
 from collections import OrderedDict
@@ -43,6 +44,11 @@ RPC_TIMEOUT: float = 5.0  # Default RPC timeout (seconds)
 STORE_TOKEN_TTL: int = 300
 # Allowable clock skew between peers when validating a STORE token.
 STORE_TOKEN_SKEW: int = 300
+
+# Environment variable carrying the DHT shared secret.  When set, it is used as
+# the default ``shared_secret`` for KademliaDHT instances that do not pass one
+# explicitly, enabling HMAC-authenticated STORE across the deployment.
+DHT_SECRET_ENV_VAR: str = "DISTLLM_DHT_SECRET"
 
 
 def _generate_node_id(seed: bytes | None = None) -> bytes:
@@ -493,12 +499,17 @@ class KademliaDHT:
 
     Usage
     -----
-        dht = KademliaDHT(host="0.0.0.0", port=0)
+        dht = KademliaDHT(host="0.0.0.0", port=0,
+                          shared_secret="cluster-wide-secret")
         port = await dht.start()
         await dht.bootstrap(seed_nodes)
         nearest = await dht.find_node(target_id)
         value = await dht.find_value("some-key")
         await dht.stop()
+
+    Without ``shared_secret`` (or the ``DISTLLM_DHT_SECRET`` env var) external
+    STORE requests are rejected unless ``allow_unauthenticated=True`` is passed
+    explicitly.
     """
 
     def __init__(
@@ -508,7 +519,8 @@ class KademliaDHT:
         port: int = 0,
         k: int = K,
         alpha: int = ALPHA,
-        shared_secret: str = "",
+        shared_secret: str | None = None,
+        allow_unauthenticated: bool | None = None,
     ) -> None:
         self.local_node = KademliaNode(
             node_id=node_id if node_id is not None else _generate_node_id(),
@@ -517,20 +529,46 @@ class KademliaDHT:
         )
         self.k: int = k
         self.alpha: int = alpha
-        self.routing_table = RoutingTable(self.local_node.node_id)
+
         # Shared secret that authenticates STORE requests (HMAC capability
-        # token).  Empty = legacy unauthenticated mode (warned loudly below).
+        # token).  Resolution order: explicit constructor arg > DISTLLM_DHT_SECRET
+        # env var > empty (no authentication material).
+        env_secret = os.environ.get(DHT_SECRET_ENV_VAR, "")
+        if shared_secret is None:
+            shared_secret = env_secret
         self._shared_secret = shared_secret
-        if shared_secret:
+
+        # Fail-closed default for external STORE requests when no secret is
+        # configured: without a secret nothing can be verified, so unauthenticated
+        # writes are rejected.  Legacy deployments that genuinely want the old
+        # open mode must opt in explicitly via ``allow_unauthenticated=True``.
+        # An explicit ``False`` is equivalent to the default but documents intent.
+        if allow_unauthenticated is None:
+            allow_unauthenticated = False
+        self._allow_unauthenticated = bool(allow_unauthenticated)
+
+        if self._shared_secret:
             logger.info(
                 "KademliaDHT: STORE requests are authenticated (shared-secret HMAC)"
             )
+        elif self._allow_unauthenticated:
+            logger.warning(
+                "KademliaDHT: no shared secret configured and "
+                "allow_unauthenticated=True — STORE requests are UNAUTHENTICATED "
+                "and any reachable peer can poison the DHT. This legacy mode is "
+                "for development only; set {} to enable store-authorisation.",
+                DHT_SECRET_ENV_VAR,
+            )
         else:
             logger.warning(
-                "KademliaDHT: no shared secret configured — STORE requests are "
-                "UNAUTHENTICATED and any reachable peer can poison the DHT. "
-                "Set a shared secret to enable store-authorisation."
+                "KademliaDHT: no shared secret configured — external STORE "
+                "requests WITHOUT a valid token will be REJECTED (fail-closed). "
+                "Set {} to enable authenticated stores, or pass "
+                "allow_unauthenticated=True to restore legacy open behaviour.",
+                DHT_SECRET_ENV_VAR,
             )
+
+        self.routing_table = RoutingTable(self.local_node.node_id)
 
         # Local key-value store: key -> (value_bytes, expiry_timestamp)
         self._store: dict[str, tuple[bytes, float]] = {}
@@ -876,10 +914,15 @@ class KademliaDHT:
     def _verify_store_token(
         self, node_id_hex: str, key: str, value_hex: str, token: str, expires: Any
     ) -> bool:
-        """Validate a STORE capability token (time-bound, constant-time)."""
+        """Validate a STORE capability token (time-bound, constant-time).
+
+        Fail-closed: without a shared secret there is no authentication
+        material, so verification succeeds only in explicit legacy mode
+        (``allow_unauthenticated=True``, warned at construction).
+        """
         if not self._shared_secret:
-            # Legacy unauthenticated mode (warned at construction).
-            return True
+            # No secret configured — nothing can be verified.
+            return bool(self._allow_unauthenticated)
         try:
             expires_int = int(expires)
         except (TypeError, ValueError):
@@ -893,9 +936,10 @@ class KademliaDHT:
     async def _handle_store(self, msg: dict[str, Any], addr: tuple[str, int]) -> dict[str, Any]:
         """Handle incoming STORE: persist a key-value pair.
 
-        When a shared secret is configured, the request must carry a valid
-        time-bound HMAC token (fail closed) so arbitrary peers cannot poison
-        the DHT.
+        The request must carry a valid time-bound HMAC token (fail closed) so
+        arbitrary peers cannot poison the DHT — both when a shared secret is
+        configured and (by default) when it is not.  Legacy open behaviour is
+        available only via ``allow_unauthenticated=True``.
         """
         params = msg.get("params", {})
         key: str = params.get("key", "")
@@ -928,7 +972,10 @@ class KademliaDHT:
             params.get("expires"),
         ):
             logger.warning(
-                f"KademliaDHT: rejected unauthenticated STORE from {addr} for key={key[:24]!r}"
+                f"KademliaDHT: rejected unauthenticated STORE from {addr} for "
+                f"key={key[:24]!r} "
+                f"(secret_configured={bool(self._shared_secret)}, "
+                f"token_present={bool(params.get('token'))})"
             )
             return {"stored": False, "error": "invalid or expired store token"}
 
