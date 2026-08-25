@@ -697,6 +697,28 @@ class SSOAuthHandler:
             return self._handler.handle_callback(code, expected_state=state)
         return self._handler.handle_callback(code)
 
+    async def async_handle_callback(self, code: str, state: str = "") -> SSOUserInfo | None:
+        """Async wrapper for :meth:`handle_callback`.
+
+        ``handle_callback`` performs **blocking** outbound HTTP calls to the
+        IdP's token/userinfo endpoints (``httpx.post/get`` sync API), so it
+        must never run directly on the event loop — offload it to a worker
+        thread.
+        """
+        import asyncio
+
+        return await asyncio.to_thread(self.handle_callback, code, state)
+
+    async def async_validate_token(self, access_token: str) -> SSOUserInfo | None:
+        """Async wrapper for :meth:`validate_token`.
+
+        Validation can trigger a blocking JWKS fetch over the network;
+        offload it to a worker thread so the event loop stays responsive.
+        """
+        import asyncio
+
+        return await asyncio.to_thread(self.validate_token, access_token)
+
     def revoke_token(self, token_hash: str) -> None:
         """Revoke a token by its SHA-256 hash.
 

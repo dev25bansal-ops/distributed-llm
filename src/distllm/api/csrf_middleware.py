@@ -3,6 +3,17 @@
 Validates Origin and Referer headers on all non-GET, non-OPTIONS requests
 to prevent Cross-Site Request Forgery attacks.
 
+Design note (why Origin/Referer instead of synchronizer tokens): DistLLM's
+API is authenticated exclusively via headers the browser never attaches
+automatically (``Authorization: Bearer …``, ``X-API-Key``, ``X-Cluster-Key``),
+and no session cookies are issued.  A cross-site form POST therefore cannot
+carry credentials at all; the residual risk is credential-bearing requests
+fired from same-browser JS, which modern browsers always tag with a truthful
+``Origin`` header on cross-origin POSTs.  Validating Origin/Referer when
+present is the OWASP-recommended secondary control for this architecture;
+requests with neither header are allowed (non-browser clients such as curl,
+SDKs, and inter-node traffic legitimately omit them).
+
 Uses the Same-Origin check: if the Origin or Referer header is present,
 it must match the server's expected origin. If neither header is present,
 the request is allowed through (browsers always send Origin for cross-origin
@@ -49,26 +60,60 @@ def _get_allowed_origins() -> list[str]:
     return list(_DEFAULT_ALLOWED_ORIGINS)
 
 
+def _normalize_origin(origin: str) -> str:
+    """Normalize an Origin/Referer-origin string for comparison.
+
+    Lowercases scheme+host (origins are case-insensitive per RFC 6454) and
+    strips any trailing slash so configured entries like
+    ``https://App.Example.com/`` compare equal to a browser-sent
+    ``https://app.example.com``.
+    """
+    origin = origin.strip()
+    parsed = urlparse(origin)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    if not scheme or not netloc:
+        # Not parseable as scheme://host — fall back to a conservative
+        # lowercase of the raw string.
+        return origin.lower().rstrip("/")
+    return f"{scheme}://{netloc}"
+
+
 def _origin_matches_allowed(origin: str, allowed_origins: list[str]) -> bool:
     """Check if an origin matches any of the allowed origins.
 
-    Supports exact match and subdomain wildcard via leading ``.*``
-    (e.g. ``*.example.com`` matches ``https://app.example.com``).
+    Supports exact match and subdomain wildcard via leading ``*.``
+    (e.g. ``https://*.example.com`` matches ``https://app.example.com``
+    but NOT ``https://example.com``, ``https://app.example.com.evil.io``,
+    or ``https://evil.com/?x=*.example.com``).
     """
+    normalized_origin = _normalize_origin(origin)
+
     # Always allow safe localhost origins
-    if origin in _SAFE_ORIGINS:
+    if normalized_origin in {_normalize_origin(o) for o in _SAFE_ORIGINS}:
         return True
 
-    # Exact match
-    if origin in allowed_origins:
-        return True
-
-    # Wildcard subdomain match
     for allowed in allowed_origins:
-        if allowed.startswith("*."):
-            pattern = re.escape(allowed).replace(r"\*\.", r"^https?://([a-zA-Z0-9-]+\.)*")
-            if re.match(pattern, origin):
+        normalized_allowed = _normalize_origin(allowed)
+
+        if normalized_allowed.startswith(("http://*.", "https://*.")):
+            scheme, _, domain = normalized_allowed.partition("://")
+            wildcard_domain = domain[2:]  # strip "*."
+            # SECURITY: anchored on BOTH ends, and the subdomain group uses
+            # ``+`` (not ``*``) so the wildcard never matches the bare apex
+            # domain — ``https://*.example.com`` means "subdomains only".
+            # Without the trailing "$", ``*.example.com`` also matched
+            # ``https://app.example.com.evil.io`` (re.match is a prefix
+            # match), letting attacker-controlled suffix domains forge
+            # same-origin requests.
+            pattern = (
+                rf"^{re.escape(scheme)}://([a-zA-Z0-9-]+\.)+"
+                rf"{re.escape(wildcard_domain)}$"
+            )
+            if re.match(pattern, normalized_origin):
                 return True
+        elif normalized_origin == normalized_allowed:
+            return True
 
     return False
 
@@ -166,17 +211,19 @@ class CSRFSameOriginMiddleware(BaseHTTPMiddleware):
             # Origin is valid
             return await call_next(request)
 
-        # If Origin is absent but Referer is present, validate Referer
+        # If Origin is absent but Referer is present, validate Referer.
+        # SECURITY: fail CLOSED on an unparseable Referer — previously a
+        # malformed value (no scheme/host) produced an empty origin string
+        # and fell through to "allowed", bypassing the check entirely.
         if referer:
-            try:
-                parsed = urlparse(referer)
-                referer_origin = f"{parsed.scheme}://{parsed.netloc}"
-            except (ValueError, AttributeError):
-                referer_origin = ""
-
-            if referer_origin and not _origin_matches_allowed(referer_origin, self._allowed_origins):
+            referer_origin = _normalize_origin(referer)
+            if (
+                not referer_origin
+                or "://" not in referer_origin
+                or not _origin_matches_allowed(referer_origin, self._allowed_origins)
+            ):
                 logger.warning(
-                    f"CSRF blocked request from referer={referer_origin!r} "
+                    f"CSRF blocked request from referer={referer!r} "
                     f"method={request.method} path={request.url.path} "
                     f"ip={request.client.host if request.client else 'unknown'}"
                 )
