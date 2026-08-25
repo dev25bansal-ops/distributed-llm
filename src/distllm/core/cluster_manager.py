@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from loguru import logger
@@ -37,6 +38,10 @@ class ClusterManager:
         self._trust_remote_code = trust_remote_code
         self._cluster_key = cluster_key
         self._model_registry: dict[str, dict] = {}
+        # Guards ``_model_registry``: written by manual_register /
+        # _register_weight_source and read by _get_weight_source, both of
+        # which run concurrently (batch registration uses a thread pool).
+        self._registry_lock = threading.Lock()
         self._distribute_weights: bool = True
 
         self.tokenizer: AutoTokenizer | None = None
@@ -136,6 +141,8 @@ class ClusterManager:
 
     def _register_weight_source(self, node_id, model_name, start_layer, end_layer):
         key = f"{model_name}:{start_layer}:{end_layer}"
+        # Snapshot the node lookup: ``self._pipeline.nodes`` is the live
+        # orchestrator dict, which other threads may be mutating.
         node = self._pipeline.nodes.get(node_id)
         if isinstance(node, dict):
             host = node.get("host", "unknown")
@@ -143,18 +150,22 @@ class ClusterManager:
         else:
             host = getattr(node, "host", "unknown") if node else "unknown"
             port_b = getattr(node, "port", 0) if node else 0
-        self._model_registry[key] = {
-            "node_id": node_id, "host": host, "port": port_b,
-            "start_layer": start_layer, "end_layer": end_layer,
-        }
+        with self._registry_lock:
+            self._model_registry[key] = {
+                "node_id": node_id, "host": host, "port": port_b,
+                "start_layer": start_layer, "end_layer": end_layer,
+            }
         logger.info(f"Registered weight source {node_id} for {key}")
 
     def _get_weight_source(self, model_name, start_layer, end_layer):
         key = f"{model_name}:{start_layer}:{end_layer}"
-        entry = self._model_registry.get(key)
-        if entry is None:
-            return None
-        return (entry["host"], entry["port"])
+        with self._registry_lock:
+            entry = self._model_registry.get(key)
+            if entry is None:
+                return None
+            # Copy under the lock so the caller's reads cannot race a
+            # concurrent _register_weight_source overwrite.
+            return (entry["host"], entry["port"])
 
     def register_nodes_batch(
         self,
@@ -200,8 +211,24 @@ class ClusterManager:
         Returns:
             Dict of node_id -> {gpu_name, memory_total_gb, memory_free_gb}.
         """
+        # ``self._pipeline.nodes`` is the live orchestrator mapping, mutated
+        # by register/unregister on other threads (batch registration uses a
+        # thread pool; the admin API unregisters nodes concurrently).
+        # Iterating it directly raises ``RuntimeError: dictionary changed
+        # size during iteration``.  Snapshot the underlying dict while
+        # holding the orchestrator's lock for a consistent point-in-time
+        # view.  We must NOT go through the ``nodes`` property here: it
+        # re-acquires the same non-reentrant lock and would self-deadlock.
+        lock = getattr(self._pipeline, "_lock", None)
+        raw_nodes = getattr(self._pipeline, "_nodes", None)
+        if lock is not None and isinstance(raw_nodes, dict):
+            with lock:
+                nodes_snapshot = list(raw_nodes.items())
+        else:
+            # Stub/test pipelines without an internal lock: plain copy.
+            nodes_snapshot = list(self._pipeline.nodes.items())
         summary = {}
-        for nid, node in self._pipeline.nodes.items():
+        for nid, node in nodes_snapshot:
             summary[nid] = {
                 "gpu_name": getattr(node, "gpu_name", ""),
                 "memory_total_gb": getattr(node, "gpu_memory_total", 0) / (1024 ** 3)
