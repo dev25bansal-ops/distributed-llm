@@ -157,12 +157,27 @@ class HydraOrchestrator:
         start = time.time()
         params = params or {}
         is_video = "video" in model.lower()
-        pipe = VideoPipeline() if is_video else DiffusionPipeline()
+        # Cache pipelines keyed by model — previously rebuilt every call
+        # (F-042) causing GB-scale download + random noise conditioning.
+        cache_key = f"{'video' if is_video else 'image'}:{model}"
+        pipe = self._pipelines.get(cache_key)
+        if pipe is None:
+            pipe = VideoPipeline() if is_video else DiffusionPipeline()
+            self._pipelines[cache_key] = pipe
 
         if is_video:
-            result = pipe.generate(prompt, num_frames=params.get("num_frames", 16))
+            init_image = params.get("init_image")
+            if init_image is None:
+                logger.warning("Video generation requires init_image param — rejecting")
+                return None
+            if not isinstance(pipe, VideoPipeline) or not pipe.is_loaded():
+                pipe.load(model)
+            result = pipe.generate(prompt, init_image=init_image,
+                                   num_frames=params.get("num_frames", 16),
+                                   fps=params.get("fps", 8))
         else:
-            pipe.load(model, num_gpus=params.get("num_gpus", 1))
+            if not getattr(pipe, "_pipeline", None):
+                pipe.load(model, num_gpus=params.get("num_gpus", 1))
             result = pipe.generate(prompt, steps=params.get("steps", 50))
 
         elapsed = time.time() - start

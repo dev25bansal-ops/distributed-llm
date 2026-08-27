@@ -344,9 +344,11 @@ class TreeSpeculativeDecoder:
             accepted = []
             for j, expected_token in enumerate(branch):
                 # Aligned with speculative_decoder.py convention: target_logits[pos]
-                # represents the distribution over the token at input position pos.
-                # Branch token j is at input position prefix.shape[1] + j.
-                pos = prefix.shape[1] + j
+                # predicts the token at input position pos+1 (logits[P-1+i]
+                # predicts token[P+i]). Branch token j is at input position
+                # prefix.shape[1] + j, so verify using logits at
+                # prefix.shape[1] - 1 + j.
+                pos = prefix.shape[1] - 1 + j
                 if pos < 0 or pos >= target_logits.shape[1]:
                     break
 

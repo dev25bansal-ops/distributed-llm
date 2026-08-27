@@ -186,8 +186,13 @@ def _get_or_generate_api_key() -> str | None:
     return generated_key
 
 
-# Module-level rate limiter instances
-_rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60)
+# Module-level rate limiter instances — dual-keyed (IP + API key) to prevent
+# IP-rotation bypass (audit H11).  Configure via DISTLLM_RATE_LIMIT_KEY_BY
+# (ip|api_key|both, default both).
+_rate_limit_key_by = os.environ.get("DISTLLM_RATE_LIMIT_KEY_BY", "both")
+if _rate_limit_key_by not in ("ip", "api_key", "both"):
+    _rate_limit_key_by = "both"
+_rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60, key_by=_rate_limit_key_by)
 _get_or_generate_api_key()
 
 try:
@@ -197,6 +202,7 @@ except (ValueError, TypeError):
 _request_rate_limiter = _RateLimiter(
     max_attempts=_rate_limit_req,
     window_seconds=60,
+    key_by=_rate_limit_key_by,
 )
 
 
@@ -286,10 +292,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if len(parts) >= 2 and parts[0] == "Bearer":
                 auth_header = f"Bearer {parts[1]}"
         client_ip = get_client_ip(request)
+        # Tentative api-key identifier for dual-key rate limiting (H11):
+        # use sha256 prefix so raw key is not stored in the limiter map.
+        def _api_key_id_for_limit(raw: str) -> str | None:
+            if not raw or len(raw) < 8:
+                return None
+            import hashlib
+            return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+        tentative_key = _api_key_id_for_limit(auth_header[7:] if auth_header.startswith("Bearer ") else None)
 
         if not auth_header.startswith("Bearer ") or len(auth_header) < 8:
-            if _rate_limiter.is_rate_limited(client_ip):
-                retry_after = _rate_limiter.retry_after(client_ip)
+            if _rate_limiter.is_rate_limited(client_ip, tentative_key):
+                retry_after = _rate_limiter.retry_after(client_ip, tentative_key)
                 return error_response(
                     status_code=429,
                     error="Too Many Requests",
@@ -298,7 +313,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     retry_after=retry_after,
                     request_id=getattr(request.state, "request_id", None),
                 )
-            _rate_limiter.record_attempt(client_ip)
+            _rate_limiter.record_attempt(client_ip, tentative_key)
             return error_response(
                 status_code=401,
                 error="Unauthorized",
@@ -315,8 +330,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # cache misses no longer stall the event loop for every request.
         result = await asyncio.to_thread(store.authenticate, token)
         if result is None:
-            if _rate_limiter.is_rate_limited(client_ip):
-                retry_after = _rate_limiter.retry_after(client_ip)
+            failed_key = _api_key_id_for_limit(token)
+            if _rate_limiter.is_rate_limited(client_ip, failed_key):
+                retry_after = _rate_limiter.retry_after(client_ip, failed_key)
                 return error_response(
                     status_code=429,
                     error="Too Many Requests",
@@ -325,7 +341,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     retry_after=retry_after,
                     request_id=getattr(request.state, "request_id", None),
                 )
-            _rate_limiter.record_attempt(client_ip)
+            _rate_limiter.record_attempt(client_ip, failed_key)
             return error_response(
                 status_code=401,
                 error="Unauthorized",

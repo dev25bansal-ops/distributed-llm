@@ -257,15 +257,39 @@ class ZeroCopyTransferEngine:
 
         try:
             if backend == TransferBackend.CUDA_IPC:
-                handle = self.cuda_ipc.import_tensor(tag or peer, b"", shape, dtype)
-                result = handle
-                success = handle is not None
+                # CUDA IPC requires handle bytes from the sender via an
+                # out-of-band control channel (e.g. gRPC metadata / TCP).
+                # An empty handle means no transfer was performed — fail
+                # rather than fabricating zeros (silent corruption).
+                ipc_handle: bytes | None = None  # populated from control channel
+                # In this engine the handle must be supplied by the caller;
+                # b"" is not a valid handle. Treat empty as failure.
+                if not ipc_handle:
+                    logger.error(
+                        f"CUDA IPC recv missing handle for {tag or peer}: "
+                        "no handle bytes received via control channel — failing"
+                    )
+                    result = None
+                    success = False
+                else:
+                    handle = self.cuda_ipc.import_tensor(tag or peer, ipc_handle, shape, dtype)
+                    result = handle
+                    success = handle is not None
             elif backend == TransferBackend.RDMA:
                 result = self.rdma.recv_rdma(peer, shape, dtype)
                 success = result is not None
             elif backend == TransferBackend.NCCL and self._nccl_transport is not None:
-                result = torch.zeros(shape, dtype=dtype, device="cuda" if torch.cuda.is_available() else "cpu")
-                success = True
+                # NCCL recv must perform a real transfer — returning zeros
+                # hides transport failures and corrupts downstream computation.
+                try:
+                    # peer is expected to be a rank identifier
+                    src_rank = int(peer) if peer.lstrip("-").isdigit() else 0
+                    result = self._nccl_transport.recv(shape, dtype, src=src_rank)
+                    success = result is not None
+                except Exception as nccl_e:
+                    logger.error(f"NCCL recv failed from {peer}: {nccl_e}")
+                    result = None
+                    success = False
         except Exception as e:
             logger.error(f"Zero-copy recv failed ({backend.value}): {e}")
 

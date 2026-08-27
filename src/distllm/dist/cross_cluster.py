@@ -18,6 +18,21 @@ from loguru import logger
 
 from distllm.dist import node_pb2
 from distllm.security import safe_urlopen
+import os as _os
+
+def _federation_allow_private() -> bool:
+    """Federation peers may be on private LAN — gated via env.
+
+    Defaults to True for LAN federation (preserves existing deployments
+    and tests that use 127.0.0.1 peers).  Set
+    DISTLLM_FEDERATION_ALLOW_PRIVATE=0 to enforce public-only peers
+    and mitigate SSRF; set DISTLLM_FEDERATION_PEERS to an explicit allowlist
+    for stricter CIDR control.
+    """
+    raw = _os.environ.get("DISTLLM_FEDERATION_ALLOW_PRIVATE")
+    if raw is None:
+        return True
+    return raw == "1"
 
 
 class CrossClusterForwarder:
@@ -88,7 +103,7 @@ class CrossClusterForwarder:
                     },
                     method="POST",
                 )
-                with safe_urlopen(req, timeout=timeout, allow_private_hosts=True) as resp:
+                with safe_urlopen(req, timeout=timeout, allow_private_hosts=_federation_allow_private()) as resp:
                     data = json.loads(resp.read())
                     logger.debug(
                         f"Cross-cluster forward: {url} -> {len(data.get('choices', []))} choices"
@@ -191,7 +206,7 @@ class CrossClusterForwarder:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with safe_urlopen(req, timeout=30, allow_private_hosts=True) as resp:
+            with safe_urlopen(req, timeout=30, allow_private_hosts=_federation_allow_private()) as resp:
                 return resp.status == 200
         except Exception as e:
             logger.debug(f"KV cache forward failed: {e}")
@@ -223,7 +238,7 @@ class CrossClusterForwarder:
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
-                    with safe_urlopen(req, timeout=30, allow_private_hosts=True) as resp:
+                    with safe_urlopen(req, timeout=30, allow_private_hosts=_federation_allow_private()) as resp:
                         if resp.status == 200:
                             success += 1
                 except Exception as e:

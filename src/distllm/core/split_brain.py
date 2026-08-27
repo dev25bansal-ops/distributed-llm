@@ -104,6 +104,15 @@ class SplitBrainDetector:
             if peer.consecutive_failures >= self._failure_threshold:
                 peer.is_alive = False
 
+    def _has_quorum_locked(self, alive_peers: int) -> bool:
+        """Single quorum helper — consistently counts self.
+
+        All quorum decisions include this cluster itself (total_alive =
+        alive_peers + 1).  This avoids the prior asymmetry where
+        check_partition excluded self but quorum_check included it.
+        """
+        return (alive_peers + 1) >= self._quorum_size
+
     def check_partition(self) -> bool:
         """Check if a split-brain partition has occurred.
 
@@ -129,8 +138,7 @@ class SplitBrainDetector:
                 else:
                     partitioned.append(pid)
 
-            # Need quorum_size peers alive (excluding self)
-            self._partition_detected = alive_count < self._quorum_size
+            self._partition_detected = not self._has_quorum_locked(alive_count)
             self._partition_peers = partitioned
             return self._partition_detected
 
@@ -192,9 +200,7 @@ class SplitBrainDetector:
         """
         with self._lock:
             alive_count = sum(1 for p in self._peers.values() if p.is_alive)
-            # Include self in the count
-            total_alive = alive_count + 1
-            return total_alive >= self._quorum_size
+            return self._has_quorum_locked(alive_count)
 
     def fence_request(self, fence_token: int) -> tuple[bool, str]:
         """Combined quorum + fence-token check for request admission.
@@ -210,10 +216,10 @@ class SplitBrainDetector:
             (False, reason) if it should be rejected.
         """
         with self._lock:
-            # Check quorum first
+            # Check quorum first (via shared helper)
             alive_count = sum(1 for p in self._peers.values() if p.is_alive)
-            total_alive = alive_count + 1
-            if total_alive < self._quorum_size:
+            if not self._has_quorum_locked(alive_count):
+                total_alive = alive_count + 1
                 return False, f"no_quorum ({total_alive}/{self._quorum_size} alive)"
 
             # Check fence token

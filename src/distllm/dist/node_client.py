@@ -544,7 +544,7 @@ def forward_request(
     request_id: str = "",
     cluster_key: str | None = None,
     timeout_s: float | None = None,
-    use_tls: bool = False,
+    use_tls: bool | None = None,
     ca_cert: str | None = None,
 ) -> torch.Tensor:
     """Run a forward pass on a remote worker node via synchronous gRPC.
@@ -580,9 +580,23 @@ def forward_request(
     import time
 
     effective_timeout = resolve_rpc_timeout(timeout_s)
+    # Resolve TLS from explicit arg > DISTLLM_PIPELINE_TLS env (mirrors weight-transfer).
+    if use_tls is None:
+        env_use_tls, env_ca = resolve_pipeline_tls()
+        effective_tls = env_use_tls
+        effective_ca = ca_cert or env_ca
+        if not effective_tls:
+            logger.warning(
+                f"Pipeline forward {host}:{port} over PLAINTEXT gRPC — activations/KV "
+                "are unencrypted on the wire. Set DISTLLM_PIPELINE_TLS=1 "
+                "(+ DISTLLM_TLS_CA_CERT_FILE) or pass use_tls=True."
+            )
+    else:
+        effective_tls = use_tls
+        effective_ca = ca_cert
     client = create_node_client(
         host, port,
-        use_tls=use_tls, ca_cert=ca_cert,
+        use_tls=effective_tls, ca_cert=effective_ca,
         timeout_s=effective_timeout, cluster_key=cluster_key,
     )
     try:
@@ -640,7 +654,7 @@ async def forward_request_async(
     request_id: str = "",
     cluster_key: str | None = None,
     timeout_s: float = 30.0,
-    use_tls: bool = False,
+    use_tls: bool | None = None,
     ca_cert: str | None = None,
 ) -> torch.Tensor:
     """Run a forward pass on a remote worker node via async gRPC (grpc.aio).
@@ -668,9 +682,21 @@ async def forward_request_async(
     from distllm.dist import node_pb2
     import time
 
+    if use_tls is None:
+        env_use_tls, env_ca = resolve_pipeline_tls()
+        effective_tls = env_use_tls
+        effective_ca = ca_cert or env_ca
+        if not effective_tls:
+            logger.warning(
+                f"Async pipeline forward {host}:{port} over PLAINTEXT gRPC — activations/KV "
+                "are unencrypted. Set DISTLLM_PIPELINE_TLS=1 or pass use_tls=True."
+            )
+    else:
+        effective_tls = use_tls
+        effective_ca = ca_cert
     client = await create_async_node_client(
         host, port,
-        use_tls=use_tls, ca_cert=ca_cert,
+        use_tls=effective_tls, ca_cert=effective_ca,
         timeout_s=timeout_s, cluster_key=cluster_key,
     )
     try:

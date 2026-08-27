@@ -275,8 +275,27 @@ class AudioPipeline:
 
         # TTS
         audio_out = await asyncio.to_thread(self._tts.synthesize, response)
-        self._state = PipelineState.IDLE if not audio_out else PipelineState.SPEAKING
+        # F-043 fix: SPEAKING previously had no exit, so second utterance never
+        # transcribed.  Return to LISTENING so silence timeout re-arms; callers
+        # that need strict barge-in can hold SPEAKING via mark_speaking().
+        if not audio_out:
+            self._state = PipelineState.IDLE
+        else:
+            self._state = PipelineState.LISTENING
+            self._last_speech_time = time.time()
         return audio_out
+
+    def mark_speaking(self) -> None:
+        """Mark pipeline as actively playing TTS (optional barge-in gate)."""
+        with self._lock:
+            self._state = PipelineState.SPEAKING
+
+    def mark_playback_complete(self) -> None:
+        """Call when TTS playback finishes — returns to LISTENING."""
+        with self._lock:
+            if self._state == PipelineState.SPEAKING:
+                self._state = PipelineState.LISTENING
+                self._last_speech_time = time.time()
 
     @property
     def state(self) -> PipelineState:

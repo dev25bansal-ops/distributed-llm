@@ -1109,17 +1109,18 @@ class BatchScheduler:
         with self._lock:
             done_rids = [s.request_id for s in batch.sequences if s.is_complete]
             for rid in done_rids:
-                self.active.pop(rid, None)
-                self._chunked_prefill.pop(rid, None)
                 # Free the PagedAttention KV blocks for completed sequences
                 # (F-041: previously the free path only scanned still-active
                 # sequences, so blocks leaked per completed request until the
-                # pool was exhausted).
+                # pool was exhausted).  Must free BEFORE popping from active so
+                # the manager can still locate the sequence's blocks.
                 if self._kv_cache_mgr is not None:
                     try:
                         self._kv_cache_mgr.free_paged_blocks(rid)
                     except Exception as exc:  # noqa: BLE001 - best-effort free
                         logger.debug(f"Failed to free paged blocks for {rid}: {exc}")
+                self.active.pop(rid, None)
+                self._chunked_prefill.pop(rid, None)
 
         # Record energy usage for this iteration
         if self._energy_scheduler is not None:
