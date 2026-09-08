@@ -16,7 +16,7 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 
 | ID | Description + Measurable Impact | Severity | Priority | Effort | Depends on | Timeline |
 |---|---|---|---|---|---|---|
-| **O-08** | **SSE emission duplicates + per-token deep-copy.** `streaming_generator.py:44-52,222-228`: `StreamChunk.to_sse`/`data_done` and module-level `format_sse_response`/`format_done` each re-implement the two wire formats; `dataclasses.asdict` deep-copies the chunk every token (default chunk=1). Impact: measured +8–12ms/1k tokens of pure Python; two code paths can drift. | Medium | P2 | 4h | none | next month |
+| **O-08** | ~~**SSE emission duplicates + per-token deep-copy**~~ **CLOSED 2026-09-08** — `to_sse()` builds the payload dict directly (no `asdict` deep-copy per token); dead `format_sse_response`/`format_done` duplicates removed (zero callers, verified). Tests: `test_streaming_generator.py` rewritten static-method class pins wire-format identity (4). | Medium | P2 | ✅ done | none | closed |
 | **O-09** | **Multimodal = zero capability** (C-01 made it fail-loud). Any image/audio/document request raises `NotImplementedError`. Product gap: no vision/audio/doc encoders wired to the pipeline. Impact: the advertised multimodal endpoint does nothing. | Medium (product, not a defect) | P2 | 2–3 wk | encoder backends + embedding injection seam | roadmap (v1.0) |
 
 ## §3. OPEN — Security Vulnerabilities
