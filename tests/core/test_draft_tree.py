@@ -1057,3 +1057,71 @@ class TestDraftTreeEndToEnd:
         target_logits = torch.ones(1, total_len, 32)
         result = tree.verify_tree(prefix, root, target_logits)
         assert result.total_candidates == total_draft_len
+
+
+# ===================================================================
+# O-11: TreeNode.logprob must be a true log-probability in BOTH modes
+# ===================================================================
+
+
+class TestLogprobSemanticsO11:
+    """Greedy mode stored the raw topk LOGIT (unbounded, often positive).
+
+    Any consumer doing exp(logprob) or ranking across modes got meaningless
+    numbers. Both modes now store log_softmax values (<= 0).
+    """
+
+    def test_greedy_logprob_is_log_probability(self) -> None:
+        stub = _StubDraftModel(vocab_size=32)
+        tree = DraftTree(
+            draft_forward=stub.forward,
+            branching_factor=4,
+            depth=1,
+            temperature=0.0,
+        )
+        prefix = make_prefix()
+        root = TreeNode(token_id=0, depth=0)
+        tree._expand_node(root, prefix, depth=0)
+        assert len(root.children) == 4
+        for child in root.children:
+            # A log-probability is <= 0; a raw logit is often > 0.
+            assert child.logprob <= 0.0, (
+                f"greedy logprob {child.logprob} > 0 — this is a raw logit, "
+                "not a log-probability (O-11 regression)"
+            )
+            assert child.logprob >= -50.0, "log-prob out of plausible range"
+
+    def test_greedy_logprob_matches_log_softmax(self) -> None:
+        stub = _StubDraftModel(vocab_size=32)
+        tree = DraftTree(
+            draft_forward=stub.forward,
+            branching_factor=2,
+            depth=1,
+            temperature=0.0,
+        )
+        prefix = make_prefix()
+        root = TreeNode(token_id=0, depth=0)
+        tree._expand_node(root, prefix, depth=0)
+        # Recompute expected log-softmax from the same stub logits.
+        logits = stub.forward(prefix)
+        last = logits[:, -1, :]
+        expected = torch.log_softmax(last, dim=-1)[0]
+        for child in root.children:
+            assert child.logprob == pytest.approx(
+                expected[child.token_id].item(), abs=1e-5
+            )
+
+    def test_sampled_logprob_still_negative(self) -> None:
+        stub = _StubDraftModel(vocab_size=32)
+        tree = DraftTree(
+            draft_forward=stub.forward,
+            branching_factor=2,
+            depth=1,
+            temperature=1.0,
+            top_k=0,
+        )
+        prefix = make_prefix()
+        root = TreeNode(token_id=0, depth=0)
+        tree._expand_node(root, prefix, depth=0)
+        for child in root.children:
+            assert child.logprob <= 0.0, "sampled mode must stay log-prob"

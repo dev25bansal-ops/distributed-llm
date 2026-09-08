@@ -134,9 +134,15 @@ class DraftTree:
             topk_values, topk_indices = torch.topk(
                 next_logits, self._branching, dim=-1,
             )
+            # O-11: store a true log-probability, not the raw logit. The raw
+            # topk value is a logit (unbounded, often positive); any consumer
+            # doing exp(logprob) or ranking across modes got meaningless
+            # numbers. log_softmax makes greedy and sampled modes share one
+            # semantic (matches tree_speculative_decoder.py).
+            log_probs = F.log_softmax(next_logits, dim=-1)
             for i in range(self._branching):
                 token_id = topk_indices[0, i].item()
-                logprob = float(topk_values[0, i].item())
+                logprob = float(log_probs[0, token_id].item())
                 child = TreeNode(
                     token_id=token_id, logprob=logprob, depth=depth + 1,
                 )
