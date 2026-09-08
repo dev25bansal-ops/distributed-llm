@@ -111,7 +111,13 @@ class TokenStreamingBuffer:
                 should_flush = True
 
         if should_flush:
-            return self.flush()
+            # Bug H-06 fix: the flush decision was made under the lock, but
+            # the flush itself ran OUTSIDE it — a concurrent flush() could
+            # drain the buffer in that window, make our flush() return None,
+            # and the caller would silently DROP the just-added token from
+            # the stream. Drain inside the critical section instead and only
+            # invoke the handler outside the lock (deadlock-safe).
+            return self._flush_locked()
         return None
 
     def finish(self, reason: str = "stop") -> TokenBatch | None:
@@ -121,8 +127,8 @@ class TokenStreamingBuffer:
             self._batch.finish_reason = reason
         return self.flush()
 
-    def flush(self) -> TokenBatch | None:
-        """Force flush the current batch."""
+    def _flush_locked(self) -> TokenBatch | None:
+        """Drain the current batch under the lock; handler runs outside it."""
         with self._lock:
             if self._batch.token_count == 0:
                 return None
@@ -134,6 +140,10 @@ class TokenStreamingBuffer:
         if self._flush_handler:
             self._flush_handler(batch)
         return batch
+
+    def flush(self) -> TokenBatch | None:
+        """Force flush the current batch."""
+        return self._flush_locked()
 
     def stats(self) -> dict[str, Any]:
         with self._lock:

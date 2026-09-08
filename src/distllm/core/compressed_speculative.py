@@ -34,6 +34,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 
+from distllm.core.spec_verify import accept_token, eos_cutoff
+
 
 # ── Lightweight Verifier ─────────────────────────────────────────────────
 
@@ -261,6 +263,7 @@ class CompressedSpeculativeDecoder:
         trainer: CompressionVerifierTrainer | None = None,
         re_run_threshold: float = 0.3,
         max_re_runs: int = 3,
+        eos_token_id: int | None = None,
     ):
         self._target = target_forward
         self._kv_cache = kv_cache
@@ -268,6 +271,7 @@ class CompressedSpeculativeDecoder:
         self._trainer = trainer
         self._re_run_threshold = re_run_threshold
         self._max_re_runs = max_re_runs
+        self._eos_token_id = eos_token_id
         self._stats = {"compressed_calls": 0, "re_runs": 0, "acceptances": 0}
 
     def _cache_is_compressed(self) -> bool:
@@ -295,6 +299,7 @@ class CompressedSpeculativeDecoder:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using compressed KV cache with verification.
@@ -307,8 +312,19 @@ class CompressedSpeculativeDecoder:
            (``target_forward(generated, compressed=False, **kwargs)``) so the
            token is recomputed from an uncompressed cache (slow, correct).
            Re-runs are re-verified and capped by ``max_re_runs``.
+
+        Args:
+            input_ids: Prompt token IDs, shape ``(1, seq_len)``.
+            max_new_tokens: Maximum tokens to generate.
+            eos_token_id: End-of-text token id (C14). Generation stops at
+                the first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
+            **kwargs: Forwarded to ``target_forward``.
         """
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
         generated = input_ids.clone()
+        prompt_len = input_ids.shape[1]
         self._stats["compressed_calls"] = 0
         self._stats["re_runs"] = 0
         self._stats["acceptances"] = 0
@@ -384,8 +400,16 @@ class CompressedSpeculativeDecoder:
             next_token = torch.tensor([[token_id]], device=input_ids.device)
             generated = torch.cat([generated, next_token], dim=1)
 
-            if token_id == getattr(self._target, 'eos_token_id', None):
-                break
+            # C14: end-of-text handling — apply eos_cutoff to this round's
+            # new tokens and stop generation if anything past the first EOS
+            # was emitted.  This replaces the previous inline check that
+            # only fired when a *single* emitted token equalled the target
+            # model's ``eos_token_id`` attribute (which may not exist) and
+            # silently let post-EOS hallucinated drafts leak through.
+            if eos_token_id is not None:
+                cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+                if cut < generated.shape[1] - prompt_len:
+                    return generated[:, :prompt_len + cut]
 
         return generated
 

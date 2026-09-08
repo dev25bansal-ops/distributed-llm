@@ -31,6 +31,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 
+from distllm.core.spec_verify import accept_token, eos_cutoff
+
 
 class MTPConfig:
     """Configuration for the Multi-Token Prediction head.
@@ -301,11 +303,13 @@ class MTPDecoder:
         target_forward: Callable,
         hidden_states_fn: Callable,
         mtp_head: MTPHead,
+        eos_token_id: int | None = None,
     ):
         self._target = target_forward
         self._hidden_states_fn = hidden_states_fn
         self._head = mtp_head
         self._num_candidates = mtp_head.config.num_candidates
+        self._eos_token_id = eos_token_id
 
         self._stats: dict[str, Any] = {
             "mtp_calls": 0,
@@ -319,6 +323,7 @@ class MTPDecoder:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using MTP speculative decoding.
@@ -332,6 +337,9 @@ class MTPDecoder:
         Args:
             input_ids: Prompt token IDs, shape ``(1, seq_len)``.
             max_new_tokens: Maximum tokens to generate.
+            eos_token_id: End-of-text token id (C14). Generation stops at
+                the first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
             **kwargs: Forwarded to ``target_forward`` and ``hidden_states_fn``.
 
         Returns:
@@ -345,6 +353,17 @@ class MTPDecoder:
         generated = input_ids.clone()
         prompt_len = input_ids.shape[1]
         target_len = prompt_len + max_new_tokens
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
+
+        def _maybe_cut() -> torch.Tensor | None:
+            """C14: truncate at first EOS in this round's new tokens, if any."""
+            if eos_token_id is None:
+                return None
+            cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+            if cut < generated.shape[1] - prompt_len:
+                return generated[:, :prompt_len + cut]
+            return None
 
         while generated.shape[1] < target_len:
             remaining = target_len - generated.shape[1]
@@ -387,6 +406,12 @@ class MTPDecoder:
                 next_logits = target_logits[:, generated.shape[1] - 1, :]
                 token = next_logits.argmax(dim=-1, keepdim=True)
                 generated = torch.cat([generated, token], dim=1)
+
+            # C14: stop at end-of-text — truncate this round's new tokens at
+            # the first EOS (covers accepted MTP batch + correction token).
+            cut = _maybe_cut()
+            if cut is not None:
+                return cut
 
         self._stats["accepted"] += generated.shape[1] - prompt_len
         return generated
@@ -431,7 +456,15 @@ class MTPDecoder:
 
             if q <= 0:
                 return i
-            if torch.rand(1).item() >= p / q:
+            # M-02: shared kernel (single source of truth for min(1, p/q))
+            if not accept_token(
+                target_logits,
+                prefix_len + i,
+                int(token_id),
+                draft_prob=q,
+                temperature=temp,
+                vocab_size=target_logits.shape[-1],
+            ):
                 return i
 
         return num_draft

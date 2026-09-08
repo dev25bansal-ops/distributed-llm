@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 import hmac
 import threading
 import time
@@ -18,6 +19,34 @@ from starlette.responses import Response
 from distllm.api.errors import error_response
 from distllm.api.ip_utils import get_client_ip
 from distllm.core.api_key_store import get_api_key_store, role_satisfies
+
+
+def _safe_key_fingerprint(key: str | None) -> str:
+    """Return a log-safe fingerprint for an API key.
+
+    Never log the full key. Returns ``"<8-char-prefix>..."`` for keys that
+    look real (>= 8 chars), ``"<empty>"`` for None / empty, and
+    ``"<invalid:len=N>"`` for suspiciously short values so a logger line
+    never accidentally surfaces a full credential.
+    """
+    if not key:
+        return "<empty>"
+    if len(key) < 8:
+        return f"<invalid:len={len(key)}>"
+    return f"{key[:8]}..."
+
+
+def _safe_key_id(raw: str | None) -> str | None:
+    """Return a stable, non-reversible identifier for a key (sha256 prefix).
+
+    Suitable for rate-limiter map keys and for log lines that need to
+    distinguish clients without exposing credentials. Returns None if the
+    input is empty or too short to fingerprint reliably.
+    """
+    if not raw or len(raw) < 8:
+        return None
+    import hashlib
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class _RateLimiter:
@@ -164,9 +193,7 @@ def _get_or_generate_api_key() -> str | None:
 
     # SECURITY: Log a fingerprint, not the full key. Full keys in logs = credential leak.
     # Logs are written to disk, captured by log aggregators, and visible in CI output.
-    import hashlib
-    import sys
-    fingerprint = generated_key[:8] + "..." + hashlib.sha256(generated_key.encode()).hexdigest()[:8]
+    fingerprint = _safe_key_fingerprint(generated_key)
     logger.warning(
         f"API_KEY not set. Generated a secure random API key.\n"
         f"Key fingerprint: {fingerprint}\n"
@@ -294,13 +321,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         client_ip = get_client_ip(request)
         # Tentative api-key identifier for dual-key rate limiting (H11):
         # use sha256 prefix so raw key is not stored in the limiter map.
-        def _api_key_id_for_limit(raw: str) -> str | None:
-            if not raw or len(raw) < 8:
-                return None
-            import hashlib
-            return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-        tentative_key = _api_key_id_for_limit(auth_header[7:] if auth_header.startswith("Bearer ") else None)
+        tentative_key = _safe_key_id(
+            auth_header[7:] if auth_header.startswith("Bearer ") else None
+        )
 
         if not auth_header.startswith("Bearer ") or len(auth_header) < 8:
             if _rate_limiter.is_rate_limited(client_ip, tentative_key):
@@ -330,7 +353,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # cache misses no longer stall the event loop for every request.
         result = await asyncio.to_thread(store.authenticate, token)
         if result is None:
-            failed_key = _api_key_id_for_limit(token)
+            failed_key = _safe_key_id(token)
             if _rate_limiter.is_rate_limited(client_ip, failed_key):
                 retry_after = _rate_limiter.retry_after(client_ip, failed_key)
                 return error_response(

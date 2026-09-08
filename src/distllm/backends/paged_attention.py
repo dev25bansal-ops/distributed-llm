@@ -136,7 +136,16 @@ class PagedAttentionManager:
         self._num_heads = num_heads
         self._head_dim = head_dim
         self._device = device
-        self._lock = threading.Lock()
+        # Enhancement #2: sharded block pool. A single global lock serialized
+        # every sequence's allocations against every other sequence. 16
+        # sequence-keyed RLock shards let different sequences allocate,
+        # append, and free concurrently. The free-list itself remains
+        # guarded by its own dedicated lock; shards are acquired before
+        # free-list ops to keep lock ordering strict:
+        #   shard(seqA) -> shard(seqB) (sorted) -> free-list -> block state
+        # preventing deadlock in the cross-sequence COW paths.
+        self._lock = threading.Lock()          # legacy attribute: free-list + global ops
+        self._lock_shards: list[threading.RLock] = [threading.RLock() for _ in range(16)]
         self._numa_node = self._detect_numa_node()
 
         # Block pool: pre-allocate all blocks
@@ -205,6 +214,21 @@ class PagedAttentionManager:
     def block_size(self) -> int:
         return self._block_size
 
+    def _shard_for(self, sequence_id: str) -> threading.RLock:
+        """Per-sequence shard lock (16-way sharded pool)."""
+        return self._lock_shards[hash(sequence_id) % len(self._lock_shards)]
+
+    def _shards_for(self, *sequence_ids: str) -> list[threading.RLock]:
+        """Distinct shard locks for the given ids, in acquisition-safe order.
+
+        Deduplicates (a cross-sequence op touching two sequences that hash
+        to the same shard acquires it once — RLock makes re-entry safe
+        anyway) and returns them sorted by index so every caller acquires
+        in the same global order: no deadlock.
+        """
+        idxs = {hash(sid) % len(self._lock_shards) for sid in sequence_ids}
+        return [self._lock_shards[i] for i in sorted(idxs)]
+
     @property
     def num_free_blocks(self) -> int:
         return len(self._free_blocks)
@@ -262,7 +286,7 @@ class PagedAttentionManager:
         Raises:
             RuntimeError: If not enough free blocks available.
         """
-        with self._lock:
+        with self._shard_for(sequence_id), self._lock:
             num_blocks_needed = math.ceil(num_tokens / self._block_size)
 
             if len(self._free_blocks) < num_blocks_needed:
@@ -300,7 +324,7 @@ class PagedAttentionManager:
 
     def free_sequence(self, sequence_id: str) -> None:
         """Free all blocks belonging to a sequence."""
-        with self._lock:
+        with self._shard_for(sequence_id), self._lock:
             seq = self._seq_blocks.pop(sequence_id, None)
             if seq is None:
                 return
@@ -353,7 +377,7 @@ class PagedAttentionManager:
         Returns:
             The block ID where the new token should be written.
         """
-        with self._lock:
+        with self._shard_for(sequence_id), self._lock:
             seq = self._seq_blocks.get(sequence_id)
             if seq is None:
                 raise ValueError(f"Unknown sequence: {sequence_id}")
@@ -431,7 +455,7 @@ class PagedAttentionManager:
 
         Increments ref_count on shared blocks instead of copying data.
         """
-        with self._lock:
+        with self._shard_for(source_id), self._shard_for(dest_id):
             source = self._seq_blocks.get(source_id)
             if source is None:
                 return
@@ -452,7 +476,7 @@ class PagedAttentionManager:
         Returns:
             Number of blocks swapped.
         """
-        with self._lock:
+        with self._shard_for(sequence_id):
             seq = self._seq_blocks.get(sequence_id)
             if seq is None:
                 return 0

@@ -63,6 +63,12 @@ class StreamingConfig:
     extra_headers: dict[str, str] = field(default_factory=dict)
     max_buffer_size: int = 256     # Max buffered tokens before backpressure kicks in
     backpressure_sleep_s: float = 0.01  # Sleep duration when buffer is full
+    # Bug C-05 fix: hard ceiling on total backpressure wait per token. Without
+    # this (and the paired guard in generate()), a configuration where
+    # max_buffer_size <= stream_chunk_size could sleep forever because nothing
+    # drained the buffer. Defaults to 5 s - long enough to absorb a slow
+    # consumer, short enough to never hang a request permanently.
+    backpressure_timeout_s: float = 5.0
 
 
 class StreamingGenerator:
@@ -111,6 +117,9 @@ class StreamingGenerator:
         """
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
+        # Bug SG-B3 fix: monotonic start for elapsed/TPS reporting (the
+        # truncated-epoch `created` inflated time by up to ~1 s).
+        start_monotonic = time.monotonic()
         config = self._config
 
         # Echo prompt if configured
@@ -148,10 +157,32 @@ class StreamingGenerator:
                 # the consumer catch up before generating more tokens.
                 # This prevents unbounded memory growth when client reads slower
                 # than generation.
-                while len(token_buffer) >= config.max_buffer_size:
+                #
+                # Bug C-05 fix: the previous `while` loop could spin forever.
+                # When max_buffer_size <= stream_chunk_size, the buffer fills to
+                # max_buffer_size BEFORE reaching the flush threshold below, so
+                # nothing ever drained it and the coroutine slept indefinitely
+                # (permanent request hang). Two guards now:
+                #   1. Only wait while the buffer is over the limit AND a flush
+                #      is not already due (i.e. chunk_size not yet reached).
+                #   2. Bound the total wait so a stuck consumer cannot hang the
+                #      request forever.
+                wait_budget = config.backpressure_timeout_s
+                while (
+                    len(token_buffer) >= config.max_buffer_size
+                    and len(token_buffer) < config.stream_chunk_size
+                ):
                     if cancel_event and cancel_event.is_set():
                         break
+                    if wait_budget <= 0:
+                        logger.warning(
+                            f"Backpressure timeout for request {request_id}; "
+                            f"flushing {len(token_buffer)} buffered token(s) "
+                            "without waiting for the consumer."
+                        )
+                        break
                     await asyncio.sleep(config.backpressure_sleep_s)
+                    wait_budget -= config.backpressure_sleep_s
 
                 # Emit chunk when buffer reaches chunk_size or on final token
                 if len(token_buffer) >= config.stream_chunk_size or is_done:
@@ -183,13 +214,21 @@ class StreamingGenerator:
 
         # Yield final chunk with usage if configured
         if config.include_usage:
-            total_time = time.time() - created
+            # Bug SG-B3 fix: `created` was truncated to whole seconds, so
+            # total_time was inflated by up to ~1 s (up to 25% error in
+            # tokens_per_second). Use a monotonic start stamp for timing.
+            total_time = time.monotonic() - start_monotonic
             if self._tokenizer is not None:
                 prompt_tok_count = len(self._tokenizer.encode(prompt))
             else:
-                prompt_tok_count = len(prompt.split())
+                # Bug M-01 fix: a whitespace word count was previously
+                # reported as prompt_tokens — off by 1.3x-2x and wrong for
+                # code/CJK. Report the estimate explicitly rather than
+                # fabricating a token count that feeds billing-shaped data.
+                prompt_tok_count = max(1, round(len(prompt) / 4))
             usage = {
                 "prompt_tokens": prompt_tok_count,
+                "prompt_tokens_estimated": self._tokenizer is None,
                 "completion_tokens": tokens_generated,
                 "total_tokens": prompt_tok_count + tokens_generated,
                 "time_ms": round(total_time * 1000, 2),

@@ -50,6 +50,8 @@ from typing import Any, Callable
 import torch
 from loguru import logger
 
+from distllm.core.spec_verify import accept_token, eos_cutoff
+
 
 # ── Ring Buffer ──────────────────────────────────────────────────────────────
 
@@ -184,6 +186,7 @@ class PipelinedSpeculativeDecoder:
         num_candidates: int = 5,
         device: str = "cuda",
         use_cuda_streams: bool = True,
+        eos_token_id: int | None = None,
     ):
         self._target = target_forward
         self._draft_gen = draft_generator
@@ -191,6 +194,7 @@ class PipelinedSpeculativeDecoder:
         self._num_candidates = num_candidates
         self._device = torch.device(device)
         self._use_streams = use_cuda_streams and device.startswith("cuda")
+        self._eos_token_id = eos_token_id
 
         # Ring buffer for draft/verify decoupling
         self._ring = DraftRingBuffer(depth=ring_buffer_depth)
@@ -235,6 +239,7 @@ class PipelinedSpeculativeDecoder:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using pipelined speculative decoding.
@@ -245,12 +250,22 @@ class PipelinedSpeculativeDecoder:
         2. Collect completed verifications from the previous iteration
         3. Accept verified tokens, feed them to target forward
         4. Launch next draft generation (overlaps with target forward)
+
+        Args:
+            input_ids: Prompt token IDs, shape ``(1, seq_len)``.
+            max_new_tokens: Maximum tokens to generate.
+            eos_token_id: End-of-text token id (C14). Generation stops at
+                the first produced EOS; ``None`` disables early stopping.
+                Overrides the constructor value when provided.
+            **kwargs: Forwarded to ``target_forward``.
         """
         if input_ids.shape[0] != 1:
             raise ValueError(
                 f"PipelinedSpeculativeDecoder only supports batch_size=1, "
                 f"got batch_size={input_ids.shape[0]}"
             )
+        if eos_token_id is None:
+            eos_token_id = self._eos_token_id
 
         generated = input_ids.clone()
         prompt_len = input_ids.shape[1]
@@ -339,6 +354,15 @@ class PipelinedSpeculativeDecoder:
                     self._ring.fill_ratio,
                 )
 
+                # C14: stop at end-of-text — truncate this round's new tokens
+                # at the first EOS so post-EOS hallucinated drafts never
+                # leak through.  Covers verifier-accepted batches and the
+                # single-token target-only fallback paths alike.
+                if eos_token_id is not None:
+                    cut = eos_cutoff(generated[0, prompt_len:], eos_token_id)
+                    if cut < generated.shape[1] - prompt_len:
+                        return generated[:, :prompt_len + cut]
+
             return generated
 
         finally:
@@ -348,13 +372,14 @@ class PipelinedSpeculativeDecoder:
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 256,
+        eos_token_id: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Async version — wraps generate() in a thread executor."""
         import asyncio
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, self.generate, input_ids, max_new_tokens, **kwargs,
+            None, self.generate, input_ids, max_new_tokens, eos_token_id=eos_token_id, **kwargs,
         )
 
     def close(self) -> None:

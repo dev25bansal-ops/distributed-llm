@@ -3,6 +3,22 @@ embedding, prompt template, and model hub configuration classes."""
 
 from pydantic import BaseModel, Field, field_validator, SecretStr
 
+# Canonical (settings-space) names for quantization methods. The validator
+# in QuantizationSettings also accepts the CLI-space aliases
+# `bitsandbytes_4bit` / `bitsandbytes_8bit` and normalizes them to the
+# canonical short form. Module-level (not class-level) so pydantic does not
+# treat the leading-underscore names as ModelPrivateAttr descriptors.
+QUANT_METHOD_CANONICAL: tuple[str, ...] = (
+    "none", "fp8", "bnb_4bit", "bnb_8bit", "gptq", "awq",
+)
+# Aliases → canonical form. CLI passes `--quantization bitsandbytes_4bit`
+# but settings expects `bnb_4bit`. Without this alias map the server
+# crashed at startup because the validator rejected the CLI value.
+QUANT_METHOD_ALIASES: dict[str, str] = {
+    "bitsandbytes_4bit": "bnb_4bit",
+    "bitsandbytes_8bit": "bnb_8bit",
+}
+
 __all__ = [
     "ModelSettings",
     "QuantizationSettings",
@@ -70,10 +86,26 @@ class QuantizationSettings(BaseModel):
     @field_validator("method")
     @classmethod
     def validate_method(cls, v: str) -> str:
-        allowed = {"none", "bnb_4bit", "bnb_8bit", "gptq", "awq", "fp8"}
-        if v not in allowed:
-            raise ValueError(f"method must be one of {allowed}, got '{v}'")
-        return v
+        """Accept both CLI-space and settings-space spellings of the quantization method.
+
+        The CLI argument parser advertises ``bitsandbytes_4bit`` /
+        ``bitsandbytes_8bit`` (matching the bitsandbytes package name) while
+        the rest of the code — model loader, registry, telemetry keys —
+        uses the short form ``bnb_4bit`` / ``bnb_8bit``. Accept either and
+        normalize to the canonical short form so downstream code never has
+        to care which spelling the user passed.
+        """
+        if not isinstance(v, str):
+            raise ValueError(
+                f"method must be a string, got {type(v).__name__}"
+            )
+        canonical = QUANT_METHOD_ALIASES.get(v, v)
+        if canonical not in QUANT_METHOD_CANONICAL:
+            raise ValueError(
+                f"method must be one of {list(QUANT_METHOD_CANONICAL)} "
+                f"(or aliases {list(QUANT_METHOD_ALIASES)}), got '{v}'"
+            )
+        return canonical
 
     @field_validator("gptq_bits", "awq_bits")
     @classmethod

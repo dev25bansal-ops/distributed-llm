@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 
-from distllm.core.spec_verify import eos_cutoff
+from distllm.core.spec_verify import accept_token, eos_cutoff
 
 
 class SpecDecoderBase:
@@ -735,16 +735,23 @@ class SelfSpeculativeDecoder(SpecDecoderBase):
             token_id = draft_tokens[0, i].item()
             p = target_probs[0, token_id].item()
 
+            # M-02: delegate acceptance to the shared kernel (single source
+            # of truth for min(1, p/q) rejection sampling). The previous
+            # inline comparisons duplicated the kernel's math.
+            q = None
             if draft_logprobs is not None and i < len(draft_logprobs):
                 q = draft_logprobs[i]
                 if q <= 0:
                     return i  # Per spec decoding theory (Leviathan et al.)
-                if torch.rand(1).item() >= p / q:
-                    return i  # Standard rejection sampling: reject
-            else:
-                # Fallback: accept proportional to target probability
-                if torch.rand(1).item() >= p:
-                    return i
+            if not accept_token(
+                target_logits,
+                prefix_len + i - 1,
+                int(token_id),
+                draft_prob=q,
+                temperature=self._temperature,
+                vocab_size=target_logits.shape[-1],
+            ):
+                return i
 
         return num_draft
 
@@ -1284,8 +1291,15 @@ class TreeDraftSpeculativeDecoder(SpecDecoderBase):
                     else:
                         break
                 else:
-                    p = F.softmax(logits_slice / self._temperature, dim=-1)[seq[i]].item()
-                    if torch.rand(1).item() < p:
+                    # M-02: shared kernel (uniform-draft fallback: min(1, p*V))
+                    if accept_token(
+                        target_logits[seq_idx:seq_idx+1],
+                        prefix_len + i,
+                        int(seq[i]),
+                        draft_prob=None,
+                        temperature=self._temperature,
+                        vocab_size=target_logits.shape[-1],
+                    ):
                         accepted += 1
                     else:
                         break
@@ -1349,11 +1363,15 @@ class TreeDraftSpeculativeDecoder(SpecDecoderBase):
                     else:
                         break
                 else:
-                    target_probs = F.softmax(
-                        target_logits[:, prefix_len + i, :] / self._temperature, dim=-1,
-                    )
-                    p = target_probs[0, seq[i]].item()
-                    if torch.rand(1).item() < p:
+                    # M-02: shared kernel (uniform-draft fallback: min(1, p*V))
+                    if accept_token(
+                        target_logits,
+                        prefix_len + i,
+                        int(seq[i]),
+                        draft_prob=None,
+                        temperature=self._temperature,
+                        vocab_size=target_logits.shape[-1],
+                    ):
                         accepted += 1
                     else:
                         break

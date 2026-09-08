@@ -11,7 +11,6 @@ import enum
 import hashlib
 import hmac
 import json
-import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,10 +19,12 @@ from threading import RLock
 from typing import Any, Callable
 
 import httpx
+from loguru import logger
 
 from distllm.core.webhook_manager import is_safe_webhook_url
 
-logger = logging.getLogger(__name__)
+# API & Middleware convention: use ``loguru`` (not stdlib ``logging``) so
+# every module shares the same logging configuration and format.
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +192,7 @@ class WebhookManager:
             UnsafeWebhookURLError: If *url* fails the SSRF safety check.
         """
         if not is_safe_webhook_url(url):
-            logger.warning("Rejected unsafe webhook URL registration: %s", url)
+            logger.warning("Rejected unsafe webhook URL registration: {}", url)
             raise UnsafeWebhookURLError(
                 f"Webhook URL rejected by SSRF guard (private/loopback/metadata "
                 f"hosts are not allowed unless DISTLLM_WEBHOOK_ALLOWLIST includes them): {url}"
@@ -207,7 +208,7 @@ class WebhookManager:
         )
         with self._lock:
             self._registrations[webhook_id] = reg
-        logger.info("Registered webhook %s for %d event(s)", webhook_id, len(events_set))
+        logger.info("Registered webhook {} for {} event(s)", webhook_id, len(events_set))
         return webhook_id
 
     def unregister(self, webhook_id: str) -> bool:
@@ -220,7 +221,7 @@ class WebhookManager:
             if webhook_id not in self._registrations:
                 return False
             del self._registrations[webhook_id]
-        logger.info("Unregistered webhook %s", webhook_id)
+        logger.info("Unregistered webhook {}", webhook_id)
         return True
 
     def list(self) -> list[WebhookRegistration]:
@@ -293,7 +294,7 @@ class WebhookManager:
                 self._dead_letter_queue.append(delivery)
                 self._delivery_log.append(delivery)
             logger.warning(
-                "Webhook %s URL failed delivery-time SSRF re-validation: %s",
+                "Webhook {} URL failed delivery-time SSRF re-validation: {}",
                 delivery.id, reg.url,
             )
             return
@@ -318,7 +319,7 @@ class WebhookManager:
                 delivery.status = WebhookDeliveryStatus.SUCCESS
                 with self._lock:
                     self._delivery_log.append(delivery)
-                logger.debug("Delivered webhook %s -> %s (200)", delivery.id, reg.url)
+                logger.debug("Delivered webhook {} -> {} (200)", delivery.id, reg.url)
                 return
             # Non-2xx response
             delivery.error = f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -333,7 +334,7 @@ class WebhookManager:
             with self._lock:
                 self._delivery_log.append(delivery)
             logger.info(
-                "Webhook %s attempt %d/%d failed, retry in %.0fs: %s",
+                "Webhook {} attempt {}/{} failed, retry in {:.0f}s: {}",
                 delivery.id,
                 delivery.attempt,
                 _MAX_RETRIES,
@@ -346,7 +347,7 @@ class WebhookManager:
                 self._dead_letter_queue.append(delivery)
                 self._delivery_log.append(delivery)
             logger.warning(
-                "Webhook %s max retries reached, moved to DLQ: %s",
+                "Webhook {} max retries reached, moved to DLQ: {}",
                 delivery.id,
                 delivery.error,
             )
@@ -516,7 +517,7 @@ async def dispatch_webhook(
         *url* fails the SSRF guard).
     """
     if not is_safe_webhook_url(url):
-        logger.warning("Blocked webhook dispatch to unsafe URL: %s", url)
+        logger.warning("Blocked webhook dispatch to unsafe URL: {}", url)
         return False
 
     payload = _build_payload(event, data)
@@ -532,8 +533,8 @@ async def dispatch_webhook(
             resp = await client.post(url, content=body, headers=headers)
         ok = 200 <= resp.status_code < 300
         if not ok:
-            logger.debug("Webhook %s -> %s returned HTTP %d", event, url, resp.status_code)
+            logger.debug("Webhook {} -> {} returned HTTP {}", event, url, resp.status_code)
         return ok
     except httpx.RequestError as exc:
-        logger.info("Webhook %s -> %s delivery failed: %s", event, url, exc)
+        logger.info("Webhook {} -> {} delivery failed: {}", event, url, exc)
         return False

@@ -82,6 +82,7 @@ class MultimodalEngine:
             "audio_requests": 0,
             "document_requests": 0,
             "text_requests": 0,
+            "unsupported_modality_requests": 0,
         }
 
     def set_vision_encoder_node(self, node_id: str) -> None:
@@ -159,24 +160,18 @@ class MultimodalEngine:
                 tokens_generated=len(result_text.split()),
             )
 
-        # Multi-modal: encode non-text modality, then generate
-        # This is a framework — actual implementation depends on model architecture
-        logger.info(f"Processing {modality.value} input (image={image is not None}, audio={audio is not None})")
-
-        if self._coordinator:
-            # Build multimodal prompt
-            prompt = self._build_multimodal_prompt(text, modality)
-            result_text = self._coordinator.generate(
-                prompt, max_new_tokens=max_tokens, temperature=temperature,
-            )
-        else:
-            result_text = f"[Multimodal processing not available for {modality.value}]"
-
-        return MultimodalResult(
-            text=result_text,
-            modality_type=modality,
-            processing_time_ms=(time.monotonic() - t0) * 1000,
-            tokens_generated=len(result_text.split()),
+        # Multi-modal: explicitly fail loud instead of silently discarding
+        # the modality payload and returning text generated from a synthetic
+        # "[IMAGE] {text}" prompt. This was a silent correctness bug
+        # (see C-01 in docs/_audit/exhaustive-2026-08-31/).
+        # TODO(issue-C-01): wire actual vision/audio encoders (CLIP, Whisper,
+        # DocTR) once a multimodal backend is available.
+        self._stats["unsupported_modality_requests"] += 1
+        raise NotImplementedError(
+            f"Multimodal {modality.value} encoding is not yet implemented. "
+            f"image={image is not None}, audio={audio is not None}, "
+            f"document_pages={len(document_pages) if document_pages else 0}. "
+            f"Use the text-only path or implement an encoder for {modality.value}."
         )
 
     def _build_multimodal_prompt(self, text: str, modality: ModalityType) -> str:

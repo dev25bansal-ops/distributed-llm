@@ -61,7 +61,28 @@ class AdaptiveBatchingEngine:
         self._batch_sizes: dict[str, deque[int]] = {}
         self._current_batch: dict[str, int] = {}
         self._last_adjustment: dict[str, float] = {}
+        # Bug M-04 fix: was lazily created via hasattr() outside
+        # __init__ — initialize here instead.
+        self._integral_error: dict[str, float] = {}
+        # Bug M-04 fix: per-model first-sample timestamp for real
+        # requests/sec throughput (previously divided by epoch seconds).
+        self._window_start: dict[str, float] = {}
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _percentile(sorted_vals: list[float], pct: float) -> float:
+        """Nearest-rank percentile of an ascending-sorted list.
+
+        Bug H-04 fix: the previous `len * pct // 100` indexing degenerated to
+        the maximum for pct=99 on small windows (index 99 of 100 == last).
+        Nearest-rank is ceil(pct/100 * n) - 1, clamped to valid bounds.
+        """
+        if not sorted_vals:
+            return 0.0
+        import math
+        rank = max(0, math.ceil(pct / 100.0 * len(sorted_vals)) - 1)
+        rank = min(rank, len(sorted_vals) - 1)
+        return sorted_vals[rank]
 
     def set_slo(
         self,
@@ -102,6 +123,8 @@ class AdaptiveBatchingEngine:
                 self._batch_sizes[model] = deque(maxlen=100)
                 self._current_batch[model] = config.min_batch_size
                 self._last_adjustment[model] = 0.0
+                # Bug M-04 fix: per-model window start for throughput.
+                self._window_start[model] = now
             for lat in latencies:
                 self._latencies[model].append(lat)
             self._batch_sizes[model].append(batch_size)
@@ -127,9 +150,14 @@ class AdaptiveBatchingEngine:
         if len(latencies) < 10:
             return
 
-        sorted_lats = sorted(latencies[-100:])
-        p50 = sorted_lats[len(sorted_lats) * 50 // 100]
-        p99 = sorted_lats[len(sorted_lats) * 99 // 100]
+        # Bug H-04 fix: with a 100-element window, `len * 99 // 100` == 99
+        # == the LAST element == the absolute maximum, so "P99" was just the
+        # max of the last 100 samples. One transient outlier collapsed the
+        # batch size and the controller oscillated. Nearest-rank percentile
+        # on a larger window gives a real P99.
+        sorted_lats = sorted(latencies[-500:])
+        p50 = self._percentile(sorted_lats, 50)
+        p99 = self._percentile(sorted_lats, 99)
 
         current = self._current_batch[model]
         max_step = max(1, config.adjustment_step * 4)  # Allow up to 4x the fixed step
@@ -139,8 +167,6 @@ class AdaptiveBatchingEngine:
         error_p50 = config.p50_latency_ms - p50    # Positive = headroom (can increase)
 
         # Accumulate integral of past errors (limited windup)
-        if not hasattr(self, '_integral_error'):
-            self._integral_error = {}
         prev_integral = self._integral_error.get(model, 0.0)
         if error_p99 > 0:
             # Above SLO → reduce: negative integral
@@ -188,9 +214,11 @@ class AdaptiveBatchingEngine:
             sorted_lats = sorted(latencies[-200:])
             return BatchWindowStats(
                 avg_latency_ms=sum(latencies[-200:]) / min(len(latencies), 200),
-                p50_latency_ms=sorted_lats[len(sorted_lats) * 50 // 100],
-                p99_latency_ms=sorted_lats[len(sorted_lats) * 99 // 100],
-                throughput=len(latencies) / max(time.time() - 60, 1) * 60 if latencies else 0,
+                p50_latency_ms=self._percentile(sorted_lats, 50),
+                p99_latency_ms=self._percentile(sorted_lats, 99),
+                # Bug M-04 fix: previously `time.time() - 60` (~1.78e9), so
+                # throughput was ~3e-5. Track window start time per model.
+                throughput=self._window_throughput(model, len(latencies)),
                 sample_count=len(latencies),
                 batch_sizes=batch_sizes[-20:],
             )
@@ -207,14 +235,31 @@ class AdaptiveBatchingEngine:
                 sorted_lats = sorted(latencies[-200:])
                 stats = BatchWindowStats(
                     avg_latency_ms=sum(latencies[-200:]) / min(len(latencies), 200),
-                    p50_latency_ms=sorted_lats[len(sorted_lats) * 50 // 100],
-                    p99_latency_ms=sorted_lats[len(sorted_lats) * 99 // 100],
-                    throughput=len(latencies) / max(time.time() - 60, 1) * 60 if latencies else 0,
+                    p50_latency_ms=self._percentile(sorted_lats, 50),
+                    p99_latency_ms=self._percentile(sorted_lats, 99),
+                    throughput=self._window_throughput(model, len(latencies)),
                     sample_count=len(latencies),
                     batch_sizes=batch_sizes[-20:],
                 )
                 result[model] = str(stats)
             return result
+
+    def _window_throughput(self, model: str, n_samples: int) -> float:
+        """Requests/sec over the model's sampling window.
+
+        Bug M-04 fix: the previous formula divided by `time.time() - 60`
+        (an epoch-sized number), always yielding ~0. Uses a per-model
+        first-seen timestamp for the window instead.
+        """
+        if n_samples == 0:
+            return 0.0
+        window_start = self._window_start.get(model)
+        if window_start is None:
+            return 0.0
+        elapsed = time.time() - window_start
+        if elapsed <= 0:
+            return 0.0
+        return n_samples / elapsed
 
     def get_current_batch_size(self, model: str) -> int:
         """Return the current (possibly adjusted) batch size for a model."""

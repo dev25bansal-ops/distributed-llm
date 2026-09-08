@@ -27,6 +27,11 @@ from typing import Any, Callable
 import torch
 import torch.nn.functional as F
 
+# Shared speculative-verification kernel (single source of truth for
+# acceptance math). Imported here so the AST lint test (M-02) can prove no
+# decoder reimplements rejection sampling.
+from distllm.core.spec_verify import accept_token
+
 
 @dataclass
 class TreeNode:
@@ -84,6 +89,7 @@ class DraftTree:
         temperature: float = 1.0,
         top_k: int = 20,
         device: str = "cpu",
+        seed: int | None = None,
     ) -> None:
         self._draft = draft_forward
         self._branching = branching_factor
@@ -91,6 +97,11 @@ class DraftTree:
         self._temperature = temperature
         self._top_k = top_k
         self._device = torch.device(device)
+        # Bug M-03 fix: `_seed` was never set, so `getattr(self, '_seed')`
+        # was always None and the deterministic-RNG path in verify_tree was
+        # dead code. Initialize it (optionally overridable) so seeded
+        # verification actually works.
+        self._seed = seed
 
     def generate_tree(
         self,
@@ -195,6 +206,21 @@ class DraftTree:
         best_accepted = 0
         best_path: list[int] = []
 
+        # Bug H-02 fix: the greedy branch previously did a full-vocab
+        # argmax + .item() sync PER TOKEN PER PATH (3^4 tree = 81 paths ->
+        # ~324 syncs per round, >3 ms of pure GPU->CPU sync). Precompute
+        # the argmax row ONCE per logits row and reuse across all paths
+        # that touch that row — an 81x reduction in sync count for greedy.
+        greedy_argmax: dict[int, int] = {}
+        if self._temperature == 0:
+            max_row = target_logits.shape[1]
+            needed_rows = {prefix_len + i - 1
+                          for path in all_paths
+                          for i in range(len(path))
+                          if prefix_len + i - 1 < max_row}
+            for row in needed_rows:
+                greedy_argmax[row] = int(target_logits[:, row, :].argmax(dim=-1).item())
+
         for path in all_paths:
             accepted = 0
             for i, token_id in enumerate(path):
@@ -203,19 +229,28 @@ class DraftTree:
                     break
 
                 if self._temperature == 0:
-                    target_token = target_logits[:, pos, :].argmax(dim=-1).item()
+                    # Batched argmax (see H-02 note above).
+                    target_token = greedy_argmax.get(pos)
                     if target_token != token_id:
                         break
                 else:
-                    target_probs = F.softmax(
-                        target_logits[:, pos, :] / self._temperature, dim=-1,
-                    )
-                    p = target_probs[0, token_id].item()
-                    # M-14: Use deterministic RNG when seed is set for reproducibility
+                    # Sampled mode: delegate to the shared verification kernel
+                    # for true rejection sampling min(1, p/q) (bug C-03 fix).
+                    # The draft probability is not tracked per-tree-node, so
+                    # the uniform-draft fallback inside accept_token applies.
+                    # M-14: deterministic RNG when a seed is set.
                     rng = torch.Generator()
-                    if hasattr(self, '_seed') and self._seed is not None:
+                    if getattr(self, '_seed', None) is not None:
                         rng = torch.Generator().manual_seed(self._seed + accepted)
-                    if torch.rand(1, generator=rng).item() >= p:
+                    if not accept_token(
+                        target_logits,
+                        pos,
+                        int(token_id),
+                        draft_prob=None,
+                        temperature=self._temperature,
+                        vocab_size=target_logits.shape[-1],
+                        rng=rng,
+                    ):
                         break
 
                 accepted += 1

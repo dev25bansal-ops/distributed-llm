@@ -1,6 +1,7 @@
 """DistLLM CLI - Unified command-line interface for Distributed LLM."""
 
 import os
+import sys
 import time
 
 import typer
@@ -881,6 +882,39 @@ def benchmark_compare(
     )
 
 
+# ── Top-level registrations ────────────────────────────────────────────────
+
+from distllm.cli.bench_live import register as _register_bench_live
+from distllm.cli.cli_doctor import main as _cli_doctor_main
+from distllm.cli.pool import register as _register_pool
+from distllm.cli.status import register as _register_status
+
+_register_bench_live(benchmark_app)
+_register_pool(app)
+_register_status(app)
+
+
+@app.command("cli-doctor")
+def cli_doctor_command(
+    fix: bool = typer.Option(False, "--fix", help="Auto-install missing packages and clean caches"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-parseable JSON"),
+) -> None:
+    """Local environment health check (Python, PyTorch, CUDA, ports, disk).
+
+    Companion to ``distllm doctor`` (which checks a *running* cluster).
+    This checks the *local environment* in which the CLI runs.
+
+    Use ``--fix`` to auto-install missing optional packages and clean
+    the HuggingFace cache when disk is tight.
+    """
+    argv: list[str] = []
+    if fix:
+        argv.append("--fix")
+    if json_output:
+        argv.append("--json")
+    sys.exit(_cli_doctor_main(argv))
+
+
 # --- benchmark verify group ---
 @benchmark_verify_app.command("run")
 def verify_run(
@@ -1222,6 +1256,57 @@ def chat(
             temperature=temperature,
             console=console,
         )
+
+
+@app.command("devices")
+def devices_command(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON instead of tables"),
+):
+    """Discover local node hardware topology: GPUs, CPUs, memory, network, PCIe/NVLink.
+
+    Useful before joining a cluster to confirm the worker can see its GPUs,
+    NUMA layout, and link topology. Works on Linux and Windows hosts; the
+    network section requires ``psutil`` if installed (falls back to
+    hostname-only otherwise).
+    """
+    from distllm.cli.devices import print_devices, run_devices
+
+    result = run_devices()
+    if json_output:
+        import json as _json
+
+        console.print(_json.dumps(result, indent=2))
+        return
+    print_devices(result, console)
+
+
+cache_app = typer.Typer(help="Inspect and manage the local KV cache")
+
+
+@cache_app.command("inspect")
+def cache_inspect(
+    token_hash: str = typer.Argument(..., help="Prefix-hash (token hash) to look up"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON instead of tables"),
+):
+    """Look up a token_hash in the local KV cache and report its metadata.
+
+    Returns ``model_id``, ``layer_index``, ``sequence_id``, ``block_count``,
+    and ``last_access_ts``.  Useful for diagnosing cache hit rates or
+    verifying that a specific prompt-prefix is being cached.
+    """
+    from distllm.cli.cache import print_cache_inspect, run_cache_inspect
+
+    entry = run_cache_inspect(token_hash)
+    if json_output:
+        import json as _json
+
+        result = {"token_hash": token_hash, "entry": entry}
+        console.print(_json.dumps(result, indent=2))
+        return
+    print_cache_inspect(token_hash, entry, console)
+
+
+app.add_typer(cache_app, name="cache")
 
 
 @app.command("chat-stream")
@@ -1788,6 +1873,32 @@ def tune_cache(
         output=output,
         console=console,
     )
+
+
+@app.command()
+def audit(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON (for CI)"),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero on any WARN or FAIL"),
+):
+    """Run a compliance / security posture check.
+
+    Reports pass/fail for each of nine checks (TLS, auth, rate limit,
+    CORS, CSRF, API key store, quota, DHT, pipeline TLS).  Designed to
+    be wired into CI to catch misconfigured production deployments.
+
+    Examples::
+
+        distllm audit             # human-readable table
+        distllm audit --json      # JSON output for CI
+        distllm audit --strict    # exit non-zero on any WARN
+    """
+    from distllm.cli.audit import main as audit_main
+    argv: list[str] = []
+    if json_output:
+        argv.append("--json")
+    if strict:
+        argv.append("--strict")
+    raise typer.Exit(audit_main(argv))
 
 
 if __name__ == "__main__":

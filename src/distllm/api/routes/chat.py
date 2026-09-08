@@ -9,7 +9,7 @@ import time
 import uuid
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -519,8 +519,20 @@ class ChatCompletionResponse(BaseModel):
         504: ERR_ENTRY("Request exceeded the 300s inference timeout", type_="timeout_error", code="504"),
     },
 )
-async def chat_completions(request: Request, body: ChatCompletionRequest):
-    """Chat completions endpoint."""
+async def chat_completions(
+    request: Request,
+    body: ChatCompletionRequest,
+    spec: str | None = None,
+    response: Response = None,
+):
+    """Chat completions endpoint.
+
+    Query-param overrides:
+        * ``spec``: per-request speculative-decoder override.  Allowed
+          values: ``greedy`` (no speculation), ``ngram`` (prompt-lookup),
+          ``medusa``, ``tree``, ``multi_draft``.  When unset (default),
+          the cluster's auto-selected decoder is used.
+    """
     # Set observability state for middleware
     request.state.model = body.model
     request.state.tenant = body.user or "default"
@@ -731,6 +743,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         user_id=effective_user_id,
         response_format=body.response_format,
         constraint=constraint,
+        spec_method=spec,
     )
 
     elapsed = time.time() - start_time
@@ -838,6 +851,29 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         response_message["content"] = None
     else:
         response_message["content"] = generated.strip()
+
+    # Enhancement #5: per-request telemetry headers on every completion.
+    # TTFT is approximated by the route's elapsed time for non-streaming
+    # (the full generation IS the first token from the client's view);
+    # streaming responses set the real TTFT in streaming.py.
+    if response is not None:
+        tps = completion_tokens / elapsed if elapsed > 0 else 0.0
+        response.headers["X-DistLLM-TTFT-Ms"] = str(int(elapsed * 1000))
+        response.headers["X-DistLLM-Tokens-Per-Sec"] = f"{tps:.1f}"
+        try:
+            from distllm.core.cost_tracker import get_cost_tracker
+            estimate = get_cost_tracker().estimate_cost(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                model_name=resolved_model,
+            )
+            cost = getattr(estimate, "estimated_cost_usd", None)
+            if cost is None:
+                cost = 0.0
+            response.headers["X-DistLLM-Cost-USD"] = f"{cost:.6f}"
+        except Exception:
+            # Cost tracking is optional; omit the header when unavailable.
+            pass
 
     return ChatCompletionResponse(
         model=resolved_model,

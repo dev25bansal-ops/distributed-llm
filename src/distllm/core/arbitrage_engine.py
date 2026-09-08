@@ -337,12 +337,26 @@ class ArbitrageEngine:
         provider_savings_threshold_pct: float = 25.0,
         history_window: int = 100,
         on_opportunity: Callable[[ArbitrageOpportunity], None] | None = None,
+        # Backward-compat alias: callers (and the coordinator wiring) historically
+        # pass a single ``min_savings_pct`` and want it to apply to all three
+        # thresholds at once. Map it to the strictest threshold so opportunities
+        # are at least as eager as the caller expects.
+        min_savings_pct: float | None = None,
+        # Backward-compat alias: coordinator wiring passes ``check_interval_s``
+        # to control how often the engine scans for new opportunities. Older
+        # builds used ``polling_interval_s``; accept both.
+        check_interval_s: float | None = None,
     ):
+        if min_savings_pct is not None:
+            price_drop_threshold_pct = min_savings_pct
+            region_savings_threshold_pct = min_savings_pct
+            provider_savings_threshold_pct = min_savings_pct
         self._price_drop_threshold = price_drop_threshold_pct
         self._region_savings_threshold = region_savings_threshold_pct
         self._provider_savings_threshold = provider_savings_threshold_pct
         self._history_window = history_window
         self._on_opportunity = on_opportunity
+        self._check_interval_s = check_interval_s or 60.0
 
         self._histories: dict[str, PriceHistory] = {}
         self._opportunities: list[ArbitrageOpportunity] = []

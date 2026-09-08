@@ -54,7 +54,7 @@ import torch.nn.functional as F
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
-from distllm.core.spec_verify import eos_cutoff
+from distllm.core.spec_verify import accept_token, eos_cutoff
 
 # Module-level lazy httpx import cache
 _httpx: Any = None
@@ -1288,7 +1288,18 @@ class DistributedSpeculativeDecoder:
                 vocab_size = target_logits.shape[-1]
                 acceptance_prob = min(1.0, p * vocab_size)
 
-            if torch.rand(1).item() >= acceptance_prob:
+            # M-02: shared kernel (single source of truth). acceptance_prob
+            # above is min(1, p/q) or the uniform fallback; accept_token
+            # recomputes the identical decision from the raw inputs.
+            if not accept_token(
+                target_logits,
+                prefix_len + i - 1,
+                int(draft_tokens[0, i].item()),
+                draft_prob=(float(torch.exp(torch.tensor(draft_logprobs[i])).item())
+                            if draft_logprobs is not None and i < len(draft_logprobs) else None),
+                temperature=self._temperature,
+                vocab_size=target_logits.shape[-1],
+            ):
                 return i
             # Note: no separate ``if p <= 0`` check needed here —
             # when p <= 0, acceptance_prob = 0, so the check above

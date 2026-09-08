@@ -21,6 +21,7 @@ from typing import Any, AsyncGenerator
 
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer
+from distllm.core.param_update_channel import ParamUpdateChannel
 
 
 def _get_client_id(request: Any) -> str:
@@ -166,9 +167,13 @@ async def _generate_tokens(
                 tk = top_k
                 include_logprobs = False
                 top_logprobs_n = 0
-                params = getattr(local_coord, '_param_update_channel', None)
-                if params is not None:
-                    params = params.get(request_id)
+                # Resolve the per-request param override channel. Test
+                # fixtures often pass a MagicMock as the coordinator, so
+                # `getattr` will return a Mock here — guard against that by
+                # requiring a real ParamUpdateChannel instance.
+                puc = getattr(local_coord, '_param_update_channel', None)
+                if isinstance(puc, ParamUpdateChannel):
+                    params = puc.get(request_id)
                     if params is not None:
                         temp = params.temperature
                         tp = params.top_p

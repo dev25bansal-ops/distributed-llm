@@ -2,7 +2,7 @@
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -128,27 +128,97 @@ class PluginReadinessResponse(BaseModel):
 @router.get(
     "/v1/models",
     summary="List available models",
-    description="Return all registered and available models with metadata including model ID and creation timestamp. Returns an empty list if no coordinator is loaded. Requires API-key authentication.",
+    description=(
+        "Return all registered and available models with metadata including model ID "
+        "and creation timestamp. Returns an empty list if no coordinator is loaded. "
+        "Requires API-key authentication.\n\n"
+        "Pagination and filtering:\n"
+        "  * `limit` -- 1..500 (default 100). Caps the number of items in `data`.\n"
+        "  * `offset` -- >= 0 (default 0). Skips the first N matching items.\n"
+        "  * `family` -- exact match on the model ID's first `/`-separated segment "
+        "(e.g. `meta-llama`, `mistralai`). Filters to that family only.\n"
+        "  * `q` -- case-insensitive substring filter on the model ID.\n\n"
+        "When `family` / `q` are supplied, pagination applies to the *filtered* "
+        "result set, not the unfiltered catalogue. This keeps the response stable "
+        "as long as the underlying model list does not change."
+    ),
     response_description="List of model identifiers and metadata",
     response_model=ModelList,
     responses={
+        400: ERR_ENTRY(
+            "Invalid query parameter (e.g. limit out of range, non-integer offset)",
+            type_="invalid_request", code="invalid_request",
+        ),
         401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
         429: ERR_ENTRY("Rate limit or auth-failure limit exceeded; retry after the interval in the error body", type_="rate_limit_error", code="rate_limit_exceeded"),
     },
 )
-async def list_models():
-    """List available models."""
+async def list_models(
+    limit: int = Query(
+        100, ge=1, le=500,
+        description="Maximum number of items to return (1..500).",
+    ),
+    offset: int = Query(
+        0, ge=0,
+        description="Number of matching items to skip before returning results.",
+    ),
+    family: str | None = Query(
+        None,
+        description=(
+            "Filter to a specific model family. Matches the first "
+            "`/`-separated segment of the model ID (e.g. `meta-llama`, "
+            "`mistralai`). Empty string is rejected."
+        ),
+    ),
+    q: str | None = Query(
+        None,
+        description="Case-insensitive substring filter on the model ID.",
+    ),
+):
+    """List available models with pagination and filtering.
+
+    Validation rules:
+      * ``limit`` -- integer in [1, 500]. Values outside this range are rejected
+        with 400 by FastAPI's query validator (``Query(ge=1, le=500)``).
+      * ``offset`` -- non-negative integer.
+      * ``family`` -- exact match on the model ID's first segment. Empty string
+        is treated as not-set (no filter).
+      * ``q`` -- case-insensitive substring on the model ID. Empty string is
+        treated as not-set.
+    """
+    # Treat empty-string filters as "not set" so a stray ``?family=`` doesn't
+    # silently filter to an empty list.
+    family_filter = family or None
+    q_filter = (q or "").strip() or None
+
     coord = g.coordinator
     if coord is None:
+        # Still honour the pagination/filter contract: an empty catalogue
+        # yields an empty page with the requested shape.
         return ModelList(data=[])
+
     if hasattr(coord, 'list_models'):
         model_names = coord.list_models()
     else:
         model_names = [coord.model_name]
+
+    # Apply filters before pagination so the page is stable across requests.
+    filtered: list[str] = []
+    for name in model_names:
+        if family_filter is not None:
+            # Family = first segment of the model ID.
+            first_segment = name.split("/", 1)[0]
+            if first_segment != family_filter:
+                continue
+        if q_filter is not None and q_filter.lower() not in name.lower():
+            continue
+        filtered.append(name)
+
+    page = filtered[offset: offset + limit]
     return ModelList(
         data=[
             ModelInfo(id=name, created=int(time.time()))
-            for name in model_names
+            for name in page
         ]
     )
 

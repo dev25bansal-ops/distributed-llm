@@ -139,42 +139,50 @@ class TestMultimodalEngineProcessText:
 
 
 class TestMultimodalEngineProcessMultimodal:
-    """MultimodalEngine.process with image/audio/document."""
+    """MultimodalEngine.process with image/audio/document.
 
-    def test_image_input_no_coordinator(self) -> None:
+    C-01: non-text modalities now raise NotImplementedError instead of
+    silently discarding the payload and generating text from a synthetic
+    "[IMAGE] {text}" prompt. These tests pin the fail-loud contract.
+    """
+
+    def test_image_input_raises_not_implemented(self) -> None:
         engine = MultimodalEngine()
         img = torch.zeros(3, 100, 100)
-        result = engine.process(image=img, text="Describe")
-        assert result.modality_type == ModalityType.IMAGE
+        with pytest.raises(NotImplementedError, match="image"):
+            engine.process(image=img, text="Describe")
 
-    def test_audio_input_no_coordinator(self) -> None:
+    def test_audio_input_raises_not_implemented(self) -> None:
         engine = MultimodalEngine()
         audio = torch.zeros(16000)
-        result = engine.process(audio=audio, text="Transcribe")
-        assert result.modality_type == ModalityType.AUDIO
+        with pytest.raises(NotImplementedError, match="audio"):
+            engine.process(audio=audio, text="Transcribe")
 
-    def test_document_input_no_coordinator(self) -> None:
+    def test_document_input_raises_not_implemented(self) -> None:
         engine = MultimodalEngine()
         pages = [torch.zeros(3, 100, 100)]
-        result = engine.process(document_pages=pages, text="Summarize")
-        assert result.modality_type == ModalityType.DOCUMENT
+        with pytest.raises(NotImplementedError, match="document"):
+            engine.process(document_pages=pages, text="Summarize")
 
     def test_image_increments_vision_stats(self) -> None:
         engine = MultimodalEngine()
         img = torch.zeros(3, 100, 100)
-        engine.process(image=img, text="Describe")
+        with pytest.raises(NotImplementedError):
+            engine.process(image=img, text="Describe")
         stats = engine.stats()
         assert stats["vision_requests"] == 1
 
     def test_audio_increments_audio_stats(self) -> None:
         engine = MultimodalEngine()
-        engine.process(audio=torch.zeros(16000), text="Transcribe")
+        with pytest.raises(NotImplementedError):
+            engine.process(audio=torch.zeros(16000), text="Transcribe")
         stats = engine.stats()
         assert stats["audio_requests"] == 1
 
     def test_document_increments_document_stats(self) -> None:
         engine = MultimodalEngine()
-        engine.process(document_pages=[torch.zeros(1, 1)], text="Sum")
+        with pytest.raises(NotImplementedError):
+            engine.process(document_pages=[torch.zeros(1, 1)], text="Sum")
         stats = engine.stats()
         assert stats["document_requests"] == 1
 
@@ -183,15 +191,18 @@ class TestMultimodalEngineProcessMultimodal:
         result = engine.process(text="test")
         assert result.processing_time_ms > 0
 
-    def test_image_with_mock_coordinator(self) -> None:
+    def test_image_with_mock_coordinator_never_generates(self) -> None:
+        """C-01: even WITH a coordinator, image input must not produce
+        fabricated text — the old test asserted the bug itself."""
+
         class MockCoord:
             def generate(self, prompt, max_new_tokens=256, temperature=0.7):
                 return f"Generated: {prompt}"
 
         engine = MultimodalEngine(coordinator=MockCoord())
         img = torch.zeros(3, 100, 100)
-        result = engine.process(image=img, text="Describe", model="llava")
-        assert "[IMAGE]" in result.text
+        with pytest.raises(NotImplementedError):
+            engine.process(image=img, text="Describe", model="llava")
 
 
 class TestMultimodalEngineBuildPrompt:

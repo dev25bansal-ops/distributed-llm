@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from distllm.core.cost_tracker import get_cost_tracker
 
@@ -40,6 +41,29 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _parse_request_body(body: bytes) -> dict[str, Any] | None:
+    """Decode *body* and return it as a dict, or None on any parse/typing error.
+
+    Returns None for empty bodies, JSON arrays, JSON numbers/strings, and
+    JSON ``null`` — all of which are invalid request payloads for the
+    inference endpoints this middleware fronts.
+    """
+    if not body:
+        return None
+    import json
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        # The downstream handler expects a JSON object (model / messages /
+        # prompt). Anything else (``[]``, ``42``, ``"a string"``, ``null``)
+        # is a malformed client request — surface 400, do not let the
+        # downstream handler turn it into a 500.
+        return None
+    return data
+
+
 class CostTrackingMiddleware(BaseHTTPMiddleware):
     """Middleware that tracks per-request costs and adds cost headers.
 
@@ -47,6 +71,10 @@ class CostTrackingMiddleware(BaseHTTPMiddleware):
    1. Estimates input token count from the request body
     2. Records the start time
     3. After the response, calculates cost and adds headers
+
+    Bad request bodies (non-dict JSON, malformed JSON, etc.) are rejected
+    with ``400 Bad Request`` before being passed downstream. This prevents
+    the downstream handler from turning a malformed body into a 500.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -64,12 +92,28 @@ class CostTrackingMiddleware(BaseHTTPMiddleware):
         input_tokens = 0
         model_name = ""
 
-        # Try to estimate input tokens from request body
+        # Try to estimate input tokens from request body.
+        # If the body is malformed or not a JSON object, return 400 here
+        # rather than letting the downstream handler crash with 500.
         try:
             body = await request.body()
             if body:
-                import json
-                data = json.loads(body)
+                data = _parse_request_body(body)
+                if data is None:
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "error": {
+                                "message": (
+                                    "Invalid request body: expected a JSON object "
+                                    "with 'model' and 'messages' (or 'prompt') "
+                                    "fields for inference endpoints."
+                                ),
+                                "type": "invalid_request_body",
+                                "code": "400",
+                            },
+                        },
+                    )
                 model_name = data.get("model", "")
                 messages = data.get("messages", [])
                 prompt = data.get("prompt", "")

@@ -632,13 +632,21 @@ class Coordinator:
                  user_id: str = "default",
                  speculative_config: dict | None = None,
                  response_format: dict | None = None,
-                 constraint: Any | None = None) -> str:
+                 constraint: Any | None = None,
+                 spec_method: str | None = None) -> str:
+        """Generate text from *prompt*.
+
+        ``spec_method`` is a per-request override for the speculative
+        decoder (``greedy``, ``ngram``, ``medusa``, ``tree``,
+        ``multi_draft``).  When ``None``, the cluster default is used.
+        """
         self._require_leader()
         return self._request_handler.generate(
             prompt, max_new_tokens, temperature, top_p, top_k,
             request_id, user_id, speculative_config,
             response_format=response_format,
             constraint=constraint,
+            spec_method=spec_method,
         )
 
     def generate_batch(self, timeout: float = 120.0, max_steps: int = 0) -> None:
@@ -1206,6 +1214,7 @@ class Coordinator:
         attrs_name: str,
         constructor_kwargs: dict | None = None,
         post_init: Callable | None = None,
+        validate_kwargs: bool = False,
     ) -> Any | None:
         """Start an optional subsystem, returning the instance or None.
 
@@ -1219,6 +1228,13 @@ class Coordinator:
             attrs_name: Attribute name to store the instance on ``self``.
             constructor_kwargs: Dict of kwargs for the constructor.
             post_init: Optional callable ``fn(instance)`` called after init.
+            validate_kwargs: When ``True``, run the kwargs through
+                :func:`distllm.core.subsystem_kwargs.validate_subsystem_kwargs`
+                before constructing.  Unknown kwargs are dropped with a
+                warning instead of raising ``TypeError`` — this prevents
+                coordinator upgrades from breaking subsystem startup when
+                a new kwarg is added to ``constructor_kwargs`` before the
+                subsystem's ``__init__`` accepts it.
 
         Returns:
             The instance, or None if import failed.
@@ -1226,7 +1242,11 @@ class Coordinator:
         try:
             mod = __import__(module_path, fromlist=[class_name])
             cls = getattr(mod, class_name)
-            instance = cls(**(constructor_kwargs or {}))
+            ctor_kwargs = dict(constructor_kwargs or {})
+            if validate_kwargs:
+                from distllm.core.subsystem_kwargs import validate_subsystem_kwargs
+                ctor_kwargs = validate_subsystem_kwargs(cls, ctor_kwargs, subsystem_name=name)
+            instance = cls(**ctor_kwargs)
             setattr(self, attrs_name, instance)
             self._subsystem_health[name] = {"status": "ok", "error": None}
             if post_init:
@@ -1378,6 +1398,7 @@ class Coordinator:
                 "min_savings_pct": float(os.environ.get("DISTLLM_ARBITRAGE_MIN_SAVINGS", "15.0")),
                 "check_interval_s": float(os.environ.get("DISTLLM_ARBITRAGE_INTERVAL", "60.0")),
             },
+            validate_kwargs=True,
         )
 
         self._start_subsystem(

@@ -38,6 +38,7 @@ class RequestHandler:
         speculative_config: dict | None = None,
         response_format: dict | None = None,
         constraint: Any | None = None,
+        spec_method: str | None = None,
     ) -> str:
         c = self.coordinator
         c._inference_engine.tokenizer = c.tokenizer
@@ -73,6 +74,7 @@ class RequestHandler:
                 user_id,
                 speculative_config,
                 constraint=constraint,
+                spec_method=spec_method,
             )
         except Exception as exc:
             if c._plugin_system:

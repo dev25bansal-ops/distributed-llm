@@ -394,11 +394,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CSRF Same-Origin middleware — validates Origin/Referer on state-changing
-# requests to prevent Cross-Site Request Forgery. Runs after CORS and security
-# headers but before AuthMiddleware so CSRF violations are caught early.
-from distllm.api.csrf_middleware import CSRFSameOriginMiddleware
-app.add_middleware(CSRFSameOriginMiddleware)
 
 
 # Structured error responses
@@ -770,11 +765,50 @@ if os.environ.get("DISTLLM_QUOTA_ENABLED", "1") == "1":
     from distllm.api.quota_middleware import QuotaMiddleware
     app.add_middleware(QuotaMiddleware)
     logger.info("QuotaMiddleware registered (per-tenant quotas active)")
+class DocsAuthMiddleware(BaseHTTPMiddleware):
+    """Require admin role to access OpenAPI documentation.
+
+    Protects ``/docs``, ``/redoc``, and ``/openapi.json`` from
+    unauthorized access.  Must be registered **after** AuthMiddleware
+    so that ``request.state.api_key_role`` is populated.
+    """
+
+    DOCS_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.url.path in self.DOCS_PATHS:
+            role = getattr(request.state, "api_key_role", None)
+            if role != "admin":
+                return _error_response(
+                    status_code=403,
+                    error="Forbidden",
+                    message="Admin access required for API documentation. "
+                            "Authenticate with an admin API key.",
+                    type="auth_error",
+                    request=request,
+                )
+        return await call_next(request)
+
+
+# DocsAuthMiddleware — requires admin role on /docs, /redoc, /openapi.json
+# add_middleware PREPENDS: the last-registered middleware is OUTERMOST and
+# runs FIRST. DocsAuth must run AFTER AuthMiddleware (it reads
+# request.state.api_key_role that Auth sets), so it must be registered
+# BEFORE AuthMiddleware in code — i.e. it must appear EARLIER in this file
+# than the AuthMiddleware registration below. (A prior fix had this order
+# correct and was later reverted; the middleware-order assertion test
+# re-locks it.)
+app.add_middleware(DocsAuthMiddleware)
 
 
 # AuthMiddleware registered AFTER PluginHookMiddleware so it runs first
 # (outermost) and populates request.state before plugin hooks dispatch.
 app.add_middleware(AuthMiddleware)
+# CSRF Same-Origin middleware — validates Origin/Referer on state-changing
+# requests to prevent Cross-Site Request Forgery. Runs after CORS and security
+# headers but before AuthMiddleware so CSRF violations are caught early.
+from distllm.api.csrf_middleware import CSRFSameOriginMiddleware
+app.add_middleware(CSRFSameOriginMiddleware)
 
 # RequestIDMiddleware registered after AuthMiddleware so it runs before it
 # on incoming requests, ensuring request.state.request_id is set before any
@@ -804,33 +838,7 @@ if os.environ.get("DISTLLM_MODERATION", "0") == "1":
     logger.info("ContentModerationMiddleware registered (DISTLLM_MODERATION=1)")
 
 # Docs auth middleware — requires admin role for OpenAPI documentation pages
-class DocsAuthMiddleware(BaseHTTPMiddleware):
-    """Require admin role to access OpenAPI documentation.
 
-    Protects ``/docs``, ``/redoc``, and ``/openapi.json`` from
-    unauthorized access.  Must be registered **after** AuthMiddleware
-    so that ``request.state.api_key_role`` is populated.
-    """
-
-    DOCS_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
-
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path in self.DOCS_PATHS:
-            role = getattr(request.state, "api_key_role", None)
-            if role != "admin":
-                return _error_response(
-                    status_code=403,
-                    error="Forbidden",
-                    message="Admin access required for API documentation. "
-                            "Authenticate with an admin API key.",
-                    type="auth_error",
-                    request=request,
-                )
-        return await call_next(request)
-
-# DocsAuthMiddleware — requires admin role on /docs, /redoc, /openapi.json
-# Registered after AuthMiddleware so request.state.api_key_role is set.
-app.add_middleware(DocsAuthMiddleware)
 
 
 class _RequestTooLarge(Exception):
@@ -2135,7 +2143,17 @@ def main() -> None:
                 await asyncio.sleep(min(in_flight * 0.5, 10.0))
         logger.info("Shutdown complete")
 
-    app.add_event_handler("shutdown", _shutdown)
+    # Register graceful shutdown handler via FastAPI lifespan (the legacy
+    # `app.add_event_handler` was removed in Starlette >=0.40).
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app):
+        yield
+        await _shutdown()
+
+    _app_obj = app
+    _app_obj.router.lifespan_context = _lifespan
 
     config = uvicorn.Config(
         app,

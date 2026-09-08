@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -58,6 +59,41 @@ class SchemaValidator:
         assert result.valid
     """
 
+    # Enhancement #3: LRU cache of validation results. Structured-output
+    # workloads repeatedly validate against the SAME schema (every request
+    # with the same response_format), so a (schema, data) hit skips the
+    # field-walk entirely. 512 entries bounds memory to ~a few MB.
+    _RESULT_CACHE: dict[tuple[str, str], "ValidationResult"] = {}
+    _RESULT_CACHE_MAX = 512
+    _RESULT_CACHE_HITS = 0
+    _RESULT_CACHE_MISSES = 0
+
+    @classmethod
+    def _cache_key(cls, data: Any, schema: dict) -> tuple[str, str]:
+        try:
+            data_s = json.dumps(data, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            data_s = repr(data)
+        try:
+            schema_s = json.dumps(schema, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            schema_s = repr(schema)
+        return (
+            hashlib.sha256(schema_s.encode()).hexdigest()[:16],
+            hashlib.sha256(data_s.encode()).hexdigest()[:16],
+        )
+
+    @classmethod
+    def validation_cache_stats(cls) -> dict[str, int]:
+        """Cache instrumentation for observability."""
+        total = cls._RESULT_CACHE_HITS + cls._RESULT_CACHE_MISSES
+        return {
+            "hits": cls._RESULT_CACHE_HITS,
+            "misses": cls._RESULT_CACHE_MISSES,
+            "size": len(cls._RESULT_CACHE),
+            "hit_rate": round(cls._RESULT_CACHE_HITS / total, 3) if total else 0.0,
+        }
+
     def validate(self, data: Any, schema: dict | None = None) -> ValidationResult:
         """Validate data against a schema.
 
@@ -71,14 +107,46 @@ class SchemaValidator:
         if schema is None:
             return ValidationResult(valid=True, data=data)
 
-        errors = []
+        # Enhancement #3: consult the LRU cache ONLY at the top level. The
+        # recursive property-walk below calls _validate_uncached directly,
+        # so nested validations neither pollute the counters nor store
+        # sub-results that could alias top-level keys.
+        key = self._cache_key(data, schema)
+        cached = self._RESULT_CACHE.get(key)
+        if cached is not None:
+            SchemaValidator._RESULT_CACHE_HITS += 1
+            return cached
+        SchemaValidator._RESULT_CACHE_MISSES += 1
+
+        errors = self._validate_uncached(data, schema)
+
+        result = ValidationResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            data=data,
+        )
+
+        # Store in the LRU cache (simple evict-oldest bound).
+        cache = SchemaValidator._RESULT_CACHE
+        if len(cache) >= SchemaValidator._RESULT_CACHE_MAX:
+            cache.pop(next(iter(cache)))
+        cache[key] = result
+        return result
+
+    def _validate_uncached(self, data: Any, schema: dict) -> list[str]:
+        """Field-walk an object against a schema WITHOUT touching the cache.
+
+        Recursive property validations call this so only the top-level
+        (data, schema) pair is counted and stored.
+        """
+        errors: list[str] = []
 
         # Type checking
         expected_type = schema.get("type")
         if expected_type:
             if not self._check_type(data, expected_type):
                 errors.append(f"Expected type '{expected_type}', got '{type(data).__name__}'")
-                return ValidationResult(valid=False, errors=errors)
+                return errors
 
         # Required fields
         required = schema.get("required", [])
@@ -87,20 +155,15 @@ class SchemaValidator:
                 if field_name not in data:
                     errors.append(f"Missing required field: '{field_name}'")
 
-        # Properties validation
+        # Properties validation (recursive, uncached)
         properties = schema.get("properties", {})
         if isinstance(data, dict) and properties:
             for key, prop_schema in properties.items():
                 if key in data:
-                    prop_result = self.validate(data[key], prop_schema)
-                    if not prop_result.valid:
-                        errors.extend(prop_result.errors)
+                    prop_errors = self._validate_uncached(data[key], prop_schema)
+                    errors.extend(prop_errors)
 
-        return ValidationResult(
-            valid=len(errors) == 0,
-            errors=errors,
-            data=data,
-        )
+        return errors
 
     def _check_type(self, data: Any, expected_type: str) -> bool:
         """Check if data matches the expected JSON type."""

@@ -87,6 +87,89 @@ def accept_token(
     return torch.rand(1).item() < acceptance
 
 
+def accept_tokens_batched(
+    target_logits: torch.Tensor,
+    first_pos: int,
+    draft_tokens: torch.Tensor,
+    *,
+    draft_probs: torch.Tensor | list[float] | None = None,
+    temperature: float = 1.0,
+    vocab_size: int | None = None,
+    rng: torch.Generator | None = None,
+) -> int:
+    """Vectorized chain acceptance — 2 GPU syncs total instead of 2N.
+
+    Enhancement #1: decides acceptance for a contiguous draft chain in one
+    batched gather + one uniform draw. Mathematically identical to calling
+    :func:`accept_token` for each position (greedy argmax match, or
+    rejection sampling with ``min(1, p/q)`` / the uniform fallback), but
+    the per-token ``.item()`` host round-trips collapse from ``2N`` to
+    ``2``.
+
+    Args:
+        target_logits: ``(1, seq_len, vocab)`` target logits.
+        first_pos: Logits row verifying draft token 0 (already causally
+            shifted, i.e. ``prefix_len(prefix)``); row ``first_pos + i``
+            verifies draft ``i``.
+        draft_tokens: ``(1, N)`` candidate token ids.
+        draft_probs: Optional per-draft probabilities ``q`` (tensor or
+            list of N floats). ``None`` selects the uniform fallback.
+        temperature: 0 = greedy argmax match; > 0 = rejection sampling.
+        vocab_size: Only needed for the uniform fallback.
+        rng: Optional generator for reproducible sampling.
+
+    Returns:
+        Number of leading draft tokens accepted: the first rejection (or
+        logits-row exhaustion — C-02 semantics) terminates the count.
+    """
+    n = draft_tokens.shape[1]
+    rows = torch.arange(first_pos, first_pos + n, device=target_logits.device)
+    usable = int(min(n, max(0, target_logits.shape[1] - first_pos)))
+    if usable <= 0:
+        return 0
+
+    ids = draft_tokens[0, :usable].to(device=target_logits.device, dtype=torch.long)
+    # (usable, vocab) slice in ONE gather
+    logits_rows = target_logits[0, rows[:usable], :]
+
+    if temperature == 0:
+        argmaxes = logits_rows.argmax(dim=-1)
+        matches = argmaxes == ids
+    else:
+        probs = F.softmax(logits_rows / temperature, dim=-1)
+        p = probs.gather(1, ids.unsqueeze(1)).squeeze(1)
+
+        if draft_probs is not None:
+            q = (
+                draft_probs[:usable]
+                if isinstance(draft_probs, torch.Tensor)
+                else torch.tensor(draft_probs[:usable], dtype=p.dtype, device=p.device)
+            )
+            q = q.to(p.device)
+            # q <= 0 rejects (per spec-decoding theory)
+            safe_q = torch.where(q > 0, q, torch.ones_like(q))
+            acceptance = torch.where(q > 0, torch.clamp(p / safe_q, max=1.0), torch.zeros_like(p))
+        else:
+            vs = vocab_size if vocab_size is not None else target_logits.shape[-1]
+            acceptance = torch.clamp(p * vs, max=1.0)
+
+        # ONE uniform draw for the whole chain
+        if rng is not None:
+            draws = torch.rand(usable, generator=rng, device=p.device)
+        else:
+            draws = torch.rand(usable, device=p.device)
+        matches = draws < acceptance
+
+    # First False terminates (rejection or bounds exhaustion)
+    all_matches = torch.cat(
+        [matches, torch.zeros(n - usable, dtype=torch.bool, device=matches.device)]
+    )
+    false_idx = (all_matches == False).nonzero(as_tuple=True)[0]  # noqa: E712
+    if false_idx.numel() > 0:
+        return int(false_idx[0].item())
+    return n
+
+
 def eos_cutoff(tokens: list[int] | torch.Tensor, eos_token_id: int | None) -> int:
     """Length of the leading span of *tokens* that may be emitted before EOS.
 
@@ -143,22 +226,18 @@ def verify_chain(
     """
     num = draft_tokens.shape[1]
     L = prefix_len(prefix)
-    for i in range(num):
-        pos = L + i
-        if pos >= target_logits.shape[1]:
-            break
-        q = draft_probs[i] if draft_probs is not None and i < len(draft_probs) else None
-        if not accept_token(
-            target_logits,
-            pos,
-            int(draft_tokens[0, i].item()),
-            draft_prob=q,
-            temperature=temperature,
-            vocab_size=vocab_size,
-            rng=rng,
-        ):
-            return i
-    return num
+    # Enhancement #1: route through the vectorized kernel — identical
+    # semantics (C-02 bounds, min(1,p/q), uniform fallback, rng threading)
+    # but 2 GPU syncs total instead of 2N.
+    return accept_tokens_batched(
+        target_logits,
+        L,
+        draft_tokens,
+        draft_probs=draft_probs,
+        temperature=temperature,
+        vocab_size=vocab_size,
+        rng=rng,
+    )
 
 
 def verify_draft_acceptance(
