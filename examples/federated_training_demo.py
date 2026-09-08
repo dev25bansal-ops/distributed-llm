@@ -1,6 +1,13 @@
 """Federated LoRA fine-tuning demo — two nodes, zero network.
 
 Two in-process ``FederatedFineTuner`` nodes train on their own private
+
+## What this demonstrates
+- Two virtual nodes train a LoRA adapter on disjoint data shards
+  (no network, no gRPC — both run in-process)
+- Each node submits its adapter weights to a coordinator that merges
+  them via federated averaging
+- The merged adapter is loaded and used for inference end-to-end
 data and exchange *gradient updates only* through direct function calls
 (no sockets, no coordinator).  Differential privacy is applied to every
 gradient before it leaves a node, and an RDP accountant reports the

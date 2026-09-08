@@ -1,5 +1,12 @@
 """Demonstrates DistLLM as a multi-provider inference control plane.
 
+## What this demonstrates
+- Routing chat-completion requests to the cheapest provider, the fastest
+  provider, or a fallback chain via the `provider` / `provider_fallbacks`
+  fields on the OpenAI-compatible `/v1/chat/completions` endpoint
+- Using the standard `openai` SDK against a DistLLM coordinator (one
+  client, multiple upstream clouds)
+
 Usage:
     export OPENAI_API_KEY=sk-...
     export TOGETHER_API_KEY=...

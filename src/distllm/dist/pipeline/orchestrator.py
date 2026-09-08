@@ -246,16 +246,20 @@ class PipelineOrchestrator:
         self.unregister_node(node_id)
 
     def validate_layer_assignment(self, node_id: str, start_layer: int, end_layer: int) -> None:
-        """Validate that a layer assignment doesn't overlap with existing nodes."""
+        """Validate that a layer assignment doesn't overlap with existing nodes.
+
+        M-06: delegates to the shared ``TopologyRegistry`` so the overlap
+        invariant lives in exactly one place (core and dist both consume
+        it). Lock is held here for the snapshot; the validation math is pure.
+        """
+        from distllm.core.topology_registry import NodeRange, validate_assignment
+
         with self._lock:
-            for nid, node in self._nodes.items():
-                if nid == node_id:
-                    continue
-                if start_layer <= node.end_layer and end_layer >= node.start_layer:
-                    raise ValueError(
-                        f"Layer overlap: {node_id}[{start_layer}-{end_layer}] "
-                        f"overlaps with {nid}[{node.start_layer}-{node.end_layer}]"
-                    )
+            existing = [
+                NodeRange(nid, node.start_layer, node.end_layer)
+                for nid, node in self._nodes.items()
+            ]
+        validate_assignment(node_id, start_layer, end_layer, existing)
 
     # ── Sequential pipeline ────────────────────────────────────────────
 

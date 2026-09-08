@@ -2,6 +2,11 @@
 
 This example shows how to use LangChain with the DistLLM OpenAI-compatible API.
 
+## What this demonstrates
+- Calling a DistLLM-served model from LangChain via `ChatOpenAI`
+- Both batch (`.invoke`) and streaming (`.stream`) chat-completion flows
+- Mixed `SystemMessage` + `HumanMessage` prompts
+
 Requirements:
     pip install langchain-openai langchain-core
 

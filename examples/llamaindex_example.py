@@ -2,6 +2,11 @@
 
 This example shows how to use LlamaIndex with the DistLLM OpenAI-compatible API.
 
+## What this demonstrates
+- Configuring LlamaIndex's `OpenAILLM` to call a DistLLM-served model
+- Building a `VectorStoreIndex` over a tiny in-memory corpus
+- Running a query engine that retrieves + generates against DistLLM
+
 Requirements:
     pip install llama-index-llms-openai llama-index-core
 

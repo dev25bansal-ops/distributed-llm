@@ -2,6 +2,11 @@
 
 This example shows how to use CrewAI with the DistLLM OpenAI-compatible API.
 
+## What this demonstrates
+- Building a CrewAI "crew" of two cooperating agents (Researcher, Writer)
+- Both agents sharing a DistLLM-served LLM via `ChatOpenAI(base_url=...)`
+- Sequential process execution through `crew.kickoff()`
+
 Requirements:
     pip install crewai langchain-openai
 

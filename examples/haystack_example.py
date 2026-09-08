@@ -1,6 +1,12 @@
 """Haystack integration with Distributed LLM.
 
 This example shows how to use Haystack (by deepset) with the DistLLM
+
+## What this demonstrates
+- Building a Haystack RAG pipeline (Retriever + PromptNode + Generator)
+- Pointing Haystack's `PromptNode` at a DistLLM-served model via
+  `OpenAIGenerator` against `http://localhost:8000/v1`
+- End-to-end question-answering against a small document corpus
 OpenAI-compatible API for RAG pipelines, document search, and
 question answering.
 

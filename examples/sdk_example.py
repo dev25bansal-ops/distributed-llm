@@ -2,6 +2,13 @@
 
 This example shows how to use the DistLLM Python SDK directly.
 
+## What this demonstrates
+- Synchronous + async usage of `distllm.sdk.DistLLMClient` /
+  `DistLLMClientSync`
+- Calling `list_models()` and `chat_completions()` without going
+  through the `openai` SDK
+- Context-manager lifecycle for the client
+
 Requirements:
     pip install httpx  # or: pip install distllm[sdk]
 
