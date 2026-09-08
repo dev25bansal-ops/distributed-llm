@@ -80,14 +80,14 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 
 ## §6. Rolls-Up Summary
 
-2026-09-08 status after Sprint-1 + quick-wins: **all 4 High security items addressed** — O-01/O-02/O-03 fully closed with regression locks, O-04 half-closed (fail-closed cert handling landed; default-flip next release). O-10 (quarantine expiry) and O-13 (import-time key print + decoy-key bug) also closed. Full API suite delta verified = 0 via stash baseline (5 pre-existing order-pollution failures both ways); full `tests/dist/` verified = 0 via stash baseline (38 pre-existing failures both ways).
+2026-09-08 status after Sprint-1 + quick wins: **O-01, O-02, O-03 closed; O-04 half-closed** (fail-closed certs; default-flip next release); **O-08, O-10, O-11, O-13 closed**. Zero regression deltas proven via stash baselines at every step (dist: 38 pre-existing both ways; api: 5 pre-existing both ways; core+api sweep: all 36 remaining failures within the known BUG-FN/optional-dep set).
 
 | Severity | Open count | Effort |
 |---|---|---|
 | Critical | 0 | — |
 | High | 1 (O-04 default-flip, scoped next release) | ~0.5 day |
-| Medium | 5 (O-05, O-06, O-07, O-08, O-09) | ~2–6 wks (O-09 dominates) |
-| Low | 2 (O-11, O-14) | ~3 days |
+| Medium | 4 (O-05 stale reds, O-06 orchestrator split, O-07 server split, O-09 multimodal) | ~2–6 wks (O-09 dominates) |
+| Low | 1 (O-14 dependency systems) | ~3 days |
 
 **Sprint-1 (done 2026-09-08):**
 1. ✅ O-03 (1h) — gossip None-guard
@@ -96,5 +96,7 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 4. ◐ O-04 — missing-certs downgrade closed; full default-flip with cert bootstrap next release
 5. ✅ O-10 (1h) — quarantine 2026-10-01 expiry policy
 6. ✅ O-13 (1h) — import-time key print removed; decoy-key bug fixed (real key now surfaced once at startup)
+7. ✅ O-11 (2h) — draft_tree greedy logprob = log_softmax, not raw logit
+8. ✅ O-08 (2h) — SSE per-token asdict deep-copy removed; dead format duplicates deleted
 
 That closes every "documented but not enforced" and silent-crash security gap in the tree before the next public milestone.
