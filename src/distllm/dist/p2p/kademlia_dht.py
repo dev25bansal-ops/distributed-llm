@@ -29,6 +29,8 @@ from typing import Any
 
 from loguru import logger
 
+from distllm.errors import ConfigError
+
 # Kademlia protocol constants
 K: int = 20  # Bucket size (max nodes per k-bucket)
 ALPHA: int = 3  # Parallelism factor for iterative lookups
@@ -49,6 +51,40 @@ STORE_TOKEN_SKEW: int = 300
 # the default ``shared_secret`` for KademliaDHT instances that do not pass one
 # explicitly, enabling HMAC-authenticated STORE across the deployment.
 DHT_SECRET_ENV_VAR: str = "DISTLLM_DHT_SECRET"
+
+# ---------------------------------------------------------------------------
+# Fail-closed DHT operator policy (DISTLLM_DHT_REQUIRE_SECRET)
+# ---------------------------------------------------------------------------
+#
+# Background
+# ----------
+# The Kademlia DHT layer treats STORE requests as untrusted writes against
+# the routing table. Without an authentication material we cannot HMAC-verify
+# a STORE token, so by default ``KademliaDHT`` runs in a fail-closed mode:
+# ``_verify_store_token`` returns False unless ``allow_unauthenticated=True``
+# is passed explicitly to the constructor (legacy dev mode).
+#
+# Operator toggle
+# ---------------
+# Environment variable: ``DISTLLM_DHT_REQUIRE_SECRET=1``
+#
+# When this variable is set, ``KademliaDHT.__init__`` will *refuse to
+# construct* unless a ``shared_secret`` (or ``DISTLLM_DHT_SECRET``) is
+# configured. There is no flag-based escape: an operator who sets the
+# kill-switch is declaring that unauthenticated STORE mode must not exist
+# anywhere in this deployment, so ``allow_unauthenticated=True`` without a
+# secret is rejected too.
+#
+# In other words, DISTLLM_DHT_REQUIRE_SECRET is the global kill-switch for
+# the "no secret, but allow_unauthenticated=True" footgun. Production
+# deployments should always set it; it removes the silent fallback that
+# would otherwise log a warning and proceed with unauthenticated writes.
+#
+# Where this is read
+# ------------------
+# See ``src/distllm/dist/p2p/kademlia_dht.py``::``KademliaDHT.__init__``.
+# The release notes for 0.4.x describe the operator-facing implications.
+DHT_REQUIRE_SECRET_ENV_VAR: str = "DISTLLM_DHT_REQUIRE_SECRET"
 
 
 def _generate_node_id(seed: bytes | None = None) -> bytes:
@@ -546,6 +582,20 @@ class KademliaDHT:
         if allow_unauthenticated is None:
             allow_unauthenticated = False
         self._allow_unauthenticated = bool(allow_unauthenticated)
+
+        # O-01: DISTLLM_DHT_REQUIRE_SECRET=1 is the operator kill-switch —
+        # the deployment requires store authentication, so refuse to
+        # construct without a secret rather than silently running with
+        # rejected (or worse, unauthenticated) STOREs.
+        if (
+            not self._shared_secret
+            and os.environ.get(DHT_REQUIRE_SECRET_ENV_VAR) == "1"
+        ):
+            raise ConfigError(
+                "KademliaDHT: DISTLLM_DHT_REQUIRE_SECRET=1 is set but no shared "
+                "secret is configured — refusing to start (STORE authentication "
+                f"required). Set {DHT_SECRET_ENV_VAR} or pass shared_secret."
+            )
 
         if self._shared_secret:
             logger.info(

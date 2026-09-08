@@ -38,7 +38,13 @@ class VectorClock:
         self.clocks[node_id] = self.clocks.get(node_id, 0) + 1
 
     def merge(self, other: "VectorClock") -> None:
+        # O-03: a None/invalid timestamp from a buggy or adversarial peer
+        # used to raise TypeError and abort the anti-entropy sync. Skip
+        # non-positive timestamps; a monotonic epoch is a precondition for
+        # causal ordering, so there is no valid None semantic.
         for nid, ts in other.clocks.items():
+            if not isinstance(ts, int) or ts < 0:
+                continue
             self.clocks[nid] = max(self.clocks.get(nid, 0), ts)
 
     def happens_before(self, other: "VectorClock") -> bool:
@@ -46,6 +52,12 @@ class VectorClock:
         for nid in set(list(self.clocks.keys()) + list(other.clocks.keys())):
             self_val = self.clocks.get(nid, 0)
             other_val = other.clocks.get(nid, 0)
+            # O-03: coerce malformed (None/negative) timestamps to 0 so a
+            # hostile peer cannot raise TypeError from the read paths.
+            if not isinstance(self_val, int) or self_val < 0:
+                self_val = 0
+            if not isinstance(other_val, int) or other_val < 0:
+                other_val = 0
             if self_val > other_val:
                 return False
             if self_val < other_val:

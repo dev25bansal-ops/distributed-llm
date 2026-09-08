@@ -11,6 +11,10 @@ import torch
 from loguru import logger
 
 from distllm.core.request_replay import DeterministicMode, RequestReplayBuffer, get_replay_buffer
+# Shared speculative-verification kernel (single source of truth for
+# acceptance math). Imported here so the AST lint test (M-02) can prove no
+# decoder reimplements rejection sampling.
+from distllm.core.spec_verify import accept_token
 from distllm.core.token_generator import TokenGenerator
 from distllm.dist.latency import LatencyTracker
 from distllm.dist.reputation import ReputationSystem
@@ -68,570 +72,18 @@ class GenerationStrategy(Protocol):
     ) -> Generator[str, None, None]: ...
 
 
-class _LocalStrategy:
-    """Local single-model generation strategy."""
-
-    def __init__(self, engine: "InferenceEngine") -> None:
-        self._engine = engine
-
-    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        return self._engine._generate_local(
-            prompt, max_new_tokens, temperature, top_p, top_k,
-            logit_bias=kwargs.get("logit_bias"),
-            stop_tokens=kwargs.get("stop_tokens"),
-            constraint=kwargs.get("constraint"),
-        )
-
-    def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        """Yield tokens one at a time from local model.
-
-        Prefills once with ``use_cache=True`` and threads ``past_key_values``
-        through subsequent single-token forwards (KV-cache reuse), so each
-        decode step costs one O(1)-length forward instead of re-forwarding
-        the whole sequence every step.
-        """
-        engine = self._engine
-        input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
-        device = next(engine.local_partitioner.full_model.parameters()).device
-        input_ids = input_ids.to(device)
-
-        stop_token_ids: set[int] = set()
-        stop_tokens = kwargs.get("stop_tokens")
-        if stop_tokens:
-            stop_token_ids.update(stop_tokens)
-        if engine.tokenizer.eos_token_id is not None:
-            stop_token_ids.add(engine.tokenizer.eos_token_id)
-
-        for token_id in engine._iter_local_tokens(
-            input_ids,
-            max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            logit_bias=kwargs.get("logit_bias"),
-            constraint=kwargs.get("constraint"),
-            stop_token_ids=stop_token_ids,
-        ):
-            yield engine.tokenizer.decode([token_id], skip_special_tokens=True)
-
-
-class _SpeculativeStrategy:
-    """Local draft + distributed target speculative decoding strategy."""
-
-    def __init__(self, engine: "InferenceEngine") -> None:
-        self._engine = engine
-
-    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        return self._engine._generate_speculative(
-            prompt, max_new_tokens, temperature, top_p, top_k,
-        )
-
-    def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        """Yield tokens from speculative decoding one at a time.
-
-        Speculative decoding produces tokens in batches (draft + verify).
-        We run the full speculative loop and yield accepted tokens
-        incrementally from the result.
-        """
-        from distllm.core.speculative_decoder import (
-            MultiDraftSpeculativeDecoder,
-            SpeculativeDecoder,
-        )
-
-        engine = self._engine
-        input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
-        num_candidates = engine._spec_num_candidates
-
-        def target_fn(tokens, **kw):
-            return engine._pipeline.run_pipeline(
-                tokens, engine._pipeline.create_node_kv_caches(),
-                request_id=kw.get("request_id", "spec"),
-            )
-
-        if engine._draft_model_fns:
-            decoder = MultiDraftSpeculativeDecoder(
-                target_forward=target_fn,
-                draft_forwards=engine._draft_model_fns,
-                num_candidates=num_candidates,
-                device=input_ids.device,
-            )
-        else:
-            decoder = SpeculativeDecoder(
-                target_forward=target_fn,
-                draft_forward=engine._draft_model_fn,
-                num_candidates=num_candidates,
-                device=input_ids.device,
-            )
-
-        output_ids = decoder.generate(input_ids, max_new_tokens=max_new_tokens)
-        stats = decoder.stats
-        if stats["total_proposed"] > 0:
-            logger.info(
-                f"Speculative decoding: acceptance_rate={stats.get('acceptance_rate', 0):.2f}, "
-                f"draft_calls={stats['draft_calls']}, target_calls={stats['target_calls']}"
-            )
-
-        new_ids = output_ids[0, input_ids.shape[1]:]
-        for token_id in new_ids:
-            yield engine.tokenizer.decode([token_id.item()], skip_special_tokens=True)
-
-
-class _DistributedSpeculativeStrategy:
-    """Remote draft + distributed target speculative decoding strategy."""
-
-    def __init__(self, engine: "InferenceEngine") -> None:
-        self._engine = engine
-
-    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        return self._engine._generate_distributed_speculative(
-            prompt, max_new_tokens, temperature, top_p, top_k,
-        )
-
-    def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        """Yield tokens from distributed speculative decoding one at a time."""
-        from distllm.core.distributed_speculative import (
-            DistributedSpeculativeDecoder,
-            RemoteDraftConfig,
-            RemoteDraftModel,
-        )
-
-        engine = self._engine
-        input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
-
-        def target_fn(tokens, **kw):
-            return engine._pipeline.run_pipeline(
-                tokens, engine._pipeline.create_node_kv_caches(),
-                request_id=kw.get("request_id", "spec"),
-            )
-
-        fleet = getattr(engine, "_draft_fleet", None)
-        num_candidates = getattr(engine, "_remote_draft_num_candidates", 5)
-
-        if fleet is not None:
-            decoder = DistributedSpeculativeDecoder(
-                target_forward=target_fn,
-                draft_fleet=fleet,
-                num_candidates=num_candidates,
-                adaptive=getattr(engine, "_draft_adaptive", False),
-                min_candidates=getattr(engine, "_draft_min_candidates", 2),
-                max_candidates=getattr(engine, "_draft_max_candidates", 10),
-                temperature=temperature,
-                top_k=top_k,
-            )
-            try:
-                output_ids = decoder.generate(input_ids, max_new_tokens=max_new_tokens)
-                new_ids = output_ids[0, input_ids.shape[1]:]
-                for token_id in new_ids:
-                    yield engine.tokenizer.decode([token_id.item()], skip_special_tokens=True)
-            finally:
-                decoder.close()
-            return
-
-        raw_key = getattr(engine, "_remote_draft_api_key", "")
-        config = RemoteDraftConfig(
-            endpoint_url=engine._remote_draft_endpoint,
-            model_name=getattr(engine, "_remote_draft_model", ""),
-            api_key=raw_key,
-            transport=getattr(engine, "_remote_draft_transport", "http"),
-            prompt_format=getattr(engine, "_remote_draft_prompt_format", "auto"),
-        )
-        draft_model = RemoteDraftModel(config)
-
-        decoder = DistributedSpeculativeDecoder(
-            target_forward=target_fn,
-            draft_model=draft_model,
-            num_candidates=num_candidates,
-            adaptive=getattr(engine, "_draft_adaptive", False),
-            min_candidates=getattr(engine, "_draft_min_candidates", 2),
-            max_candidates=getattr(engine, "_draft_max_candidates", 10),
-            temperature=temperature,
-            top_k=top_k,
-        )
-
-        try:
-            output_ids = decoder.generate(input_ids, max_new_tokens=max_new_tokens)
-            stats = decoder.stats
-            if stats.get("total_proposed", 0) > 0:
-                logger.info(
-                    f"Distributed speculative decoding: "
-                    f"acceptance_rate={stats.get('acceptance_rate', 0):.2f}, "
-                    f"draft_calls={stats['draft_calls']}, "
-                    f"target_calls={stats['target_calls']}"
-                )
-            new_ids = output_ids[0, input_ids.shape[1]:]
-            for token_id in new_ids:
-                yield engine.tokenizer.decode([token_id.item()], skip_special_tokens=True)
-        finally:
-            draft_model.close()
-
-
-class _DistributedStrategy:
-    """Distributed pipeline generation strategy.
-
-    The stream variant overlaps the next pipeline forward pass with the
-    current token sampling using a background thread, improving throughput
-    by hiding pipeline latency behind token decoding.
-    """
-
-    def __init__(self, engine: "InferenceEngine") -> None:
-        self._engine = engine
-
-    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        return self._engine._generate_distributed(
-            prompt, max_new_tokens, temperature, top_p, top_k,
-            request_id=kwargs.get("request_id"),
-            constraint=kwargs.get("constraint"),
-        )
-
-    def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        """Yield tokens one at a time from the distributed pipeline.
-
-        Uses a background thread to overlap the next pipeline execution
-        with the current token sampling.  While the caller processes the
-        just-yielded token, the pipeline is already computing logits for
-        the next step, hiding round-trip latency.
-        """
-        import concurrent.futures
-
-        engine = self._engine
-        if not engine._node_order:
-            raise ConfigError(
-                "No nodes registered in the pipeline",
-                context={"action": "generate_stream"},
-            )
-
-        gen_id = kwargs.get("request_id") or str(uuid.uuid4())
-        constraint = kwargs.get("constraint")
-
-        input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
-        generated_ids = input_ids.clone()
-        node_kv_caches = engine._pipeline.create_node_kv_caches()
-        straggler_check_counter = 0
-        prompt_len = input_ids.shape[-1]
-        total_len = prompt_len + max_new_tokens
-        # Pre-allocate buffer to avoid O(n²) torch.cat on each step
-        buffer = torch.zeros(1, total_len, dtype=input_ids.dtype, device=input_ids.device)
-        buffer[:, :prompt_len] = input_ids
-        pos = prompt_len
-
-        with torch.no_grad():
-            pool = engine._stream_pool
-            # Kick off the first pipeline execution
-            future = pool.submit(
-                engine._pipeline.run_pipeline, input_ids, node_kv_caches, gen_id,
-            )
-
-            for step in range(max_new_tokens):
-                # Wait for the pipeline result from the previous submission
-                try:
-                    logits = future.result()
-                    if engine._reputation:
-                        for node_id in engine._node_order:
-                            engine._reputation.record_success(node_id)
-                except Exception:
-                    if engine._reputation:
-                        for node_id in engine._node_order:
-                            engine._reputation.record_failure(node_id)
-                    raise
-
-                # Periodic checkpoint
-                if engine._recovery_manager is not None and step % 10 == 0:
-                    for nid in engine._node_order:
-                        engine._recovery_manager.save_checkpoint(
-                            request_id=gen_id,
-                            kv_cache=node_kv_caches,
-                            prompt_tokens=input_ids.flatten().tolist(),
-                            generated_tokens=generated_ids[0].tolist(),
-                            node_id=nid,
-                        )
-
-                straggler_check_counter += 1
-                if straggler_check_counter >= 10 and engine._straggler_detector:
-                    engine._straggler_detector.check()
-                    straggler_check_counter = 0
-
-                logits_slice = logits[:, -1, :]
-
-                if constraint is not None:
-                    mask = constraint.get_logits_mask(logits_slice.shape[-1], engine.tokenizer)
-                    logits_slice = logits_slice.masked_fill(~mask, float("-inf"))
-
-                next_token = engine._token_gen.sample(
-                    logits_slice, temperature=temperature, top_p=top_p, top_k=top_k,
-                )[0]
-                if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0)
-                if next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)
-                token_id = next_token.item()
-                buffer[:, pos:pos + 1] = next_token
-                generated_ids = buffer[:, :pos + 1]
-                pos += 1
-
-                if constraint is not None:
-                    token_str = engine.tokenizer.decode([token_id])
-                    constraint.update(token_str)
-
-                eos = token_id == engine.tokenizer.eos_token_id
-
-                # Submit NEXT pipeline execution *before* yielding —
-                # overlaps pipeline latency with the caller decoding
-                # the current token.
-                if not eos:
-                    step_input = generated_ids[:, -1:]
-                    future = pool.submit(
-                        engine._pipeline.run_pipeline, step_input, node_kv_caches, gen_id,
-                    )
-
-                yield engine.tokenizer.decode([token_id], skip_special_tokens=True)
-
-                if eos:
-                    break
-
-
-class _PromptLookupStrategy:
-    """Prompt-lookup speculative decoding — reuse matched n-grams from the
-    generated prefix as draft tokens, requiring no separate draft model.
-
-    When generating, the current suffix (last N tokens) is searched in the
-    prefix.  If a match is found, the tokens *following* that match are used
-    as draft candidates and verified in a single cached forward pass.
-
-    The sequence is prefilled ONCE with ``use_cache=True``; every subsequent
-    verification / fallback pass forwards only the new tokens with
-    ``past_key_values`` threaded through.  Previously this strategy
-    re-forwarded the entire sequence on every round (O(n²) total work), which
-    made it dramatically slower than plain generation.
-    """
-
-    def __init__(self, engine: "InferenceEngine") -> None:
-        self._engine = engine
-        # How many recent tokens to use as the lookup key (n-gram size).
-        self._ngram_size: int = 6
-        # Max draft tokens to propose from matched prefix.
-        self._max_draft: int = 10
-
-    def _find_match(
-        self, seq: list[int], min_match: int = 4,
-    ) -> tuple[int, int] | None:
-        """Find the longest suffix match of *seq* in its own prefix.
-
-        ``seq`` is a CPU-side mirror of the generated ids (kept incrementally
-        so no GPU->CPU sync is needed per lookup round).
-
-        Returns ``(match_end, num_draft)`` or ``None``.
-        """
-        n = len(seq)
-        if n < min_match + 1:
-            return None
-        suffix = seq[-min_match:]
-        # Search backwards from the end-1 position for the longest match
-        for start in range(n - min_match - 1, 0, -1):
-            if seq[start:start + min_match] == suffix:
-                # How many continuation tokens can we take?
-                match_end = start + min_match
-                available = n - match_end
-                if available > 0:
-                    return match_end, min(available, self._max_draft)
-        return None
-
-    def _accept_drafts(
-        self,
-        prev_logits: torch.Tensor,
-        verify_logits: torch.Tensor,
-        draft_ids: torch.Tensor,
-        temperature: float,
-    ) -> int:
-        """Number of leading draft tokens accepted.
-
-        Textbook assisted-generation alignment: a causal LM's logits row at
-        absolute position ``p`` predicts the token at position ``p + 1``.
-        Draft token ``i`` occupies absolute position ``prefix_len + i``, so
-        the model's opinion of it lives one row *earlier*: draft 0 is scored
-        against ``prev_logits`` (the pending prediction that was available
-        before the verify pass), and draft ``i >= 1`` against verify-pass
-        row ``i - 1``.
-
-        Greedy mode is fully batched (one GPU->CPU sync for all k positions);
-        sampled mode keeps a per-position draw order of one ``torch.rand`` +
-        ``multinomial``-free comparison per position.
-        """
-        k = draft_ids.shape[1]
-        # Candidate predictions for positions prefix_len .. prefix_len+k-1:
-        # the pending row followed by verify rows 0..k-2.  Only the first k
-        # rows are consumed.
-        predicted = torch.cat(
-            [prev_logits.unsqueeze(1), verify_logits], dim=1,
-        )[0][:k]
-        accepted = 0
-        if temperature == 0:
-            predicted = predicted.argmax(dim=-1)  # [k]
-            matches = (predicted == draft_ids[0]).tolist()  # one sync
-            for ok in matches:
-                if not ok:
-                    break
-                accepted += 1
-            return accepted
-
-        for i in range(k):
-            probs = torch.softmax(predicted[i : i + 1] / temperature, dim=-1)
-            p = probs[0, draft_ids[0, i]].item()
-            if torch.rand(1).item() >= p:
-                break
-            accepted += 1
-        return accepted
-
-    def _generate_tokens(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        engine = self._engine
-        model = engine.local_partitioner.full_model
-        input_ids = engine.tokenizer.encode(prompt, return_tensors="pt")
-        device = next(model.parameters()).device
-        input_ids = input_ids.to(device)
-        prompt_len = input_ids.shape[1]
-        target_len = prompt_len + max_new_tokens
-
-        # CPU mirror of the generated ids.  Maintained incrementally instead
-        # of calling .tolist() on the device tensor every round (a full
-        # GPU->CPU sync per lookup round in the old implementation).
-        gen_cpu: list[int] = input_ids[0].tolist()
-
-        with torch.no_grad():
-            # Prefill once; thread past_key_values through every later pass.
-            outputs = model(input_ids, use_cache=True)
-            past = getattr(outputs, "past_key_values", None)
-            # Invariant: pending_logits holds the logits at absolute position
-            # cache_len - 1, i.e. the prediction for whatever token comes next.
-            pending_logits = outputs.logits[:, -1, :]
-
-            while len(gen_cpu) < target_len:
-                # Tokens appended to gen_cpu THIS round; every one of them
-                # must be yielded so streamed/collected text matches the
-                # true token sequence (multi-token accept rounds included).
-                new_tokens: list[int] = []
-
-                # 1. Find a matching n-gram suffix in the prefix
-                match = self._find_match(gen_cpu, min_match=4)
-                draft_list: list[int] | None = None
-                if match is not None:
-                    match_end, num_draft = match
-                    draft_list = gen_cpu[match_end:match_end + num_draft]
-
-                if draft_list:
-                    # 2. Verify draft tokens with a single cached forward
-                    # pass over just the drafts.  Row i of the verify logits
-                    # covers absolute position prefix_len + i and PREDICTS
-                    # the token at prefix_len + i + 1 — so the opinion on
-                    # draft i comes from one row earlier (see
-                    # _accept_drafts), with draft 0 scored against the
-                    # pre-verify pending prediction.
-                    draft_ids = torch.tensor(
-                        [draft_list], dtype=torch.long, device=device,
-                    )
-                    v_out = model(
-                        draft_ids, use_cache=True, past_key_values=past,
-                    )
-                    verify_logits = v_out.logits
-                    prefix_len = len(gen_cpu)
-
-                    accepted = self._accept_drafts(
-                        pending_logits, verify_logits, draft_ids, temperature,
-                    )
-                    # Respect the caller's token budget: drafts verified
-                    # beyond the remaining allowance are treated as rejected
-                    # (the crop below discards their KV entries), so the
-                    # strategy never emits more than max_new_tokens.
-                    accepted = min(accepted, target_len - prefix_len)
-
-                    past = getattr(v_out, "past_key_values", None)
-                    if accepted == len(draft_list):
-                        # All drafts verified: keep the appended KV entries.
-                        gen_cpu.extend(draft_list)
-                        new_tokens.extend(draft_list)
-                        pending_logits = verify_logits[:, -1, :]
-                    else:
-                        # Drop rejected tail's KV entries; keep accepted ones.
-                        # ``accepted`` counts drafts whose prediction (one
-                        # row earlier) matched, so the cache must retain
-                        # exactly prefix_len + accepted entries and the
-                        # correction row for the NEXT token is verify row
-                        # accepted - 1 (it predicts position
-                        # prefix_len + accepted).
-                        if past is not None and hasattr(past, "crop"):
-                            past.crop(prefix_len + accepted)
-                        gen_cpu.extend(draft_list[:accepted])
-                        new_tokens.extend(draft_list[:accepted])
-                        if len(gen_cpu) < target_len:
-                            # Budget remains for the replacement token.
-                            if accepted > 0:
-                                correction = verify_logits[:, accepted - 1, :]
-                            else:
-                                # Nothing accepted: prediction for position
-                                # prefix_len still lives in the previous
-                                # state's last-row logits.
-                                correction = pending_logits
-                            next_token = engine._token_gen.sample(
-                                correction, temperature=temperature,
-                                top_p=top_p, top_k=top_k,
-                            )[0]
-                            if next_token.dim() == 0:
-                                next_token = next_token.unsqueeze(0)
-                            if next_token.dim() == 1:
-                                next_token = next_token.unsqueeze(-1)
-                            tok_id = int(next_token.item())
-                            gen_cpu.append(tok_id)
-                            new_tokens.append(tok_id)
-                            # Append the correction token to the KV cache.
-                            c_out = model(
-                                next_token, use_cache=True,
-                                past_key_values=past,
-                            )
-                            past = getattr(c_out, "past_key_values", None)
-                            pending_logits = c_out.logits[:, -1, :]
-                else:
-                    # 3. No draft match — standard single-token cached step.
-                    next_token = engine._token_gen.sample(
-                        pending_logits, temperature=temperature, top_p=top_p,
-                        top_k=top_k,
-                    )[0]
-                    if next_token.dim() == 0:
-                        next_token = next_token.unsqueeze(0)
-                    if next_token.dim() == 1:
-                        next_token = next_token.unsqueeze(-1)
-                    tok_id = int(next_token.item())
-                    gen_cpu.append(tok_id)
-                    new_tokens.append(tok_id)
-                    s_out = model(
-                        next_token, use_cache=True, past_key_values=past,
-                    )
-                    past = getattr(s_out, "past_key_values", None)
-                    pending_logits = s_out.logits[:, -1, :]
-
-                for tok_id in new_tokens:
-                    yield engine.tokenizer.decode(
-                        [tok_id], skip_special_tokens=True,
-                    )
-                    if tok_id == engine.tokenizer.eos_token_id:
-                        return
-
-    def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        """Return the joined generation string (non-streaming contract).
-
-        The per-token loop lives in ``_generate_tokens`` (a generator); this
-        method collects it into a single string so the strategy honors the
-        ``GenerationStrategy.generate -> str`` protocol (F-007 surfaced this
-        mismatch — generate previously leaked a generator object).
-        """
-        return "".join(
-            self._generate_tokens(
-                prompt, max_new_tokens, temperature, top_p, top_k, **kwargs
-            )
-        )
-
-    def generate_stream(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):
-        yield from self._generate_tokens(
-            prompt, max_new_tokens, temperature, top_p, top_k, **kwargs
-        )
-
+# ── M-05: execution strategies ─────────────────────────────────────────
+# The five strategy classes were extracted to distllm/core/strategies/
+# (each with a narrow EngineContext seam so they are testable without a
+# full engine). Imported back here under their original private names so
+# every existing call site and test keeps working unchanged.
+from distllm.core.strategies import (  # noqa: E402
+    _DistributedSpeculativeStrategy,
+    _DistributedStrategy,
+    _LocalStrategy,
+    _PromptLookupStrategy,
+    _SpeculativeStrategy,
+)
 
 class InferenceEngine:
     """Handles text generation (local and distributed).
@@ -659,6 +111,12 @@ class InferenceEngine:
     ):
         self.model_name = model_name
         self.dtype = dtype
+        # O-02: never forward an ambiguous None to from_pretrained — HF
+        # treats a repo as trusted when None is allowed to leak through the
+        # deep loader's own defaulting. Explicit caller value wins; else
+        # DISTLLM_TRUST_REMOTE_CODE=1 opts in; else False (fail closed).
+        if trust_remote_code is None:
+            trust_remote_code = os.environ.get("DISTLLM_TRUST_REMOTE_CODE") == "1"
         self.trust_remote_code = trust_remote_code
         self.model_revision = model_revision
         self.tokenizer = tokenizer
@@ -903,11 +361,46 @@ class InferenceEngine:
                     break
                 step_input = generated[:, pos - 1:pos]
 
-    def _select_strategy(self) -> GenerationStrategy:
-        """Select the generation strategy based on current engine configuration."""
-        # Prompt-lookup speculative decoding: enabled by default for
-        # local models.  Provides 1.5-2x speedup on input-grounded tasks
-        # (code completion, chat continuation) with zero draft-model cost.
+    def _select_strategy(self, spec_method: str | None = None) -> GenerationStrategy:
+        """Select the generation strategy based on current engine configuration.
+
+        Args:
+            spec_method: Per-request override for the speculative decoder
+                (``"greedy"``, ``"ngram"``, ``"medusa"``, ``"tree"``,
+                ``"multi_draft"``).  ``None`` means use the cluster default
+                — the engine picks the best strategy automatically based on
+                the model and draft-model configuration.
+        """
+        # Per-request override: map method names to strategy instances.
+        # Unknown / unsupported values fall through to the cluster default
+        # so a typo doesn't break generation — we log the override but pick
+        # the closest available strategy.
+        if spec_method:
+            spec_method_lower = spec_method.strip().lower()
+            if spec_method_lower == "greedy":
+                # Greedy = no speculation at all; the local-partitioner path
+                # uses prompt-lookup by default but "greedy" means no
+                # speculation.  Route through the distributed path which
+                # does one token per forward.
+                logger.debug(
+                    f"spec_method=greedy: bypassing speculative decoding"
+                )
+                return self._distributed_strategy
+            if spec_method_lower == "ngram":
+                # Prompt-lookup = n-gram speculation against the prefix.
+                return self._prompt_lookup_strategy
+            if spec_method_lower in ("medusa", "multi_draft"):
+                return self._distributed_spec_strategy
+            if spec_method_lower == "tree":
+                # Tree drafting is a refinement of single-draft speculation.
+                # We treat it as the standard speculative strategy.
+                return self._speculative_strategy
+            logger.warning(
+                f"Unknown spec_method='{spec_method}'; using cluster default"
+            )
+
+        # Cluster default: prompt-lookup for local, then draft+target spec,
+        # then remote-draft, then plain distributed.
         if self.local_partitioner is not None:
             return self._prompt_lookup_strategy
         if self._draft_model_fn is not None and self._pipeline is not None:
@@ -929,8 +422,22 @@ class InferenceEngine:
         logit_bias: dict[int, float] | None = None,
         stop_tokens: list[int] | None = None,
         constraint: Any | None = None,
+        spec_method: str | None = None,
     ) -> str:
-        strategy = self._select_strategy()
+        """Generate text.
+
+        ``spec_method`` is a per-request hint that overrides the cluster's
+        default speculative-decoder selection.  Supported values:
+
+            - ``"greedy"``: no speculation; one token per forward pass.
+            - ``"ngram"``: prompt-lookup n-gram matching against the prefix.
+            - ``"medusa"``: multi-draft via the Medusa heads.
+            - ``"tree"``: tree-structured speculative decoding.
+            - ``"multi_draft"``: multi-draft verifier path.
+
+        Unknown values log a warning and fall back to the cluster default.
+        """
+        strategy = self._select_strategy(spec_method=spec_method)
         return strategy.generate(
             prompt, max_new_tokens, temperature, top_p, top_k,
             request_id=request_id,
@@ -954,22 +461,13 @@ class InferenceEngine:
         logit_bias: dict[int, float] | None = None,
         stop_tokens: list[int] | None = None,
         constraint: Any | None = None,
+        spec_method: str | None = None,
     ) -> Generator[str, None, None]:
         """Generate text by yielding one token at a time.
 
-        Token-by-token streaming interface.  Each ``yield`` produces a
-        decoded token string.  Callers can start processing or forwarding
-        tokens before generation completes.
-
-        For the distributed pipeline strategy, the next pipeline forward
-        pass is submitted in a background thread while the caller
-        processes the current token, overlapping network/compute latency
-        with token decoding.
-
-        Yields:
-            Decoded token strings, one per step.
+        ``spec_method`` is the same per-request override as ``generate()``.
         """
-        strategy = self._select_strategy()
+        strategy = self._select_strategy(spec_method=spec_method)
         yield from strategy.generate_stream(
             prompt, max_new_tokens, temperature, top_p, top_k,
             request_id=request_id,
@@ -980,7 +478,10 @@ class InferenceEngine:
             constraint=constraint,
         )
 
-    def _generate_speculative(self, prompt, max_new_tokens, temperature, top_p, top_k) -> str:
+    def _generate_speculative(
+        self, prompt, max_new_tokens, temperature, top_p, top_k,
+        request_id: str | None = None,
+    ) -> str:
         """Generate using speculative decoding: draft model on coordinator,
         verification on distributed pipeline."""
         from distllm.core.speculative_decoder import (
@@ -990,10 +491,16 @@ class InferenceEngine:
 
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
 
+        # Bug H-05 fix: use the caller's request_id (falling back to a
+        # unique id per generation rather than the shared "spec") so
+        # concurrent requests stop colliding on pipeline caching,
+        # checkpointing, and tracing.
+        rid = request_id or f"spec-{uuid.uuid4().hex[:12]}"
+
         def target_fn(tokens, **kwargs):
             return self._pipeline.run_pipeline(
                 tokens, self._pipeline.create_node_kv_caches(),
-                request_id=kwargs.get("request_id", "spec"),
+                request_id=kwargs.get("request_id", rid),
             )
 
         num_candidates = self._spec_num_candidates
@@ -1045,10 +552,14 @@ class InferenceEngine:
 
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
 
+        # Bug H-05 fix: unique per-generation id instead of the shared
+        # "spec", so concurrent requests stop colliding.
+        rid = f"spec-{uuid.uuid4().hex[:12]}"
+
         def target_fn(tokens, **kwargs):
             return self._pipeline.run_pipeline(
                 tokens, self._pipeline.create_node_kv_caches(),
-                request_id=kwargs.get("request_id", "spec"),
+                request_id=kwargs.get("request_id", rid),
             )
 
         # Fleet routing: use multiple draft endpoints
@@ -1200,16 +711,28 @@ class InferenceEngine:
                         raise
 
                 # Save checkpoint for graceful degradation on node failure
-                # Only checkpoint every 10 tokens to avoid memory leak
+                # Only checkpoint every 10 tokens to avoid memory leak.
+                #
+                # Bug H-01 fix: the checkpoint previously looped over
+                # `_node_order` and serialized the FULL cluster KV cache on
+                # every iteration — the same cache N times (8 nodes × 205
+                # steps = 1,640 full serializations per 2,048-token request,
+                # a 10-100x latency multiplier). The recovery manager already
+                # accepts a `node_id` field per checkpoint; the full cache is
+                # saved ONCE with the node list recorded, so per-node state
+                # remains reconstructible without N-fold duplication.
                 if self._recovery_manager is not None and step % 10 == 0:
-                    for nid in self._node_order:
-                        self._recovery_manager.save_checkpoint(
-                            request_id=gen_id,
-                            kv_cache=node_kv_caches,
-                            prompt_tokens=input_ids.flatten().tolist(),
-                            generated_tokens=generated_ids[0].tolist(),
-                            node_id=nid,
-                        )
+                    self._recovery_manager.save_checkpoint(
+                        request_id=gen_id,
+                        kv_cache=node_kv_caches,
+                        prompt_tokens=input_ids.flatten().tolist(),
+                        # Bug IE-B5 (audit R1): previously serialized the
+                        # entire pre-allocated padded buffer here, reporting
+                        # ~2,000 zero-pad ints as generated tokens. Emit only
+                        # the tokens actually produced so far.
+                        generated_tokens=generated_ids[0, :pos].tolist(),
+                        node_id=",".join(self._node_order),
+                    )
 
                 straggler_check_counter += 1
                 if straggler_check_counter >= 10 and self._straggler_detector:

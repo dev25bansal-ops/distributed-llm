@@ -18,6 +18,7 @@ from distllm.dist import node_pb2
 from distllm.dist import node_pb2_grpc
 from distllm.dist.node_client import compute_weights_hmac
 from distllm.core.kv_cache import KVCache
+from distllm.errors import ConfigError
 from distllm.security.e2e import E2EEncryption, decrypt_tensor_payload, encrypt_tensor_payload
 
 
@@ -488,10 +489,37 @@ class NodeServer:
     MAX_HIDDEN_DIM = 16384  # Sanity cap on hidden state dimensions
     MAX_BATCH_SIZE = 1024   # Sanity cap on batch dimension
 
-    def start(self, use_tls: bool = False,
+    def start(self, use_tls: bool | None = None,
               cert_file: str | None = None,
               key_file: str | None = None,
               ca_cert: str | None = None) -> None:
+        """Start the gRPC server.
+
+        TLS is opt-in:
+          * If ``use_tls=True`` is passed explicitly, TLS is enabled.
+          * Otherwise, the ``DISTLLM_TLS_ENABLED`` environment variable is
+            consulted (``1``, ``true``, ``yes``, ``on`` enable TLS).
+          * Otherwise TLS is disabled (the existing insecure default).
+
+        When TLS is requested, ``cert_file`` and ``key_file`` must point to
+        PEM-encoded material on disk; ``ca_cert`` is optional and used for
+        mTLS client verification.  Requesting TLS without cert material is
+        a hard error (fail closed) — the server refuses to start rather
+        than downgrade to plaintext.  The no-TLS default is retained for
+        cluster deployments that terminate TLS at a load balancer or rely
+        on the cluster key; operators on untrusted networks flip
+        ``DISTLLM_TLS_ENABLED=1``.
+        """
+        import os
+
+        if use_tls is None:
+            # Read at call time so test fixtures and operator overrides
+            # both see the current value.  Falsy values are not errors —
+            # we treat anything truthy that isn't the literal "0"/"false"
+            # set as "off" (fail-closed).
+            env_val = os.environ.get("DISTLLM_TLS_ENABLED", "").strip().lower()
+            use_tls = env_val in ("1", "true", "yes", "on")
+
         self._server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=self._max_workers),
             options=[
@@ -528,7 +556,23 @@ class NodeServer:
                 key = f.read()
             creds = grpc.ssl_server_credentials([(key, cert)])
             self._server.add_secure_port(f'0.0.0.0:{self._port}', creds)
+            logger.info(
+                f"Node {self._worker.node_id}: gRPC server started with TLS "
+                f"on port {self._port} (cert={cert_file})"
+            )
         else:
+            if use_tls:
+                # O-04: TLS was explicitly requested (flag or env var) but
+                # cert/key are missing.  Silently downgrading to insecure
+                # gRPC would defeat the operator's explicit request — an
+                # attacker who can strip the cert files gets plaintext.
+                # Fail closed instead.
+                raise ConfigError(
+                    f"Node {self._worker.node_id}: TLS requested but "
+                    f"cert_file/key_file not provided — refusing to start "
+                    f"INSECURE gRPC on port {self._port}. Provide "
+                    f"cert_file/key_file or unset DISTLLM_TLS_ENABLED."
+                )
             self._server.add_insecure_port(f'0.0.0.0:{self._port}')
 
         # SECURITY: a keyless node servicer rejects every RPC (fail closed).
