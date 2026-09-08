@@ -20,7 +20,14 @@ class ModelEntry:
         self.total_layers = total_layers
 
 class ModelRegistry:
-    def __init__(self, max_models=4):
+    """Catalog of hot-swappable models.
+
+    ``max_models`` caps how many entries the registry itself retains — the
+    oldest entry (dict insertion order) is evicted once the cap is reached.
+    ``None`` disables the cap so every registered model stays catalogued.
+    """
+
+    def __init__(self, max_models: int | None = 4):
         self._models = {}
         self.default_model = None
         self.max_models = max_models
@@ -28,7 +35,11 @@ class ModelRegistry:
     def register(self, name, path, total_layers):
         # Refresh-in-place if re-registered; otherwise evict the OLDEST
         # entry (dict insertion order) once the registry is at capacity.
-        if name not in self._models and len(self._models) >= self.max_models:
+        if (
+            self.max_models is not None
+            and name not in self._models
+            and len(self._models) >= self.max_models
+        ):
             oldest = next(iter(self._models))
             del self._models[oldest]
         self._models[name] = ModelEntry(name, path, total_layers)
@@ -134,7 +145,13 @@ class ModelHotSwapManager:
         on_unload_model: Callable | None = None,
         enable_layer_sharing: bool = True,
     ):
-        self.registry = model_registry or ModelRegistry(max_models=max_models)
+        # The registry is an uncapped catalog: max_models limits how many
+        # models may be LOADED simultaneously (enforced in load_model), not
+        # how many can be registered. Capping the registry at max_models
+        # silently unregistered models on register (e.g. with max_models=1,
+        # registering 'b' evicted 'a' from the catalog, so 'a' could never
+        # be hot-swapped back in) — see register_model's note below.
+        self.registry = model_registry or ModelRegistry(max_models=None)
         self.memory_budget = ModelMemoryBudget(total_gpu_memory_gb=total_gpu_memory_gb)
         # Back-compat aliases (older call sites/tests use the underscore names).
         self._registry = self.registry

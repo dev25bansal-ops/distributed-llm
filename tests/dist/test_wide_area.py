@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import statistics
+import sys
 
 import pytest
 import torch
@@ -163,10 +164,24 @@ class TestWideAreaPipelineConstruction:
         assert pipeline.wan.enabled is True
 
     def test_init_wan_enabled_quic_forced_no_aioquic(self) -> None:
-        """enabled=True + transport='quic' should raise if aioquic missing."""
+        """enabled=True + transport='quic' should raise if aioquic missing.
+
+        aioquic may be installed on this machine, so its absence is
+        simulated by nulling ``sys.modules["aioquic"]`` — an ``import
+        aioquic`` then raises ImportError, which ``is_quic_available``
+        translates to ``False``.
+        """
         config = WideAreaConfig(enabled=True, transport="quic")
-        with pytest.raises(RuntimeError, match="QUIC transport requested"):
-            WideAreaPipeline(wan_config=config)
+        previously_imported = sys.modules.get("aioquic")
+        sys.modules["aioquic"] = None
+        try:
+            with pytest.raises(RuntimeError, match="QUIC transport requested"):
+                WideAreaPipeline(wan_config=config)
+        finally:
+            if previously_imported is not None:
+                sys.modules["aioquic"] = previously_imported
+            else:
+                sys.modules.pop("aioquic", None)
 
     def test_multiple_instances_independent(self) -> None:
         p1 = WideAreaPipeline()
@@ -552,22 +567,30 @@ class TestWideAreaPipelineAutoDiscovery:
 class TestWideAreaPipelineErrorPaths:
     """Methods that fail due to missing setup (test error type and message)."""
 
-    def test_run_async_p2p_missing_topology_lock(self) -> None:
-        """run_pipeline_async_p2p accesses self._topology_lock which does not
-        exist on the parent PipelineOrchestrator, raising AttributeError."""
+    def test_run_async_p2p_no_nodes_raises(self) -> None:
+        """run_pipeline_async_p2p on a bare pipeline (no nodes registered)
+        fails with a clear RuntimeError instead of proceeding.
+
+        The historical bug this test tracked — ``_topology_lock`` missing,
+        causing AttributeError — is fixed: WideAreaPipeline now owns the
+        lock, and the async path fails cleanly on the empty topology.
+        """
         pipeline = WideAreaPipeline()
+        # The topology lock the async path depends on now exists.
+        assert hasattr(pipeline, "_topology_lock")  # noqa: SLF001
         input_ids = torch.tensor([[1, 2, 3]])
-        with pytest.raises(AttributeError):
+        with pytest.raises(RuntimeError, match="No nodes registered in WAN pipeline"):
             asyncio.run(
                 pipeline.run_pipeline_async_p2p(input_ids, {}, "test-fail")
             )
 
-    def test_run_accumulated_missing_topology_lock(self) -> None:
-        """run_pipeline_accumulated calls run_pipeline_async_p2p which also
-        fails on missing _topology_lock."""
+    def test_run_accumulated_no_nodes_raises(self) -> None:
+        """run_pipeline_accumulated without token accumulation delegates to
+        run_pipeline_async_p2p and likewise fails cleanly on an empty
+        topology (no nodes registered)."""
         pipeline = WideAreaPipeline()
         input_ids = torch.tensor([[1, 2, 3]])
-        with pytest.raises(AttributeError):
+        with pytest.raises(RuntimeError, match="No nodes registered in WAN pipeline"):
             asyncio.run(
                 pipeline.run_pipeline_accumulated(input_ids, {}, "test-fail")
             )

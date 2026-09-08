@@ -426,9 +426,17 @@ class TestFederationPartition:
     """Network partition keeps both sides consistent and reconciles on heal."""
 
     def test_partition_detected_by_split_brain(self):
+        """A peer going unreachable costs the federation quorum and is detected.
+
+        Quorum counts alive peers *including this cluster itself* (the
+        ``_has_quorum_locked`` helper).  With a 3-cluster federation
+        (self + cB + cC) configured to require all 3, losing cC drops the
+        alive total to 2/3 — below quorum — so the partition is declared
+        and cC is named as the partitioned peer.
+        """
         detector = SplitBrainDetector(
             "cA", peer_cluster_ids=["cB", "cC"],
-            quorum_size=2, heartbeat_timeout_s=1, failure_threshold=1,
+            quorum_size=3, heartbeat_timeout_s=1, failure_threshold=1,
         )
         detector.heartbeat("cB")
         detector.record_failure("cC")  # cC unreachable
@@ -438,6 +446,14 @@ class TestFederationPartition:
         token = detector.increment_fence_token()
         assert detector.should_accept_request(token) is True
         assert detector.should_accept_request(token - 1) is False
+        # While quorum is held (self + both peers alive) no partition is declared.
+        healed = SplitBrainDetector(
+            "cA", peer_cluster_ids=["cB", "cC"],
+            quorum_size=3, heartbeat_timeout_s=1, failure_threshold=1,
+        )
+        healed.heartbeat("cB")
+        healed.heartbeat("cC")
+        assert healed.check_partition() is False
 
     def test_each_side_stays_consistent_via_crdt(self):
         """Two partitioned replicas diverge locally then converge on reconcile."""

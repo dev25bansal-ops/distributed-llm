@@ -1,8 +1,10 @@
 """Regression: F-043 audio pipeline must not get stuck in SPEAKING.
 
-The state machine transitioned to SPEAKING after the first utterance's TTS and
-never returned to LISTENING, so a second utterance was buffered but never
-transcribed/answered.  New speech must re-arm listening from SPEAKING too.
+The state machine once transitioned to SPEAKING after the first utterance's
+TTS and never returned to LISTENING, so a second utterance was buffered but
+never transcribed/answered.  Post-F-043 the pipeline returns to LISTENING
+after TTS (SPEAKING is an explicit opt-in via mark_speaking() for barge-in
+gating), and new speech re-arms listening from any state including SPEAKING.
 """
 
 from __future__ import annotations
@@ -64,20 +66,33 @@ class TestAudioMultipleUtterances:
 
     async def _run(self):
         p, vad = _pipeline()
-        # Utterance 1: speak, then silence -> processed, TTS -> SPEAKING.
+        # Utterance 1: speak, then silence -> processed, TTS answer returned.
         await _clap(p, vad, True)
         assert p.state == PipelineState.LISTENING
         out1 = await _clap(p, vad, False)
         assert out1 == b"\x00\x01audio"
-        assert p.state == PipelineState.SPEAKING, f"expected SPEAKING, got {p.state}"
+        # F-043 fix: after TTS the pipeline returns to LISTENING (not
+        # SPEAKING) so the silence-timeout path re-arms for the next
+        # utterance. Callers that play the audio out loud hold SPEAKING
+        # explicitly via mark_speaking().
+        assert p.state == PipelineState.LISTENING, f"expected LISTENING, got {p.state}"
 
-        # Utterance 2: new speech arrives while SPEAKING.  It must re-arm
-        # LISTENING so the silence-timeout path can fire for a second answer.
-        await _clap(p, vad, True)
-        assert p.state == PipelineState.LISTENING, f"must resume listening, got {p.state}"
-        out2 = await _clap(p, vad, False)
-        assert out2 == b"\x00\x01audio", "second utterance must be processed"
+        # Utterance 2: must still be processed and answered — this is the
+        # F-043 regression the test guards (pipeline used to get stuck after
+        # the first utterance and never answer a second one).
+        out2 = await _clap(p, vad, True)
+        assert out2 is None  # speech frames are buffered, no answer yet
+        assert p.state == PipelineState.LISTENING
+        out3 = await _clap(p, vad, False)
+        assert out3 == b"\x00\x01audio", "second utterance must be processed"
+        assert p.state == PipelineState.LISTENING
+
+        # Barge-in gate: while TTS playback is held in SPEAKING, new speech
+        # must re-arm LISTENING (the original stuck-in-SPEAKING bug).
+        p.mark_speaking()
         assert p.state == PipelineState.SPEAKING
+        await _clap(p, vad, True)
+        assert p.state == PipelineState.LISTENING, "must resume listening, got {p.state}"
 
     def test_speech_during_speaking_transitions_to_listening(self):
         import asyncio

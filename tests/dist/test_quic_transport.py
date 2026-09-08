@@ -3,6 +3,7 @@
 import importlib.util
 import os
 import struct
+import sys
 from typing import Any
 
 import pytest
@@ -87,9 +88,27 @@ class TestIsQuicAvailable:
     def setup_class(cls):
         cls.mod = _get_module()
 
-    def test_quic_not_available_by_default(self):
+    def test_quic_not_available_by_default(self, monkeypatch):
+        """is_quic_available() is False when aioquic cannot be imported.
+
+        aioquic may be installed on this machine, so its absence is
+        simulated by nulling ``sys.modules["aioquic"]`` — an
+        ``import aioquic`` then raises ImportError and the probe
+        reports False.
+        """
+        monkeypatch.setitem(sys.modules, "aioquic", None)
         result = self.mod.is_quic_available()
         assert result is False
+
+    def test_quic_available_when_installed(self, monkeypatch):
+        """is_quic_available() is True when aioquic imports cleanly.
+
+        A stub module is registered under sys.modules so the probe
+        succeeds deterministically regardless of the machine.
+        """
+        monkeypatch.setitem(sys.modules, "aioquic", object())
+        result = self.mod.is_quic_available()
+        assert result is True
 
 
 class TestQuicStreamHandler:

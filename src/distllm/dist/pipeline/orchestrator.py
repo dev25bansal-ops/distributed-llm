@@ -95,6 +95,12 @@ class PipelineOrchestrator:
         pipeline_timeout: Timeout for the full pipeline pass in seconds.
         redundancy: Number of redundant copies per layer (for fault tolerance).
         default_micro_batch_size: Default batch size for micro-batched execution.
+        cluster_key: Optional shared cluster auth secret.  Stamped onto
+            every ForwardPass request so workers running fail-closed auth
+            (``NodeServicer._check_auth``) accept our RPCs.  Resolution:
+            explicit argument > ``DISTLLM_CLUSTER_KEY`` env var > ``None``.
+            ``None`` keeps insecure deployments working (requests carry an
+            empty key; workers without a configured key accept them).
         on_partial_failure: What to do when some (not all) micro-batches
             fail in the micro-batched path.  ``"raise"`` (default) raises
             :class:`PipelineError` naming the failed sequences;
@@ -117,6 +123,7 @@ class PipelineOrchestrator:
         ca_cert: str | None = None,
         total_layers: int = 0,
         on_partial_failure: str = "raise",
+        cluster_key: str | None = None,
     ):
         if on_partial_failure not in self._PARTIAL_FAILURE_POLICIES:
             raise ValueError(
@@ -128,6 +135,11 @@ class PipelineOrchestrator:
         self._redundancy = redundancy
         self._default_micro_batch_size = default_micro_batch_size
         self._max_inflight = max_inflight_micro_batches
+        # Shared cluster auth secret — explicit arg > DISTLLM_CLUSTER_KEY
+        # env var > None.  None is valid (insecure deployments); every
+        # dial-through forward call then sends an empty ``cluster_key``
+        # protobuf field, which unauthenticated workers accept.
+        self._cluster_key = cluster_key or os.environ.get("DISTLLM_CLUSTER_KEY") or None
         # Encrypt pipeline-parallel gRPC (activations/KV carry prompt content).
         # Enable via DISTLLM_PIPELINE_TLS=1 and point DISTLLM_TLS_CA_CERT(_FILE)
         # at the cluster CA.
@@ -322,6 +334,7 @@ class PipelineOrchestrator:
                         hidden_states=current_tensor,
                         kv_cache=kv_cache,
                         request_id=request_id,
+                        cluster_key=self._cluster_key,
                         use_tls=self._use_tls,
                         ca_cert=self._ca_cert,
                     )
@@ -580,6 +593,7 @@ class PipelineOrchestrator:
                         hidden_states=input_tensor,
                         kv_cache=kv_cache,
                         request_id=f"{request_id}-s{stage_idx}b{batch_idx}",
+                        cluster_key=self._cluster_key,
                         use_tls=self._use_tls,
                         ca_cert=self._ca_cert,
                     )
@@ -790,6 +804,20 @@ class PipelineOrchestrator:
     @wan.setter
     def wan(self, value: WideAreaConfig) -> None:
         self._wan = value
+
+    @property
+    def cluster_key(self) -> str | None:
+        """Shared cluster auth secret forwarded on every pipeline RPC.
+
+        ``None`` when unset (insecure deployments send a keyless request
+        that unauthenticated workers accept).
+        """
+        return self._cluster_key
+
+    @cluster_key.setter
+    def cluster_key(self, value: str | None) -> None:
+        """Post-construction wiring (ClusterManager/coordinator push)."""
+        self._cluster_key = value or None
 
     def shutdown(self) -> None:
         """Shutdown the pipeline orchestrator."""

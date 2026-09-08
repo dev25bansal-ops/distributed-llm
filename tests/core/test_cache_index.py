@@ -3,7 +3,14 @@
 import threading
 
 import pytest
-from distllm.core.cache_index import CacheIndex
+
+# The prefix-hash -> node-set index contract (store/lookup/lookup_all/
+# remove-by-node/stats) lives in distllm.dist.cache.CacheIndex — the same
+# class production CacheManager imports.  distllm.core.cache_index.CacheIndex
+# subclasses it but overrides lookup/remove for its gossip entry-store
+# (key -> CacheIndexEntry); that contract is pinned by
+# tests/integration/test_kv_cache_gossip.py.
+from distllm.dist.cache import CacheIndex
 
 
 class TestCacheIndex:

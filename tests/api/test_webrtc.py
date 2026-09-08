@@ -94,14 +94,21 @@ class TestOffer:
     ENDPOINT = "/v1/webrtc/offer"
 
     def test_offer_webrtc_not_available(
-        self, client: TestClient, auth_header: dict[str, str]
+        self, client: TestClient, auth_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Return 503 when ``aiortc`` is not installed.
+        """Return 503 when ``aiortc`` is not available.
 
         The ``distllm.dist.webrtc`` module sets ``HAS_WEBRTC = False`` at
-        import time when ``aiortc`` cannot be imported.  The route checks
-        this flag and returns 503.
+        import time when ``aiortc`` cannot be imported.  The route imports
+        and checks this flag per request, returning 503 when it is off.
+
+        ``aiortc`` may or may not be installed on the test machine, so the
+        flag is forced off with monkeypatch — pinning the exact 503 guard
+        the route must enforce regardless of the local environment.
         """
+        import distllm.dist.webrtc as dist_webrtc
+
+        monkeypatch.setattr(dist_webrtc, "HAS_WEBRTC", False)
         resp = client.post(
             self.ENDPOINT,
             json={

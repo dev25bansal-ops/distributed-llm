@@ -157,11 +157,19 @@ class TestTransportInit:
         t.destroy()
 
     @patch("distllm.dist.nccl.NcclTransport")
-    def test_auto_nccl_present_but_not_initialized(self, mock_nccl_cls):
+    @patch("distllm.dist.quic_transport.is_quic_available")
+    def test_auto_nccl_present_but_not_initialized(
+        self,
+        mock_quic_avail,
+        mock_nccl_cls,
+    ):
         """AUTO: NCCL is constructed but not initialized, falls through."""
         mock_instance = MagicMock()
         mock_instance.is_initialized = False
         mock_nccl_cls.return_value = mock_instance
+        # QUIC unavailable (aioquic absent) so the fallback is deterministic
+        # even on machines where aioquic is installed.
+        mock_quic_avail.return_value = False
 
         t = TensorTransport(backend=TransportBackend.AUTO)
         # NCCL was created but not initialized, QUIC not available, so GRPC

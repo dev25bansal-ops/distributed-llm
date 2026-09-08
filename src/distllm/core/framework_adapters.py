@@ -178,9 +178,17 @@ def get_haystack_generator(
     Requires: pip install haystack-ai
     """
     from haystack.components.generators import OpenAIGenerator
+    from haystack.utils.auth import Secret
 
     resolved_base = _resolve_base_url(base_url)
     resolved_key = _resolve_api_key(api_key)
+
+    # Haystack 2.x requires a ``Secret`` for ``api_key``; a plain string
+    # raises ``AttributeError: 'str' object has no attribute 'resolve_value'``
+    # inside ``OpenAIGenerator.__init__``.  Wrap string keys in a token
+    # secret; already-wrapped ``Secret`` values pass through untouched.
+    if not isinstance(resolved_key, Secret):
+        resolved_key = Secret.from_token(resolved_key)
 
     return OpenAIGenerator(
         api_base_url=f"{resolved_base.rstrip('/')}/v1",

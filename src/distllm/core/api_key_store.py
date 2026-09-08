@@ -445,7 +445,15 @@ class ApiKeyStore:
     def list_keys(self) -> list[dict[str, Any]]:
         """Return metadata for all stored keys (excluding the key value itself)."""
         return [
-            {"key_id": k.key_id, "role": k.role, "label": k.label}
+            {
+                "key_id": k.key_id,
+                "role": k.role,
+                "label": k.label,
+                # Real creation timestamp — must be exposed so the /v1/api-keys
+                # list route can show genuine created_at values instead of a
+                # fabricated epoch-0 fallback. Metadata only: never key material.
+                "created_at": k.created_at,
+            }
             for k in self._keys
         ]
 

@@ -435,7 +435,6 @@ class TestQuotaMountConformance:
     def test_quota_in_stack_and_inner_of_auth(self):
         if not _quota_gate_on():
             pytest.skip("DISTLLM_QUOTA_ENABLED != 1 at import time")
-        from distllm.api.middleware import AuthMiddleware
         from distllm.api.server import app
 
         classes = [mw.cls for mw in app.user_middleware]
@@ -445,7 +444,25 @@ class TestQuotaMountConformance:
         )
         # Lower user_middleware index = outer = runs first.  Auth MUST run
         # before Quota so request.state carries tenant identity.
-        assert classes.index(AuthMiddleware) < classes.index(QuotaMiddleware), (
+        #
+        # Match AuthMiddleware by class NAME, not identity: other tests in
+        # the suite (test_no_full_key_in_logs) importlib.reload() the
+        # middleware module, rebinding AuthMiddleware to a fresh class
+        # object while the live app stack still holds the original.  After
+        # such a reload an identity comparison can never match even though
+        # the mounted stack is exactly correct.
+        auth_idx = [
+            i
+            for i, c in enumerate(classes)
+            if c.__name__ == "AuthMiddleware"
+            and c.__module__ == "distllm.api.middleware"
+        ]
+        assert auth_idx, (
+            "AuthMiddleware from distllm.api.middleware missing from the "
+            "live middleware stack — every request would bypass API-key "
+            "authentication"
+        )
+        assert auth_idx[0] < classes.index(QuotaMiddleware), (
             "QuotaMiddleware is outer of AuthMiddleware — it would see "
             "unset tenant/api-key state and attribute everything to "
             "'anonymous' (ordering regression)"

@@ -51,7 +51,13 @@ except ImportError:
 
 HAS_WEBRTC = False
 try:
-    from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+    from aiortc import (
+        RTCConfiguration,
+        RTCIceCandidate,
+        RTCIceServer,
+        RTCPeerConnection,
+        RTCSessionDescription,
+    )
     from aiortc.contrib.media import MediaPlayer, MediaRelay
 
     HAS_WEBRTC = True
@@ -59,6 +65,8 @@ except ImportError:
     RTCPeerConnection = None
     RTCSessionDescription = None
     RTCIceCandidate = None
+    RTCConfiguration = None
+    RTCIceServer = None
 
 
 class MsgType(IntEnum):
@@ -85,13 +93,35 @@ class WebRTCConfig:
     data_channel_label: str = "distllm-tensor"
     sctp_buffer_size: int = 16 * 1024 * 1024  # 16 MB
 
-    def to_rtc_config(self) -> dict[str, Any]:
-        servers = list(self.ice_servers)
+    def to_rtc_config(self) -> RTCConfiguration:
+        """Build an aiortc ``RTCConfiguration`` from this config.
+
+        ``RTCPeerConnection.__init__()`` takes a single ``configuration``
+        kwarg — an ``RTCConfiguration`` whose ``iceServers`` is a list of
+        ``RTCIceServer`` objects (not dicts, and not top-level kwargs).
+        """
+        servers: list[RTCIceServer] = []
+        for server in self.ice_servers:
+            urls = server.get("urls")
+            if urls is None:
+                continue
+            servers.append(RTCIceServer(
+                urls=urls,
+                username=server.get("username"),
+                credential=server.get("credential"),
+            ))
         for stun_url in self.stun_servers:
-            servers.append({"urls": stun_url})
+            servers.append(RTCIceServer(urls=stun_url))
         for turn_cfg in self.turn_servers:
-            servers.append(turn_cfg)
-        return {"iceServers": servers}
+            urls = turn_cfg.get("urls")
+            if urls is None:
+                continue
+            servers.append(RTCIceServer(
+                urls=urls,
+                username=turn_cfg.get("username"),
+                credential=turn_cfg.get("credential"),
+            ))
+        return RTCConfiguration(iceServers=servers)
 
 
 class WebRTCError(Exception):
@@ -306,7 +336,7 @@ class WebRTCTransport:
             RTCSessionDescription to be sent to the answerer via signaling.
         """
 
-        self._pc = RTCPeerConnection(**self._config.to_rtc_config())
+        self._pc = RTCPeerConnection(configuration=self._config.to_rtc_config())
         self._setup_listeners()
         self._data_channel = self._pc.createDataChannel(
             self._config.data_channel_label,
@@ -329,7 +359,7 @@ class WebRTCTransport:
             RTCSessionDescription answer to send back to the offerer.
         """
 
-        self._pc = RTCPeerConnection(**self._config.to_rtc_config())
+        self._pc = RTCPeerConnection(configuration=self._config.to_rtc_config())
         self._setup_listeners()
 
         @self._pc.on("datachannel")

@@ -89,6 +89,16 @@ class FederationLoadBalancer:
             logger.debug(f"Load report for cluster {cluster_id} is stale")
         return load
 
+    def get_load(self, cluster_id: str) -> RemoteClusterLoad | None:
+        """Router-facing alias of :meth:`get_remote_load`.
+
+        ``FederationCoordinator`` routing (``get_peer_slo_status``,
+        ``select_peer_for_sla``, ``get_best_peer``) consumes load via
+        this method: it returns the current ``RemoteClusterLoad`` for
+        the cluster, or ``None`` when no load has been reported.
+        """
+        return self.get_remote_load(cluster_id)
+
     def get_all_loads(self) -> dict[str, RemoteClusterLoad]:
         for load in self._loads.values():
             load.stale = load.is_stale(self.stale_threshold_s)

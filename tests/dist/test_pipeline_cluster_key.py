@@ -213,7 +213,11 @@ class TestNodeClientStampsKeyOnProto:
         def make_client(*args: object, **kwargs: object) -> MagicMock:
             client = MagicMock()
 
-            def with_call(req: node_pb2.ForwardPassRequest) -> tuple:
+            def with_call(
+                req: node_pb2.ForwardPassRequest,
+                timeout: float | None = None,
+                **kwargs: object,
+            ) -> tuple:
                 captured.append(req)
                 resp = _response_like(torch.randn(2, 8))
                 return resp, None
@@ -244,7 +248,11 @@ class TestNodeClientStampsKeyOnProto:
         def make_client(*args: object, **kwargs: object) -> MagicMock:
             client = MagicMock()
 
-            def with_call(req: node_pb2.ForwardPassRequest) -> tuple:
+            def with_call(
+                req: node_pb2.ForwardPassRequest,
+                timeout: float | None = None,
+                **kwargs: object,
+            ) -> tuple:
                 captured.append(req)
                 return _response_like(torch.randn(2, 8)), None
 
@@ -312,7 +320,11 @@ class TestReceiverAcceptsWiredChain:
         def make_client(*args: object, **kwargs: object) -> MagicMock:
             client = MagicMock()
 
-            def with_call(req: node_pb2.ForwardPassRequest) -> tuple:
+            def with_call(
+                req: node_pb2.ForwardPassRequest,
+                timeout: float | None = None,
+                **kwargs: object,
+            ) -> tuple:
                 captured.append(req)
                 return _response_like(torch.randn(1, 4)), None
 

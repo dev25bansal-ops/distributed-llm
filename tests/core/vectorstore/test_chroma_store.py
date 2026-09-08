@@ -8,6 +8,10 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from tests._import_helper import bootstrap_fake_packages, load_module
 
 bootstrap_fake_packages()
@@ -40,7 +44,20 @@ class TestChromaStoreConstruction:
 
 
 class TestChromaStoreFailClosed:
-    """Without the optional chromadb driver, methods fail closed."""
+    """Without the optional chromadb driver, methods fail closed.
+
+    The driver may or may not be installed on the machine running the tests
+    (it is an optional dependency).  To pin the fail-closed contract
+    deterministically either way, each test blocks the ``chromadb`` import
+    (``sys.modules`` ``None`` entry -> ``ImportError``) via ``monkeypatch``,
+    which auto-restores after the test.  The store must then raise
+    ``RuntimeError`` naming the driver — never attempt a live connection.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _block_chromadb(self, monkeypatch):
+        for mod in ("chromadb", "chromadb.config"):
+            monkeypatch.setitem(sys.modules, mod, None)
 
     def test_upsert_fails_closed(self):
         store = ChromaStore(host="localhost", port=8000)

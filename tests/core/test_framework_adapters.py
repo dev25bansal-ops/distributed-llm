@@ -1,11 +1,15 @@
 """Tests for framework integration adapters using real objects via load_module.
 
-NOTE: Optional dependencies (langchain-openai, llama-index-llms-openai,
-haystack-ai) are not installed in test env.  Adapter functions raise
-``ImportError`` at call time, which we test for.
+NOTE: Optional dependencies langchain-openai and llama-index-llms-openai are
+not installed in the test env — their adapter functions raise ``ImportError``
+at call time, which we test for directly.  haystack-ai IS installed in this
+env, so its missing-dependency path is exercised by blocking the module in
+``sys.modules``; its installed path is pinned by a construction test.
 """
 
 from __future__ import annotations
+
+import sys
 
 import pytest
 
@@ -71,11 +75,28 @@ class TestGetLlamaIndexLLM:
 
 
 class TestGetHaystackGenerator:
-    """get_haystack_generator raises ImportError when haystack missing."""
+    """get_haystack_generator behavior for missing and installed haystack."""
 
     def test_import_error_when_missing(self) -> None:
-        with pytest.raises((ImportError, ModuleNotFoundError)):
-            get_haystack_generator()
+        # Simulate haystack-ai being uninstalled: a None entry in sys.modules
+        # makes any ``import haystack...`` raise ImportError immediately.
+        saved = sys.modules.pop("haystack", None)
+        sys.modules["haystack"] = None
+        try:
+            with pytest.raises((ImportError, ModuleNotFoundError)):
+                get_haystack_generator()
+        finally:
+            del sys.modules["haystack"]
+            if saved is not None:
+                sys.modules["haystack"] = saved
+
+    def test_constructs_generator_when_installed(self) -> None:
+        # haystack-ai is installed in this env; the adapter must build a
+        # working OpenAIGenerator (haystack 2.x requires a Secret api_key).
+        pytest.importorskip("haystack")
+        gen = get_haystack_generator(base_url="http://localhost:8000")
+        assert type(gen).__name__ == "OpenAIGenerator"
+        assert str(gen.client.base_url).rstrip("/") == "http://localhost:8000/v1"
 
 
 class TestListFrameworks:

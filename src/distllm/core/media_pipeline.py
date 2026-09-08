@@ -102,6 +102,14 @@ class SpeechRecognizer:
             logger.info(f"ASR model loaded: {self._model_size} on {self._device}")
         except ImportError:
             logger.warning("faster-whisper not available — ASR disabled")
+        except Exception as e:
+            # Weights unavailable (cold/offline HF cache), unsupported device,
+            # corrupt download, … — degrade to ASR-disabled instead of crashing
+            # the constructor. This module treats media deps as optional
+            # (available=False, transcribe returns ""), and SpeechRecognizer is
+            # constructed by default inside AudioPipeline/MediaStreamRouter, so
+            # a raise here would take down the whole pipeline.
+            logger.warning(f"ASR model load failed ({e}) — ASR disabled")
 
     def transcribe(self, audio: bytes, sample_rate: int = 16000) -> str:
         """Transcribe PCM audio to text."""

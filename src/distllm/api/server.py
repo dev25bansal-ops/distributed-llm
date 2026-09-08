@@ -70,6 +70,7 @@ from distllm.api.routes import (
     batch_router,
     eval_router,
     metrics_history_router,
+    api_keys_router,
 )
 from distllm.api.routes.tools import router as tools_router
 
@@ -1070,6 +1071,10 @@ app.include_router(router_admin_router)
 app.include_router(batch_router)
 app.include_router(eval_router)
 app.include_router(metrics_history_router)
+# API-key management (/v1/api-keys) — must be mounted on the live app; a
+# prior regression left the router defined but never included, so every
+# /v1/api-keys request 404'd on the real server.
+app.include_router(api_keys_router)
 # Cost tracking middleware
 try:
     from distllm.api.cost_middleware import CostTrackingMiddleware

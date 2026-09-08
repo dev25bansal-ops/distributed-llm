@@ -175,23 +175,37 @@ class TestInitAndConfig:
     def test_nodes_property_empty(self, orch: PipelineOrchestrator) -> None:
         assert orch.nodes == {}
 
-    def test_nodes_property_snapshot(self, orch: PipelineOrchestrator) -> None:
-        """Accessing .nodes returns a snapshot, not the live dict."""
+    def test_nodes_property_live_mapping(self, orch: PipelineOrchestrator) -> None:
+        """Accessing .nodes returns the live internal mapping, not a copy.
+
+        The documented contract (see the ``nodes`` property docstring):
+        callers register nodes, inject clients, and flip health flags in
+        place through the mapping; structural changes go through
+        register_node/unregister_node.
+        """
         register_two_nodes(orch)
-        snap = orch.nodes
+        live = orch.nodes
+        # Registrations made after the mapping was grabbed are visible.
         orch.register_node("n2", "h", 1, 32, 47)
-        assert "n2" not in snap
+        assert "n2" in live
+        # It is the same mapping the orchestrator itself reads from.
+        assert orch.nodes["n2"] is live["n2"]
+        # Health flags flipped through the mapping are seen by the orchestrator.
+        live["node-0"].is_healthy = False
+        assert orch.nodes["node-0"].is_healthy is False
 
     def test_nodes_property_keys(self, orch: PipelineOrchestrator) -> None:
+        """Each registered node is keyed by ID as a PipelineNode record."""
         register_two_nodes(orch)
+        assert set(orch.nodes) == {"node-0", "node-1"}
         entry = orch.nodes["node-0"]
-        assert entry == {
-            "host": "10.0.0.1",
-            "port": 50051,
-            "start_layer": 0,
-            "end_layer": 15,
-            "healthy": True,
-        }
+        assert isinstance(entry, PipelineNode)
+        assert entry.node_id == "node-0"
+        assert entry.host == "10.0.0.1"
+        assert entry.port == 50051
+        assert entry.start_layer == 0
+        assert entry.end_layer == 15
+        assert entry.is_healthy is True
 
     def test_node_order_property(self, orch: PipelineOrchestrator) -> None:
         register_two_nodes(orch)

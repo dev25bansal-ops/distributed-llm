@@ -8,6 +8,10 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from tests._import_helper import bootstrap_fake_packages, load_module
 
 bootstrap_fake_packages()
@@ -49,7 +53,21 @@ class TestQdrantStoreConstruction:
 
 
 class TestQdrantStoreFailClosed:
-    """Without the optional qdrant_client driver, methods fail closed."""
+    """Without the optional qdrant_client driver, methods fail closed.
+
+    The driver may or may not be installed on the machine running the tests
+    (it is an optional dependency).  To pin the fail-closed contract
+    deterministically either way, each test blocks the ``qdrant_client``
+    import (``sys.modules`` ``None`` entry -> ``ImportError``) via
+    ``monkeypatch``, which auto-restores after the test.  The store must then
+    raise ``RuntimeError`` naming the driver — never attempt a live
+    connection.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _block_qdrant_client(self, monkeypatch):
+        for mod in ("qdrant_client", "qdrant_client.models", "qdrant_client.http"):
+            monkeypatch.setitem(sys.modules, mod, None)
 
     def test_upsert_fails_closed(self):
         store = QdrantStore(host="localhost", port=6333)

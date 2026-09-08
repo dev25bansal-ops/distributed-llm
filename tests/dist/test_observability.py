@@ -1,7 +1,14 @@
 """Tests for distllm.dist.observability.
 
 Uses only real objects from the module -- zero mocks.
+
+The two provider-backed tests (OTLP endpoint default, kwargs passthrough)
+require a functional OpenTelemetry install; ``distllm.dist.tracing``
+degrades to a no-op (``provider is None``) when the OTLP exporter package
+is missing, so they are skipped rather than asserting the degraded shape.
 """
+
+import pytest
 
 from distllm.dist.observability import enable_dist_observability
 from distllm.observability.exporter import DistLLMPrometheusExporter
@@ -189,6 +196,9 @@ class TestEnableDistObservability:
 
     def test_otlp_endpoint_default(self) -> None:
         """Default OTLP endpoint is localhost:4318."""
+        # Requires a functional OpenTelemetry install: without the OTLP
+        # exporter the Tracer degrades to a no-op with provider=None.
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.trace_exporter")
         result = enable_dist_observability(exporter=None, enable_tracing=True)
         tracer = result["tracer"]
         assert tracer is not None
@@ -199,6 +209,9 @@ class TestEnableDistObservability:
 
     def test_kwargs_passthrough(self) -> None:
         """Extra kwargs are forwarded to the Tracer constructor."""
+        # Requires a functional OpenTelemetry install: resource_attributes
+        # can only be observed on the provider, which is None without it.
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.trace_exporter")
         result = enable_dist_observability(
             exporter=None,
             enable_tracing=True,

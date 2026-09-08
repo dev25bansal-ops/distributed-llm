@@ -71,13 +71,35 @@ class TestSpeechRecognizer:
         assert asr._device == "cpu"
 
     def test_custom_model_size(self) -> None:
+        """Custom model_size/device are stored as configured.
+
+        Model weights may be unavailable (cold HF cache, offline mode, no
+        CUDA device) — construction must still succeed and degrade via
+        ``available`` rather than raise, so the pipeline can run without ASR.
+        """
         asr = SpeechRecognizer(model_size="base", device="cuda")
         assert asr._model_size == "base"
         assert asr._device == "cuda"
+        if not asr.available:  # weights could not be fetched in this env
+            assert asr._model is None
+            assert asr.transcribe(b"\x00" * 1600) == ""
 
-    def test_not_available_without_faster_whisper(self) -> None:
+    def test_not_available_without_faster_whisper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With faster-whisper unavailable, construction must still succeed
+        and report available=False (ASR degrades instead of raising).
+
+        ``sys.modules["faster_whisper"] = None`` makes ``from faster_whisper
+        import WhisperModel`` raise ImportError (import halted), which is
+        exactly the missing-dependency path ``_load()`` must survive.
+        monkeypatch restores the real module afterwards, so a warm cache
+        keeps other tests fast.
+        """
+        import sys
+
+        monkeypatch.setitem(sys.modules, "faster_whisper", None)
         asr = SpeechRecognizer()
         assert asr.available is False
+        assert asr.transcribe(b"\x00" * 1600) == ""
 
     def test_transcribe_empty_when_not_available(self) -> None:
         asr = SpeechRecognizer()

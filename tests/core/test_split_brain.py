@@ -148,6 +148,30 @@ class TestPartitionDetection:
         assert d.is_partitioned() is True
 
     def test_partition_from_heartbeat_timeout(self):
+        """A timed-out heartbeat marks the peer dead; with the quorum size
+        no longer reachable without it, a partition is declared.
+
+        Quorum counts include this cluster itself (alive_peers + 1), so
+        quorum_size must be 2 here: self alone cannot hold quorum, and
+        the timed-out peer must not vouch for it.
+        """
+        d = SplitBrainDetector(
+            cluster_id="c1",
+            peer_cluster_ids=["p1"],
+            quorum_size=2,
+            heartbeat_timeout_s=0.01,
+            failure_threshold=1,
+        )
+        # Set old heartbeat
+        d.heartbeat("p1", timestamp=time.time() - 60.0)
+        # Timeout must mark the peer dead and the quorum lost
+        assert d.check_partition() is True
+        assert d.get_alive_peers() == []
+        assert d.get_partitioned_peers() == ["p1"]
+
+    def test_no_partition_when_self_holds_quorum(self):
+        """With quorum_size=1 the cluster itself holds quorum, so a dead
+        peer alone must NOT declare a partition (self-counting quorum)."""
         d = SplitBrainDetector(
             cluster_id="c1",
             peer_cluster_ids=["p1"],
@@ -155,10 +179,11 @@ class TestPartitionDetection:
             heartbeat_timeout_s=0.01,
             failure_threshold=1,
         )
-        # Set old heartbeat
         d.heartbeat("p1", timestamp=time.time() - 60.0)
-        # Should detect timeout and mark dead
-        assert d.check_partition() is True
+        assert d.check_partition() is False
+        # The peer is still marked dead even though quorum is held
+        assert d.get_alive_peers() == []
+        assert d.get_partitioned_peers() == ["p1"]
 
     def test_no_partition_with_enough_alive(self):
         d = SplitBrainDetector(

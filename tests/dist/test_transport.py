@@ -85,8 +85,18 @@ class TestTensorTransport:
         assert t.is_available is False
         t.destroy()
 
-    def test_init_auto_falls_to_grpc(self) -> None:
-        """AUTO falls through to gRPC when NCCL+QUIC are unavailable."""
+    def test_init_auto_falls_to_grpc(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AUTO falls through to gRPC when NCCL+QUIC are unavailable.
+
+        aioquic may be installed on this machine, so its absence is
+        simulated by nulling ``sys.modules["aioquic"]`` (an ``import
+        aioquic`` then raises ImportError, which ``is_quic_available``
+        translates to ``False``).  No GPU is present, so NCCL is also
+        unavailable and the fallback path is exercised for real.
+        """
+        import sys
+
+        monkeypatch.setitem(sys.modules, "aioquic", None)
         t = TensorTransport(backend=TransportBackend.AUTO)
         assert t.is_available is False
         assert t._quic_client is None
@@ -112,10 +122,30 @@ class TestTensorTransport:
         assert result == TransportBackend.GRPC
         t.destroy()
 
-    def test_is_quic_supported(self) -> None:
-        """Without aioquic installed, QUIC is not supported."""
+    def test_is_quic_supported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without aioquic installed, QUIC is not supported.
+
+        aioquic may be installed on this machine, so its absence is
+        simulated by nulling ``sys.modules["aioquic"]`` — an ``import
+        aioquic`` then raises ImportError, which the property translates
+        to ``False``.
+        """
+        import sys
+
+        monkeypatch.setitem(sys.modules, "aioquic", None)
         t = TensorTransport(backend=TransportBackend.GRPC)
         assert t.is_quic_supported is False
+        t.destroy()
+
+    def test_is_quic_supported_with_aioquic(self) -> None:
+        """When aioquic IS installed, QUIC support is reported correctly.
+
+        Pins the positive side of the availability flag; skipped on
+        machines without the optional dependency.
+        """
+        pytest.importorskip("aioquic")
+        t = TensorTransport(backend=TransportBackend.GRPC)
+        assert t.is_quic_supported is True
         t.destroy()
 
     # -- Error paths ---------------------------------------------------
