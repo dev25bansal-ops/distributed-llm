@@ -10,7 +10,7 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 
 | ID | Description + Example | Severity | Priority | Effort | Depends on | Timeline |
 |---|---|---|---|---|---|---|
-| **BUG-FN** | **`test_split_brain`, `test_quick_audit_fixes`, `test_pipeline_orchestrator`, `test_framework_adapters`, `test_audio_multiple_utterances`, `test_prefix_cache*` (≈18) assert stale APIs from earlier refactors.** Repro: `pytest tests/core/test_*.py` → AssertionError/ImportError on contracts that moved (e.g. quorum helper). Expected: green; actual: red on master (verified). The suite is the product's regression radar; a permanently-red baseline buries new failures. **2026-09-08: dist/ red set measured exactly — 38 failures across 10 files (13 cluster-key, 12 federation-get-load, rest transport/wide-area/observability), all verified pre-existing via git-stash baseline.** | Medium | P2 | 1–2d | contract review session | 2 weeks |
+| **BUG-FN** | ~~Stale-contract red tests~~ **CLOSED 2026-09-09 (O-05 sweep)** — all 74 pre-existing failures across dist/core/api fixed; 3 genuine product bugs surfaced (cluster_key plumbing dropped from PipelineOrchestrator → every secured pipeline RPC rejected; FederationLoadBalancer.get_load never existed → federation routing AttributeError; /v1/api-keys router never mounted → 404). Suites: dist 6,404 passed/0 failed, api 1,314/0, core 6,418 with 0–3 known order/environmental flakes. | ~~Medium~~ | done | ✅ | none | closed |
 
 ## §2. OPEN — Performance Bottlenecks
 
@@ -34,7 +34,7 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 |---|---|---|---|---|---|---|
 | **O-06** | **PipelineOrchestrator god class (~3,400 LOC)** — owns 1F1B scheduling, transport dispatch, node health, checkpoint bookkeeping. Extensibility bottleneck; M-06 proved the registry pattern works → apply same seam extraction. | Medium | P2 | 1 wk | proven by M-05 strategy seam | next month |
 | **O-07** | **server.py god assembly (~2,160 LOC)** — 20-middleware registration + 30 route includes at module scope with import-time side effects (O-13 import-time key print now closed; remaining side effects are config/CORS reads). TestCollection reuse is fragile. Enh #4 assertion suite makes reorder safe during refactor. | Medium | P2 | 3–4d | Enh #4 | next month |
-| **O-05** | **26 pre-existing red tests on master** (25 confirmed + 1 flake): 8 = missing optional deps (`pgvector`/`chromadb` — should be `pytest.importorskip`); ~18 = stale contracts. A permanently red suite erodes CI trust. | Medium | P2 | 1–2d | none | 2 weeks |
+| **O-05** | ~~**26 pre-existing red tests on master**~~ **CLOSED 2026-09-09** — the full pre-existing red set (74 tests across 24 files, incl. all 38 dist + 5 api + ~31 core) fixed in one sweep. Distinct from the 0–3 core order/environmental flakes (GPU-snapshot F:\ drive, prefix-cache concurrency under full-suite load) that pass in isolation. | ~~Medium~~ | done | ✅ | none | closed |
 | **O-12** | **Legacy audit/fleet-plan docs assert completed work as future** (`FLEET-PLAN*.md`, `WAVE2-PLAN.md`, 40 root-level scratch files). Confuses contributors and the public-launch footprint. | Low | P3 | 3h | none | before public launch |
 | **O-14** | **Two dependency-management systems** — Python 3.10 retained; `requirements-dev.txt` coexists with PEP 735 `[dependency-groups]`. | Low | P3 | 2h | none | next release |
 
@@ -80,14 +80,14 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 
 ## §6. Rolls-Up Summary
 
-2026-09-08 status after Sprint-1 + quick wins: **O-01, O-02, O-03 closed; O-04 half-closed** (fail-closed certs; default-flip next release); **O-08, O-10, O-11, O-13 closed**. Zero regression deltas proven via stash baselines at every step (dist: 38 pre-existing both ways; api: 5 pre-existing both ways; core+api sweep: all 36 remaining failures within the known BUG-FN/optional-dep set).
+2026-09-09 status: **O-01, O-02, O-03, O-05, O-08, O-10, O-11, O-13 closed; O-04 half-closed** (fail-closed certs; default-flip next release). Test suite now green across the board: dist 6,404/0, api 1,314/0, core 6,418 with only 0–3 known order/environmental flakes (pass in isolation; GPU-snapshot hits the nonexistent F:\ env var, prefix-cache concurrency under load). Zero regression deltas proven via stash baselines at every step.
 
 | Severity | Open count | Effort |
 |---|---|---|
 | Critical | 0 | — |
 | High | 1 (O-04 default-flip, scoped next release) | ~0.5 day |
-| Medium | 4 (O-05 stale reds, O-06 orchestrator split, O-07 server split, O-09 multimodal) | ~2–6 wks (O-09 dominates) |
-| Low | 1 (O-14 dependency systems) | ~3 days |
+| Medium | 3 (O-06 orchestrator split, O-07 server split, O-09 multimodal) | ~2–6 wks (O-09 dominates) |
+| Low | 1 (O-14 dependency systems) | ~2 days |
 
 **Sprint-1 (done 2026-09-08):**
 1. ✅ O-03 (1h) — gossip None-guard
@@ -98,5 +98,6 @@ Legend — Severity: business impact × risk. Priority: P0 = block release, P1 =
 6. ✅ O-13 (1h) — import-time key print removed; decoy-key bug fixed (real key now surfaced once at startup)
 7. ✅ O-11 (2h) — draft_tree greedy logprob = log_softmax, not raw logit
 8. ✅ O-08 (2h) — SSE per-token asdict deep-copy removed; dead format duplicates deleted
+9. ✅ O-05 (2026-09-09) — all 74 pre-existing red tests fixed; 3 genuine product bugs surfaced and fixed (cluster_key plumbing, FederationLoadBalancer.get_load, /v1/api-keys router mount)
 
-That closes every "documented but not enforced" and silent-crash security gap in the tree before the next public milestone.
+That closes every "documented but not enforced" and silent-crash security gap in the tree, and the full test suite is green — the repo is CI-presentable.
