@@ -220,7 +220,20 @@ _rate_limit_key_by = os.environ.get("DISTLLM_RATE_LIMIT_KEY_BY", "both")
 if _rate_limit_key_by not in ("ip", "api_key", "both"):
     _rate_limit_key_by = "both"
 _rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60, key_by=_rate_limit_key_by)
-_get_or_generate_api_key()
+# O-13: no import-time side effect. The auto-generation (and its one-time
+# stdout key print) previously ran at module import — polluting stderr for
+# every library consumer and embedding generated keys into CI captures.
+# It now runs lazily on first server use (lifespan startup / middleware).
+_auto_key_resolved = False
+
+
+def ensure_api_key_resolved() -> str | None:
+    """Resolve the API key exactly once, lazily, on first server use."""
+    global _auto_key_resolved
+    if _auto_key_resolved:
+        return os.environ.get("API_KEY")
+    _auto_key_resolved = True
+    return _get_or_generate_api_key()
 
 try:
     _rate_limit_req = int(os.environ.get("DISTLLM_RATE_LIMIT_REQUESTS", "1000"))

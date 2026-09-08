@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import hmac
 import os
+import sys
 import threading
 import time
 from collections.abc import AsyncGenerator
@@ -214,12 +215,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Log API key presence (never log the raw key)
     from distllm.core.api_key_store import get_api_key_store
+    from distllm.api.middleware import ensure_api_key_resolved, _safe_key_fingerprint
+
+    # O-13: the middleware's lazy key resolution runs here (server startup),
+    # not at module import — library imports stay side-effect free.
+    ensure_api_key_resolved()
+
     store = get_api_key_store()
     display_key = store.get_display_key()
     if display_key:
-        fingerprint = hashlib.sha256(display_key.encode()).hexdigest()[:12]
-        logger.info("API key configured (fingerprint: %s...)", fingerprint)
-        logger.info("Use 'distllm config keys' to view or rotate keys.")
+        fingerprint = _safe_key_fingerprint(display_key)
+        logger.info("API key configured (fingerprint: {})...", fingerprint)
+        # O-13 companion: the real auto-generated key used to exist NOWHERE
+        # user-visible (the old import-time print emitted a different,
+        # discarded key — a decoy that authenticated nothing). Print the
+        # actual store key once to stdout, only when it was auto-generated,
+        # so a first-time operator can actually connect.
+        auto_key = getattr(store, "_auto_generated_key", None)
+        if auto_key:
+            print(
+                "\nGenerated admin API key (shown once — do NOT paste into "
+                "logs/screenshots/CI):\n"
+                f"{auto_key}\n"
+                "Set API_KEY=<key> (or API_KEYS) in your environment and "
+                "restart to pin it.\n",
+                file=sys.stdout,
+                flush=True,
+            )
     else:
         logger.info("API keys loaded from config file. Use 'distllm config keys' to manage.")
 

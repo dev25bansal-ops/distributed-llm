@@ -12,6 +12,13 @@ DO NOT import from here in production code. If a module becomes needed:
 3. Add a test that exercises it.
 4. Remove this entry from the quarantine README.
 
+**Expiry policy (O-10):** this directory is scheduled for deletion on
+**2026-10-01** (30-day review date). Before that date, either wire a
+module back in (steps above) or delete it — unpromoted modules are
+removed wholesale, not migrated again. The 2026-10-01 sweep is itself a
+release-blocker item in
+``docs/_audit/exhaustive-2026-08-31/ISSUES_CATALOG_CURRENT.md`` (§4, O-10).
+
 | Module | Original LOC | Notes |
 |---|---|---|
 | block_eviction_policy | 363 | Eviction policy variants never wired into cache tiers |
