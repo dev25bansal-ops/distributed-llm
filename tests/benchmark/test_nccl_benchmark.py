@@ -106,7 +106,7 @@ class TestNcclStats:
         with patch("distllm.dist.nccl.dist") as mock_dist:
             mock_dist.is_initialized.return_value = True
 
-            from distllm.dist.nccl import NcclTransport
+            from distllm.dist.nccl import CommType, NcclTransport
 
             transport = NcclTransport(
                 rank=0, world_size=2, backend="gloo",
@@ -114,11 +114,14 @@ class TestNcclStats:
             )
             transport._initialized = True
 
-            # Generate some stats
+            # Generate some stats.  _record uses time.time_ns() as its
+            # clock (elapsed = time.time_ns() - start_ns), so the timestamps
+            # passed here must come from the same clock.
+            import time as _time
             for _ in range(50):
                 transport._record(
-                    transport.CommType.ALL_REDUCE,
-                    1024 * 1024, time.perf_counter_ns(),
+                    CommType.ALL_REDUCE,
+                    1024 * 1024, _time.time_ns(),
                 )
 
             def _run() -> dict:
@@ -126,3 +129,6 @@ class TestNcclStats:
 
             result = benchmark(_run)
             assert "all_reduce" in result
+            # The recorded samples are reflected in the stats output.
+            assert result["all_reduce"]["count"] == 50
+            assert result["all_reduce"]["total_bytes"] == 50 * 1024 * 1024

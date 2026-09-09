@@ -1,7 +1,9 @@
 """Ollama BackendAdapter - connects DistLLM to Ollama servers."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -15,16 +17,67 @@ class OllamaBackendConfig:
     keep_alive: str = "5m"
 
 class OllamaBackendAdapter(BackendAdapter):
-    def __init__(self, config=None):
+    """Remote-HTTP adapter for an Ollama inference server."""
+
+    def __init__(self, config: OllamaBackendConfig | None = None):
         self.config = config or OllamaBackendConfig()
-    @property
-    def display_name(self) -> str:
+
+    # ── Required metadata classmethods ───────────────────────────────
+
+    @classmethod
+    def display_name(cls) -> str:
         return "Ollama"
-    @property
-    def version(self) -> str:
+
+    @classmethod
+    def version(cls) -> str:
         return "0.1.0"
-    def forward(self, hidden_states, **kwargs):
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """True only if the HTTP client dependency is importable.
+
+        Server reachability is ``load_model()``/``health_check()``'s job;
+        availability here just means the adapter's client stack is
+        installed, mirroring the TGI adapter convention.
+        """
+        try:
+            import importlib.util as _util
+
+            return _util.find_spec("httpx") is not None
+        except Exception:
+            return False
+
+    @classmethod
+    def priority_for(cls, device_type: str) -> int:
+        """Ollama is a remote server, usable from any device with network access.
+
+        It is not a local GPU engine, so it sits below the local engines
+        (PyTorch/vLLM) but above pure-CPU fallbacks.
+        """
+        device_type = (device_type or "cpu").lower()
+        if device_type in ("cuda", "rocm", "mps", "xpu"):
+            return 4
+        return 2
+
+    # ── Required instance methods ────────────────────────────────────
+
+    def load_model(self, model_name: str | None = None) -> bool:
+        """Probe the Ollama server (list installed models) before serving."""
+        try:
+            resp = httpx.get(f"{self.config.base_url}/api/tags", timeout=5.0)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def forward(self, hidden_states: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("Ollama adapter does not support layer-level forward")
+
+    def shutdown(self) -> None:
+        """Nothing to release for a remote HTTP client."""
+        pass
+
+    # ── Generation ───────────────────────────────────────────────────
+
     async def generate(self, prompt, max_new_tokens=256, temperature=0.7, **kwargs):
         payload = {"model": kwargs.get("model", "llama3.2"), "prompt": prompt, "stream": False,
                    "options": {"num_predict": max_new_tokens, "temperature": temperature},

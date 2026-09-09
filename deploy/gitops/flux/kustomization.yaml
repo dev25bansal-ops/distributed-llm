@@ -1,0 +1,28 @@
+# Flux Kustomization: reconciles the per-environment overlay chosen at boot
+# by the ${environment} substitute. The environment-pinned namespace
+# (distllm-dev etc.) and ${replicas}/${model_name} substitutes are rendered
+# from the kustomize configMapGenerator (var reference) before apply, then
+# health-checked against the coordinator Deployment.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: distllm-app
+  namespace: flux-system
+spec:
+  interval: 5m
+  path: ./deploy/kustomize/${environment}
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: distllm-repo
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: distllm-coordinator
+      namespace: distllm-${environment}
+  postBuild:
+    substitute:
+      replica_count: ${replicas}
+      model_name: ${model_name}
+  dependsOn:
+    - name: distllm-crds

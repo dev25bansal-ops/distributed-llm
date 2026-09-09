@@ -1,0 +1,43 @@
+# Spot NodePool for GPU worker inference pods (g*/p* GPU instance families).
+# Spot capacity: reclaimed by AWS at any time; workers are stateless
+# (StatefulSet + PDB absorb reclaims), so WhenEmpty consolidation with a short
+# TTL lets empty spot nodes be removed quickly.
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: gpu-spot
+  labels:
+    app.kubernetes.io/name: distributed-llm
+    app.kubernetes.io/part-of: distllm
+    app.kubernetes.io/component: worker
+spec:
+  limits:
+    cpu: 100
+  disruption:
+    consolidationPolicy: WhenEmpty
+    ttlSecondsAfterEmpty: 30
+  template:
+    metadata:
+      labels:
+        node-pool: gpu-spot
+    spec:
+      nodeClassRef:
+        name: gpu-ec2-class
+        kind: EC2NodeClass
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["g", "p"]
+        # Any GPU count (1/2/4/8 GPUs per node) — Karpenter picks size by
+        # pending GPU requests.
+        - key: karpenter.k8s.aws/instance-gpu-count
+          operator: Exists
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["xlarge", "2xlarge", "4xlarge", "8xlarge", "12xlarge", "24xlarge"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]

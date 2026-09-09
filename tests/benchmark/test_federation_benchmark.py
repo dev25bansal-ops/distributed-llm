@@ -21,7 +21,14 @@ import pytest
 
 @pytest.fixture
 def coord():
-    """FederationCoordinator with mocked network."""
+    """FederationCoordinator with mocked network.
+
+    The mocks mirror real ``httpx`` semantics:
+    - ``AsyncClient.post(...)`` is awaited and returns a Response whose
+      ``.json()`` is a *synchronous* method (as in real httpx).
+    - ``AsyncClient.stream(...)`` is a *synchronous* call returning an async
+      context manager (as in real httpx).
+    """
     with patch("distllm.dist.federation.httpx.Client") as MockClient, \
          patch("distllm.dist.federation.httpx.AsyncClient") as MockAsyncClient:
 
@@ -33,11 +40,37 @@ def coord():
         mock_coord.scheduler.stats.return_value = {"active_requests": 0, "pending_requests": 0}
 
         async_client = AsyncMock()
-        mock_resp = AsyncMock()
+        # httpx Response.json() is sync — use MagicMock so .json() returns
+        # the dict directly instead of an unawaitable coroutine.
+        mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"choices": [{"text": "hello"}], "usage": {}}
-        mock_resp.__aenter__.return_value = mock_resp
         async_client.post.return_value = mock_resp
+
+        # httpx AsyncClient.stream() is sync, returning an async CM whose
+        # response supports aiter_lines().
+        class _FakeStreamResponse:
+            def __init__(self, lines):
+                self._lines = lines
+                self.raise_for_status = MagicMock()
+
+            async def aiter_lines(self):
+                for line in self._lines:
+                    yield line
+
+        class _FakeStreamCM:
+            def __init__(self, lines):
+                self._resp = _FakeStreamResponse(lines)
+
+            async def __aenter__(self):
+                return self._resp
+
+            async def __aexit__(self, *exc):
+                return False
+
+        async_client.stream = MagicMock(
+            return_value=_FakeStreamCM(["data: hello", "data: [DONE]"])
+        )
 
         MockClient.return_value = MagicMock()
         MockAsyncClient.return_value = async_client
@@ -74,20 +107,14 @@ class TestFederationOverhead:
 
         import asyncio
 
-        async def _run():
-            result = await coord.forward_request(peer, request, timeout_s=30.0)
-            return result
+        def _run():
+            # asyncio.run requires a coroutine — call the async function to
+            # create one each benchmark iteration.
+            return asyncio.run(coord.forward_request(peer, request, timeout_s=30.0))
 
-        async def _bench():
-            result = await _run()
-            return result
-
-        # Warmup
-        asyncio.run(_bench())
-
-        # Benchmark
-        result = benchmark(asyncio.run, _run)
+        result = benchmark(_run)
         assert result["choices"][0]["text"] == "hello"
+        assert result["x-distllm-federated"] == "peer-1"
 
     def test_forward_request_streaming_overhead(self, benchmark, coord):
         """Benchmark streaming forward overhead."""
@@ -100,33 +127,51 @@ class TestFederationOverhead:
 
         import asyncio
 
-        async def _run():
+        async def _collect():
             chunks = []
             async for chunk in coord.forward_request_streaming(peer, request):
                 chunks.append(chunk)
             return chunks
 
-        async def _bench():
-            return await _run()
+        def _run():
+            return asyncio.run(_collect())
 
-        result = benchmark(asyncio.run, _run)
+        result = benchmark(_run)
         assert isinstance(result, list)
+        assert result == ["hello"]
 
 
 class TestCacheAwareRouting:
     """Benchmarks cache-aware routing logic."""
 
     def test_cache_affinity_routing(self, benchmark, coord):
-        coord.update_cache_digest([101, 202, 303, 404])
-        digest = {"hash": "abc", "prefix_hash": {0: 12345}, "length": 4}
+        """Route by cache affinity: a peer with a digest matching the prompt
+        must be preferred (genuine cache-aware routing, not capacity fallback)."""
+        from distllm.dist.federation import KVCacheDigest
 
-        async def _run():
-            peer = await coord.forward_with_cache_affinity(
-                request={"model": "test", "messages": []},
-                prompt_token_ids=[101, 202, 303, 404],
-            )
-            return peer
+        prompt_token_ids = [101, 202, 303, 404]
+
+        # Seed the peer's advertised cache digest from the SAME prompt, so
+        # cache affinity routing has a real match to find.
+        coord._cache_digests["peer-1"] = KVCacheDigest(window_size=128).compute(
+            prompt_token_ids
+        )
+        # Also set the local digest (as update_cache_digest would in prod).
+        coord.update_cache_digest(prompt_token_ids)
 
         import asyncio
-        result = benchmark(asyncio.run, _run)
+
+        def _run():
+            return asyncio.run(
+                coord.forward_with_cache_affinity(
+                    request={"model": "test", "messages": []},
+                    prompt_token_ids=prompt_token_ids,
+                )
+            )
+
+        result = benchmark(_run)
         assert result is not None
+        # The peer was selected by cache affinity, not capacity fallback.
+        assert result["x-distllm-federated"] == "peer-1"
+        assert result["x-distllm-cache-affinity"] > 0.3
+        assert result["x-distllm-matched-tokens"] == len(prompt_token_ids)

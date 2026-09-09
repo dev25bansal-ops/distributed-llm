@@ -9,17 +9,17 @@ class TestBackendProtocol:
     """Tests for backends/protocol.py."""
 
     def test_protocol_has_required_methods(self):
-        from distllm.backends.protocol import InferenceBackend
+        from distllm.backends.protocol import BackendAdapter
 
-        methods = ["load", "unload", "generate", "forward", "health_check"]
+        methods = ["load_model", "forward", "shutdown", "generate", "health_check"]
         for m in methods:
-            assert hasattr(InferenceBackend, m), f"Missing method: {m}"
+            assert hasattr(BackendAdapter, m), f"Missing method: {m}"
 
     def test_protocol_type_annotations(self):
-        from distllm.backends.protocol import InferenceBackend
+        from distllm.backends.protocol import BackendAdapter
 
         import inspect
-        sig = inspect.signature(InferenceBackend.generate)
+        sig = inspect.signature(BackendAdapter.forward)
         assert len(sig.parameters) > 0
 
 
@@ -34,26 +34,57 @@ class TestBackendRegistry:
 
     def test_register_and_list(self):
         from distllm.backends.registry import BackendRegistry
+        from distllm.backends.protocol import BackendAdapter
+
+        class TestBackend(BackendAdapter):
+            def load_model(self):
+                pass
+            def forward(self, hidden_states=None, attention_mask=None,
+                       position_ids=None, past_key_values=None, input_ids=None):
+                return None, []
+            def shutdown(self):
+                pass
+            @classmethod
+            def display_name(cls):
+                return "Test"
+            @classmethod
+            def is_available(cls):
+                return True
+            @classmethod
+            def priority_for(cls, device_type):
+                return 5
 
         reg = BackendRegistry()
-        if hasattr(reg, "register"):
-            mock_backend = MagicMock()
-            mock_backend.name = "test_backend"
-            reg.register("test_backend", mock_backend)
-            if hasattr(reg, "list"):
-                backends = reg.list()
-                assert "test_backend" in backends
+        reg.register(TestBackend, name="test_backend")
+        plugins = reg.list_backends()
+        assert "test_backend" in [p.name for p in plugins]
 
     def test_get_backend(self):
         from distllm.backends.registry import BackendRegistry
+        from distllm.backends.protocol import BackendAdapter
+
+        class TestBackend(BackendAdapter):
+            def load_model(self):
+                pass
+            def forward(self, hidden_states=None, attention_mask=None,
+                       position_ids=None, past_key_values=None, input_ids=None):
+                return None, []
+            def shutdown(self):
+                pass
+            @classmethod
+            def display_name(cls):
+                return "Test"
+            @classmethod
+            def is_available(cls):
+                return True
+            @classmethod
+            def priority_for(cls, device_type):
+                return 5
 
         reg = BackendRegistry()
-        if hasattr(reg, "register"):
-            mock_backend = MagicMock()
-            reg.register("test", mock_backend)
-            if hasattr(reg, "get"):
-                result = reg.get("test")
-                assert result is mock_backend
+        reg.register(TestBackend, name="test")
+        result = reg.get("test")
+        assert result is TestBackend
 
     def test_get_nonexistent_backend(self):
         from distllm.backends.registry import BackendRegistry
@@ -85,50 +116,60 @@ class TestPyTorchBackend:
     """Tests for backends/pytorch_backend.py."""
 
     def test_backend_class_exists(self):
-        from distllm.backends.pytorch_backend import PyTorchBackend
-        assert PyTorchBackend is not None
+        from distllm.backends.pytorch_backend import PyTorchNodeAdapter
+        assert PyTorchNodeAdapter is not None
 
-    @patch("distllm.backends.pytorch_backend.AutoModelForCausalLM", create=True)
-    def test_load_model(self, mock_model_cls):
-        from distllm.backends.pytorch_backend import PyTorchBackend
+    @patch("distllm.backends.pytorch_backend.ModelPartitioner")
+    def test_load_model(self, mock_partitioner):
+        from distllm.backends.pytorch_backend import PyTorchNodeAdapter
 
-        backend = PyTorchBackend()
-        if hasattr(backend, "load"):
-            mock_model_cls.from_pretrained.return_value = MagicMock()
-            with patch("distllm.backends.pytorch_backend.AutoTokenizer", create=True):
-                backend.load("test-model")
+        backend = PyTorchNodeAdapter(
+            model_name="test-model",
+            layer_start=0,
+            layer_end=2,
+            total_layers=4,
+        )
+        assert backend.load_model() is None  # succeeds without raising
+        mock_partitioner.assert_called_once()
+        assert backend.partitioner is mock_partitioner.return_value
 
     def test_unload(self):
-        from distllm.backends.pytorch_backend import PyTorchBackend
+        from distllm.backends.pytorch_backend import PyTorchNodeAdapter
 
-        backend = PyTorchBackend()
-        if hasattr(backend, "unload"):
-            backend.unload()
+        backend = PyTorchNodeAdapter(
+            model_name="test-model",
+            layer_start=0,
+            layer_end=2,
+            total_layers=4,
+        )
+        backend.shutdown()
+        assert backend.partitioner is None
 
 
 class TestVLLMBackend:
     """Tests for backends/vllm_backend.py."""
 
     def test_backend_class_exists(self):
-        from distllm.backends.vllm_backend import VLLMBackend
-        assert VLLMBackend is not None
+        from distllm.backends.vllm_backend import VLLMNodeAdapter
+        assert VLLMNodeAdapter is not None
 
     def test_backend_init(self):
-        from distllm.backends.vllm_backend import VLLMBackend
-        backend = VLLMBackend()
+        from distllm.backends.vllm_backend import VLLMNodeAdapter
+        backend = VLLMNodeAdapter(model_name="test-org/test-model")
         assert backend is not None
+        assert backend.state.value == "uninitialized"
 
 
 class TestLlamaCppBackend:
     """Tests for backends/llamacpp_backend.py."""
 
     def test_backend_class_exists(self):
-        from distllm.backends.llamacpp_backend import LlamaCppBackend
-        assert LlamaCppBackend is not None
+        from distllm.backends.llamacpp_backend import LlamacppNodeAdapter
+        assert LlamacppNodeAdapter is not None
 
     def test_backend_init(self):
-        from distllm.backends.llamacpp_backend import LlamaCppBackend
-        backend = LlamaCppBackend()
+        from distllm.backends.llamacpp_backend import LlamacppNodeAdapter
+        backend = LlamacppNodeAdapter(model_path="test-model")
         assert backend is not None
 
 
@@ -136,12 +177,12 @@ class TestExLlamaBackend:
     """Tests for backends/exllama_backend.py."""
 
     def test_backend_class_exists(self):
-        from distllm.backends.exllama_backend import ExLlamaBackend
-        assert ExLlamaBackend is not None
+        from distllm.backends.exllama_backend import ExLlamaV2NodeAdapter
+        assert ExLlamaV2NodeAdapter is not None
 
     def test_backend_init(self):
-        from distllm.backends.exllama_backend import ExLlamaBackend
-        backend = ExLlamaBackend()
+        from distllm.backends.exllama_backend import ExLlamaV2NodeAdapter
+        backend = ExLlamaV2NodeAdapter(model_name="test-model")
         assert backend is not None
 
 
@@ -149,12 +190,12 @@ class TestOnnxBackend:
     """Tests for backends/onnx_backend.py."""
 
     def test_backend_class_exists(self):
-        from distllm.backends.onnx_backend import OnnxBackend
-        assert OnnxBackend is not None
+        from distllm.backends.onnx_backend import ONNXNodeAdapter
+        assert ONNXNodeAdapter is not None
 
     def test_backend_init(self):
-        from distllm.backends.onnx_backend import OnnxBackend
-        backend = OnnxBackend()
+        from distllm.backends.onnx_backend import ONNXNodeAdapter
+        backend = ONNXNodeAdapter(model_name="test-model")
         assert backend is not None
 
 

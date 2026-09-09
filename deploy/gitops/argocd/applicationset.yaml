@@ -1,0 +1,42 @@
+# ArgoCD ApplicationSet driving one Application per environment (dev/staging/
+# production) via a list generator. Go templates substitute per-element values.
+# dev auto-syncs; staging tracks the release branch; production is pinned to
+# the v0.4.0 release tag and autoSync disabled (manual, audited promotion).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: distllm-environments
+spec:
+  generators:
+    - list:
+        elements:
+          - environment: dev
+            namespace: distllm-dev
+            revision: main
+            autoSync: true
+          - environment: staging
+            namespace: distllm-staging
+            revision: release
+            autoSync: false
+          - environment: production
+            namespace: distllm-production
+            revision: v0.4.0
+            autoSync: false
+  template:
+    metadata:
+      name: distllm-{{environment}}
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/dev25bansal-ops/distributed-llm.git
+        path: deploy/kustomize/{{environment}}
+        targetRevision: '{{revision}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: false
+        syncOptions:
+          - CreateNamespace=true

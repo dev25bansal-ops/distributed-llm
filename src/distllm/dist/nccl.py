@@ -79,6 +79,7 @@ class NcclTransport:
         # P2P preemption state
         self._preempted = threading.Event()
         self._preempted.set()  # Not preempted initially
+        self._preempted_ops: list[str] = []  # drained ops awaiting resume()
         self._active_ops: dict[str, dist.Work] = {}
         self._op_priority: dict[str, int] = {}  # Higher = more important
         self._op_lock = threading.Lock()

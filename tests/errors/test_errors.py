@@ -53,7 +53,8 @@ class TestDistLLMErrorBase:
 
     def test_message(self):
         err = DistLLMError("something went wrong")
-        assert str(err) == "something went wrong"
+        # __str__ prefixes the programmatic code for log scannability.
+        assert str(err) == "[DISTLLM_ERROR] something went wrong"
         assert err.message == "something went wrong"
 
     def test_default_empty_context(self):

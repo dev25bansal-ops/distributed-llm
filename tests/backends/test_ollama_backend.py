@@ -5,11 +5,15 @@ from distllm.backends.ollama_backend import OllamaBackendAdapter
 
 
 class _StubAsyncPost:
-    """Stub response with .json() and .raise_for_status()."""
+    """Stub response with .json() and .raise_for_status().
+
+    ``json()`` is synchronous to match real ``httpx.Response.json()``
+    semantics (same convention as the TGI backend test stub).
+    """
     def __init__(self, json_data=None):
         self._json = json_data or {"response": "Hello from Ollama"}
 
-    async def json(self):
+    def json(self):
         return self._json
 
     def raise_for_status(self):

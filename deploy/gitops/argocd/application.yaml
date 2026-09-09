@@ -1,0 +1,33 @@
+# ArgoCD Application for the dev environment, pointed at the dev kustomize
+# overlay in this repo. Automated sync with prune + selfHeal: dev should
+# always converge to git. Retries absorb transient sync webhook failures.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: distllm-dev
+  # Sync wave 0: created before dev-dependent Applications.
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/dev25bansal-ops/distributed-llm.git
+    path: deploy/kustomize/dev
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: distllm-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        maxDuration: 3m0s
+        factor: 2

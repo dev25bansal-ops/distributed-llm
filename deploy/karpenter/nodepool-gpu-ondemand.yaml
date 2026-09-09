@@ -1,0 +1,38 @@
+# On-demand NodePool for the coordinator and other stateless control-plane
+# pods (m*/c* CPU families). On-demand (never spot) because coordinator
+# availability gates the whole cluster; consolidate aggressively when
+# underutilized since pods reschedule freely.
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: coordinator-ondemand
+  labels:
+    app.kubernetes.io/name: distributed-llm
+    app.kubernetes.io/part-of: distllm
+    app.kubernetes.io/component: coordinator
+spec:
+  limits:
+    cpu: 50
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+  template:
+    metadata:
+      labels:
+        node-pool: coordinator-ondemand
+    spec:
+      nodeClassRef:
+        name: gpu-ec2-class
+        kind: EC2NodeClass
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["m", "c"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["large", "xlarge", "2xlarge", "4xlarge"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]

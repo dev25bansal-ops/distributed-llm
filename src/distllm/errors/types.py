@@ -260,7 +260,7 @@ class ModelOOMError(ModelError):
 # a node_id — callers construct it as OOMError(node_id, detail=...).
 class OOMError(ModelError):
     """GPU out of memory (legacy class: model-hierarchy, node-scoped)."""
-    code = "MODEL_OOM"
+    code = "OOM_ERROR"
     troubleshooting_section = "6-gpu-issues"
 
     def __init__(self, node_id: str, detail: str = ""):
