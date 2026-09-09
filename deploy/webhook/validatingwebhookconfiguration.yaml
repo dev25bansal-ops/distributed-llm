@@ -1,0 +1,39 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: distllm-validating-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: distllm-system/distllm-webhook-tls
+webhooks:
+  - name: validate-crd.distllm.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: distllm-webhook
+        namespace: distllm-system
+        path: /validate-crd
+        port: 443
+    rules:
+      - apiGroups: ["apiextensions.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["customresourcedefinitions"]
+  - name: validate-cluster.distllm.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: distllm-webhook
+        namespace: distllm-system
+        path: /validate-cluster
+        port: 443
+    rules:
+      - apiGroups: ["distllm.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["distllmclusters"]

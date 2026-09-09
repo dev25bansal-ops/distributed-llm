@@ -209,30 +209,58 @@ class TestReportGeneration:
     """Benchmarks quantization report generation."""
 
     def test_report_generation(self, benchmark):
-        from distllm.dist.partition.quant_report import ReportGenerator
+        from distllm.dist.partition.quant_report import QuantizationReport, ReportGenerator
+        from distllm.dist.partition.quantization_tuner import (
+            ActivationQuantMethod,
+            KVCacheBits,
+            NodeQuantRecommendation,
+            QuantizationPlan,
+            QuantMethod,
+        )
 
         generator = ReportGenerator()
-        sample_data = {
-            "node-1": {
-                "method": "int8",
-                "perplexity": 5.2,
-                "speedup": 1.8,
-                "compression_ratio": 0.5,
-            },
-            "node-2": {
-                "method": "int4",
-                "perplexity": 6.1,
-                "speedup": 2.4,
-                "compression_ratio": 0.25,
-            },
-        }
 
-        def _run():
-            report = generator.generate(sample_data)
-            return report
+        # Two-node plan mirroring the legacy sample data: node-1 on int8
+        # (0.5 compression), node-2 on 4-bit (0.25 compression).
+        weights_gb = 16.0
+        weights_bytes = int(weights_gb * 1024**3)
 
-        try:
-            result = benchmark(_run)
-            assert result is not None
-        except Exception as e:
-            pytest.skip(f"Report generation failed: {e}")
+        def _rec(node_id: str, method: QuantMethod, factor: float,
+                 quality_loss: float) -> NodeQuantRecommendation:
+            mem_with = int(weights_bytes * factor)
+            savings = weights_bytes - mem_with
+            return NodeQuantRecommendation(
+                node_id=node_id,
+                method=method,
+                memory_bytes_without_quant=weights_bytes,
+                memory_bytes_with_quant=mem_with,
+                memory_savings_bytes=savings,
+                memory_savings_pct=savings / weights_bytes * 100.0,
+                speed_penalty=1.0,
+                quality_loss=quality_loss,
+                reason="benchmark",
+                activation_quant=ActivationQuantMethod.NONE,
+                kv_cache_bits=KVCacheBits.NONE,
+            )
+
+        plan = QuantizationPlan(
+            recommendations=[
+                _rec("node-1", QuantMethod.INT8, 0.5, 0.01),
+                _rec("node-2", QuantMethod.BNB_4BIT, 0.25, 0.03),
+            ],
+            strategy="benchmark",
+        )
+
+        def _run() -> QuantizationReport:
+            return generator.generate(plan)
+
+        result = benchmark(_run)
+        assert isinstance(result, QuantizationReport)
+        assert result.strategy == "benchmark"
+        # Both nodes made it into the report with their methods intact.
+        assert {n.node_id for n in result.nodes} == {"node-1", "node-2"}
+        assert {n.method for n in result.nodes} == {"int8", "bnb_4bit"}
+        # The report reflects the per-node compression ratios (0.5 / 0.25).
+        savings_by_node = {n.node_id: n.memory_savings_pct for n in result.nodes}
+        assert savings_by_node["node-1"] == pytest.approx(50.0)
+        assert savings_by_node["node-2"] == pytest.approx(75.0)

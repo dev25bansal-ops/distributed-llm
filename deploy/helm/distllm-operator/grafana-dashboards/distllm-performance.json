@@ -1,0 +1,98 @@
+{
+  "title": "DistLLM — Serving Performance",
+  "uid": "distllm-performance",
+  "schemaVersion": 39,
+  "editable": true,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requests / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(distllm_requests_total[5m]))", "legendFormat": "req/s" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Tokens / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        { "expr": "distllm_tokens_per_second", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Errors / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(distllm_errors_total[5m]))", "legendFormat": "err/s" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Request latency (p50 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(distllm_request_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(distllm_request_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Coordinator queue depth & active requests",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "distllm_coordinator_queue_depth", "legendFormat": "queue depth" },
+        { "expr": "distllm_coordinator_active_requests", "legendFormat": "active" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Circuit-breaker state",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "max(distllm_circuit_breaker_state)", "legendFormat": "state" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Node GPU memory used",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
+      "targets": [
+        { "expr": "distllm_node_gpu_memory_bytes", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Active nodes vs dead",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
+      "targets": [
+        { "expr": "distllm_active_nodes", "legendFormat": "active" },
+        { "expr": "distllm_dead_nodes", "legendFormat": "dead" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "KV cache hit rate",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 22 },
+      "targets": [
+        { "expr": "distllm_kv_cache_hit_rate", "legendFormat": "{{node}}" }
+      ]
+    }
+  ]
+}

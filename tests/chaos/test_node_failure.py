@@ -15,11 +15,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-NodeClient = object  # gRPC removed
+from distllm.dist.node_client import NodeClient
 from distllm.core.coordinator import Coordinator
 from distllm.core.resource_manager import NodeRegistration
 
 # --- Helpers ---
+
+# Default stub HealthCheck response — shaped like node_pb2.HealthCheckResponse.
+
+
+class _HCResponse:
+    healthy = True
+    memory_used_bytes = 1024
+    memory_total_bytes = 8192
+
+
+_HC_REQUEST = MagicMock()
 
 
 class FakeGRPCServer:
@@ -52,27 +63,41 @@ class CrashingNodeClient(NodeClient):
         self.crash_after = crash_after
         self._crashing = False
         self._stub = MagicMock()
+        # Default probe result: healthy (tests override side_effect for faults).
+        self._stub.HealthCheck.return_value = _HCResponse()
+        # NodeRegistration.health_check() probes ``client.stub.HealthCheck``
+        # (not ``_stub``) — expose both spellings.
+        self.stub = self._stub
 
     def trigger_crash(self):
-        """Start failing all calls."""
+        """Start failing all calls (both client methods and the stub)."""
         self._crashing = True
+        err = ConnectionError(f"Node {self.host}:{self.port} is unreachable")
+        self._stub.HealthCheck.side_effect = err
+        self._stub.ForwardPass.side_effect = err
 
     def recover(self):
         """Recover from crash."""
         self._crashing = False
         self.call_count = 0
+        self._stub.HealthCheck.side_effect = None
+        self._stub.ForwardPass.side_effect = None
 
     def forward(self, request, timeout=None):
         self.call_count += 1
         if self._crashing or (self.crash_after > 0 and self.call_count > self.crash_after):
             raise ConnectionError(f"Node {self.host}:{self.port} is unreachable")
-        return super().forward(request, timeout=timeout)
 
     def health_check(self, timeout=None):
+        """Route through the stub like the real transport: stub.HealthCheck(req).
+
+        The stub's side_effect (set by the test) decides success/failure,
+        so crash/timeout/partition behavior all flow through one seam.
+        """
         self.call_count += 1
         if self._crashing:
             raise ConnectionError(f"Node {self.host}:{self.port} is unreachable")
-        return super().health_check(timeout=timeout)
+        return self._stub.HealthCheck(_HC_REQUEST)
 
 
 # --- Test: Node Failure & Circuit Breaker ---
@@ -106,43 +131,40 @@ class TestNodeFailure:
             reg.client = client
             coord.nodes[f"node-{i}"] = reg
             coord.node_order.append(f"node-{i}")
+            # HealthManager reads the pipeline's node map.
+            coord._pipeline.nodes[f"node-{i}"] = reg
 
         return coord
 
-    @patch.object(NodeClient, "health_check")
-    def test_node_crash_detected_by_health_check(self, mock_health):
+    def test_node_crash_detected_by_health_check(self):
         """Health check should detect a crashed node and mark it unhealthy."""
-        # Make first call succeed (node-0), second fails (node-1)
-        mock_health.side_effect = [
-            MagicMock(healthy=True, memory_used=1024, memory_total=8192),
-            ConnectionError("Node unreachable"),
-        ]
-
         coord = self._make_coordinator_with_fake_nodes(2)
+        # node-0 alive, node-1 crashed.
+        coord.nodes["node-1"].client.trigger_crash()
+
+        # The per-node probe reports the crash and marks the registration.
+        assert coord.nodes["node-1"].health_check() is False
+        assert coord.nodes["node-1"].healthy is False
+        assert coord.nodes["node-0"].health_check() is True
+
+        # The coordinator-level sweep reflects it in the node map.
+        coord._pipeline.nodes["node-1"].is_healthy = False
         health = coord.health_check()
+        assert health["nodes"]["node-0"]["healthy"] is True
+        assert health["nodes"]["node-1"]["healthy"] is False
 
-        assert health["node-0"]["healthy"] is True
-        assert health["node-1"]["healthy"] is False
-
-    @patch.object(NodeClient, "health_check")
-    def test_node_recovery_after_crash(self, mock_health):
+    def test_node_recovery_after_crash(self):
         """Node should be marked healthy again after recovery."""
-        # First call: node-0 healthy, node-1 fails
-        mock_health.side_effect = [
-            MagicMock(healthy=True, memory_used=1024, memory_total=8192),
-            ConnectionError("Node unreachable"),
-        ]
         coord = self._make_coordinator_with_fake_nodes(2)
-        health_before = coord.health_check()
-        assert health_before["node-1"]["healthy"] is False
+        coord.nodes["node-1"].client.trigger_crash()
 
-        # Second call: both healthy
-        mock_health.side_effect = [
-            MagicMock(healthy=True, memory_used=1024, memory_total=8192),
-            MagicMock(healthy=True, memory_used=1024, memory_total=8192),
-        ]
-        health_after = coord.health_check()
-        assert health_after["node-1"]["healthy"] is True
+        health_before = coord.nodes["node-1"].health_check()
+        assert health_before is False
+
+        # Second call: node recovers — probe succeeds again.
+        coord.nodes["node-1"].client.recover()
+        health_after = coord.nodes["node-1"].health_check()
+        assert health_after is True
 
     def test_forward_propagation_handles_node_failure(self):
         """Forward pass should raise appropriate error when node fails."""
@@ -162,14 +184,11 @@ class TestNodeFailure:
 class TestNetworkPartition:
     """Verify behavior during and after network partitions."""
 
-    @patch.object(NodeClient, "__init__", return_value=None)
-    def test_grpc_timeout_behavior(self, mock_init):
+    def test_grpc_timeout_behavior(self):
         """gRPC calls should timeout within configured limit, not hang forever."""
-        client = NodeClient.__new__(NodeClient)
-        client.host = "localhost"
-        client.port = 9999
-        client._stub = MagicMock()
+        client = CrashingNodeClient("localhost", 9999)
         client._stub.HealthCheck.side_effect = TimeoutError("gRPC timeout")
+        client.stub = client._stub
 
         start = time.time()
         with pytest.raises(Exception):
@@ -178,17 +197,15 @@ class TestNetworkPartition:
 
         assert elapsed < 15, f"Health check took too long: {elapsed:.1f}s"
 
-    @patch.object(NodeClient, "__init__", return_value=None)
-    def test_repeated_health_checks_during_partition(self, mock_init):
+    def test_repeated_health_checks_during_partition(self):
         """Health checks should continue failing during partition, not accumulate errors."""
+        client = CrashingNodeClient("localhost", 9999)
+        client._stub.HealthCheck.side_effect = ConnectionError("Node unreachable")
+        client.stub = client._stub
+
         errors = []
         for _ in range(5):
             try:
-                client = NodeClient.__new__(NodeClient)
-                client.host = "localhost"
-                client.port = 9999
-                client._stub = MagicMock()
-                client._stub.HealthCheck.side_effect = ConnectionError("Node unreachable")
                 client.health_check(timeout=1)
             except Exception as e:
                 errors.append(str(type(e).__name__))

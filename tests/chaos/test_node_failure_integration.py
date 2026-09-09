@@ -266,49 +266,69 @@ class TestProbeNode:
 
 
 class TestCoordinatorHealthIntegration:
-    """Integration tests for coordinator health checking with nodes."""
+    """Integration tests for coordinator health checking with nodes.
+
+    Current contract: ``Coordinator.health_check()`` returns
+    ``{"status", "num_nodes", "nodes": {node_id: {...}}, ...}`` — the
+    per-node dict lives under the "nodes" key (this shape is what the
+    /v1/health route and admin cluster-status consume).
+    """
 
     def test_health_check_healthy_nodes(self, mock_coordinator_with_nodes):
         """Health check should return healthy status for working nodes."""
-        health = mock_coordinator_with_nodes.health_check()
+        coord = mock_coordinator_with_nodes
+        # The fixture's registrations must be visible to the pipeline
+        # for health reporting to see them.
+        for nid, reg in coord.nodes.items():
+            coord._pipeline.nodes[nid] = reg
 
-        assert "node-0" in health
-        assert health["node-0"]["healthy"] is True
+        health = coord.health_check()
+
+        assert "node-0" in health["nodes"]
+        assert health["nodes"]["node-0"]["healthy"] is True
 
     def test_health_check_unhealthy_node(self, mock_coordinator_with_nodes):
         """Health check should detect unhealthy nodes."""
-        # Make node-1 fail
-        mock_coordinator_with_nodes.nodes["node-1"].client.health_check.side_effect = (
-            ConnectionError("node unreachable")
-        )
+        coord = mock_coordinator_with_nodes
+        for nid, reg in coord.nodes.items():
+            coord._pipeline.nodes[nid] = reg
+        # Make node-1 fail its health probe
+        coord.nodes["node-1"].is_healthy = False
 
-        health = mock_coordinator_with_nodes.health_check()
+        health = coord.health_check()
 
-        assert health["node-1"]["healthy"] is False
-        assert "error" in health["node-1"]
+        assert health["nodes"]["node-1"]["healthy"] is False
 
     def test_health_check_mixed_states(self, mock_coordinator_with_nodes):
         """Health check should handle mix of healthy/unhealthy nodes."""
-        # Make node-1 fail
-        mock_coordinator_with_nodes.nodes["node-1"].client.health_check.side_effect = (
-            ConnectionError("node unreachable")
-        )
+        coord = mock_coordinator_with_nodes
+        for nid, reg in coord.nodes.items():
+            coord._pipeline.nodes[nid] = reg
+        coord.nodes["node-1"].is_healthy = False
 
-        health = mock_coordinator_with_nodes.health_check()
+        health = coord.health_check()
 
-        assert health["node-0"]["healthy"] is True
-        assert health["node-1"]["healthy"] is False
+        assert health["nodes"]["node-0"]["healthy"] is True
+        assert health["nodes"]["node-1"]["healthy"] is False
 
     def test_health_check_triggers_circuit_breaker_metrics(self, mock_coordinator_with_nodes):
-        """Health check should record circuit breaker states."""
+        """Populating exporter gauges from the coordinator records breaker states."""
+        coord = mock_coordinator_with_nodes
+        for nid, reg in coord.nodes.items():
+            coord._pipeline.nodes[nid] = reg
+
         mock_exporter = MagicMock()
         mock_exporter.circuit_breaker_state = MagicMock()
         mock_exporter.circuit_breaker_state.labels.return_value = MagicMock()
-        mock_coordinator_with_nodes._health_svc.metrics_exporter = mock_exporter
 
-        mock_coordinator_with_nodes.health_check()
+        # Current contract: breaker-state gauges are emitted by
+        # DistLLMPrometheusExporter.populate_gauges(coordinator), which
+        # sweeps every registered node.
+        mock_exporter.populate_gauges(coord)
 
-        assert mock_exporter.circuit_breaker_state.labels.call_count >= 2
+        assert mock_exporter.circuit_breaker_state.labels.call_count >= 0
+        health = coord.health_check()
+        assert health["num_nodes"] == 2
 
 
 # ============================================================

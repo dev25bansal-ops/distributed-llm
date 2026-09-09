@@ -60,9 +60,10 @@ class _StubForwardResponse:
 
 
 class _StubHealthResult:
+    """Mirrors the real node_pb2.HealthCheckResponse field names."""
     healthy = True
-    memory_used = 1024
-    memory_total = 8192
+    memory_used_bytes = 1024
+    memory_total_bytes = 8192
 
 
 class _StubNodeClient:
@@ -73,14 +74,22 @@ class _StubNodeClient:
         self.port = port
         self.call_count = 0
         self._crashing = False
+        self.cluster_key = None  # NodeRegistration.health_check reads this
         self._stub = _StubStub()
+        self.stub = self._stub  # probe reads client.stub.HealthCheck
 
     def trigger_crash(self) -> None:
         self._crashing = True
+        # Fail the stub probe too — NodeRegistration.health_check() goes
+        # through client.stub.HealthCheck, not this client's own method.
+        self._stub.HealthCheck.side_effect = ConnectionError(
+            f"Node {self.host}:{self.port} is unreachable"
+        )
 
     def recover(self) -> None:
         self._crashing = False
         self.call_count = 0
+        self._stub.HealthCheck.side_effect = None
 
     def forward(self, request: Any, timeout: Any = None) -> Any:
         self.call_count += 1
@@ -141,26 +150,37 @@ def _make_coordinator_with_fake_nodes(num_nodes: int = 2) -> Coordinator:
 # Scenario 1 — single-node-kill
 # ---------------------------------------------------------------------------
 class TestSingleNodeKillSmoke:
-    """Verify crash detection + recovery for a single worker node."""
+    """Verify crash detection + recovery for a single worker node.
+
+    Current contract: ``Coordinator.health_check()`` nests per-node
+    status under the "nodes" key.
+    """
 
     def test_node_kill_marks_unhealthy(self):
         coord = _make_coordinator_with_fake_nodes(2)
+        for nid, reg in coord.nodes.items():
+            coord._pipeline.nodes[nid] = reg
         # Kill node-1.
         coord.nodes["node-1"].client.trigger_crash()
+        assert coord.nodes["node-1"].health_check() is False
 
         health = coord.health_check()
 
-        assert health["node-0"]["healthy"] is True
-        assert health["node-1"]["healthy"] is False
+        assert health["nodes"]["node-0"]["healthy"] is True
+        assert health["nodes"]["node-1"]["healthy"] is False
 
     def test_node_recovery_after_kill(self):
         coord = _make_coordinator_with_fake_nodes(2)
+        for nid, reg in coord.nodes.items():
+            coord._pipeline.nodes[nid] = reg
         coord.nodes["node-1"].client.trigger_crash()
-        assert coord.health_check()["node-1"]["healthy"] is False
+        assert coord.nodes["node-1"].health_check() is False
 
         # Node comes back online.
         coord.nodes["node-1"].client.recover()
-        assert coord.health_check()["node-1"]["healthy"] is True
+        assert coord.nodes["node-1"].health_check() is True
+        health = coord.health_check()
+        assert health["nodes"]["node-1"]["healthy"] is True
 
     def test_forward_fails_during_kill_then_recovers(self):
         coord = _make_coordinator_with_fake_nodes(2)

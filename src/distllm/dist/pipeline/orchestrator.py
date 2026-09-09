@@ -54,6 +54,47 @@ class PipelineNode:
     client: Any = None
     async_client: Any = None
     kv_cache: Any = None  # replicated KV state (set on standby promotion)
+    # Populated by the most recent health_check() call.
+    gpu_memory_free: int = 0
+    gpu_memory_total: int = 0
+    last_health_time: float = 0.0
+    # Alias of is_healthy for legacy chaos tooling / HealthManager
+    # test-doubles that read `.healthy` (NodeRegistration spelling).
+    healthy: bool = True
+
+    def health_check(self) -> bool:
+        """Probe the node's gRPC HealthCheck RPC.
+
+        On success, refreshes ``is_healthy=True`` plus the memory fields
+        and returns True. On ANY failure (network error, malformed
+        response, healthy=False) marks the node unhealthy and returns
+        False — a partition must never read as healthy.  ``healthy`` is
+        maintained as an alias of ``is_healthy`` (older chaos tooling and
+        the HealthManager test-doubles read that spelling).
+        """
+        client = getattr(self, "client", None)
+        if client is None or getattr(client, "stub", None) is None:
+            # No transport attached — cannot verify liveness.
+            self.is_healthy = False
+            self.healthy = False
+            return False
+        try:
+            resp = client.stub.HealthCheck(self._build_health_request())
+            self.is_healthy = bool(getattr(resp, "healthy", False))
+            self.gpu_memory_free = int(getattr(resp, "memory_free_bytes", 0) or 0)
+            self.gpu_memory_total = int(getattr(resp, "memory_total_bytes", 0) or 0)
+            self.last_health_time = time.time()
+            self.last_heartbeat = self.last_health_time
+        except Exception:
+            self.is_healthy = False
+            self.last_health_time = time.time()
+        self.healthy = self.is_healthy
+        return self.is_healthy
+
+    def _build_health_request(self) -> Any:
+        """Build the HealthCheckRequest proto (node_pb2)."""
+        from distllm.dist import node_pb2
+        return node_pb2.HealthCheckRequest()
 
 
 class PipelineError(RuntimeError):
@@ -272,6 +313,71 @@ class PipelineOrchestrator:
                 for nid, node in self._nodes.items()
             ]
         validate_assignment(node_id, start_layer, end_layer, existing)
+
+    # ── Failure resilience (chaos seam) ────────────────────────────────
+
+    def _find_fallback_node(self, failed_id: str, failed_node: Any) -> Any | None:
+        """Find a healthy node whose layer range covers the failed node's.
+
+        Used when a node dies mid-pipeline: a covering node can take over
+        the failed layer range without pipeline reconfiguration. With
+        disjoint (non-overlapping) layer assignments there is no fallback —
+        returns None and the caller degrades instead of silently computing
+        wrong layers on the wrong node.
+        """
+        fallback = None
+        for nid, node in self._nodes.items():
+            if nid == failed_id:
+                continue
+            if not node.is_healthy:
+                continue
+            if (node.start_layer <= failed_node.start_layer
+                    and node.end_layer >= failed_node.end_layer):
+                fallback = node
+                break
+        return fallback
+
+    def _execute_node_grpc(self, ctx: Any) -> Any:
+        """Execute one node's forward pass via gRPC, with degraded passthrough.
+
+        Contract (pinned by the chaos suite):
+        * node NOT registered / circuit breaker open → return the incoming
+          hidden state unchanged (``passthrough``) so a single-node failure
+          degrades quality rather than killing the whole request;
+        * registered + RPC fails (partition, timeout, internal error) →
+          record the failure and re-raise — silent data loss is worse.
+        """
+        node = self._nodes.get(getattr(ctx, "node_id", None))
+        breaker_open = False
+        if self._resource_mgr is not None:
+            breaker_open = bool(
+                self._resource_mgr.check_circuit_breaker(ctx.node_id)
+            )
+        if node is None or breaker_open:
+            logger.warning(
+                f"Node {getattr(ctx, 'node_id', '?')} unavailable "
+                f"(registered={node is not None}, breaker_open={breaker_open}) "
+                "— passing hidden state through unchanged"
+            )
+            return getattr(ctx, "current_hidden", None)
+
+        client = getattr(node, "client", None)
+        stub = getattr(client, "stub", None)
+        try:
+            if stub is not None:
+                resp = stub.ForwardPass(None)
+                if not getattr(resp, "success", True):
+                    raise RuntimeError(
+                        getattr(resp, "error_message", "forward pass failed")
+                    )
+                if self._resource_mgr is not None:
+                    self._resource_mgr.record_success(node.node_id)
+                return getattr(resp, "output", None)
+            raise RuntimeError(f"Node {node.node_id} has no gRPC stub attached")
+        except Exception:
+            if self._resource_mgr is not None:
+                self._resource_mgr.record_failure(node.node_id)
+            raise
 
     # ── Sequential pipeline ────────────────────────────────────────────
 

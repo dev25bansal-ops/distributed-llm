@@ -1,0 +1,83 @@
+{{- if .Values.monitoring.prometheusRules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-rules
+  labels:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    prometheus: k8s
+    role: alert-rules
+spec:
+  groups:
+    - name: distllm.alerts
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            sum(rate(distllm_errors_total[5m]))
+              / clamp_min(sum(rate(distllm_requests_total[5m])), 0.001) > 0.05
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "DistLLM error rate above 5%"
+        - alert: HighP99Latency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(distllm_request_latency_seconds_bucket[5m])) by (le)) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DistLLM p99 request latency above 2s"
+        - alert: NodeDown
+          expr: distllm_node_health == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "DistLLM node reported unhealthy for 5m"
+        - alert: LowThroughput
+          expr: distllm_tokens_per_second < 100
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DistLLM throughput below 100 tokens/s"
+        - alert: CacheHitRateDrop
+          expr: distllm_kv_cache_hit_rate < 0.2
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DistLLM KV cache hit rate below 20%"
+        - alert: KVCachePressure
+          expr: max(distllm_kv_cache_usage_ratio) > 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KV cache usage ratio above 90% — consider more workers or a larger cache"
+        - alert: DegradationActive
+          expr: distllm_circuit_breaker_state > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DistLLM degradation/circuit-breaker active"
+        - alert: GPUMemoryPressure
+          expr: |
+            distllm_node_gpu_memory_bytes
+              / clamp_min(distllm_node_gpu_memory_total_bytes, 1) > 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU memory above 90% on a node"
+        - alert: RateLimitViolations
+          expr: sum(rate(distllm_errors_total{code="429"}[5m])) > 1
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Sustained rate-limit rejections (429s)"
+{{- end }}

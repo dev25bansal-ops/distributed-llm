@@ -1,0 +1,53 @@
+{
+  "title": "DistLLM — GPU Fleet",
+  "uid": "distllm-gpu",
+  "schemaVersion": 39,
+  "editable": true,
+  "panels": [
+    {
+      "id": 1,
+      "title": "GPU memory used per node",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "distllm_node_gpu_memory_bytes", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "GPU memory total per node",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "distllm_node_gpu_memory_total_bytes", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "KV cache usage ratio",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "max(distllm_kv_cache_usage_ratio)", "legendFormat": "usage" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "KV cache hit rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "distllm_kv_cache_hit_rate", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Node health",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "distllm_node_health", "legendFormat": "{{node}}" }
+      ]
+    }
+  ]
+}
