@@ -58,9 +58,6 @@ class PipelineNode:
     gpu_memory_free: int = 0
     gpu_memory_total: int = 0
     last_health_time: float = 0.0
-    # Alias of is_healthy for legacy chaos tooling / HealthManager
-    # test-doubles that read `.healthy` (NodeRegistration spelling).
-    healthy: bool = True
 
     def health_check(self) -> bool:
         """Probe the node's gRPC HealthCheck RPC.
@@ -68,15 +65,15 @@ class PipelineNode:
         On success, refreshes ``is_healthy=True`` plus the memory fields
         and returns True. On ANY failure (network error, malformed
         response, healthy=False) marks the node unhealthy and returns
-        False — a partition must never read as healthy.  ``healthy`` is
-        maintained as an alias of ``is_healthy`` (older chaos tooling and
-        the HealthManager test-doubles read that spelling).
+        False — a partition must never read as healthy.  ``is_healthy``
+        is the canonical spelling on PipelineNode (``healthy`` is
+        NodeRegistration's field; a distinct attr here breaks the
+        hasattr contract pinned by tests/dist/test_wan_attrs.py).
         """
         client = getattr(self, "client", None)
         if client is None or getattr(client, "stub", None) is None:
             # No transport attached — cannot verify liveness.
             self.is_healthy = False
-            self.healthy = False
             return False
         try:
             resp = client.stub.HealthCheck(self._build_health_request())
@@ -88,7 +85,6 @@ class PipelineNode:
         except Exception:
             self.is_healthy = False
             self.last_health_time = time.time()
-        self.healthy = self.is_healthy
         return self.is_healthy
 
     def _build_health_request(self) -> Any:

@@ -38,7 +38,7 @@ class TestNodeKill:
         coord = chaos_coordinator
         rm = coord._resource_mgr
         node_id = "n0"
-        assert coord.nodes[node_id].healthy
+        assert coord.nodes[node_id].is_healthy
 
         rm.simulate_node_failure(node_id)
 
@@ -213,8 +213,8 @@ class TestNetworkPartition:
             side_effect=Exception("connection refused")
         )
         result = node.health_check()
-        assert not result
-        assert not node.healthy
+        assert result is False
+        assert node.is_healthy is False
 
     def test_partition_partial_message_loss(self, chaos_coordinator):
         import grpc
@@ -300,8 +300,8 @@ class TestNetworkPartition:
         rm._node_recovery_time["n0"] = time.time() - 1
         assert not rm.check_circuit_breaker("n0")
 
-        coord.nodes["n0"].healthy = True
-        assert coord.nodes["n0"].healthy
+        coord.nodes["n0"].is_healthy = True
+        assert coord.nodes["n0"].is_healthy
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +452,7 @@ class TestMemoryPressure:
         node = chaos_coordinator.nodes["n0"]
 
         def _mock_health(self):
-            self.healthy = True
+            self.is_healthy = True
             self.gpu_memory_free = 692
             self.last_health_time = __import__("time").time()
             return True
@@ -468,14 +468,14 @@ class TestMemoryPressure:
         node = chaos_coordinator.nodes["n0"]
 
         def _mock_health(self):
-            self.healthy = True
+            self.is_healthy = True
             self.gpu_memory_free = 7168
             self.last_health_time = __import__("time").time()
             return True
         monkeypatch.setattr(type(node), "health_check", _mock_health)
 
         assert node.health_check()
-        node.healthy = True
+        node.is_healthy = True
 
     def test_memory_pressure_node_drain(self, chaos_coordinator):
         coord = chaos_coordinator
@@ -554,7 +554,7 @@ class TestClockSkew:
         node = chaos_coordinator.nodes["n0"]
 
         def _mock_health(self):
-            self.healthy = True
+            self.is_healthy = True
             self.gpu_memory_free = 7168
             self.last_health_time = __import__("time").time()
             return True
@@ -580,7 +580,7 @@ class TestClockSkew:
         node = coord.nodes["n0"]
 
         def _mock_health(self):
-            self.healthy = True
+            self.is_healthy = True
             self.gpu_memory_free = 7168
             self.last_health_time = __import__("time").time()
             return True
@@ -591,7 +591,7 @@ class TestClockSkew:
         ))
 
         assert node.health_check()
-        assert node.healthy
+        assert node.is_healthy
         resp = node.client.stub.ForwardPass(MagicMock())
         assert resp.success
 
