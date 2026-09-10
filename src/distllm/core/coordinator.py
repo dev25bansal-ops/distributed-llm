@@ -579,6 +579,17 @@ class Coordinator:
         """Prefix cache for prompt deduplication (None when disabled)."""
         return self._cache_mgr.prefix_cache if self._cache_mgr is not None else None
 
+    @property
+    def local_partitioner(self) -> Any:
+        """Local model partitioner (None when no local model is loaded).
+
+        The partitioner is created by the engine's load_local_model, but the
+        API surface (embeddings route) and the local-generation fallback in
+        request_pipeline read it off the Coordinator — delegate so those
+        call sites see the loaded model.
+        """
+        return getattr(self._inference_engine, "local_partitioner", None)
+
     @prefix_cache.setter
     def prefix_cache(self, value: Any) -> None:
         if self._cache_mgr is not None:

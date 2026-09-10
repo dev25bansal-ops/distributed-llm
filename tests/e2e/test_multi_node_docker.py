@@ -123,14 +123,16 @@ class TestDesktopAppE2E:
         """Verify Tauri configuration exists."""
         from pathlib import Path
 
+        # Tauri project layout: tauri/ is the frontend root (package.json)
+        # with the Rust shell under tauri/src-tauri/.
         tauri_dir = Path("tauri")
         if not tauri_dir.exists():
             pytest.skip("Tauri directory not found")
 
         # Check for Tauri config files
         config_files = [
-            tauri_dir / "tauri.conf.json",
-            tauri_dir / "Cargo.toml",
+            tauri_dir / "src-tauri" / "tauri.conf.json",
+            tauri_dir / "src-tauri" / "Cargo.toml",
         ]
         existing = [f for f in config_files if f.exists()]
         assert len(existing) > 0, "No Tauri config files found"
@@ -142,7 +144,7 @@ class TestDesktopAppE2E:
         import json
         from pathlib import Path
 
-        config_path = Path("tauri") / "tauri.conf.json"
+        config_path = Path("tauri") / "src-tauri" / "tauri.conf.json"
         if not config_path.exists():
             pytest.skip("tauri.conf.json not found")
 

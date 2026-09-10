@@ -22,7 +22,7 @@ def test_single_node():
     from distllm.core.coordinator import Coordinator, CoordinatorConfig
 
     config = CoordinatorConfig(
-        model_name="Qwen/Qwen2.5-0.5B-Instruct",
+        model_name="roneneldan/TinyStories-1M",
         port=50050,
     )
     coord = Coordinator(config=config)
@@ -54,7 +54,7 @@ def test_multi_node_simulation():
     from distllm.core.coordinator import Coordinator, CoordinatorConfig
 
     config = CoordinatorConfig(
-        model_name="Qwen/Qwen2.5-0.5B-Instruct",
+        model_name="roneneldan/TinyStories-1M",
         port=50050,
     )
     coord = Coordinator(config=config)
