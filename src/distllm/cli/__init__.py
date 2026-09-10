@@ -23,7 +23,11 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     if name in ("app", "main"):
-        from distllm.cli import main as _main
+        # Import by file-path-keyed submodule (importlib.import_module with
+        # the DOTTED name re-enters this __getattr__ during the fromlist
+        # lookup and self-recurses to RecursionError).
+        import importlib
 
+        _main = importlib.import_module("distllm.cli.main")
         return getattr(_main, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
