@@ -419,3 +419,79 @@ class TestLearningRouterEdgeCases:
         lr = LearningRouter(base, models=["codellama", "llama3"])
         policy = lr._get_policy("nonexistent")
         assert isinstance(policy, dict)
+
+
+# ── NeuralBanditRouter: reward must drive training (BUG-3 regression) ────────
+
+
+class TestNeuralBanditRewardLearning:
+    """BUG-3 regression: record_outcome's reward must influence routing.
+
+    The old implementation trained plain cross_entropy on the chosen action
+    index — the net learned to imitate its own exploration distribution and
+    the reward signal had no gradient path.
+    """
+
+    def _router(self):
+        torch = pytest.importorskip("torch")
+        torch.manual_seed(0)
+        return _lr.NeuralBanditRouter(
+            base_router=object(),  # only consulted below the sample threshold
+            models=["fast-model", "smart-model"],
+            min_samples_for_training=5,
+            batch_size=8,
+            lr=5e-3,
+            device="cpu",
+        ), torch
+
+    def test_reward_shifts_routing_preference(self):
+        router, torch = self._router()
+        prompt = "summarize this quarterly report"
+
+        def greedy_pick(text: str) -> str:
+            # Learned policy = argmax of the net (Thompson noise removed).
+            with torch.no_grad():
+                idx = int(router._net(router._encode(text).unsqueeze(0)).argmax())
+            return router._models[idx]
+
+        # Teach: fast-model earns reward 1.0 on this prompt, smart-model 0.0.
+        for _ in range(15):
+            router.record_outcome("fast-model", reward=1.0, text=prompt)
+            router.record_outcome("smart-model", reward=0.0, text=prompt)
+        assert router._train_count > 0
+        assert greedy_pick(prompt) == "fast-model"
+
+        picks = [router.route(prompt) for _ in range(30)]
+        fast = picks.count("fast-model")
+        assert fast > 21, f"expected strong preference for rewarded model, got {fast}/30"
+
+        # Flip the rewards: smart-model now earns more. The learned policy
+        # must move off fast-model (old replay samples decay as capacity
+        # cycles and the fresh rewards dominate the advantage baseline).
+        for _ in range(100):
+            router.record_outcome("fast-model", reward=0.0, text=prompt)
+            router.record_outcome("smart-model", reward=1.0, text=prompt)
+        assert greedy_pick(prompt) == "smart-model"
+
+    def test_equal_rewards_leave_loss_at_zero_but_do_not_crash(self):
+        router, _ = self._router()
+        for i in range(20):
+            router.record_outcome("fast-model", reward=0.5, text=f"prompt {i}")
+            router.record_outcome("smart-model", reward=0.5, text=f"prompt {i}")
+        assert router._train_count > 0
+        assert router.stats["replay_buffer_size"] == 40
+
+    def test_negative_vs_positive_reward_distinguishes_models(self):
+        router, _ = self._router()
+        # Symmetric exploration: both models chosen equally often per prompt,
+        # but only one is ever rewarded.
+        for i in range(40):
+            text = f"doc {i % 4}"
+            router.record_outcome("fast-model", reward=1.0, text=text)
+            router.record_outcome("smart-model", reward=-1.0, text=text)
+
+        rewarded = 0
+        for i in range(40):
+            if router.route(f"doc {i % 4}") == "fast-model":
+                rewarded += 1
+        assert rewarded > 24, f"rewarded arm should win most routes, got {rewarded}/40"
