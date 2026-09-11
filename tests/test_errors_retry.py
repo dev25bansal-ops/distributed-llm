@@ -1,6 +1,7 @@
 """Tests for retry utilities — RetryPolicy, with_retry, with_retry_async, retry_grpc_call."""
 
 import asyncio
+import random
 import time
 from unittest.mock import patch, MagicMock
 
@@ -132,12 +133,14 @@ class TestWithRetrySync:
     @patch("distllm.errors.retry.time.sleep", return_value=None)
     def test_exponential_backoff_delays(self, mock_sleep):
         """Should compute delays: base * multiplier^attempt, capped at max_delay."""
+        # jitter=0 pins the deterministic backoff curve under test
         policy = RetryPolicy(
             max_retries=3,
             base_delay=1.0,
             max_delay=10.0,
             backoff_multiplier=2.0,
             retryable=(IOError,),
+            jitter=0.0,
         )
 
         @with_retry(policy)
@@ -277,12 +280,14 @@ class TestWithRetryAsync:
     @pytest.mark.asyncio
     @patch("distllm.errors.retry.asyncio.sleep", return_value=None)
     async def test_exponential_backoff_delays(self, mock_sleep):
+        # jitter=0 pins the deterministic backoff curve under test
         policy = RetryPolicy(
             max_retries=3,
             base_delay=1.0,
             max_delay=10.0,
             backoff_multiplier=2.0,
             retryable=(TimeoutError,),
+            jitter=0.0,
         )
 
         @with_retry_async(policy)
@@ -391,6 +396,7 @@ class TestRetryGrpcCall:
                 base_delay=1.0,
                 max_delay=10.0,
                 retryable_exceptions=(TransientError,),
+                jitter=0.0,  # pin the deterministic curve under test
             )
 
         expected_delays = [1.0, 2.0, 4.0]
@@ -412,3 +418,27 @@ class TestRetryGrpcCall:
             fn = MagicMock(side_effect=[mock_rpc_error("fail"), "ok"])
             result = retry_mod.retry_grpc_call(fn, max_retries=1, base_delay=0.01)
             assert result == "ok"
+
+
+class TestJitter:
+    """CQ-2: equal-jitter decorrelates concurrent retries; 0 stays deterministic."""
+
+    def test_jitter_zero_is_exact_backoff(self):
+        random.seed(1234)
+        policy = RetryPolicy(base_delay=2.0, backoff_multiplier=2.0, max_delay=100.0, jitter=0.0)
+        assert [policy.delay_for_attempt(a) for a in range(4)] == [2.0, 4.0, 8.0, 16.0]
+
+    def test_jitter_stays_in_bounds(self):
+        random.seed(7)
+        policy = RetryPolicy(base_delay=1.0, backoff_multiplier=2.0, max_delay=8.0, jitter=0.5)
+        for attempt in range(8):
+            for _ in range(200):
+                d = policy.delay_for_attempt(attempt)
+                capped = min(1.0 * 2 ** attempt, 8.0)
+                assert capped * 0.5 <= d <= capped + 1e-9
+
+    def test_jitter_decorrelates_concurrent_failures(self):
+        random.seed(42)
+        policy = RetryPolicy(base_delay=4.0, backoff_multiplier=1.0, max_delay=60.0, jitter=0.5)
+        samples = {round(policy.delay_for_attempt(0), 6) for _ in range(100)}
+        assert len(samples) > 10  # same failure moment, many distinct delays
