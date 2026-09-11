@@ -9,6 +9,8 @@ import time
 from rich.console import Console
 from rich.panel import Panel
 
+import httpx
+
 console = Console()
 
 
@@ -45,8 +47,6 @@ def run_deploy(
         hf_token: HuggingFace API token for gated models.
         auto_partition: If True, auto-calculate optimal layer partitioning.
     """
-    import httpx
-
     # One-line HuggingFace deploy: estimate model parameters
     if "/" in model:
         console.print(Panel(
@@ -231,7 +231,7 @@ def _deploy_local(model: str, dtype: str, quantization: str, nodes: int, console
             prompt="",
             console=console,
         )
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         console.print(f"[red]Local deployment failed: {e}[/red]")
 
 

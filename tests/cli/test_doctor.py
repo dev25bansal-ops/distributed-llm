@@ -14,8 +14,8 @@ class TestCheckCUDA:
         results = _check_cuda()
         assert isinstance(results, list)
         assert len(results) > 0
-        # Should always have torch version check
-        assert any(r["check"] == "torch version" for r in results)
+        # Should always have the PyTorch version check
+        assert any(r["check"] == "PyTorch version" for r in results)
 
     def test_cuda_check_has_status_fields(self):
         from distllm.cli.doctor import _check_cuda
@@ -41,7 +41,15 @@ class TestCheckPorts:
         from distllm.cli.doctor import _check_ports
 
         results = _check_ports()
-        assert len(results) == 5  # 50050, 50051, 50052, 50060, 8000
+        assert len(results) == 6  # 50050, 50051, 50052, 50060, 8000, 8500
+        assert [r["check"] for r in results] == [
+            "port 50050",
+            "port 50051",
+            "port 50052",
+            "port 50060",
+            "port 8000",
+            "port 8500",  # dashboard port (DASHBOARD_PORT)
+        ]
 
     def test_check_ports_custom(self):
         from distllm.cli.doctor import _check_ports
@@ -89,29 +97,44 @@ class TestCheckDisk:
         from distllm.cli.doctor import _check_disk
 
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.disk_usage", return_value=MagicMock(free=50e9)):
+            with patch("shutil.disk_usage", return_value=MagicMock(free=100e9)):
                 results = _check_disk()
+                # 3-band ladder: ok requires > 50 GB free
                 assert any(r["status"] == "ok" for r in results)
 
     def test_check_disk_low_space(self):
         from distllm.cli.doctor import _check_disk
 
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.disk_usage", return_value=MagicMock(free=5e9)):
+            # 10 GB < free <= 50 GB → warn
+            with patch("shutil.disk_usage", return_value=MagicMock(free=20e9)):
                 results = _check_disk()
                 assert any(r["status"] == "warn" for r in results)
+
+            # <= 10 GB free → error (critical, cannot fit a model)
+            with patch("shutil.disk_usage", return_value=MagicMock(free=5e9)):
+                results = _check_disk()
+                assert any(r["status"] == "error" for r in results)
 
 
 class TestPrintResults:
     def test_print_results(self, capsys):
-        from distllm.cli.doctor import _print_results
+        import argparse
+
+        from distllm.cli.doctor import Doctor
+
+        args = argparse.Namespace(
+            gpu=False, network=False, model=None, nodes=None,
+            json=False, terse=False, verbose=False,
+        )
+        doctor = Doctor(args)
 
         results = [
             {"check": "test", "status": "ok", "value": "42"},
             {"check": "warn_test", "status": "warn", "value": "low"},
             {"check": "err_test", "status": "error", "value": "bad"},
         ]
-        _print_results("Test Category", results)
+        doctor._render_category("Test Category", results)
         captured = capsys.readouterr()
         assert "Test Category" in captured.out
         assert "test" in captured.out

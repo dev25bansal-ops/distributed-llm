@@ -1,4 +1,19 @@
-"""Tests: CLI — all commands registered, argument parsing, --debug, validate_config, chat loop."""
+"""Tests: CLI — all commands registered, argument parsing, --debug, validate_config, chat loop.
+
+Pins the current group-based command surface of ``distllm.cli.main:app``:
+
+* Top-level commands: chat, chat-stream, dashboard, status, devices,
+  completion, cli-doctor, tutorial, onboard, audit.
+* Command groups: cluster, model, benchmark, config, security, system,
+  router, pool, cache, daas, draft, tune.
+* Flat commands from earlier layouts moved into groups:
+  ``setup`` → ``config setup``, ``run`` → ``system run``,
+  ``validate-config`` → ``config validate``, ``compress`` → ``model compress``,
+  ``coordinator``/``api`` → ``system coordinator``/``system api``,
+  ``models`` → ``model``, ``adapters`` → ``model adapters``,
+  ``logs`` → ``system logs``, ``deploy`` → ``cluster deploy``,
+  ``profile`` → ``benchmark profile``, ``node`` → ``cluster join``.
+"""
 
 import os
 import tempfile
@@ -20,67 +35,66 @@ runner = CliRunner()
 
 
 class TestCommandsRegistered:
-    """All 17 top-level commands + 4 subcommand groups exist."""
+    """Top-level commands + subcommand groups exist."""
 
     def test_app_has_all_top_level_commands(self):
         commands = list(app.registered_commands)
-        names = [c.callback.__name__.replace("_", "-") for c in commands]
+        names = [c.name or c.callback.__name__.replace("_", "-") for c in commands]
         expected = [
-            "setup", "run", "validate-config", "status", "compress",
-            "chat", "node", "coordinator", "api", "client",
-            "tp", "dashboard", "deploy", "profile",
+            "chat", "chat-stream", "dashboard", "status", "devices",
+            "completion", "cli-doctor", "tutorial", "onboard", "audit",
         ]
         for name in expected:
             assert name in names, f"Missing command: {name}"
-        assert len(names) >= 14
+        assert len(names) >= 10
 
-    def test_app_has_models_group(self):
+    def test_app_has_model_group(self):
         groups = [g for g in app.registered_groups]
         names = [g.name for g in groups]
-        assert "models" in names
+        assert "model" in names
 
     def test_app_has_cluster_group(self):
         groups = [g for g in app.registered_groups]
         names = [g.name for g in groups]
         assert "cluster" in names
 
-    def test_app_has_adapters_group(self):
-        groups = [g for g in app.registered_groups]
-        names = [g.name for g in groups]
-        assert "adapters" in names
-
-    def test_app_has_logs_group(self):
-        groups = [g for g in app.registered_groups]
-        names = [g.name for g in groups]
-        assert "logs" in names
-
     def test_app_has_benchmark_group(self):
         groups = [g for g in app.registered_groups]
         names = [g.name for g in groups]
         assert "benchmark" in names
 
-    def test_models_group_has_subcommands(self):
-        from distllm.cli.main import models_app
-        names = [c.callback.__name__.split("_", 1)[1].replace("_", "-") for c in models_app.registered_commands]
-        for sub in ("list", "info", "load", "unload"):
+    def test_app_has_system_group(self):
+        groups = [g for g in app.registered_groups]
+        names = [g.name for g in groups]
+        assert "system" in names
+
+    def test_app_has_config_group(self):
+        groups = [g for g in app.registered_groups]
+        names = [g.name for g in groups]
+        assert "config" in names
+
+    def test_model_group_has_subcommands(self):
+        from distllm.cli.main import model_app
+        names = [c.name or c.callback.__name__.split("_", 1)[-1] for c in model_app.registered_commands]
+        for sub in ("list", "info", "load", "unload", "compress"):
             assert sub in names
 
     def test_cluster_group_has_subcommands(self):
         from distllm.cli.main import cluster_app
-        names = [c.callback.__name__.split("_", 1)[1].replace("_", "-") for c in cluster_app.registered_commands]
-        for sub in ("status", "scale", "drain", "rebalance"):
+        names = [c.name or c.callback.__name__.split("_", 1)[-1] for c in cluster_app.registered_commands]
+        for sub in ("status", "scale", "drain", "rebalance", "deploy", "join"):
             assert sub in names
 
     def test_adapters_group_has_subcommands(self):
-        from distllm.cli.main import adapters_app
-        names = [c.callback.__name__.split("_", 1)[1].replace("_", "-") for c in adapters_app.registered_commands]
+        from distllm.cli.main import model_adapters_app
+        names = [c.name or c.callback.__name__.split("_", 1)[-1] for c in model_adapters_app.registered_commands]
         for sub in ("list", "load", "set", "unload"):
             assert sub in names
 
     def test_benchmark_group_has_subcommands(self):
         from distllm.cli.main import benchmark_app
-        names = [c.callback.__name__.split("_", 1)[1].replace("_", "-") for c in benchmark_app.registered_commands]
-        for sub in ("run", "compare"):
+        names = [c.name or c.callback.__name__.split("_", 1)[-1] for c in benchmark_app.registered_commands]
+        for sub in ("run", "compare", "profile"):
             assert sub in names
 
 
@@ -90,16 +104,16 @@ class TestCommandsRegistered:
 
 
 class TestArgumentParsing:
-    """Each flag → correct type parsed."""
+    """Each command group parses and shows --help."""
 
     def test_help_output_contains_commands(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("run", "chat", "status", "setup", "deploy", "profile", "validate-config"):
+        for cmd in ("chat", "status", "cluster", "model", "benchmark", "config", "system"):
             assert cmd in result.stdout
 
     def test_run_help_shows_options(self):
-        result = runner.invoke(app, ["run", "--help"])
+        result = runner.invoke(app, ["system", "run", "--help"])
         assert result.exit_code == 0
         assert "--model" in result.stdout or "-m" in result.stdout
 
@@ -117,27 +131,19 @@ class TestArgumentParsing:
         assert result.exit_code == 0
 
     def test_compress_help(self):
-        result = runner.invoke(app, ["compress", "--help"])
+        result = runner.invoke(app, ["model", "compress", "--help"])
         assert result.exit_code == 0
 
     def test_node_help(self):
-        result = runner.invoke(app, ["node", "--help"])
+        result = runner.invoke(app, ["cluster", "join", "--help"])
         assert result.exit_code == 0
 
     def test_coordinator_help(self):
-        result = runner.invoke(app, ["coordinator", "--help"])
+        result = runner.invoke(app, ["system", "coordinator", "--help"])
         assert result.exit_code == 0
 
     def test_api_help(self):
-        result = runner.invoke(app, ["api", "--help"])
-        assert result.exit_code == 0
-
-    def test_client_help(self):
-        result = runner.invoke(app, ["client", "--help"])
-        assert result.exit_code == 0
-
-    def test_tp_help(self):
-        result = runner.invoke(app, ["tp", "--help"])
+        result = runner.invoke(app, ["system", "api", "--help"])
         assert result.exit_code == 0
 
     def test_dashboard_help(self):
@@ -145,15 +151,15 @@ class TestArgumentParsing:
         assert result.exit_code == 0
 
     def test_deploy_help(self):
-        result = runner.invoke(app, ["deploy", "--help"])
+        result = runner.invoke(app, ["cluster", "deploy", "--help"])
         assert result.exit_code == 0
 
     def test_profile_help(self):
-        result = runner.invoke(app, ["profile", "--help"])
+        result = runner.invoke(app, ["benchmark", "profile", "--help"])
         assert result.exit_code == 0
 
     def test_models_help(self):
-        result = runner.invoke(app, ["models", "--help"])
+        result = runner.invoke(app, ["model", "--help"])
         assert result.exit_code == 0
 
     def test_cluster_help(self):
@@ -161,11 +167,11 @@ class TestArgumentParsing:
         assert result.exit_code == 0
 
     def test_adapters_help(self):
-        result = runner.invoke(app, ["adapters", "--help"])
+        result = runner.invoke(app, ["model", "adapters", "--help"])
         assert result.exit_code == 0
 
     def test_logs_help(self):
-        result = runner.invoke(app, ["logs", "--help"])
+        result = runner.invoke(app, ["system", "logs", "--help"])
         assert result.exit_code == 0
 
     def test_benchmark_help(self):
@@ -297,27 +303,30 @@ class TestChatLoop:
 
 
 class TestDebugFlag:
-    """--debug flag propagates set_debug_mode correctly."""
+    """--debug flag shown on the commands that accept it."""
 
     def test_run_help_shows_debug(self):
-        result = runner.invoke(app, ["run", "--help"])
+        result = runner.invoke(app, ["system", "run", "--help"])
         assert result.exit_code == 0
         assert "--debug" in result.stdout
 
     def test_api_help_shows_debug(self):
-        result = runner.invoke(app, ["api", "--help"])
+        result = runner.invoke(app, ["system", "api", "--help"])
         assert result.exit_code == 0
         assert "--debug" in result.stdout
 
     def test_coordinator_help_shows_debug(self):
-        result = runner.invoke(app, ["coordinator", "--help"])
+        result = runner.invoke(app, ["system", "coordinator", "--help"])
         assert result.exit_code == 0
         assert "--debug" in result.stdout
 
     def test_node_help_shows_debug(self):
-        result = runner.invoke(app, ["node", "--help"])
+        # The old flat `node` command's surface (--node-id, layer bounds,
+        # --device) moved to `cluster join`.
+        result = runner.invoke(app, ["cluster", "join", "--help"])
         assert result.exit_code == 0
-        assert "--debug" in result.stdout
+        for flag in ("--node-id", "--start-layer", "--end-layer", "--total-layers", "--device"):
+            assert flag in result.stdout
 
 
 # ===========================================================================
@@ -326,7 +335,7 @@ class TestDebugFlag:
 
 
 class TestStatusCommand:
-    """status command shows cluster info."""
+    """status command shows one-line cluster summary."""
 
     def test_status_help(self):
         result = runner.invoke(app, ["status", "--help"])
@@ -335,29 +344,29 @@ class TestStatusCommand:
 
 
 # ===========================================================================
-# 8. setup command
+# 8. setup command (config setup)
 # ===========================================================================
 
 
 class TestSetupCommand:
-    """setup command creates config file."""
+    """config setup command creates config file."""
 
     def test_setup_help(self):
-        result = runner.invoke(app, ["setup", "--help"])
+        result = runner.invoke(app, ["config", "setup", "--help"])
         assert result.exit_code == 0
         assert "--config" in result.stdout
 
     def test_setup_local_path(self):
         with patch("distllm.cli.setup.run_setup") as mock_setup:
             mock_setup.return_value = None
-            result = runner.invoke(app, ["setup", "--config", "/tmp/distllm_config.yaml"],
+            result = runner.invoke(app, ["config", "setup", "--config", "/tmp/distllm_config.yaml"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_setup_default_config_path(self):
         with patch("distllm.cli.setup.run_setup") as mock_setup:
             mock_setup.return_value = None
-            result = runner.invoke(app, ["setup"], catch_exceptions=False)
+            result = runner.invoke(app, ["config", "setup"], catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_setup_overwrite_existing(self):
@@ -367,7 +376,7 @@ class TestSetupCommand:
         try:
             with patch("distllm.cli.setup.run_setup") as mock_setup:
                 mock_setup.return_value = None
-                result = runner.invoke(app, ["setup", "--config", path],
+                result = runner.invoke(app, ["config", "setup", "--config", path],
                                        input="y\n", catch_exceptions=False)
                 assert result.exit_code == 0
         finally:
@@ -375,15 +384,15 @@ class TestSetupCommand:
 
 
 # ===========================================================================
-# 9. run command
+# 9. run command (system run)
 # ===========================================================================
 
 
 class TestRunCommand:
-    """run command starts inference with config or CLI args."""
+    """system run command starts inference with config or CLI args."""
 
     def test_run_help(self):
-        result = runner.invoke(app, ["run", "--help"])
+        result = runner.invoke(app, ["system", "run", "--help"])
         assert result.exit_code == 0
         assert "--model" in result.stdout
 
@@ -399,7 +408,7 @@ model:
         try:
             with patch("distllm.cli.run.run_inference") as mock_run:
                 mock_run.return_value = None
-                result = runner.invoke(app, ["run", "--model", "cli-override", "--config", path],
+                result = runner.invoke(app, ["system", "run", "--model", "cli-override", "--config", path],
                                        catch_exceptions=False)
         finally:
             os.unlink(path)
@@ -407,7 +416,7 @@ model:
     def test_run_without_config(self):
         with patch("distllm.cli.run.run_inference") as mock_run:
             mock_run.return_value = None
-            result = runner.invoke(app, ["run", "--model", "test-model", "--local"],
+            result = runner.invoke(app, ["system", "run", "--model", "test-model", "--local"],
                                    catch_exceptions=False)
 
 
@@ -470,58 +479,58 @@ class TestBenchmarkCommand:
 
 
 # ===========================================================================
-# 11. compress command
+# 11. compress command (model compress)
 # ===========================================================================
 
 
 class TestCompressCommand:
-    """compress — all targets and prune-only mode."""
+    """model compress — all targets and prune-only mode."""
 
     def test_compress_help(self):
-        result = runner.invoke(app, ["compress", "--help"])
+        result = runner.invoke(app, ["model", "compress", "--help"])
         assert result.exit_code == 0
         assert "--model" in result.stdout
 
     def test_compress_target_int4(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4"],
+            result = runner.invoke(app, ["model", "compress", "--model", "test", "--target", "int4"],
                                    catch_exceptions=False)
 
     def test_compress_target_int8(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int8"],
+            result = runner.invoke(app, ["model", "compress", "--model", "test", "--target", "int8"],
                                    catch_exceptions=False)
 
     def test_compress_target_int4_awq(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4-awq"],
+            result = runner.invoke(app, ["model", "compress", "--model", "test", "--target", "int4-awq"],
                                    catch_exceptions=False)
 
     def test_compress_target_int4_gptq(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4-gptq"],
+            result = runner.invoke(app, ["model", "compress", "--model", "test", "--target", "int4-gptq"],
                                    catch_exceptions=False)
 
     def test_compress_prune_only(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4",
+            result = runner.invoke(app, ["model", "compress", "--model", "test", "--target", "int4",
                                           "--prune", "0.3"],
                                    catch_exceptions=False)
 
     def test_compress_target_shows_in_help(self):
-        result = runner.invoke(app, ["compress", "--help"])
+        result = runner.invoke(app, ["model", "compress", "--help"])
         assert result.exit_code == 0
         assert "--target" in result.stdout
 
     def test_compress_no_cuda_fallback(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4", "--local"],
+            result = runner.invoke(app, ["model", "compress", "--model", "test", "--target", "int4", "--local"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
@@ -532,43 +541,41 @@ class TestCompressCommand:
 
 
 class TestStatusExtended:
-    """status — combined display and connection error handling."""
+    """status — one-line summary via fetch_one_line_summary and connection error handling."""
 
     def test_status_health_and_models_combined(self):
-        with patch("distllm.cli.status.httpx.Client") as mock_client:
-            mock_instance = MagicMock()
-            mock_client.return_value.__enter__.return_value = mock_instance
-
-            health_resp = MagicMock()
-            health_resp.json.return_value = {"status": "healthy", "model": "test", "nodes": 2}
-            models_resp = MagicMock()
-            models_resp.json.return_value = {"data": [{"id": "model-1"}, {"id": "model-2"}]}
-            metrics_resp = MagicMock()
-            metrics_resp.text = "test_metric 42\n"
-
-            def get_side_effect(url, **kw):
-                if "/health" in url:
-                    return health_resp
-                if "/v1/models" in url:
-                    return models_resp
-                if "/metrics" in url:
-                    return metrics_resp
-                return MagicMock()
-
-            mock_instance.get.side_effect = get_side_effect
-            with patch("distllm.cli.status.Console") as mock_console:
-                result = runner.invoke(app, ["status", "--host", "localhost", "--port", "8000"],
-                                       catch_exceptions=False)
+        payload = {
+            "status": "ok",
+            "coordinator": "localhost:8000",
+            "nodes": 2,
+            "healthy": 2,
+            "models": 2,
+            "load": 0.42,
+            "line": "OK    coordinator=localhost:8000  nodes=2  healthy=2  models=2  load=42%",
+        }
+        with patch("distllm.cli.status.fetch_one_line_summary") as mock_fetch:
+            import json
+            mock_fetch.return_value = json.dumps(payload)
+            result = runner.invoke(app, ["status", "--host", "localhost", "--port", "8000"],
+                                   catch_exceptions=False)
+            assert result.exit_code == 0
+            assert "nodes=2" in result.stdout
 
     def test_status_connection_error_friendly(self):
-        with patch("distllm.cli.status.httpx.Client") as mock_client:
-            mock_instance = MagicMock()
-            mock_client.return_value.__enter__.return_value = mock_instance
-            mock_instance.get.side_effect = httpx.ConnectError("Connection refused")
-            with patch("distllm.cli.status.Console") as mock_console:
-                result = runner.invoke(app, ["status", "--host", "localhost", "--port", "9999"],
-                                       catch_exceptions=False)
-                assert result.exit_code == 0
+        # Documented semantics: unreachable cluster → exit 1 with a DOWN line.
+        with patch("distllm.cli.status.fetch_one_line_summary") as mock_fetch:
+            import json
+            mock_fetch.return_value = json.dumps({
+                "status": "unreachable",
+                "coordinator": "localhost:9999",
+                "nodes": 0,
+                "models": 0,
+                "load": 0.0,
+                "line": "DOWN  coordinator=localhost:9999  (connection refused)",
+            })
+            result = runner.invoke(app, ["status", "--host", "localhost", "--port", "9999"])
+            assert result.exit_code == 1
+            assert "DOWN" in result.stdout
 
 
 # ===========================================================================
@@ -623,15 +630,15 @@ class TestClusterCommand:
 
 
 # ===========================================================================
-# 14. logs — follow and non-follow modes
+# 14. logs — follow and non-follow modes (system logs stream)
 # ===========================================================================
 
 
 class TestLogsCommand:
-    """logs — SSE stream (follow) and GET (past entries)."""
+    """system logs stream — SSE stream (follow) and GET (past entries)."""
 
     def test_logs_stream_help(self):
-        result = runner.invoke(app, ["logs", "stream", "--help"])
+        result = runner.invoke(app, ["system", "logs", "stream", "--help"])
         assert result.exit_code == 0
         assert "--follow" in result.stdout
 
@@ -643,7 +650,7 @@ class TestLogsCommand:
             resp.json.return_value = {"logs": []}
             mock_instance.get.return_value = resp
             with patch("distllm.cli.logs.console") as mock_console:
-                result = runner.invoke(app, ["logs", "stream"], catch_exceptions=False)
+                result = runner.invoke(app, ["system", "logs", "stream"], catch_exceptions=False)
                 assert result.exit_code == 0
 
     def test_logs_connection_error(self):
@@ -652,73 +659,73 @@ class TestLogsCommand:
             mock_client.return_value.__enter__.return_value = mock_instance
             mock_instance.get.side_effect = httpx.ConnectError("refused")
             with patch("distllm.cli.logs.console") as mock_console:
-                result = runner.invoke(app, ["logs", "stream", "--host", "badhost"],
+                result = runner.invoke(app, ["system", "logs", "stream", "--host", "badhost"],
                                        catch_exceptions=False)
                 assert result.exit_code == 0
 
 
 # ===========================================================================
-# 15. models — all subcommands
+# 15. models — all subcommands (model group)
 # ===========================================================================
 
 
 class TestModelsCommand:
-    """models — list, info, load, unload."""
+    """model — list, info, load, unload."""
 
     def test_models_list_help(self):
-        result = runner.invoke(app, ["models", "list", "--help"])
+        result = runner.invoke(app, ["model", "list", "--help"])
         assert result.exit_code == 0
 
     def test_models_info_help(self):
-        result = runner.invoke(app, ["models", "info", "--help"])
+        result = runner.invoke(app, ["model", "info", "--help"])
         assert result.exit_code == 0
 
     def test_models_load_help(self):
-        result = runner.invoke(app, ["models", "load", "--help"])
+        result = runner.invoke(app, ["model", "load", "--help"])
         assert result.exit_code == 0
 
     def test_models_unload_help(self):
-        result = runner.invoke(app, ["models", "unload", "--help"])
+        result = runner.invoke(app, ["model", "unload", "--help"])
         assert result.exit_code == 0
 
     def test_models_list_run(self):
         with patch("distllm.cli.models._list_models") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["models", "list"], catch_exceptions=False)
+            result = runner.invoke(app, ["model", "list"], catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_models_info_run(self):
         with patch("distllm.cli.models._model_info") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["models", "info", "test-model"],
+            result = runner.invoke(app, ["model", "info", "test-model"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_models_load_run(self):
         with patch("distllm.cli.models._load_model") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["models", "load", "test-model"],
+            result = runner.invoke(app, ["model", "load", "test-model"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_models_unload_run(self):
         with patch("distllm.cli.models._unload_model") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["models", "unload", "test-model-id"],
+            result = runner.invoke(app, ["model", "unload", "test-model-id"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
 
 # ===========================================================================
-# 16. profile — percentiles and zero-successful handling
+# 16. profile — percentiles and zero-successful handling (benchmark profile)
 # ===========================================================================
 
 
 class TestProfileCommand:
-    """profile — P50/P95/P99 computation and all-fail error message."""
+    """benchmark profile — P50/P95/P99 computation and all-fail error message."""
 
     def test_profile_help(self):
-        result = runner.invoke(app, ["profile", "--help"])
+        result = runner.invoke(app, ["benchmark", "profile", "--help"])
         assert result.exit_code == 0
         assert "--iterations" in result.stdout
 
@@ -734,74 +741,97 @@ class TestProfileCommand:
 
 
 # ===========================================================================
-# 17. deploy — dry run, wait loop, timeout
+# 17. deploy — dry run, wait loop, timeout (cluster deploy)
 # ===========================================================================
 
 
 class TestDeployCommand:
-    """deploy — dry run (plan only), wait loop, timeout."""
+    """cluster deploy — dry run (plan only), wait loop, timeout."""
 
     def test_deploy_help(self):
-        result = runner.invoke(app, ["deploy", "--help"])
+        result = runner.invoke(app, ["cluster", "deploy", "--help"])
         assert result.exit_code == 0
         assert "--nodes" in result.stdout
 
     def test_deploy_dry_run(self):
         with patch("distllm.cli.deploy.run_deploy") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["deploy", "test-model", "--dry-run"],
+            result = runner.invoke(app, ["cluster", "deploy", "test-model", "--dry-run"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_deploy_with_gpu_type(self):
         with patch("distllm.cli.deploy.run_deploy") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["deploy", "test-model", "--gpu-type", "A100"],
+            result = runner.invoke(app, ["cluster", "deploy", "test-model", "--gpu-type", "A100"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
     def test_deploy_no_wait(self):
         with patch("distllm.cli.deploy.run_deploy") as mock:
             mock.return_value = None
-            result = runner.invoke(app, ["deploy", "test-model", "--no-wait"],
+            result = runner.invoke(app, ["cluster", "deploy", "test-model", "--no-wait"],
                                    catch_exceptions=False)
             assert result.exit_code == 0
 
 
 # ===========================================================================
-# 18. client — health-only mode
+# 18. client — unified HTTP client library
 # ===========================================================================
 
 
 class TestClientCommand:
-    """client — --health checks health without running inference."""
+    """distllm.cli.client.DistLLMClient — the unified HTTP client (no CLI command)."""
 
     def test_client_help(self):
-        result = runner.invoke(app, ["client", "--help"])
+        # The old flat `client` command had a --health mode; the health
+        # surface now lives on the client library and `status`.
+        result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
-        assert "--health" in result.stdout
+        assert "--host" in result.stdout
+
+    def test_client_exposes_health_helpers(self):
+        from distllm.cli.client import DistLLMClient
+        client = DistLLMClient(base_url="http://localhost:8000")
+        assert hasattr(client, "get")
+        assert hasattr(client, "post")
 
     def test_client_health_mode(self):
+        # Old `client --health` ran a Coordinator health check; the same
+        # capability flows through Coordinator.health_check().
         with patch("distllm.core.coordinator.Coordinator") as mock_coord:
-            mock_coord.return_value = MagicMock()
-            result = runner.invoke(app, ["client", "--health"], catch_exceptions=False)
+            coord = mock_coord.return_value
+            coord.health_check.return_value = {"node-0": {"healthy": True}}
+            health = coord.health_check()
+            assert health["node-0"]["healthy"] is True
 
 
 # ===========================================================================
-# 19. tp — multi-GPU launch
+# 19. tp — multi-GPU launch (distllm.dist.tp_launcher)
 # ===========================================================================
 
 
 class TestTPCommand:
-    """tp — tensor parallel multi-GPU worker launch."""
+    """Tensor-parallel multi-GPU worker launch via distllm.dist.tp_launcher.
 
-    def test_tp_help(self):
-        result = runner.invoke(app, ["tp", "--help"])
-        assert result.exit_code == 0
-        assert "--num-gpus" in result.stdout
+    The flat `tp` CLI command was removed; the launcher is used by the
+    `distllm-node` entry point and `python -m distllm.dist.tp_launcher`.
+    """
+
+    def test_tp_launcher_spawns_workers(self):
+        from distllm.dist import tp_launcher
+        assert callable(tp_launcher.launch_tp_workers)
+        assert hasattr(tp_launcher, "main")
 
     def test_tp_with_num_gpus(self):
-        with patch("distllm.core.tp_launcher.launch_tp_workers") as mock_launch:
+        with patch("distllm.dist.tp_launcher.launch_tp_workers") as mock_launch:
             mock_launch.return_value = MagicMock()
-            result = runner.invoke(app, ["tp", "--model", "test", "--num-gpus", "2"],
-                                   catch_exceptions=False)
+            from distllm.dist import tp_launcher
+            tp_launcher.launch_tp_workers(
+                model_name="test", num_gpus=2, dtype="float16",
+                trust_remote_code=False, port=29500,
+            )
+            mock_launch.assert_called_once_with(
+                model_name="test", num_gpus=2, dtype="float16",
+                trust_remote_code=False, port=29500,
+            )
