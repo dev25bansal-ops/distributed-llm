@@ -596,3 +596,35 @@ class TestMemoryAwarePlacerAccounting:
         assert placer.place_model("x", required_gb=4.0) == 0
         assert placer.place_model("x", required_gb=4.0, preferred_gpu=0) == 0
         assert placer.stats()["gpu_usage"][0] == 4.0
+
+
+class TestGPUTimeSlicerWeightedFairness:
+    """BUG-6 regression: priority affects selection FREQUENCY (smooth WRR),
+    not just slice duration — total_weight was computed but unused before."""
+
+    def test_priority_1_selected_3x_priority_3(self):
+        s = GPUTimeSlicer()
+        s.register_model(ModelSLA(model_name="high", priority=1))
+        s.register_model(ModelSLA(model_name="mid", priority=2))
+        s.register_model(ModelSLA(model_name="low", priority=3))
+
+        counts = {"high": 0, "mid": 0, "low": 0}
+        for _ in range(330):
+            counts[s.get_next_model()] += 1
+
+        # Weights 1, 0.5, 0.333 -> expected 180/90/60 of 330.
+        assert counts["high"] > counts["mid"] > counts["low"]
+        assert counts["high"] > 150
+        assert counts["low"] < 90
+
+    def test_selections_interleave_not_bunch(self):
+        s = GPUTimeSlicer()
+        s.register_model(ModelSLA(model_name="high", priority=1))
+        s.register_model(ModelSLA(model_name="low", priority=3))
+
+        picks = [s.get_next_model() for _ in range(8)]
+        # Smooth WRR spreads the high-priority model through the cycle
+        # instead of granting all its slices consecutively.
+        assert picks[0] == "high"
+        assert "low" in picks[:4]
+        assert picks != ["high"] * 4 + ["low"] * 4

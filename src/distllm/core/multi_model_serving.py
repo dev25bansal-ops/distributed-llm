@@ -480,6 +480,9 @@ class GPUTimeSlicer:
         # would self-deadlock on the second acquire.
         self._lock = threading.RLock()
         self._stats: dict[str, dict] = {}
+        # Smooth weighted round-robin credits (BUG-6): priority affects
+        # selection FREQUENCY here, not just slice duration.
+        self._rr_credits: dict[str, float] = {}
 
     def register_model(self, sla: ModelSLA) -> None:
         """Register a model with its SLA for scheduling."""
@@ -494,31 +497,29 @@ class GPUTimeSlicer:
     def get_next_model(self) -> str | None:
         """Select the next model to run based on priority and fairness.
 
-        Uses weighted round-robin: higher priority models get proportionally
-        more time slices.
+        Uses smooth weighted round-robin (nginx algorithm): weight is
+        ``1 / priority``, so a priority-1 model is selected ~3x as often as
+        a priority-3 model, while selections stay interleaved instead of
+        bunching. Slice LENGTH is additionally scaled by priority in
+        :meth:`get_slice_duration`.
         """
         with self._lock:
             if not self._slas:
                 return None
 
-            # Weight by priority (lower number = higher priority = more slices)
-            total_weight = sum(1.0 / max(s.priority, 1) for s in self._slas.values())
-            if total_weight == 0:
+            weights = {
+                name: 1.0 / max(sla.priority, 1)
+                for name, sla in self._slas.items()
+            }
+            total_weight = sum(weights.values())
+            if total_weight <= 0:
                 return None
 
-            # Simple round-robin weighted by priority
-            models = list(self._slas.keys())
-            if self._active_model is None:
-                return models[0]
-
-            # Find next model in rotation
-            try:
-                current_idx = models.index(self._active_model)
-                next_idx = (current_idx + 1) % len(models)
-            except ValueError:
-                next_idx = 0
-
-            return models[next_idx]
+            for name in self._slas:
+                self._rr_credits[name] = self._rr_credits.get(name, 0.0) + weights[name]
+            best = max(self._slas, key=lambda n: self._rr_credits.get(n, 0.0))
+            self._rr_credits[best] = self._rr_credits.get(best, 0.0) - total_weight
+            return best
 
     def get_slice_duration(self, model_name: str) -> float:
         """Get the time slice duration for a model based on its priority."""
