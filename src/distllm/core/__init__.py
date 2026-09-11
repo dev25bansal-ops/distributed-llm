@@ -52,13 +52,6 @@ _register("distllm.core.prompt_library", "PromptRepository", "PromptVersion")
 _register("distllm.core.evaluation_harness", "EvalRunner", "EvaluationReport")
 _register("distllm.core.dp_inference", "DifferentialPrivacyInference", "PrivacyBudgetManager")
 _register("distllm.core.media_pipeline", "AudioPipeline", "MediaStreamRouter", "SpeechRecognizer", "TextToSpeech", "VoiceActivityDetector", "LLMResponder")
-_register("distllm.core.neural_partition_optimizer",
-    # Data classes
-    "LayerConfig", "HardwareSpec", "CostPrediction", "TrainingSample",
-    "PartitionProposal", "OptimizationStats",
-    # Classes
-    "NeuralCostModel", "BayesianOptimizationLoop", "NeuralPartitionOptimizer",
-)
 _register("distllm.core.voyager_multimodal",
     # Enums
     "ModalityType", "RouteType",
