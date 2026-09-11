@@ -206,7 +206,16 @@ class PluginMarketplace:
         import subprocess
         import sys
 
+        # SECURITY (SEC-3): fail-closed gate — see core/plugin_trust.py
+        from distllm.core.plugin_trust import PluginInstallRefused, enforce_install_allowed
+
         package = f"distllm-plugin-{plugin_name}"
+        try:
+            enforce_install_allowed(package)
+        except PluginInstallRefused as e:
+            logger.error(f"Plugin install refused for '{package}': {e}")
+            return False
+
         cmd = [sys.executable, "-m", "pip", "install"]
         if upgrade:
             cmd.append("--upgrade")
