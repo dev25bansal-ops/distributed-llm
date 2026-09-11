@@ -248,10 +248,37 @@ class ModelHotSwapManager:
                 instance.model = model
                 instance.tokenizer = tokenizer
                 instance.actual_memory_gb = memory_gb
-                instance.is_loading = False
                 instance.last_used_at = time.time()
                 instance.request_count = 1
+                # is_loading stays True until admission passes so LRU
+                # eviction never targets the model being admitted.
 
+                # Admission control (BUG-4): the memory budget must actually
+                # hold the model before it starts serving. Evict LRU models
+                # to make room; refuse (and free) if it still does not fit —
+                # serving anyway would OOM every co-resident model later.
+                if not self.memory_budget.can_fit(name, memory_gb):
+                    attempts = len(self._loaded) + 1
+                    while not self.memory_budget.can_fit(name, memory_gb) and attempts > 0:
+                        if not self._evict_lru():
+                            break
+                        attempts -= 1
+                    if not self.memory_budget.can_fit(name, memory_gb):
+                        if self._on_unload_model is not None and model is not None:
+                            try:
+                                self._on_unload_model(name, model, tokenizer)
+                            except Exception as e:
+                                logger.error(f"Error unloading over-budget model '{name}': {e}")
+                        del self._loaded[name]
+                        budget = self.memory_budget.get_budget(name)
+                        logger.error(
+                            f"Refusing to load '{name}': {memory_gb:.2f} GB does not fit "
+                            f"(budget={budget if budget else 'unlimited'} GB, "
+                            f"available={self.memory_budget.available_gb():.2f} GB)"
+                        )
+                        return False
+
+                instance.is_loading = False
                 self.memory_budget.update_usage(name, memory_gb)
                 self._total_loads += 1
 
@@ -579,6 +606,7 @@ class MemoryAwarePlacer:
         self._safety_margin = safety_margin_pct
         self._placements: dict[str, int] = {}  # model_name -> gpu_id
         self._usage: dict[int, float] = {}  # gpu_id -> used_gb
+        self._model_gb: dict[str, float] = {}  # model_name -> reserved gb
 
     def place_model(
         self,
@@ -598,12 +626,17 @@ class MemoryAwarePlacer:
         """
         available = self._gpu_memory * (1 - self._safety_margin)
 
+        # Re-placing an already-placed model must not double-charge usage.
+        if model_name in self._placements:
+            self.remove_model(model_name)
+
         # Try preferred GPU first
         if preferred_gpu is not None:
             used = self._usage.get(preferred_gpu, 0.0)
             if used + required_gb <= available:
                 self._placements[model_name] = preferred_gpu
                 self._usage[preferred_gpu] = used + required_gb
+                self._model_gb[model_name] = required_gb
                 return preferred_gpu
 
         # Find GPU with most free space
@@ -619,15 +652,16 @@ class MemoryAwarePlacer:
         if best_gpu is not None:
             self._placements[model_name] = best_gpu
             self._usage[best_gpu] = self._usage.get(best_gpu, 0.0) + required_gb
+            self._model_gb[model_name] = required_gb
 
         return best_gpu
 
     def remove_model(self, model_name: str) -> None:
-        """Remove a model from placement tracking."""
+        """Remove a model from placement tracking and release its reservation."""
         gpu_id = self._placements.pop(model_name, None)
         if gpu_id is not None:
-            # We don't know exact usage reduction, so clear it
-            pass
+            reserved = self._model_gb.pop(model_name, 0.0)
+            self._usage[gpu_id] = max(0.0, self._usage.get(gpu_id, 0.0) - reserved)
 
     def get_placement(self, model_name: str) -> int | None:
         return self._placements.get(model_name)
