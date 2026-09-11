@@ -187,3 +187,99 @@ class TestLoadBalancerStats:
         lb.reset_stats()
         assert lb._total_requests == 0
         assert target.total_requests == 0
+
+
+class _FakeTime:
+    """Deterministic clock for health-interval tests."""
+
+    def __init__(self, start: float = 1_000_000.0) -> None:
+        self.now = start
+
+    def time(self) -> float:
+        return self.now
+
+
+class TestHealthRecovery:
+    """BUG-1/H9 regression: unhealthy targets re-enter rotation and recover,
+    and concurrent picks cannot pile onto one node."""
+
+    def _two_targets(self) -> Any:
+        lb = LoadBalancer(strategy=LBStrategy.LEAST_CONNECTIONS)
+        lb.add_target("10.0.0.1", 50050, node_id="A")
+        lb.add_target("10.0.0.2", 50050, node_id="B")
+        return lb
+
+    def _target(self, lb: Any, node_id: str) -> Any:
+        return next(t for t in lb.all_targets() if t.node_id == node_id)
+
+    def test_unhealthy_target_reenters_after_interval(self, monkeypatch) -> None:
+        ft = _FakeTime(start=1_000.0)
+        monkeypatch.setattr(_mod, "time", ft)
+        lb = self._two_targets()
+        a = self._target(lb, "A")
+
+        for _ in range(3):
+            lb.record_failure(a, error="timeout")
+        assert a.is_healthy is False
+
+        # Within the health-check interval the target stays excluded.
+        picked = lb.pick("req-1")
+        assert picked is not None
+        assert picked.node_id == "B"
+
+        # After the interval it re-enters rotation as a trial (least
+        # connections: B carries the earlier un-released pick).
+        ft.now += lb._health_check_interval + 1.0
+        picked = lb.pick("req-2")
+        assert picked is not None
+        assert picked.node_id == "A"
+
+        # A successful trial fully restores the target.
+        lb.record_success(picked, latency_ms=10.0)
+        assert a.is_healthy is True
+        assert a.failed_requests == 0
+
+        ft.now += 1.0
+        picked = lb.pick("req-3")
+        assert picked is not None
+        assert picked.node_id == "A"
+
+    def test_trial_failure_reexcludes_target(self, monkeypatch) -> None:
+        ft = _FakeTime(start=1_000.0)
+        monkeypatch.setattr(_mod, "time", ft)
+        lb = self._two_targets()
+        a = self._target(lb, "A")
+
+        for _ in range(3):
+            lb.record_failure(a, error="timeout")
+        ft.now += lb._health_check_interval + 1.0
+
+        picked = lb.pick("req-1")
+        assert picked is not None and picked.node_id == "A"
+
+        # A failed trial refreshes last_checked -> excluded again at once.
+        lb.record_failure(picked, error="still down")
+        picked = lb.pick("req-2")
+        assert picked is not None
+        assert picked.node_id == "B"
+
+    def test_concurrent_picks_distribute(self) -> None:
+        lb = self._two_targets()
+        t1 = lb.pick("req-1")
+        t2 = lb.pick("req-2")
+        assert t1 is not None and t2 is not None
+        # Connection reservation is atomic with selection, so the second
+        # in-flight request lands on the other node.
+        assert {t1.node_id, t2.node_id} == {"A", "B"}
+
+    def test_record_success_resets_failure_streak(self) -> None:
+        lb = self._two_targets()
+        a = self._target(lb, "A")
+        lb.record_failure(a, error="e1")
+        lb.record_failure(a, error="e2")
+        lb.record_success(a, latency_ms=5.0)
+        assert a.failed_requests == 0
+        # Two further failures stay below the 3-failure threshold.
+        lb.record_failure(a, error="e3")
+        lb.record_failure(a, error="e4")
+        assert a.is_healthy is True
