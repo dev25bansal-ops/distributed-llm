@@ -121,10 +121,40 @@ class MicroBatchScheduler:
 
         return schedule
 
+    def submit(self, batch: MicroBatch) -> bool:
+        """Queue a micro-batch for dispatch by :meth:`get_next_batch`.
+
+        Returns False when ``max_in_flight`` batches are already queued —
+        callers should apply backpressure (complete in-flight work first)
+        rather than queueing unboundedly.
+        """
+        with self._lock:
+            if len(self._in_flight) >= self._max_in_flight:
+                return False
+            if batch.status == "pending":
+                self._in_flight.append(batch)
+            return True
+
+    def submit_decode(self, num_tokens: int) -> list[MicroBatch]:
+        """Schedule decode micro-batches (see :meth:`schedule_decode`) and
+        queue them for dispatch.
+
+        Returns the batches that were accepted; once ``max_in_flight`` is
+        reached the remaining batches are left pending for the caller to
+        submit again after completing in-flight work.
+        """
+        schedule = self.schedule_decode(num_tokens)
+        accepted: list[MicroBatch] = []
+        for batch in schedule.batches:
+            if not self.submit(batch):
+                break
+            accepted.append(batch)
+        return accepted
+
     def get_next_batch(self) -> MicroBatch | None:
         """Get the next micro-batch to process.
 
-        Returns None if max_in_flight is reached.
+        Returns None if max_in_flight is reached or nothing is queued.
         """
         with self._lock:
             if len(self._in_flight) >= self._max_in_flight:
