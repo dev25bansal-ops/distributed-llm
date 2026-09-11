@@ -13,6 +13,8 @@ import sys
 import time
 from typing import NoReturn
 
+import torch
+
 
 def _print_step(num: int, title: str) -> None:
     print(f"\n{'='*60}")
@@ -37,18 +39,18 @@ def _run_tutorial() -> None:
     _print_step(1, "System Requirements Check")
     print()
     try:
-        import torch
-        print(f"  {_check_mark()} PyTorch {torch.__version__}")
-        cuda = torch.cuda.is_available()
+        version = getattr(torch, "__version__", "unknown")
+        print(f"  {_check_mark()} PyTorch {version}")
+        cuda = bool(torch.cuda.is_available())
         if cuda:
-            count = torch.cuda.device_count()
+            count = int(torch.cuda.device_count())
             for i in range(count):
                 name = torch.cuda.get_device_name(i)
                 print(f"  {_check_mark()} GPU {i}: {name}")
         else:
             print(f"  ⚠️  No CUDA GPU detected. DistLLM will use CPU (slow).")
-    except ImportError:
-        print(f"  ❌ PyTorch not installed. Run: pip install distllm[self-hosted]")
+    except Exception:
+        print(f"  ❌ PyTorch not available. Run: pip install distllm[self-hosted]")
         return
 
     print()

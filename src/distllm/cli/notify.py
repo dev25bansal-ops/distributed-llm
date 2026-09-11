@@ -1,26 +1,35 @@
 """CLI commands for notification system.
 
-Functions are imported by :mod:`distllm.cli.main` which registers them
-as Typer commands on the ``system notify`` sub-group.
+Owns the ``notify_app`` Typer group registered by :mod:`distllm.cli.main`
+on the ``system notify`` sub-group (``distllm system notify ...``).
 """
 
+import datetime
+
+import typer
 from rich.console import Console
 from rich.table import Table
 
+from distllm.core.notification_manager import (
+    Notification,
+    NotificationChannel,
+    NotificationManager,
+    NotificationSeverity,
+)
 
+notify_app = typer.Typer(help="Notifications and alerts")
+console = Console()
+
+
+@notify_app.command("send")
 def notify_send(
-    title: str,
-    message: str,
-    severity: str = "info",
-    channel: str = "console",
-    webhook_url: str = "",
+    title: str = typer.Option(..., "--title", "-t", help="Notification title"),
+    message: str = typer.Option(..., "--message", "-m", help="Notification message"),
+    severity: str = typer.Option("info", "--severity", "-s", help="Severity"),
+    channel: str = typer.Option("console", "--channel", "-c", help="Channel"),
+    webhook_url: str = typer.Option("", "--webhook-url", help="Webhook URL"),
 ) -> None:
     """Send a test notification."""
-    from distllm.core.notification_manager import (
-        NotificationManager, Notification, NotificationSeverity, NotificationChannel,
-    )
-
-    console = Console()
     nm = NotificationManager()
 
     try:
@@ -47,18 +56,15 @@ def notify_send(
         console.print(f"[green]Notification sent via {ch.value}[/]")
     else:
         console.print(f"[red]Failed to send notification via {ch.value}[/]")
+        raise typer.Exit(1)
 
 
+@notify_app.command("history")
 def notify_history(
-    limit: int = 20,
-    severity: str = "",
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of recent notifications"),
+    severity: str = typer.Option("", "--severity", "-s", help="Filter by severity"),
 ) -> None:
     """Show recent notification history."""
-    from distllm.core.notification_manager import (
-        NotificationManager, NotificationSeverity,
-    )
-
-    console = Console()
     nm = NotificationManager()
     sev = NotificationSeverity(severity) if severity else None
     recent = nm.recent(limit=limit, severity=sev)
@@ -74,7 +80,6 @@ def notify_history(
     table.add_column("Title")
     table.add_column("Message")
 
-    import datetime
     for n in recent:
         time_str = datetime.datetime.fromtimestamp(n.timestamp).strftime("%H:%M:%S")
         sev_color = {

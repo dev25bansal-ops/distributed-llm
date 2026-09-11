@@ -1,36 +1,47 @@
 """CLI commands for usage metering and quota management.
 
-Functions are imported by :mod:`distllm.cli.main` which registers them
-as Typer commands on the ``config quota`` sub-group.
+Owns the ``quota_app`` Typer group registered by :mod:`distllm.cli.main`
+on the ``config quota`` sub-group (``distllm config quota ...``).
 """
 
+import datetime
 import json
 import os
 import time
 
+import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
+from distllm.core.usage_meter import UsageMeter
 
-def _get_meter():
-    from distllm.core.usage_meter import UsageMeter
+quota_app = typer.Typer(help="Usage quotas and billing")
+console = Console()
+
+
+def _get_meter() -> UsageMeter:
     db = os.environ.get("DISTLLM_USAGE_DB", "")
     return UsageMeter(storage_path=db)
 
 
+def _today() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d")
+
+
+@quota_app.command("set")
 def quota_set(
-    tenant_id: str,
-    max_tokens_per_day: int = 0,
-    max_requests_per_minute: int = 0,
-    max_tokens_per_request: int = 0,
-    max_concurrent: int = 0,
-    cost_budget: float = 0.0,
-    overage: bool = False,
+    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
+    max_tokens_per_day: int = typer.Option(0, "--tokens-per-day", help="Max tokens per day"),
+    max_requests_per_minute: int = typer.Option(0, "--rpm", help="Max requests per minute"),
+    max_tokens_per_request: int = typer.Option(0, "--tokens-per-request", help="Max tokens per request"),
+    max_concurrent: int = typer.Option(0, "--concurrent", help="Max concurrent requests"),
+    cost_budget: float = typer.Option(0.0, "--budget", "-b", help="Monthly cost budget"),
+    overage: bool = typer.Option(False, "--overage", help="Allow overage"),
 ) -> None:
     """Set usage quota for a tenant."""
     from distllm.core.usage_meter import QuotaLimit
 
-    console = Console()
     meter = _get_meter()
     quota = QuotaLimit(
         tenant_id=tenant_id,
@@ -45,11 +56,11 @@ def quota_set(
     console.print(f"[green]Quota set for tenant:[/] {tenant_id}")
 
 
+@quota_app.command("show")
 def quota_show(
-    tenant_id: str,
+    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
 ) -> None:
     """Show current quota and usage for a tenant."""
-    console = Console()
     meter = _get_meter()
     quota = meter.get_quota(tenant_id)
     usage = meter.tenant_usage(tenant_id)
@@ -75,16 +86,14 @@ def quota_show(
         table.add_row("Total Input Tokens", str(usage.total_input_tokens))
         table.add_row("Total Output Tokens", str(usage.total_output_tokens))
         table.add_row("Total Cost", f"${usage.total_cost:.4f}")
-        table.add_row("Today's Tokens", str(usage.daily_tokens.get(
-            __import__("datetime").datetime.now().strftime("%Y-%m-%d"), 0
-        )))
+        table.add_row("Today's Tokens", str(usage.daily_tokens.get(_today(), 0)))
 
     console.print(table)
 
 
+@quota_app.command("list")
 def quota_list() -> None:
     """List all tenants with usage data."""
-    console = Console()
     meter = _get_meter()
     tenants = meter.all_tenants()
 
@@ -100,7 +109,7 @@ def quota_list() -> None:
     table.add_column("Cost")
     table.add_column("Today Tokens")
 
-    today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    today = _today()
     for t in tenants:
         table.add_row(
             t.tenant_id,
@@ -113,14 +122,12 @@ def quota_list() -> None:
     console.print(table)
 
 
+@quota_app.command("invoice")
 def quota_invoice(
-    tenant_id: str,
+    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
 ) -> None:
     """Generate an invoice for a tenant's current billing period."""
-    console = Console()
     meter = _get_meter()
-
-    from rich.panel import Panel
     invoice = meter.generate_invoice(tenant_id)
     console.print(Panel(
         f"[bold]Invoice for:[/] {tenant_id}\n"
@@ -135,13 +142,13 @@ def quota_invoice(
     ))
 
 
+@quota_app.command("report")
 def quota_report(
-    tenant_id: str = "",
-    days: int = 30,
-    json_output: bool = False,
+    tenant_id: str = typer.Argument("", help="Tenant ID (omit for all)"),
+    days: int = typer.Option(30, "--days", "-d", help="Report period in days"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
 ) -> None:
     """Generate a detailed usage report with per-model breakdown."""
-    console = Console()
     meter = _get_meter()
     period_start = time.time() - days * 86400
 
@@ -154,7 +161,6 @@ def quota_report(
         console.print(json.dumps(report, indent=2, default=str))
         return
 
-    from rich.panel import Panel
     console.print(Panel(
         f"[bold]Report for:[/] {report['tenant_id']}\n"
         f"[bold]Period:[/] {days} day(s)\n"
@@ -184,13 +190,13 @@ def quota_report(
         console.print(mt)
 
 
+@quota_app.command("export")
 def quota_export(
-    filepath: str,
-    tenant_id: str = "",
-    days: int = 30,
+    filepath: str = typer.Argument(..., help="Output CSV file path"),
+    tenant_id: str = typer.Option("", "--tenant", "-t", help="Filter by tenant"),
+    days: int = typer.Option(30, "--days", "-d", help="Export period in days"),
 ) -> None:
     """Export usage records as CSV."""
-    console = Console()
     meter = _get_meter()
     period_start = time.time() - days * 86400
 
@@ -202,14 +208,14 @@ def quota_export(
     console.print(f"[green]Exported usage to:[/] {result}")
 
 
+@quota_app.command("import")
 def quota_import(
-    filepath: str,
+    filepath: str = typer.Argument(..., help="JSON file with quota definitions"),
 ) -> None:
     """Bulk import quotas from a JSON file.
 
     File format: ``{"quotas": [{"tenant_id": "...", "max_tokens_per_day": 100000, ...}]}``
     """
-    console = Console()
     meter = _get_meter()
 
     try:

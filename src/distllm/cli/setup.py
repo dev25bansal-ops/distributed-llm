@@ -82,20 +82,21 @@ def run_setup(config_path: str, console: Console):
         "retry_delay": 1.0,
     }
 
-    # Step 7: TLS (optional)
-    console.print("\n[bold]Step 6: TLS Configuration[/bold]")
-    enable_tls = console.input("Enable TLS? [y/N]: ").strip().lower() in ("y", "yes")
-    config["tls"] = {"enabled": enable_tls}
-    if enable_tls:
-        config["tls"]["cert_dir"] = "certs"
-
-    # Write config
+    # Overwrite check before the TLS question — no point collecting more
+    # answers if the user is going to decline the write anyway.
     config_path = Path(config_path)
     if config_path.exists():
         confirm = console.input(f"[yellow]Config file {config_path} already exists. Overwrite? [y/N]: [/yellow]").strip().lower()
         if confirm not in ("y", "yes"):
             console.print("[red]Aborted — config not written.[/red]")
             return
+
+    # Step 7: TLS (optional)
+    console.print("\n[bold]Step 6: TLS Configuration[/bold]")
+    enable_tls = console.input("Enable TLS? [y/N]: ").strip().lower() in ("y", "yes")
+    config["tls"] = {"enabled": enable_tls}
+    if enable_tls:
+        config["tls"]["cert_dir"] = "certs"
 
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)

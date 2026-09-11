@@ -1,23 +1,29 @@
 """CLI commands for certificate management.
 
-Functions are imported by :mod:`distllm.cli.main` which registers them
-as Typer commands on the ``security cert`` sub-group.
+Owns the ``cert_app`` Typer group registered by :mod:`distllm.cli.main`
+on the ``security cert`` sub-group (``distllm security cert ...``).
 """
 
+import datetime
+
+import typer
 from rich.console import Console
 from rich.table import Table
 
+from distllm.core.certificate_manager import CertificateManager
 
+cert_app = typer.Typer(help="Manage TLS certificates")
+console = Console()
+
+
+@cert_app.command("create")
 def cert_create(
-    common_name: str,
-    alt_names: list[str] | None = None,
-    cert_dir: str = "./certs",
-    self_signed: bool = True,
+    common_name: str = typer.Argument(..., help="Domain name"),
+    alt_names: list[str] = typer.Option([], "--alt-name", "-a", help="Subject alternative names"),
+    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
+    self_signed: bool = typer.Option(True, "--self-signed", help="Self-signed certificate"),
 ) -> None:
     """Create a TLS certificate."""
-    from distllm.core.certificate_manager import CertificateManager
-
-    console = Console()
     mgr = CertificateManager(cert_dir=cert_dir)
     info = mgr.ensure_certificate(common_name, alt_names=alt_names or [])
     console.print(f"[green]Certificate created:[/] {common_name}")
@@ -27,21 +33,18 @@ def cert_create(
     console.print(f"  SANs: {', '.join(info.subject_alt_names)}")
 
 
+@cert_app.command("info")
 def cert_info(
-    common_name: str,
-    cert_dir: str = "./certs",
+    common_name: str = typer.Argument(..., help="Certificate common name"),
+    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
 ) -> None:
     """Show certificate details."""
-    from distllm.core.certificate_manager import CertificateManager
-
-    console = Console()
     mgr = CertificateManager(cert_dir=cert_dir)
     info = mgr.get_certificate_info(common_name)
     if info is None:
         console.print(f"[red]Certificate not found:[/] {common_name}")
-        return
+        raise typer.Exit(1)
 
-    import datetime
     table = Table(title=f"Certificate: {common_name}")
     table.add_column("Field", style="cyan")
     table.add_column("Value")
@@ -57,13 +60,11 @@ def cert_info(
     console.print(table)
 
 
+@cert_app.command("renew")
 def cert_renew(
-    cert_dir: str = "./certs",
+    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
 ) -> None:
     """Renew all certificates nearing expiry."""
-    from distllm.core.certificate_manager import CertificateManager
-
-    console = Console()
     mgr = CertificateManager(cert_dir=cert_dir)
     renewed = mgr.renew_all()
     if renewed:
@@ -73,14 +74,12 @@ def cert_renew(
         console.print("[yellow]No certificates needed renewal[/]")
 
 
+@cert_app.command("revoke")
 def cert_revoke(
-    common_name: str,
-    cert_dir: str = "./certs",
+    common_name: str = typer.Argument(..., help="Certificate common name"),
+    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
 ) -> None:
     """Revoke a certificate."""
-    from distllm.core.certificate_manager import CertificateManager
-
-    console = Console()
     mgr = CertificateManager(cert_dir=cert_dir)
     mgr.revoke(common_name)
     console.print(f"[green]Revoked:[/] {common_name}")
