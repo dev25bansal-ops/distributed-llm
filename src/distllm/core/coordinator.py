@@ -590,6 +590,14 @@ class Coordinator:
         """
         return getattr(self._inference_engine, "local_partitioner", None)
 
+    @local_partitioner.setter
+    def local_partitioner(self, value: Any) -> None:
+        # The engine owns the attribute; the Coordinator property is a
+        # delegate. Writing through keeps test fixtures and any caller that
+        # assigns on the Coordinator working after the fde0d43 delegation.
+        if self._inference_engine is not None:
+            self._inference_engine.local_partitioner = value
+
     @prefix_cache.setter
     def prefix_cache(self, value: Any) -> None:
         if self._cache_mgr is not None:
