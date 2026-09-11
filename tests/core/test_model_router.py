@@ -596,3 +596,50 @@ class TestAuditCallback:
         r = _code_router()
         r.set_audit_callback(None)
         r.resolve("write a function")  # Should not crash
+
+
+class TestRedosHardening:
+    """SEC-5 regression: dangerous routing regexes are rejected without
+    executing, match input is bounded, and confidence stays finite."""
+
+    def _router_with(self, rule: "RouteRule") -> "ModelRouter":
+        r = ModelRouter(default_model="default")
+        r.add_rule(rule)
+        return r
+
+    def test_nested_quantifier_rule_rejected_fast(self):
+        import time as _time
+
+        r = self._router_with(RouteRule(
+            name="evil", match_type="regex", pattern="(a+)+$", target_model="m1",
+        ))
+        text = "a" * 40 + "!"
+        t0 = _time.monotonic()
+        match = r.route([{"role": "user", "content": text}])
+        elapsed = _time.monotonic() - t0
+        assert match.model == "default"  # evil rule rejected, default served
+        assert elapsed < 1.0  # would hang for a long time if executed
+
+    def test_overlong_pattern_rejected(self):
+        from distllm.core.model_router import _regex_is_safe
+
+        assert _regex_is_safe("x" * 300) is False
+        r = self._router_with(RouteRule(
+            name="long", match_type="regex", pattern="x" * 300, target_model="m1",
+        ))
+        assert r.route([{"role": "user", "content": "x" * 400}]).model == "default"
+
+    def test_safe_regex_still_matches(self):
+        r = self._router_with(RouteRule(
+            name="ok", match_type="regex", pattern="quarterly (report|summary)",
+            target_model="m1",
+        ))
+        assert r.route([{"role": "user", "content": "Please analyze this Quarterly Report for me"}]).model == "m1"
+
+    def test_confidence_finite_for_unsafe_rule(self):
+        r = self._router_with(RouteRule(
+            name="evil", match_type="regex", pattern="(a+)+$", target_model="m1",
+        ))
+        # _compute_confidence must not hang or raise on an unsafe pattern.
+        conf = r._compute_confidence(r._rules[0], "a" * 30 + "b")
+        assert 0.0 <= conf <= 1.0
