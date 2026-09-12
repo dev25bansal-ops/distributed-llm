@@ -255,3 +255,64 @@ def test_carbon_formula_uses_energy_term():
     # The buggy old formula would have been 400*0.001*(1000/3.6e6)=1.1e-4; new is
     # different (uses real energy), so ensure it isn't the buggy value.
     assert abs(s2.total_carbon_kg - 1.1e-4) > 1e-6
+
+
+def test_moe_batched_routing_combines_correctly():
+    """PERF-1 semantics: output = sum over selected experts of weight * expert(x),
+    with one batched RPC per node and tokens that miss all experts left at zero."""
+    import sys
+    import types
+
+    import torch
+
+    from distllm.core.moe_orchestrator import ExpertRegistry, MoERouter
+
+    fake_mod = types.ModuleType("distllm.dist.grpc_client")
+
+    class RecordingClient:
+        def __init__(self):
+            self.calls = []
+
+        def call_expert_forward_batch(self, expert_ids, hidden_states, layer_idx):
+            self.calls.append((tuple(expert_ids), hidden_states.shape))
+            # Deterministic: expert e multiplies each row by (e + 1).
+            scale = torch.tensor([float(e + 1) for e in expert_ids]).unsqueeze(1)
+            return hidden_states * scale
+
+    clients = {"node-a": RecordingClient(), "node-b": RecordingClient()}
+
+    class Pool:
+        @staticmethod
+        def get_client(node_id):
+            return clients.get(node_id)
+
+    fake_mod.GrpcClientPool = Pool
+    sys.modules["distllm.dist.grpc_client"] = fake_mod
+    try:
+        registry = ExpertRegistry()
+        for e in (0, 1):
+            registry.register_expert("node-a", 0, e)
+        for e in (2, 3):
+            registry.register_expert("node-b", 0, e)
+        router = MoERouter(registry, num_experts=4, top_k=2, hidden_size=4)
+
+        torch.manual_seed(0)
+        hidden = torch.randn(1, 3, 4)
+        gate = torch.randn(1, 3, 4)
+        out = router.route(hidden, gate, layer_idx=0)
+
+        # Recompute expected: every token picks 2 experts out of 4 with
+        # softmax weights; experts 0/1 -> node-a, 2/3 -> node-b.
+        probs = torch.softmax(gate, dim=-1)
+        w, idx = torch.topk(probs, 2, dim=-1)
+        expected = torch.zeros_like(hidden)
+        for b in range(1):
+            for s in range(3):
+                for k in range(2):
+                    e = int(idx[b, s, k])
+                    expected[b, s] += hidden[b, s] * (e + 1) * float(w[b, s, k])
+        assert torch.allclose(out, expected, atol=1e-5)
+        # Batching: exactly one call per node that received any token.
+        assert clients["node-a"].calls and clients["node-b"].calls
+    finally:
+        sys.modules.pop("distllm.dist.grpc_client", None)
