@@ -18,6 +18,8 @@ from typing import Any
 
 from loguru import logger
 
+from distllm.core.money import MoneyAccumulator
+
 
 @dataclass
 class RoutingAttribution:
@@ -29,6 +31,7 @@ class RoutingAttribution:
     spot_used: bool = False
     price_per_hour: float = 0.0
     carbon_intensity: float = 0.0  # gCO2/kWh
+    energy_kwh: float = 0.0        # M15: measured energy for the request
     routing_reason: str = ""
     routing_score: float = 0.0
     alternatives_considered: int = 0
@@ -154,8 +157,9 @@ class TenantCostAttribution:
         self._records: dict[str, deque[TenantCostRecord]] = defaultdict(
             lambda: deque(maxlen=max_history_per_tenant)
         )
-        self._hourly_costs: dict[str, float] = defaultdict(float)
-        self._daily_costs: dict[str, float] = defaultdict(float)
+        # M1: Decimal-backed accumulators — exact at billing volume.
+        self._hourly_costs: dict[str, "MoneyAccumulator"] = defaultdict(MoneyAccumulator)
+        self._daily_costs: dict[str, "MoneyAccumulator"] = defaultdict(MoneyAccumulator)
         self._monthly_costs: dict[str, float] = defaultdict(float)
         self._hourly_reset: float = time.time()
         self._daily_reset: float = time.time()
@@ -193,8 +197,8 @@ class TenantCostAttribution:
         )
         with self._lock:
             self._records[tenant_id].append(record)
-            self._hourly_costs[tenant_id] += cost
-            self._daily_costs[tenant_id] += cost
+            self._hourly_costs[tenant_id].add(cost)
+            self._daily_costs[tenant_id].add(cost)
             self._monthly_costs[tenant_id] += cost
             self._total_records += 1
             self._reset_periods_if_needed()
@@ -213,8 +217,8 @@ class TenantCostAttribution:
             headers["X-DistLLM-Latency"] = f"{record.latency_ms:.1f}"
         headers.update(record.routing.to_headers())
         with self._lock:
-            hourly = self._hourly_costs.get(tenant_id, 0.0)
-            daily = self._daily_costs.get(tenant_id, 0.0)
+            hourly = float(self._hourly_costs.get(tenant_id).value()) if tenant_id in self._hourly_costs else 0.0
+            daily = float(self._daily_costs.get(tenant_id).value()) if tenant_id in self._daily_costs else 0.0
         headers["X-DistLLM-Tenant-Hourly-Cost"] = f"{hourly:.6f}"
         headers["X-DistLLM-Tenant-Daily-Cost"] = f"{daily:.6f}"
         return headers
@@ -253,8 +257,15 @@ class TenantCostAttribution:
             if provider:
                 provider_costs[provider] += r.actual_cost_usd
             if r.routing.carbon_intensity > 0:
-                energy_kwh = r.routing.carbon_intensity * 0.001
-                summary.total_carbon_kg += energy_kwh * (r.latency_ms / 3600000)
+                # M15: carbon = intensity (gCO2/kWh) x energy (kWh) / 1000.
+                # The old code treated the intensity AS the energy, so the
+                # reported kgCO2 was wrong by orders of magnitude.
+                if r.routing.energy_kwh > 0:
+                    energy_kwh = r.routing.energy_kwh
+                else:
+                    # Nominal fallback: ~0.4 kW draw for the request duration.
+                    energy_kwh = 0.4 * (r.latency_ms / 3_600_000.0)
+                summary.total_carbon_kg += r.routing.carbon_intensity * energy_kwh / 1000.0
         summary.provider_costs = dict(provider_costs)
         return summary
 

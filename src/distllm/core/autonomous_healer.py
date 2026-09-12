@@ -234,8 +234,18 @@ class GPUResetManager:
     Handles the RECOVERING state: GPU reset, driver reload, NCCL health check.
     """
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(
+        self,
+        dry_run: bool = False,
+        node_executor: Callable[[str, list[str]], tuple[int, str, str]] | None = None,
+    ):
         self._dry_run = dry_run
+        # M11: the reset MUST run on the node hosting the GPU. The executor
+        # receives (node_id, command) and returns (returncode, stdout, stderr);
+        # wire it to SSH/gRPC/agent on the coordinator side. With no executor
+        # configured we refuse rather than reset the LOCAL host's GPU by
+        # mistake in a multi-node cluster.
+        self._node_executor = node_executor
         self._reset_count = 0
         self._recovery_count = 0
         self._lock = threading.Lock()
@@ -257,7 +267,8 @@ class GPUResetManager:
             observability but the reset command runs locally.
 
         Args:
-            node_id: The node hosting the GPU (logged for observability).
+            node_id: The node hosting the GPU — the reset is executed
+                against this node via the configured ``node_executor``.
             device_id: The GPU device index.
 
         Returns:
@@ -269,26 +280,28 @@ class GPUResetManager:
                 self._reset_count += 1
             return True
 
-        try:
-            import subprocess
-            logger.warning(f"Resetting GPU {node_id}:{device_id} (local host)")
-
-            # Step 1: GPU reset via nvidia-smi
-            result = subprocess.run(
-                ["nvidia-smi", f"--gpu-reset={device_id}", "-i", str(device_id)],
-                capture_output=True, text=True, timeout=120,
+        if self._node_executor is None:
+            logger.error(
+                f"Refusing GPU reset for {node_id}:{device_id}: no node_executor "
+                f"configured. Running nvidia-smi on the local host would reset "
+                f"the WRONG GPU in a multi-node cluster — pass node_executor= "
+                f"(e.g. SSH/gRPC runner) to target the node."
             )
-            if result.returncode != 0:
-                logger.error(f"GPU reset failed for {node_id}:{device_id}: {result.stderr}")
+            return False
+
+        try:
+            # Step 1: GPU reset via nvidia-smi on the target node
+            reset_cmd = ["nvidia-smi", f"--gpu-reset={device_id}", "-i", str(device_id)]
+            rc, stdout, stderr = self._node_executor(node_id, reset_cmd)
+            if rc != 0:
+                logger.error(f"GPU reset failed for {node_id}:{device_id}: {stderr}")
                 return False
 
             # Step 2: Wait for GPU to come back
             time.sleep(5)
-            result = subprocess.run(
-                ["nvidia-smi", f"--query-gpu=name,index", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if str(device_id) not in result.stdout:
+            query_cmd = ["nvidia-smi", "--query-gpu=name,index", "--format=csv,noheader"]
+            rc, stdout, stderr = self._node_executor(node_id, query_cmd)
+            if rc != 0 or str(device_id) not in stdout:
                 logger.error(f"GPU {node_id}:{device_id} not detected after reset")
                 return False
 
@@ -344,6 +357,7 @@ class AutonomousHealer:
         recovery_threshold: float = 0.15,    # Re-integrate when risk < 15%
         shadow_duration_s: float = 300.0,    # 5 min shadow mode
         check_interval_s: float = 60.0,      # Check every 60s
+        drain_duration_s: float = 0.0,       # opt-in drain window (M11)
         dry_run: bool = False,
     ):
         self._on_drain = on_drain_callback
@@ -352,11 +366,13 @@ class AutonomousHealer:
         self._recovery_threshold = recovery_threshold
         self._shadow_duration = shadow_duration_s
         self._check_interval = check_interval_s
+        self._drain_duration = drain_duration_s
         self._dry_run = dry_run
 
         self._states: dict[str, GPUHealthState] = {}
         self._heartbeats: dict[str, GPUHeartbeat] = {}
         self._shadow_start: dict[str, float] = {}
+        self._drain_start: dict[str, float] = {}
         self._predictor = FailurePredictor()
         self._reset_mgr = GPUResetManager(dry_run=dry_run)
 
@@ -392,6 +408,7 @@ class AutonomousHealer:
                 if state == GPUHealthState.HEALTHY:
                     if risk >= self._failure_threshold:
                         self._states[node_id] = GPUHealthState.DRAINING
+                        self._drain_start[node_id] = time.time()
                         logger.warning(
                             f"{node_id}: risk={risk:.2f} ≥ {self._failure_threshold}"
                             f" — initiating drain"
@@ -400,16 +417,29 @@ class AutonomousHealer:
                             self._on_drain(node_id)
 
                 elif state == GPUHealthState.DRAINING:
-                    # After drain, attempt recovery
-                    self._states[node_id] = GPUHealthState.RECOVERING
-                    success = self._reset_mgr.reset_gpu(node_id)
-                    if success:
-                        self._states[node_id] = GPUHealthState.SHADOW
-                        self._shadow_start[node_id] = time.time()
-                        logger.info(f"{node_id}: reset successful — entering shadow mode")
+                    # M11: DRAINING must persist through the drain window so
+                    # in-flight requests finish before recovery starts.
+                    started = self._drain_start.get(node_id)
+                    if started is None:
+                        # Entered DRAINING without a stamp (e.g. manual state
+                        # override) — start the window now.
+                        self._drain_start[node_id] = time.time()
+                    elif time.time() - started < self._drain_duration:
+                        logger.debug(
+                            f"{node_id}: draining "
+                            f"({time.time() - started:.0f}s/{self._drain_duration:.0f}s)"
+                        )
                     else:
-                        self._states[node_id] = GPUHealthState.OFFLINE
-                        logger.error(f"{node_id}: reset failed — marking OFFLINE")
+                        self._drain_start.pop(node_id, None)
+                        self._states[node_id] = GPUHealthState.RECOVERING
+                        success = self._reset_mgr.reset_gpu(node_id)
+                        if success:
+                            self._states[node_id] = GPUHealthState.SHADOW
+                            self._shadow_start[node_id] = time.time()
+                            logger.info(f"{node_id}: reset successful — entering shadow mode")
+                        else:
+                            self._states[node_id] = GPUHealthState.OFFLINE
+                            logger.error(f"{node_id}: reset failed — marking OFFLINE")
 
                 elif state == GPUHealthState.SHADOW:
                     # Check shadow duration elapsed

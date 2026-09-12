@@ -1,53 +1,40 @@
-"""Decimal-based money helpers for the billing ledger.
+"""Exact money math for billing accumulators (M1).
 
-M1: ledger math was done in float and ``tenant.total_cost`` was re-rounded on
-every ``+=`` (``round(x + y, 6)``), which accumulates binary-float drift at
-billing volume. These helpers keep running monetary sums as ``Decimal`` and
-quantize exactly once, at display time, to a fixed number of decimal places.
-
-Public API stays float-compatible: callers that want a number get ``float``,
-callers that want exact display get a quantized ``Decimal`` / string.
+The cost ledgers used plain ``float`` +=, which drifts at billing volume
+(10,000 x $0.0001 must be exactly $1.00). All accumulation goes through
+:class:`MoneyAccumulator`, which keeps a Decimal total; the public header
+API keeps returning float strings unchanged.
 """
+
 from __future__ import annotations
 
-from decimal import ROUND_HALF_UP, Decimal
-
-# Two decimal places is the smallest meaningful billing unit (cents); the
-# accumulator itself keeps full precision and is quantized only on read.
-QUANTIZE = Decimal("0.01")
+from decimal import Decimal
 
 
-class Money:
-    """An exact monetary accumulator backed by Decimal.
+class MoneyAccumulator:
+    """Thread-safe-enough additive accumulator backed by Decimal.
 
-    Addition is exact (no per-``+=`` rounding). Use :meth:`value` /
-    :meth:`as_float` to read a display/compatible representation, quantized
-    once to ``QUANTIZE``.
+    Instances are used under the owning ledger's lock; no internal lock.
     """
 
-    __slots__ = ("_value",)
+    __slots__ = ("_total",)
 
-    def __init__(self, amount: Decimal | float | int | str = 0) -> None:
-        self._value = Decimal(str(amount)) if not isinstance(amount, Decimal) else amount
+    def __init__(self) -> None:
+        self._total = Decimal(0)
 
-    def add(self, amount: Decimal | float | int | str) -> Money:
-        self._value += Decimal(str(amount)) if not isinstance(amount, Decimal) else amount
-        return self
-
-    def __iadd__(self, amount: Decimal | float | int | str) -> Money:
-        return self.add(amount)
+    def add(self, amount: float | Decimal | int) -> None:
+        if isinstance(amount, Decimal):
+            self._total += amount
+        else:
+            # str() preserves the decimal literal instead of inheriting
+            # binary-float representation error.
+            self._total += Decimal(str(amount))
 
     def value(self) -> Decimal:
-        """Exact (unrounded) Decimal value of the accumulator."""
-        return self._value
+        return self._total
 
-    def quantized(self) -> Decimal:
-        """Value quantized once to the display unit (no intermediate rounding)."""
-        return self._value.quantize(QUANTIZE, rounding=ROUND_HALF_UP)
-
-    def as_float(self) -> float:
-        """Float-compatible view (for callers expecting float)."""
-        return float(self.quantized())
+    def __float__(self) -> float:
+        return float(self._total)
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
-        return f"Money({self._value})"
+        return f"MoneyAccumulator({self._total})"
