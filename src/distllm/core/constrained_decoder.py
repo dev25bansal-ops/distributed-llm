@@ -507,13 +507,12 @@ class ConstrainedConstraint:
     def get_logits_mask(self, vocab_size: int, tokenizer: Any = None) -> torch.Tensor:
         """Return boolean mask: True for allowed tokens."""
         mask = torch.zeros(vocab_size, dtype=torch.bool)
-        allowed_bytes = self._fsm.get_allowed_bytes()
 
         for tid in range(min(vocab_size, self._token_index.vocab_size)):
             token_bytes = self._token_index.get_bytes(tid)
             if not token_bytes:
                 continue
-            if token_bytes[0] in allowed_bytes:
+            if self._token_allowed(token_bytes):
                 mask[tid] = True
 
         eos_id = self._token_index.eos_token_id
@@ -544,16 +543,24 @@ class ConstrainedConstraint:
         return ""
 
     def _token_allowed(self, token_bytes: bytes) -> bool:
-        """Check if a token's bytes are valid in the current FSM state.
+        """Check whether a token's bytes keep the FSM in a valid state.
 
-        Args:
-            token_bytes: The byte representation of the token.
-
-        Returns:
-            True if the token's first byte is in the allowed set.
+        M17: validates EVERY byte of the token — the old check accepted
+        tokens whose first byte matched the grammar but whose later bytes
+        violated it. Non-mutating: the candidate continuation is tested
+        against the FSM's prefix predicate instead of consuming input.
         """
         if not token_bytes:
             return False
+        base = getattr(self._fsm, "generated", "") or getattr(self._fsm, "_generated", "")
+        try:
+            candidate = base + token_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        is_valid_prefix = getattr(self._fsm, "_is_valid_prefix", None)
+        if callable(is_valid_prefix):
+            return bool(is_valid_prefix(candidate))
+        # Fallback for FSMs without a prefix predicate: first-byte screen.
         allowed = self._fsm.get_allowed_bytes()
         return token_bytes[0] in allowed
 

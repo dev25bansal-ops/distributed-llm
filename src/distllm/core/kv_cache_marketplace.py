@@ -99,6 +99,8 @@ class CacheMarketplace:
         # Transaction log
         self._transactions: list[CacheTransaction] = []
 
+        self._consumed_tokens: dict[str, int] = {}
+
         self._lock = threading.Lock()
         self._last_cleanup: float = time.monotonic()
 
@@ -260,11 +262,14 @@ class CacheMarketplace:
             self._credit_balances[node_id] = current + earnings
 
     def record_consumed_tokens(self, node_id: str, token_count: int) -> None:
-        """Debit a node for consuming cached tokens."""
+        """Meter consumed tokens WITHOUT debiting credits (M3).
+
+        The buyer already paid the advertised price in ``purchase()``;
+        debiting again here double-charged. Consumption is metered so
+        usage stays visible without touching balances.
+        """
         with self._lock:
-            cost = token_count * self._default_price
-            current = self._credit_balances.get(node_id, 0.0)
-            self._credit_balances[node_id] = max(0.0, current - cost)
+            self._consumed_tokens[node_id] = self._consumed_tokens.get(node_id, 0) + token_count
 
     def get_balance(self, node_id: str) -> float:
         """Get a node's credit balance."""

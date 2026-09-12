@@ -188,7 +188,7 @@ class TestRadixNode:
         root.insert([1], "a")
         root.insert([2], "b")
         root.insert([3], "c")
-        evicted = root.evict_lru(max_entries=2)
+        evicted, _remaining = root.evict_lru(max_entries=2)
         assert evicted >= 1
         assert root._count_entries() <= 2
 
@@ -323,7 +323,7 @@ class TestRadixNodeEviction:
         root.insert([2], "b")
         root.children[1].last_access = 100.0
         root.children[2].last_access = 200.0
-        evicted = root.evict_lru(max_entries=1)
+        evicted, _remaining = root.evict_lru(max_entries=1)
         assert evicted == 1
         # Oldest entry is gone entirely (pruned, not left as a dead leaf).
         assert 1 not in root.children
@@ -335,7 +335,7 @@ class TestRadixNodeEviction:
         root.insert([2], "b")
         root.children[1].last_access = 100.0
         root.children[2].last_access = 200.0
-        evicted = root.evict_lru(max_entries=1)
+        evicted, _remaining = root.evict_lru(max_entries=1)
         assert evicted == 1
         _, _ = root.lookup([1])
         assert 1 not in root.children
@@ -344,7 +344,7 @@ class TestRadixNodeEviction:
         root = RadixNode()
         root.insert([1], "a")
         root.insert([2], "b")
-        evicted = root.evict_lru(max_entries=10)
+        evicted, _remaining = root.evict_lru(max_entries=10)
         assert evicted == 0
         assert root._count_entries() == 2
 
@@ -352,13 +352,13 @@ class TestRadixNodeEviction:
         root = RadixNode()
         root.insert([1], "a")
         root.insert([2], "b")
-        evicted = root.evict_lru(max_entries=0)
+        evicted, _remaining = root.evict_lru(max_entries=0)
         assert evicted == 2
         assert root._count_entries() == 0
 
     def test_evict_lru_empty_tree(self):
         root = RadixNode()
-        evicted = root.evict_lru(max_entries=1)
+        evicted, _remaining = root.evict_lru(max_entries=1)
         assert evicted == 0
 
     def test_shared_prefix_survives_child_eviction(self):
@@ -370,7 +370,7 @@ class TestRadixNodeEviction:
         node4 = root.children[1].children[2].children[4]
         node3.last_access = 100.0
         node4.last_access = 200.0
-        evicted = root.evict_lru(max_entries=1)
+        evicted, _remaining = root.evict_lru(max_entries=1)
         assert evicted == 1
         # Dead leaf is pruned so it can never stall future eviction...
         assert 3 not in root.children[1].children[2].children
@@ -397,7 +397,7 @@ class TestRadixNodeEviction:
         root.children[1].last_access = 100.0
         root.children[2].last_access = 200.0
         root.children[3].last_access = 300.0
-        evicted = root.evict_lru(max_entries=1)
+        evicted, _remaining = root.evict_lru(max_entries=1)
         assert evicted == 2
         assert root._count_entries() == 1
 

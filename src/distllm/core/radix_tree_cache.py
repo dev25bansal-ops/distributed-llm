@@ -133,6 +133,17 @@ class RadixNode:
         found.sort(key=lambda pair: pair[0])
         return found, live
 
+    def _collect_leaves(self) -> list["RadixNode"]:
+        """All leaf entry nodes in the subtree (kv_data set, no children)."""
+        found: list[RadixNode] = []
+        stack: list[RadixNode] = [self]
+        while stack:
+            node = stack.pop()
+            if node.kv_data is not None and not node.children:
+                found.append(node)
+            stack.extend(node.children.values())
+        return found
+
     def _remove_entry(self) -> Any:
         """Remove this node's KV entry and prune any dead chain left behind.
 
@@ -164,14 +175,17 @@ class RadixNode:
 
         return old_value
 
-    def evict_lru(self, max_entries: int) -> int:
+    def evict_lru(self, max_entries: int) -> tuple[int, int]:
         """Evict LRU leaf entries until the subtree holds <= max_entries.
+
+        Victims are taken oldest-``last_access`` first, so the most recently
+        touched entries survive (M6 LRU semantics).
 
         Evicted entries are cleared AND their now-empty leaf chains pruned, so
         repeated shared-prefix evictions never exhaust the victim pool.
 
         Returns:
-            Number of entries evicted.
+            Tuple ``(entries_evicted, entries_remaining)``.
         """
         limit = max(0, max_entries)
         victims, live = self._collect_evictable()
@@ -185,7 +199,7 @@ class RadixNode:
             node._remove_entry()
             remaining -= 1
             evicted += 1
-        return evicted
+        return evicted, remaining
 
     def _take_path(self, token_ids: list[int]) -> Any:
         """Remove and return the KV entry at the given path (None if absent)."""

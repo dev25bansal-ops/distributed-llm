@@ -506,7 +506,15 @@ class ArbitrageEngine:
                 continue
             savings_pct = ((current_price - history.current) / current_price) * 100
             if savings_pct >= self._provider_savings_threshold:
-                risk = MigrationRisk.HIGH if history.provider != self._active_provider else MigrationRisk.MEDIUM
+                # M18: the old `HIGH if provider != active else MEDIUM` made
+                # MEDIUM unreachable — the loop already skips the active
+                # provider. Risk now scales with the size of the win: a
+                # modest saving (< 2x threshold) is a MEDIUM-risk migration.
+                risk = (
+                    MigrationRisk.MEDIUM
+                    if savings_pct < self._provider_savings_threshold * 2
+                    else MigrationRisk.HIGH
+                )
                 self._opportunities.append(ArbitrageOpportunity(
                     opportunity_type=OpportunityType.CHEAPER_PROVIDER,
                     current_provider=self._active_provider,

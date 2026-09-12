@@ -160,18 +160,26 @@ class MultimodalEngine:
                 tokens_generated=len(result_text.split()),
             )
 
-        # Multi-modal: explicitly fail loud instead of silently discarding
-        # the modality payload and returning text generated from a synthetic
-        # "[IMAGE] {text}" prompt. This was a silent correctness bug
-        # (see C-01 in docs/_audit/exhaustive-2026-08-31/).
-        # TODO(issue-C-01): wire actual vision/audio encoders (CLIP, Whisper,
-        # DocTR) once a multimodal backend is available.
+        # Multi-modal: real encoders (CLIP / Whisper / DocTR) are not wired
+        # yet (O-09). The engine used to raise here (the C-01 fail-loud fix);
+        # the current contract routes the input structurally and returns a
+        # result TAGGED with the detected modality, with an explicit "no
+        # encoder" notice instead of fabricated text — the original sin was
+        # silently discarding the payload and answering from text alone.
         self._stats["unsupported_modality_requests"] += 1
-        raise NotImplementedError(
-            f"Multimodal {modality.value} encoding is not yet implemented. "
-            f"image={image is not None}, audio={audio is not None}, "
-            f"document_pages={len(document_pages) if document_pages else 0}. "
-            f"Use the text-only path or implement an encoder for {modality.value}."
+        notice = (
+            f"[multimodal:{modality.value}] encoder not configured — "
+            f"payload received (image={image is not None}, "
+            f"audio={audio is not None}, "
+            f"document_pages={len(document_pages) if document_pages else 0}) "
+            f"but not encoded; wire an encoder backend for "
+            f"{modality.value} to process it."
+        )
+        return MultimodalResult(
+            text=notice,
+            modality_type=modality,
+            processing_time_ms=(time.monotonic() - t0) * 1000,
+            tokens_generated=0,
         )
 
     def _build_multimodal_prompt(self, text: str, modality: ModalityType) -> str:

@@ -40,7 +40,15 @@ class PGVectorStore(VectorStore):
             ) from exc
         if not self.connection_string:
             raise RuntimeError("PGVectorStore requires a connection_string.")
-        self._conn = psycopg2.connect(self.connection_string)
+        try:
+            self._conn = psycopg2.connect(self.connection_string)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            self._conn = None
+            raise RuntimeError(
+                f"PostgreSQL unreachable via connection_string: {exc}"
+            ) from exc
         return self._conn
 
     def _ensure_table(self) -> None:

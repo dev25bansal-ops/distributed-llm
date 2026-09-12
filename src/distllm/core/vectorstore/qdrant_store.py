@@ -52,11 +52,19 @@ class QdrantStore(VectorStore):
             ) from exc
 
         client = self._require_client()
-        if not client.collection_exists(self.collection_name):
-            client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
-            )
+        try:
+            if not client.collection_exists(self.collection_name):
+                client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Qdrant server unreachable at {self.host}:{self.port}: {exc}. "
+                f"Start your Qdrant service or point host/port at it."
+            ) from exc
 
     def upsert(self, embeddings: list[list[float]], ids: list[str], metadata: list[dict] | None = None) -> None:
         """Insert/replace ``embeddings`` (``ids`` + optional ``metadata``)."""
@@ -81,17 +89,44 @@ class QdrantStore(VectorStore):
         client.upsert(collection_name=self.collection_name, points=points)
 
     def query(self, embedding: list[float], top_k: int = 10) -> list[dict]:
-        """Return the ``top_k`` nearest neighbours as ``{id, score, metadata}``."""
-        client = self._require_client()
-        res = client.search(
-            collection_name=self.collection_name,
-            query_vector=embedding,
-            limit=top_k,
-        )
-        return [
-            {"id": str(h.id), "score": h.score, "metadata": h.payload}
-            for h in res
-        ]
+        """Return the ``top_k`` nearest neighbours as ``{id, score, metadata}``.
+
+        Fails closed with RuntimeError when the server is unreachable or the
+        client API has drifted (H17: a broken backend must be loud, never a
+        silent empty result).
+        """
+        try:
+            client = self._require_client()
+            # qdrant-client renamed `search` to `query_points` (>=1.10);
+            # prefer the modern API and fall back for pinned older versions.
+            query_fn = getattr(client, "query_points", None)
+            if callable(query_fn):
+                from qdrant_client.models import Filter as _Filter
+                res = query_fn(
+                    collection_name=self.collection_name,
+                    query=embedding,
+                    limit=top_k,
+                    query_filter=_Filter(),
+                )
+                return [
+                    {"id": str(h.id), "score": float(h.score), "metadata": h.payload}
+                    for h in res.points
+                ]
+            res = client.search(
+                collection_name=self.collection_name,
+                query_vector=embedding,
+                limit=top_k,
+            )
+            return [
+                {"id": str(h.id), "score": h.score, "metadata": h.payload}
+                for h in res
+            ]
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Qdrant query failed (server unreachable or API mismatch): {exc}"
+            ) from exc
 
     def delete(self, ids: list[str]) -> None:
         """Delete ``ids`` from the collection."""
