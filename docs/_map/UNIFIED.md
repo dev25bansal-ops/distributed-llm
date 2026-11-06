@@ -134,7 +134,13 @@ Every deletion/move with its evidence. Format: `YYYY-MM-DD — path — verdict 
 
 **Kept despite looking like junk (verified references):** `requirements.lock` (Makefile+Dockerfile), `config.yaml`/`install.sh`/`docker-entrypoint.sh` (referenced), `integrations/kubernetes/` (helm-publish.yml:45 packages it), `sdk/js/dist/` (npm main), `deploy/ray/`+`deploy/operator/controller.py`+`deploy/webhook/` (REVIEW — orphan deploy surfaces, decided KEEP pending product direction), `src/distllm/ui/` (REVIEW — redundant with dashboard but tested+packaged).
 
-**Open follow-ups (REVIEW items, not deleteable unilaterally):**
+**Final state (2026-11-06):** 12 commits on `worktree-bubbly-pondering-whisper`; ~1,050 files / ~30K lines removed; 79 dead modules + 79 paired tests/baselines deleted; 40+ docs corrected with grep-cited evidence; 46+ fiction env vars/commands/endpoints replaced or UNVERIFIED-flagged; `CLOUD_MARKETPLACE.md` deleted (vaporware); `SECURITY_HARDENING.md` merge markers resolved; `evaluation_harness.py` now raises `NotImplementedError` instead of fabricating benchmark numbers; personal IPs scrubbed from 3 docs; README roadmap corrected (mDNS/speculative shipped, 12 backends); MOCs + `_Project Overview` deterministically recounted (src 707 .py / 207,872 LOC; tests 922 / 204,578 LOC).
+
+**Verification:** full `tests/api` 1349 passed post-merge; `tests/backends` 165; `tests/security` 601+; new regression files 52/52; `tests/core` failure list diffed against clean master: **0 regressions, 1 pre-existing failure fixed by this pass** (`test_memory_budget_eviction`); remaining core failures identical to master (radix eviction tuple-return etc.). CLI import + compileall green. Gitignore now covers `.distllm/`, `.usage.db*`, `sdk/dist/`, `sdk/js/dist/`, `integrations/*/dist/`, `*.pyc`, `.benchmarks/`.
+
+**Kept-despite-junk (verified references):** `requirements.lock`, `config.yaml`, `install.sh`, `docker-entrypoint.sh`, `integrations/kubernetes/` (helm-publish.yml), `sdk/js/dist/` (npm main), `deploy/{ray,operator,webhook}/`, `src/distllm/ui/`, dashboard `static/` + `static_v2/` (both live), deprecated re-export shims (public API compat), `redis_rate_limiter.py` (tests load by path), `evaluation_harness.py` (fixed), `integrations/one-api/` (standalone pkg), `src/distllm/benchmarks/` (orphaned, tiny, flagged).
+
+**Open follow-ups:** product decision on `ui/` vs `dashboard/` duplication; `deploy/operator/controller.py` stub vs integrations operator; `deploy/ray/` hardcoded paths; permanently-skipped tests honest but env-gated; `docs/MIGRATION_OPENAI.md:126` /v1/health aliases live but undocumented in api.md.
 - `src/distllm/dashboard/static/` vs `static_v2/` — v1 still served by server.py; needs one product decision, then delete v1.
 - `src/distllm/dashboard/static_v2/verification_report.html` — one-off snapshot in served static dir.
 - `tauri/COMPREHENSIVE_ANALYSIS.md` — stale analysis artifact inside product code.
