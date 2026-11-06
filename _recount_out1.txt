@@ -1,0 +1,230 @@
+==============================================================================
+A. src/distllm packages (immediate subdirs; .py count + non-empty LOC)
+==============================================================================
+  api                88 files    23,851 LOC
+  backends           19 files     5,855 LOC
+  benchmarks          3 files       302 LOC
+  cache               3 files     1,009 LOC
+  cli                50 files    10,182 LOC
+  client              2 files       450 LOC
+  cloud               7 files     2,455 LOC
+  compliance          2 files       626 LOC
+  config             18 files     2,218 LOC
+  core              274 files    75,171 LOC
+  dashboard           3 files       681 LOC
+  deploy              2 files        92 LOC
+  dist              194 files    71,033 LOC
+  errors              4 files       963 LOC
+  health              5 files       301 LOC
+  integrations       12 files     2,193 LOC
+  models             10 files     2,786 LOC
+  observability      20 files    11,755 LOC
+  operator            5 files       240 LOC
+  plugins             9 files     1,913 LOC
+  prompts            17 files     2,984 LOC
+  sdk                 7 files     1,879 LOC
+  security           16 files     4,030 LOC
+  terraform           1 files       225 LOC
+  ui                  2 files        74 LOC
+  utils               4 files       177 LOC
+  verification        6 files     1,541 LOC
+  <root .py>          2 files       133 LOC  ['constants.py', '__init__.py']
+  TOTAL src/distllm  785 files   225,119 LOC
+
+==============================================================================
+B. tests/ (.py count + non-empty LOC)
+==============================================================================
+  TOTAL tests/ : 788 .py files, 152,219 LOC
+  tests root-level .py: 48 files, 8,712 LOC
+  test packages (immediate subdirs with .py): 51
+    api                    65 files    17,199 LOC
+    backends               17 files     2,181 LOC
+    benchmark              15 files     1,679 LOC
+    benchmarks              3 files        36 LOC
+    cache                   1 files        75 LOC
+    chaos                  16 files     2,802 LOC
+    cli                    16 files     4,371 LOC
+    client                  3 files       789 LOC
+    cloud                   4 files       923 LOC
+    communication           1 files       137 LOC
+    comprehensive          13 files     1,916 LOC
+    config                  7 files       615 LOC
+    core                  299 files    65,483 LOC
+    correctness            10 files     1,590 LOC
+    dashboard               1 files       239 LOC
+    deploy                  5 files       811 LOC
+    dist                  158 files    57,925 LOC
+    distributed             2 files       340 LOC
+    e2e                    22 files     3,694 LOC
+    errors                  2 files       625 LOC
+    evaluation              1 files       299 LOC
+    features                1 files         0 LOC
+    fixtures                1 files       131 LOC
+    fuzz                   14 files     3,554 LOC
+    health                  4 files       839 LOC
+    infrastructure          1 files       168 LOC
+    integration            22 files     3,894 LOC
+    integrations            4 files     1,430 LOC
+    lint                    2 files       130 LOC
+    load                   17 files     1,857 LOC
+    manual                  2 files       198 LOC
+    models                  4 files       436 LOC
+    mutation                3 files       764 LOC
+    observability           6 files     1,020 LOC
+    partition              13 files     1,644 LOC
+    performance             2 files        83 LOC
+    plugins                 3 files       138 LOC
+    profiling               1 files       432 LOC
+    prompts                 3 files       315 LOC
+    property                8 files     1,405 LOC
+    real_import             1 files        91 LOC
+    regression_high        70 files     9,477 LOC
+    scripts                 2 files       170 LOC
+    sdk                     3 files     1,335 LOC
+    security               34 files     5,748 LOC
+    security_pkg            3 files       158 LOC
+    stability               2 files       363 LOC
+    stress                  2 files       129 LOC
+    ui                      3 files       195 LOC
+    utils                   3 files       436 LOC
+    verification            3 files     1,163 LOC
+
+==============================================================================
+C. root support trees
+==============================================================================
+  integrations   all-files= 168 (LOC  17,356)  .py= 70  .md= 10
+  sdk            all-files=  61 (LOC  12,608)  .py= 41  .md=  2
+  docs           all-files=  99 (LOC  18,776)  .py=  0  .md= 98
+  examples       all-files=  20 (LOC   2,637)  .py= 10  .md=  3
+  benchmarks     all-files=   8 (LOC   3,245)  .py=  7  .md=  1
+  scripts        all-files=  23 (LOC   3,248)  .py= 14  .md=  0
+  extensions     all-files=  17 (LOC   1,211)  .py=  0  .md=  3
+  website        all-files= 137 (LOC 130,484)  .py=  0  .md=  1
+  tauri          all-files=  93 (LOC  22,911)  .py=  1  .md=  2
+  deploy         all-files=  69 (LOC   4,090)  .py=  1  .md=  0
+  proto          all-files=   1 (LOC     257)  .py=  0  .md=  0
+  apps           MISSING at repo root
+  distllm        MISSING at repo root
+  distributed-llm MISSING at repo root
+  .github/workflows yml/yaml: 25
+  .github total files: 33
+
+==============================================================================
+D. combined aggregates for _Project Overview Module map
+==============================================================================
+  07 integrations/ + sdk/ + src/distllm/{integrations,sdk,prompts,plugins}  274 files    38,933 LOC (all file types)
+  08 tauri/ + website/ + extensions/ + apps/ + dash + ui   269 files   160,235 LOC (all file types)
+  09 deploy/ + .github/ + proto/ + scripts/ + benchmarks/ + root packaging  134 files    14,198 LOC (all file types)
+  Guide-to-packages combined rows:
+    cli+config+client                                      70 files    12,850 LOC (.py)
+    backends+models                                        29 files     8,641 LOC (.py)
+    security+compliance                                    18 files     4,656 LOC (.py)
+    plugins+prompts                                        26 files     4,897 LOC (.py)
+    integrations+sdk                                       19 files     4,072 LOC (.py)
+    errors+utils                                            8 files     1,140 LOC (.py)
+    dashboard+health+ui                                    10 files     1,056 LOC (.py)
+
+==============================================================================
+E. MOC table-row existence check (missing file/dir tokens)
+==============================================================================
+  [01 Core Engine.md] line 53 (base core): MISSING 'batch_builder.py'
+  [01 Core Engine.md] line 56 (base core): MISSING 'priority_heap.py'
+  [01 Core Engine.md] line 57 (base core): MISSING 'stats_collector.py'
+  [01 Core Engine.md] line 58 (base core): MISSING 'starvation_monitor.py'
+  [01 Core Engine.md] line 66 (base core): MISSING 'straggler_alerts.py'
+  [01 Core Engine.md] line 97 (base core): MISSING 'kv_cache_adaptive_quantizer.py'
+  [01 Core Engine.md] line 101 (base core): MISSING 'kv_cache_metrics.py'
+  [01 Core Engine.md] line 102 (base core): MISSING 'kv_cache_migration.py'
+  [01 Core Engine.md] line 103 (base core): MISSING 'kv_cache_paged.py'
+  [01 Core Engine.md] line 105 (base core): MISSING 'kv_cache_serialization.py'
+  [01 Core Engine.md] line 116 (base core): MISSING 'cache_template_warmer.py'
+  [01 Core Engine.md] line 118 (base core): MISSING 'cache_bench.py'
+  [01 Core Engine.md] line 127 (base core): MISSING 'block_affinity_tracker.py'
+  [01 Core Engine.md] line 128 (base core): MISSING 'block_eviction_policy.py'
+  [01 Core Engine.md] line 130 (base core): MISSING 'gaia_cache.py'
+  [01 Core Engine.md] line 135 (base core): MISSING 'dynamic_memory_budget.py'
+  [01 Core Engine.md] line 152 (base core): MISSING 'route_audit.py'
+  [01 Core Engine.md] line 174 (base core): MISSING 'spot_forecasting.py'
+  [01 Core Engine.md] line 175 (base core): MISSING 'spot_failover.py'
+  [01 Core Engine.md] line 183 (base core): MISSING 'node_recovery.py'
+  [01 Core Engine.md] line 187 (base core): MISSING 'auto_discovery.py'
+  [01 Core Engine.md] line 212 (base core): MISSING 'aria_autoscaler.py'
+  [01 Core Engine.md] line 217 (base core): MISSING 'neural_partition_optimizer.py'
+  [01 Core Engine.md] line 219 (base core): MISSING 'activation_profiler.py'
+  [01 Core Engine.md] line 220 (base core): MISSING 'autoq.py'
+  [01 Core Engine.md] line 246 (base core): MISSING 'faas_7b.py'
+  [01 Core Engine.md] line 247 (base core): MISSING 'vllm_node.py'
+  [01 Core Engine.md] line 249 (base core): MISSING 'wisp_wasm.py'
+  [01 Core Engine.md] line 261 (base core): MISSING 'sentinel_qos.py'
+  [01 Core Engine.md] line 291 (base core): MISSING 'performance_alerts.py'
+  [01 Core Engine.md] line 295 (base core): MISSING 'synapse_debugger.py'
+  [02 Distributed Layer.md] line 131 (base dist): MISSING 'partitioner.py'
+  [02 Distributed Layer.md] line 132 (base dist): MISSING 'optimizer.py'
+  [02 Distributed Layer.md] line 133 (base dist): MISSING 'pareto_optimizer.py'
+  [02 Distributed Layer.md] line 134 (base dist): MISSING 'cost_model.py'
+  [02 Distributed Layer.md] line 135 (base dist): MISSING 'learned_cost.py'
+  [02 Distributed Layer.md] line 136 (base dist): MISSING 'network_cost_model.py'
+  [02 Distributed Layer.md] line 137 (base dist): MISSING 'quant_cost.py'
+  [02 Distributed Layer.md] line 138 (base dist): MISSING 'quant_partition.py'
+  [02 Distributed Layer.md] line 139 (base dist): MISSING 'quantization_tuner.py'
+  [02 Distributed Layer.md] line 140 (base dist): MISSING 'quantization_search.py'
+  [02 Distributed Layer.md] line 141 (base dist): MISSING 'quantization_metrics.py'
+  [02 Distributed Layer.md] line 142 (base dist): MISSING 'quant_bench.py'
+  [02 Distributed Layer.md] line 143 (base dist): MISSING 'quant_calibrate.py'
+  [02 Distributed Layer.md] line 144 (base dist): MISSING 'quant_coordinator.py'
+  [02 Distributed Layer.md] line 145 (base dist): MISSING 'quant_cost.py'
+  [02 Distributed Layer.md] line 146 (base dist): MISSING 'quant_report.py'
+  [02 Distributed Layer.md] line 147 (base dist): MISSING 'mixed_precision_tuner.py'
+  [02 Distributed Layer.md] line 148 (base dist): MISSING 'adaptive.py'
+  [02 Distributed Layer.md] line 149 (base dist): MISSING 'cloud_arbitrage.py'
+  [02 Distributed Layer.md] line 150 (base dist): MISSING 'validator.py'
+  [02 Distributed Layer.md] line 151 (base dist): MISSING 'visualizer.py'
+  [02 Distributed Layer.md] line 152 (base dist): MISSING 'benchmark_suite.py'
+  [02 Distributed Layer.md] line 153 (base dist): MISSING 'persistence.py'
+  [02 Distributed Layer.md] line 154 (base dist): MISSING 'profiles.py'
+  [02 Distributed Layer.md] line 156 (base dist): MISSING 'plugins.py'
+  [02 Distributed Layer.md] line 158 (base dist): MISSING 'cli.py'
+  [03 API Server.md] line 89 (base api): MISSING 'chat.py'
+  [03 API Server.md] line 90 (base api): MISSING 'completion.py'
+  [03 API Server.md] line 91 (base api): MISSING 'embeddings.py'
+  [03 API Server.md] line 92 (base api): MISSING 'batch.py'
+  [03 API Server.md] line 93 (base api): MISSING 'admin.py'
+  [03 API Server.md] line 94 (base api): MISSING 'assistants.py'
+  [03 API Server.md] line 95 (base api): MISSING 'api_keys.py'
+  [03 API Server.md] line 96 (base api): MISSING 'debug.py'
+  [03 API Server.md] line 97 (base api): MISSING 'defrag.py'
+  [03 API Server.md] line 98 (base api): MISSING 'eval.py'
+  [03 API Server.md] line 99 (base api): MISSING 'exchange.py'
+  [03 API Server.md] line 100 (base api): MISSING 'experiments.py'
+  [03 API Server.md] line 101 (base api): MISSING 'federated.py'
+  [03 API Server.md] line 102 (base api): MISSING 'fine_tuning.py'
+  [03 API Server.md] line 103 (base api): MISSING 'files.py'
+  [03 API Server.md] line 104 (base api): MISSING 'gossip.py'
+  [03 API Server.md] line 105 (base api): MISSING 'health.py'
+  [03 API Server.md] line 106 (base api): MISSING 'leaderboard.py'
+  [03 API Server.md] line 107 (base api): MISSING 'marketplace.py'
+  [03 API Server.md] line 108 (base api): MISSING 'metrics_history.py'
+  [03 API Server.md] line 109 (base api): MISSING 'model_registry.py'
+  [03 API Server.md] line 110 (base api): MISSING 'moderation.py'
+  [03 API Server.md] line 111 (base api): MISSING 'plugins.py'
+  [03 API Server.md] line 112 (base api): MISSING 'prompts.py'
+  [03 API Server.md] line 113 (base api): MISSING 'router_admin.py'
+  [03 API Server.md] line 114 (base api): MISSING 'scheduler.py'
+  [03 API Server.md] line 115 (base api): MISSING 'tokenize.py'
+  [03 API Server.md] line 116 (base api): MISSING 'tools.py'
+  [03 API Server.md] line 117 (base api): MISSING 'webhooks.py'
+  [03 API Server.md] line 118 (base api): MISSING 'webrtc.py'
+  [03 API Server.md] line 124 (base api): MISSING 'chat_service.py'
+  [03 API Server.md] line 125 (base api): MISSING 'completion_service.py'
+  [03 API Server.md] line 126 (base api): MISSING 'embedding_service.py'
+  [03 API Server.md] line 127 (base api): MISSING 'eval_service.py'
+  [03 API Server.md] line 134 (base api): MISSING 'delivery.py'
+  [11 Platform Services.md] line 92 (base terraform): MISSING 'terraform/__init__.py'
+  [11 Platform Services.md] line 93 (base terraform): MISSING 'verification/'
+  [11 Platform Services.md] line 94 (base terraform): MISSING 'benchmarks/scaling.py'
+  [11 Platform Services.md] line 95 (base terraform): MISSING 'benchmarks/evaluation_harness.py'
+  [11 Platform Services.md] line 96 (base terraform): MISSING 'benchmarks/__init__.py'
+  [00 Module Index.md] line 51: MISSING 'apps/'
+  total missing tokens: 98
+
+done.
