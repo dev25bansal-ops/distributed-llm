@@ -32,10 +32,7 @@
   - [Log Redaction](#log-redaction)
   - [Security Metrics](#security-metrics)
   - [Alerting Rules](#alerting-rules)
-<<<<<<< Updated upstream
-=======
 - [Debug Endpoints](#debug-endpoints)
->>>>>>> Stashed changes
 - [Incident Response](#incident-response)
   - [If API Key is Compromised](#if-api-key-is-compromised)
   - [If Node is Compromised](#if-node-is-compromised)
@@ -271,37 +268,17 @@ securityContext:
 
 ### Log Redaction
 
-<<<<<<< Updated upstream
-All application logs are automatically redacted at startup to prevent secrets and PII leakage. The `install_global_redaction()` function is called in `api/server.py::_init_observability` during server initialization, which installs:
-
-- **Loguru patcher**: A core-level patcher applied to every `loguru.logger` record across all ~794 source files
-- **Stdlib filter**: A `RedactingFilter` attached to the root logger's handlers
-
-This covers all log outputs (stderr, JSON stdout, queues, Loki) regardless of which logger instance emitted the message.
-
-**Redacted patterns:**
-=======
 All application logs are automatically redacted at startup to prevent secrets and PII leakage. `install_global_redaction()` is called in `api/server.py::_init_observability`, which runs from the FastAPI `lifespan` handler (`app = FastAPI(lifespan=lifespan, ...)`) — the live startup path. It installs two layers:
 
 - **Loguru core patcher**: applied by loguru to every `loguru.logger` record (the primary logging path across the codebase) after %-formatting and before any sink writes — covers stderr, JSON stdout, `enqueue=True` queues, and third-party sinks. No call site needs to change.
 - **Stdlib `RedactingFilter`**: attached to the root logger and each of its handlers, covering libraries that log via stdlib logging (including records propagated from child/third-party loggers).
 
 The pattern set lives in `src/distllm/security/log_redaction.py` (`DEFAULT_PATTERNS`):
->>>>>>> Stashed changes
 
 | Category | Patterns |
 |----------|----------|
 | **PII** | email addresses, SSN, phone numbers, credit card numbers, IP addresses |
 | **API keys** | `sk-...` tokens, `api_key="..."` assignments, AWS access keys (`AKIA...`) |
-<<<<<<< Updated upstream
-| **Long tokens** | Base64url tokens ≥40 chars, hex tokens ≥32 chars |
-| **Credentials** | password/passwd/pwd, secret, client_secret, token, access_token, refresh_token assignments |
-| **Authorization** | Bearer tokens, Authorization/Proxy-Authorization header values |
-
-Configuration: Disable entirely via `DISTLLM_LOG_REDACTION=off` (also accepts `0`, `false`, `no`). Extend patterns via `DISTLLM_REDACT_PATTERNS` (semicolon-separated regex list).
-
-**Test coverage:** `tests/security/test_loguru_redaction.py::TestInstallGlobalRedactionCombined::test_startup_wiring_call_sites_exist` verifies that `install_global_redaction()` appears in both startup paths' `_init_observability`.
-=======
 | **Credential assignments** | password/passwd/pwd, secret, client_secret, token, access_token, refresh_token `= value` |
 | **Authorization headers** | `Bearer <token>`, Authorization / Proxy-Authorization header values |
 | **High-entropy tokens** | base64/base64url runs ≥40 chars (covers `ApiKeyStore` `secrets.token_urlsafe(48)` keys with no prefix), hex runs ≥32 chars |
@@ -315,7 +292,6 @@ Configuration:
 Residual gap: only `record["message"]` is scrubbed on the loguru path — exception traceback text (`record["exception"]`) is not rewritten, so a secret embedded only in an exception repr can still appear in `logger.exception()` traceback output. This is acknowledged in `tests/security/test_loguru_redaction.py::test_exception_logging_redacted`.
 
 **Test coverage:** `tests/security/test_loguru_redaction.py::TestInstallGlobalRedactionCombined::test_startup_wiring_call_sites_exist` asserts that `_init_observability` in `distllm/api/server.py` (and the mirrored copy in `distllm/api/server_lifespan.py`, which currently has no importer) still contains the `install_global_redaction()` call, guarding against the "module tested, wiring untested" regression.
->>>>>>> Stashed changes
 
 ### Security Metrics
 
