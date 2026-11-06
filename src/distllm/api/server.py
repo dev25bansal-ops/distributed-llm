@@ -261,8 +261,9 @@ def custom_openapi() -> dict:
 app.openapi = custom_openapi  # type: ignore[method-assign]
 
 # Security headers middleware
-# Version identifiers mirror the canonical APIVersion registry in
-# api_versioning.py (date-based YYYY-MM strings).
+# Version identifiers mirror the canonical APIVersion registry
+# (date-based YYYY-MM strings; api_versioning.py was deleted in the
+# 2026-11-06 hygiene pass — this inline dict is the live source).
 _API_VERSIONS: dict[str, str] = {
     "v1": "2026-01",
     "v2": "2026-07",

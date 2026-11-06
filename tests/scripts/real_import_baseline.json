@@ -127,7 +127,6 @@
     "distllm.core.health_manager",
     "distllm.core.heterogeneous_scheduler",
     "distllm.core.hibernation_manager",
-    "distllm.core.hierarchical_digest",
     "distllm.core.hybrid_cache",
     "distllm.core.hydra_diffusion",
     "distllm.core.inference_engine",
