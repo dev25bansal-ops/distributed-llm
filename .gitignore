@@ -101,3 +101,8 @@ _dead_code.tsv
 # runtime data dir (get_data_dir default: persistent_store.py) — never commit
 .distllm/
 .usage.db*
+
+# generated SDK/integration artifacts (rebuild in CI, never commit)
+sdk/dist/
+sdk/js/dist/
+integrations/*/dist/
