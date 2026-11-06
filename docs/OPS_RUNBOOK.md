@@ -204,9 +204,12 @@ for node in node1 node2 node3; do
   scp certs/coordinator.* $node:/etc/distllm/tls/
 done
 
-# 3. Reload (no restart needed)
-kill -HUP $(pgrep -f distllm-api)
-kill -HUP $(pgrep -f distllm-node)
+# 3. Restart all services so they load the new certificates (TLS certs are
+#    read at startup — src/distllm/dist/worker.py:560-565; the SIGHUP handler
+#    on distllm-api only reloads scheduler config, and distllm-node installs
+#    no SIGHUP handler, so kill -HUP would terminate it)
+docker compose down  # or systemctl stop distllm-*
+docker compose up -d  # or systemctl start distllm-*
 
 # 4. Verify TLS
 openssl s_client -connect coordinator:50050 -servername coordinator

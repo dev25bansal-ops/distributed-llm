@@ -96,6 +96,8 @@ helm install distllm ./integrations/kubernetes/helm/distllm \
     --set env.TRANSFORMERS_OFFLINE=1
 ```
 
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — `integrations/kubernetes/helm/distllm/templates/deployment.yaml:39-40` hardcodes only `DISTLLM_CONFIG` in the pod env; no template renders `.Values.env`, so `--set env.*` overrides above may not reach the container
+
 ## Security Hardening for Air-Gapped
 
 In addition to standard security measures:
