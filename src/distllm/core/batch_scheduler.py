@@ -724,6 +724,7 @@ class BatchScheduler:
                 if prefetcher is not None:
                     prefetcher.prefetch_for_stage(active_ids, stage_idx=0)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         return active_items
 

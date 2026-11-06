@@ -478,6 +478,7 @@ class VLLMNodeAdapter(BackendAdapter):
                 info["max_num_seqs"] = getattr(self._llm, 'max_num_seqs', None)
                 info["dtype"] = str(getattr(self._llm, 'dtype', 'unknown'))
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         if self._tokenizer is not None:
@@ -485,6 +486,7 @@ class VLLMNodeAdapter(BackendAdapter):
                 info["vocab_size"] = self._tokenizer.vocab_size
                 info["model_max_length"] = getattr(self._tokenizer, 'model_max_length', None)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         return info
@@ -507,6 +509,7 @@ class VLLMNodeAdapter(BackendAdapter):
                     engine_metrics = engine.get_metrics()
                     metrics.update(engine_metrics)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         return metrics

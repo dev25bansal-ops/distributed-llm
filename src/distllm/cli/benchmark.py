@@ -85,6 +85,7 @@ def _run_benchmarks(
             console.print(f"[red]Error:[/red] Could not connect to {base_url}")
             return []
         except Exception as e:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(f"[red]Error:[/red] {e}")
             return []
 

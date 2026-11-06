@@ -181,11 +181,13 @@ class AccuracyVerifier:
                 try:
                     s.stop(grace=1.0)
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             for w in workers:
                 try:
                     w.stop()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             del ref_partitioner
             if torch.cuda.is_available():

@@ -93,6 +93,7 @@ def _close_opa_clients() -> None:
         try:
             _opa_async_client.close()
         except Exception:
+            # CQ-08: intentional: close() must not raise during teardown; clients are process-global.
             pass
         _opa_async_client = None
 
@@ -293,6 +294,7 @@ def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         allow = bool(exprs[0].get("value")) if exprs else False
         return Decision(allow, "opa policy evaluation", "opa")
     except Exception:
+        # CQ-08: intentional fail-open: OPA binary unavailable/errored -> fall through to the OPA server, then the pure-Python policy (see authorize()).
         return None
 
 
@@ -310,6 +312,7 @@ def _opa_server_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
     except Exception:
+        # CQ-08: intentional fail-open: OPA server unreachable/errored -> fall through to the pure-Python policy (see authorize()).
         return None
 
 
@@ -328,6 +331,7 @@ async def _opa_server_evaluate_async(data: dict[str, Any]) -> Optional[Decision]
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
     except Exception:
+        # CQ-08: intentional fail-open: OPA server unreachable/errored -> fall through to the pure-Python policy (see authorize_async()).
         return None
 
 

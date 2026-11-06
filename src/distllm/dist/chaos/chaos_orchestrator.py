@@ -84,6 +84,7 @@ class ScenarioGenerator:
                 ))
             return scenarios
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return ScenarioGenerator.predefined_scenarios()
 
     @staticmethod
@@ -159,6 +160,7 @@ class ChaosOrchestrator:
                 self._recovery_successes += 1
                 self._recovery_times.append(result.recovery_time_s)
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             result.success = False
             result.side_effects.append(str(e))
 

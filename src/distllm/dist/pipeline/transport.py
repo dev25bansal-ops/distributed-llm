@@ -169,6 +169,7 @@ class TensorTransport:
                 self._nccl = NcclTransport(auto_init=True, **kwargs)
                 self.is_available = self._nccl.is_initialized
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 self.is_available = False
                 self._nccl = None
         elif backend == TransportBackend.QUIC:
@@ -188,6 +189,7 @@ class TensorTransport:
                 self._selected_backend = TransportBackend.NCCL
                 return
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         # Try QUIC (best for WAN)
@@ -428,6 +430,7 @@ class TensorTransport:
                 try:
                     asyncio.run(self._quic_client.close())
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             self._quic_client = None
         if self._nccl is not None:

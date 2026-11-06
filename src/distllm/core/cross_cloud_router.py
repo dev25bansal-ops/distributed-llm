@@ -251,6 +251,7 @@ class CarbonIntensityProvider:
             try:
                 self._http_client.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._http_client = None
 

@@ -84,6 +84,7 @@ class ChannelPool:
                 try:
                     ch.close()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
                 del self._pool[target]
                 return None
@@ -119,6 +120,7 @@ class ChannelPool:
                 try:
                     new_channel.close()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
                 return ch
             self._pool[target] = (new_channel, 1)
@@ -131,6 +133,7 @@ class ChannelPool:
                 try:
                     ch.close()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             self._pool.clear()
 
@@ -176,6 +179,7 @@ class NodeClient:
             channel_pool.decrement_ref(self._target)
             self.channel.close()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
 
@@ -190,6 +194,7 @@ class AsyncNodeClient:
         try:
             await self.channel.close()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
 

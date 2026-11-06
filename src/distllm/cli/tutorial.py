@@ -50,6 +50,7 @@ def _run_tutorial() -> None:
         else:
             print(f"  ⚠️  No CUDA GPU detected. DistLLM will use CPU (slow).")
     except Exception:
+        # CQ-08: failure is surfaced via console output; not propagated.
         print(f"  ❌ PyTorch not available. Run: pip install distllm[self-hosted]")
         return
 

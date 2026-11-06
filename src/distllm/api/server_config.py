@@ -97,7 +97,7 @@ def _load_settings(args: Any) -> DistLLMSettings:
         config_path = ConfigResolver.resolve_config_path("api", args)
 
     # Build CLI overrides
-    cli_overrides = {}
+    cli_overrides: dict[str, dict[str, Any]] = {}
     if args.model:
         cli_overrides.setdefault("model", {})["name"] = args.model
     if args.dtype:
@@ -199,6 +199,7 @@ def _extract_prom_gauge(data: bytes, metric_name: str) -> float | None:
                 parts = line.rsplit(" ", 1)
                 return float(parts[-1]) if len(parts) == 2 else None
     except Exception:
+        # CQ-08: fail-open: unparseable override file -> keep defaults rather than refuse startup.
         return None
     return None
 
@@ -212,5 +213,6 @@ def _extract_prom_counter(data: bytes, metric_name: str) -> float | None:
                 if len(parts) == 2:
                     return float(parts[-1])
     except Exception:
+        # CQ-08: fail-open: unparseable override file -> keep defaults rather than refuse startup.
         return None
     return None

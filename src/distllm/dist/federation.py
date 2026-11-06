@@ -530,6 +530,7 @@ class FederationCoordinator:
             if "memory_percent" in gpu_info:
                 gpu_mem_pct = float(gpu_info["memory_percent"])
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         active = 0
@@ -540,6 +541,7 @@ class FederationCoordinator:
                 active = stats.get("active_requests", 0)
                 pending = stats.get("pending_requests", 0)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         cpu_pct = psutil.cpu_percent(interval=0.1)
@@ -741,6 +743,7 @@ class FederationCoordinator:
             try:
                 return await self.check_peer_health(pid)
             except Exception as e:
+                # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
                 return {"_peer_id": pid, "_reachable": False, "_error": str(e)}
 
         tasks = [probe(pid) for pid in self._peers if pid != self.config.cluster_id]

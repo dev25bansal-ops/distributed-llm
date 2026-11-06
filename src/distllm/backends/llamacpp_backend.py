@@ -287,6 +287,7 @@ class LlamacppNodeAdapter(BackendAdapter):
                 elif plat == "xpu" and hasattr(torch.xpu, "empty_cache"):
                     torch.xpu.empty_cache()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             logger.info("[llama.cpp] Engine shut down")
         # Idempotent: a second shutdown (or shutdown before load) is a no-op

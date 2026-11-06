@@ -252,6 +252,21 @@ _cache = _FaissIndex()
 
 
 # ---------------------------------------------------------------------------
+# Env gate — mirrored at the mount site in server.py
+# ---------------------------------------------------------------------------
+
+
+def semantic_cache_enabled() -> bool:
+    """Return True only when ``DISTLLM_SEMANTIC_CACHE=1``.
+
+    Default off: the cache is opt-in because serving a cached response for a
+    semantically similar (not identical) prompt changes generation behaviour,
+    so operators must explicitly accept that trade-off.
+    """
+    return os.environ.get("DISTLLM_SEMANTIC_CACHE", "0") == "1"
+
+
+# ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
 

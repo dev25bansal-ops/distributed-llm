@@ -357,6 +357,7 @@ class CacheManager:
                 prefix_hash = idx.index_tokens(tokens[:32])
                 self.gossip_protocol.advertise_cache(prefix_hash)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     async def async_lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
@@ -551,6 +552,7 @@ class CacheManager:
                                 self._tier_stats["disk"]["hits"] += 1
                             return ("disk", kv_data)
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
 
         # 3. Gossip index lookup

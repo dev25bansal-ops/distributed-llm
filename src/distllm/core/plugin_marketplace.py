@@ -187,6 +187,7 @@ class PluginMarketplace:
                             self._registry[name] = entry
                         discovered.append(entry)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         return discovered
@@ -254,6 +255,7 @@ class PluginMarketplace:
                 return True
             return False
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     # ── Custom Backend Registration ───────────────────────────────────────

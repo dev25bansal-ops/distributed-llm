@@ -276,6 +276,7 @@ def _pip_install(pkg: str) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, "pip install timed out (300s)"
     except Exception as e:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False, f"pip install error: {e}"
 
 
@@ -299,6 +300,7 @@ def _clean_hf_cache() -> tuple[bool, str]:
         shutil.rmtree(path, ignore_errors=True)
         return True, f"freed {total / 1e9:.1f} GB by cleaning {path}"
     except Exception as e:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False, f"clean error: {e}"
 
 
@@ -401,4 +403,4 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())

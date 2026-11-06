@@ -220,6 +220,7 @@ async def close_session(session_id: str):
         try:
             await transport.close()
         except Exception:
+            # CQ-08: best-effort cleanup: a transport that is already closed must not break session teardown.
             pass
 
     _session_mgr.close_session(session_id)

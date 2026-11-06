@@ -100,6 +100,7 @@ class TransferProgress:
             try:
                 self.on_progress(self)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     # -- chunk lifecycle ---------------------------------------------------
@@ -580,6 +581,7 @@ class TransferPipeline:
                     progress.mark_chunk_completed(chunk_id)
                     return True
                 except Exception as exc:
+                    # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                     progress.mark_chunk_failed(chunk_id, str(exc))
                     return False
 

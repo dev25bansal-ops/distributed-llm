@@ -370,6 +370,7 @@ class TritonNodeAdapter(BackendAdapter):
         try:
             out = tokenizer(text, add_special_tokens=False)["input_ids"]
         except Exception:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             out = tokenizer.encode(text)
         return [int(t) for t in out]
 
@@ -546,6 +547,7 @@ class TritonNodeAdapter(BackendAdapter):
                 return False
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def current_load(self) -> float:
@@ -571,6 +573,7 @@ class TritonNodeAdapter(BackendAdapter):
             load = min(inflight / max(max_batch, 1), 1.0)
             return float(load)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     # ── Generation ───────────────────────────────────────────────────
@@ -892,6 +895,7 @@ class TritonNodeAdapter(BackendAdapter):
             try:
                 self._client.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._client = None
             self._model_metadata = {}
@@ -937,6 +941,7 @@ class TritonNodeAdapter(BackendAdapter):
                 and self._client.is_server_ready()
             )
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _probe_model_ready(self) -> bool:
@@ -948,6 +953,7 @@ class TritonNodeAdapter(BackendAdapter):
                 )
             )
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
 

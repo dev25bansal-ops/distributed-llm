@@ -58,11 +58,18 @@ def webhook_store(tmp_path, monkeypatch):
     from distllm.api.routes import webhooks as webhooks_routes
 
     monkeypatch.setenv("DISTLLM_DATA_DIR", str(tmp_path))
+    # At-rest encryption (SEC-API-08-KEK): keep the fallback KEK file in the
+    # temp dir too, so tests never write into the repo's .distllm/.
+    monkeypatch.setenv("DISTLLM_WEBHOOK_KEK_FILE", str(tmp_path / "webhook_kek"))
+    monkeypatch.setattr(webhooks_routes, "_kek_cache", None)
+    monkeypatch.setattr(webhooks_routes, "_fernet_cache", None)
     monkeypatch.setattr(ps, "_store", None)
     monkeypatch.setattr(webhooks_routes, "_webhook_cache", {})
     yield
     # Do not restore a global store bound to the tmp dir.
     monkeypatch.setattr(ps, "_store", None)
+    monkeypatch.setattr(webhooks_routes, "_kek_cache", None)
+    monkeypatch.setattr(webhooks_routes, "_fernet_cache", None)
 
 
 # ── 1. Route-level: registration-time rejection ──────────────────────────────

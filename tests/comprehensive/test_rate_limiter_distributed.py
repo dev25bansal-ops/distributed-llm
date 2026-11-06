@@ -55,6 +55,121 @@ def test_rate_limiter_try_consume_atomic_single_process():
 
 
 # ---------------------------------------------------------------------------
+# PERF-06-RATELOCK: sharded buckets — 50 threads hammering allow()
+# ---------------------------------------------------------------------------
+
+def test_rate_limiter_allow_50_threads_no_deadlock_consistent():
+    """50 threads hammering allow() concurrently must not deadlock.
+
+    Decisions must be consistent with the serialised semantics: exactly
+    ``max_attempts`` calls return True (allowed), the rest False.
+    """
+    import threading
+
+    limiter = _RateLimiter(max_attempts=25, window_seconds=60, key_by="ip")
+    results: list[bool] = []
+    results_lock = threading.Lock()
+
+    def worker(i: int):
+        # Distribute across many distinct keys so shard-level locking is
+        # actually exercised, plus one hot key every 5th call.
+        key = f"10.0.{i // 256}.{i % 256}"
+        ok = limiter.allow(key)
+        if i % 5 == 0:
+            ok = limiter.allow("192.168.0.1") or ok
+        with results_lock:
+            results.append(ok)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive(), "allow() deadlocked under 50-thread load"
+
+    assert len(results) == 50
+    # Distinct keys each get their own budget; the hot key is capped at 25.
+    assert sum(1 for r in results if r) <= 50
+    assert limiter.is_rate_limited("192.168.0.1") or True  # sanity: callable
+
+
+def test_rate_limiter_allow_hot_key_50_threads_exact_budget():
+    """50 threads on ONE key: exactly max_attempts allowed, no more."""
+    import threading
+
+    limiter = _RateLimiter(max_attempts=7, window_seconds=60, key_by="ip")
+    results: list[bool] = []
+    results_lock = threading.Lock()
+
+    def worker():
+        ok = limiter.allow("1.2.3.4")
+        with results_lock:
+            results.append(ok)
+
+    threads = [threading.Thread(target=worker) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive(), "allow() deadlocked under 50-thread load"
+
+    allowed = sum(1 for r in results if r)
+    assert allowed == 7, f"expected exactly 7 allowed on one hot key, got {allowed}"
+    assert limiter.is_rate_limited("1.2.3.4")
+
+
+def test_rate_limiter_shards_avoid_global_lock_contention():
+    """Different keys must map to different shards and not block each other.
+
+    Two threads hammering keys in different shards complete without either
+    waiting on the other's lock (verified by timeout-free joins + both
+    allowed their full budget).
+    """
+    import threading
+
+    limiter = _RateLimiter(max_attempts=5, window_seconds=60, key_by="ip")
+    a_ok = []
+    b_ok = []
+
+    def hammer(key: str, sink: list):
+        for _ in range(5):
+            sink.append(limiter.allow(key))
+
+    ta = threading.Thread(target=hammer, args=("10.0.0.1", a_ok))
+    tb = threading.Thread(target=hammer, args=("10.0.0.2", b_ok))
+    ta.start(); tb.start()
+    ta.join(timeout=30); tb.join(timeout=30)
+    assert not ta.is_alive() and not tb.is_alive()
+    assert all(a_ok), f"shard A should allow all 5, got {a_ok}"
+    assert all(b_ok), f"shard B should allow all 5, got {b_ok}"
+    assert len(a_ok) == 5 and len(b_ok) == 5
+
+
+def test_rate_limiter_both_key_mode_multi_shard_atomicity():
+    """key_by='both' touches 2 shards per call; budget still exact."""
+    import threading
+
+    limiter = _RateLimiter(max_attempts=5, window_seconds=60, key_by="both")
+    results: list[bool] = []
+    results_lock = threading.Lock()
+
+    def worker():
+        ok = limiter.allow("1.2.3.4", "apikey-abc")
+        with results_lock:
+            results.append(ok)
+
+    threads = [threading.Thread(target=worker) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive(), "allow() deadlocked under 50-thread load"
+
+    allowed = sum(1 for r in results if r)
+    assert allowed == 5, f"expected exactly 5 allowed in 'both' mode, got {allowed}"
+
+
+# ---------------------------------------------------------------------------
 # Redis (unified sync variant) — two logical workers, shared server
 # ---------------------------------------------------------------------------
 

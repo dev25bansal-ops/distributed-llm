@@ -502,6 +502,7 @@ class KVTransferManager:
                 import sys
                 record.transfer_bytes = sys.getsizeof(kv_data)
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 record.transfer_bytes = 0
 
         logger.debug(

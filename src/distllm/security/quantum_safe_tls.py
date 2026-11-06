@@ -76,6 +76,7 @@ def _probe_openssl_group_support() -> bool:
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
     # CPython 3.13+ SSLContext.set_groups is the only stdlib path to select a
     # named group like X25519MLKEM768. Its presence is necessary but we also
@@ -86,6 +87,7 @@ def _probe_openssl_group_support() -> bool:
         ctx.set_groups(KYBER_HYBRID_GROUP)  # type: ignore[attr-defined]
         return True
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
 
@@ -94,6 +96,7 @@ def _probe_oqs() -> bool:
     try:
         import oqs  # type: ignore  # noqa: F401
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
     try:
         import oqs  # type: ignore
@@ -102,6 +105,7 @@ def _probe_oqs() -> bool:
         # Kyber768 was renamed to ML-KEM-768 in newer liboqs; accept either.
         return bool(mechs & {"Kyber768", "ML-KEM-768"})
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
 
@@ -120,6 +124,7 @@ def _probe_cryptography_kem() -> bool:
 
         return True
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
 
@@ -295,6 +300,7 @@ def _configure_kyber_group(ctx: ssl.SSLContext) -> bool:
             set_groups(KYBER_HYBRID_GROUP)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
     # Path 2 (oqs provider) would be configured at the OpenSSL provider level,
     # not via the Python SSLContext, so there is nothing to do on ctx here;

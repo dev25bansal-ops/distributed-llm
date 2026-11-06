@@ -197,6 +197,7 @@ class FailurePredictor:
                 proba = self._model.predict_proba(feats)[0]
                 return float(proba[1]) if len(proba) > 1 else 0.0
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         # Heuristic fallback

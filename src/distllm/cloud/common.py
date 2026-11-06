@@ -214,4 +214,5 @@ def multi_provider_session(
             try:
                 session.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass

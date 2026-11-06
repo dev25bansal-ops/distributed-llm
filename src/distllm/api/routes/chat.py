@@ -217,6 +217,7 @@ class _ToolCallingEngine:
                 else:
                     invoke = functools.partial(handler, args)
             except Exception as e:
+                # CQ-08: tool failure is recorded in the results payload (visible to the LLM); other tool calls still run.
                 results[index] = {
                     "tool_call_id": tool_call_id,
                     "role": "tool",
@@ -235,6 +236,7 @@ class _ToolCallingEngine:
                         "content": str(invoke()),
                     }
                 except Exception as inline_e:
+                    # CQ-08: tool failure is recorded in the results payload (visible to the LLM); other tool calls still run.
                     results[index] = {
                         "tool_call_id": tool_call_id,
                         "role": "tool",
@@ -259,6 +261,7 @@ class _ToolCallingEngine:
                     "content": f"Error executing tool '{name}': timed out after {timeout_s}s",
                 }
             except Exception as e:
+                # CQ-08: tool failure is recorded in the results payload (visible to the LLM); other tool calls still run.
                 results[index] = {
                     "tool_call_id": tool_call_id,
                     "role": "tool",

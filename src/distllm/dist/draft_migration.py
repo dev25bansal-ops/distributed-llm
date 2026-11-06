@@ -235,6 +235,7 @@ class HeterogeneousDraftManager:
                 if snapshot:
                     return snapshot.utilization_pct
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         # Fallback: try pynvml directly
@@ -245,6 +246,7 @@ class HeterogeneousDraftManager:
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
             return float(util.gpu)
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def _select_best_gpu_endpoint(self) -> HardwareEndpoint | None:
@@ -299,6 +301,7 @@ class HeterogeneousDraftManager:
                     # The fleet will route to the new endpoint
                     pass
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         logger.info(
@@ -311,6 +314,7 @@ class HeterogeneousDraftManager:
             try:
                 self._on_migrate(event)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     def start_monitor(self) -> None:

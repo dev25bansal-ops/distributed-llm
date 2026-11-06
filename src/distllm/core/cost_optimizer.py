@@ -294,6 +294,7 @@ class CostOptimizer:
                     try:
                         self._pricing.refresh()
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
 
                 # Check for arbitrage opportunities

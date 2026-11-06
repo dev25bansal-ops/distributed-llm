@@ -322,6 +322,7 @@ class GrammarConstrainedGenerator:
                 try:
                     token_str = tokenizer.decode([tid])
                 except Exception:
+                    # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                     continue
                 if token_str:
                     formatted.setdefault(token_str, []).append(int(tid))
@@ -529,6 +530,7 @@ def _patch_schema_constrained_decoder() -> None:
     try:
         from distllm.core.constrained_decoder import SchemaConstrainedDecoder
     except Exception:
+        # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
         return
 
     if hasattr(SchemaConstrainedDecoder, "grammar_constrained"):

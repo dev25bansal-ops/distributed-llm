@@ -451,6 +451,7 @@ class ModelPartitioner:
             partial_model.load_state_dict(state_dict, strict=False, assign=True)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _extract_subset(self, full_model: Any, start_layer: int, end_layer: int, total_layers: int, device: str) -> None:

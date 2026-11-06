@@ -155,6 +155,7 @@ def _verify_entry_point_signature(ep: importlib.metadata.EntryPoint) -> bool:
         if raw:
             signature_b64 = raw.strip()
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     if not signature_b64:
         # Fallback: a marker file listing the signature.
@@ -163,12 +164,14 @@ def _verify_entry_point_signature(ep: importlib.metadata.EntryPoint) -> bool:
             if sig_file.is_file():
                 signature_b64 = sig_file.read_text().strip()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
     if not signature_b64:
         return False
     try:
         signature = base64.b64decode(signature_b64.encode("ascii"))
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
     payload = f"{ep.name}:{dist.version}:{ep.value}".encode("utf-8")
     for key in trusted_keys:
@@ -178,6 +181,7 @@ def _verify_entry_point_signature(ep: importlib.metadata.EntryPoint) -> bool:
         except InvalidSignature:
             continue
         except Exception:
+            # CQ-08: skip this item and continue with the rest (partial results are acceptable).
             continue
     return False
 
@@ -690,6 +694,7 @@ def _check_health(adapter_class: type) -> bool:
             return bool(probe.health_check())
         return True
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
 
@@ -707,6 +712,7 @@ def _supports_forward(adapter_class: type) -> bool:
             return True
         return bool(fn())
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
 
@@ -719,4 +725,5 @@ def _get_load(adapter_class: type) -> float:
             return float(probe.current_load())
         return 0.0
     except Exception:
+        # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
         return 0.0

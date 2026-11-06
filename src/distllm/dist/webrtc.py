@@ -301,6 +301,7 @@ class WebRTCSignaling:
                 resp = await client.post(url, content=payload)
                 return resp.status_code == 200
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
 
@@ -493,6 +494,7 @@ class WebRTCTransport:
             self._data_channel.send(TensorFraming.make_heartbeat())
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     async def close(self) -> None:
@@ -504,11 +506,13 @@ class WebRTCTransport:
             try:
                 self._data_channel.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         if self._pc is not None:
             try:
                 await self._pc.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     @property
@@ -714,6 +718,7 @@ class SignalingServer:
             try:
                 await transport.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         self._transports.clear()
         if self._server:

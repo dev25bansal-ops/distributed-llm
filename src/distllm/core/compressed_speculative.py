@@ -236,7 +236,7 @@ class CompressedSpeculativeDecoder:
     Usage::
 
         kv_cache = KVCache(...)
-        kv_cache.compress("int4")  # 4x compression
+        kv_cache.compress("int4")  # 2x compression (int8-equivalent storage)
 
         decoder = CompressedSpeculativeDecoder(
             target_forward=model_forward_fn,

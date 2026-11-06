@@ -141,6 +141,7 @@ class RequestTracker:
                     else:
                         self._results[seq_id] = "[Error: Sequence completed without output]"
                 except Exception as e:
+                    # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                     self._results[seq_id] = f"[Error decoding output: {e}]"
                 # SET, never pop: the event is consumed by wait_for_result.
                 # Popping here left completed results unreachable ("Unknown

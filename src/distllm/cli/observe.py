@@ -303,6 +303,7 @@ def _collect_metrics(coordinator_url: str) -> str:
                     lines.append(f"# TYPE {metric_name} gauge")
                     lines.append(f"{metric_name} {value}")
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
 
     # Add default metrics

@@ -19,6 +19,10 @@ Supported event types:
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import os
+import secrets
 import threading
 import time
 import uuid
@@ -31,6 +35,11 @@ from pydantic import BaseModel, Field
 from ..auth_deps import require_coordinator, require_role
 from ..persistent_store import get_store
 from distllm.core.webhook_manager import is_safe_webhook_url
+
+try:  # cryptography is an existing dependency of delivery.py (httpx stack).
+    from cryptography.fernet import Fernet
+except ImportError:  # pragma: no cover - only on broken installs
+    Fernet = None  # type: ignore[assignment]
 
 # Lazy import — the webhook engine is only needed for the test endpoint
 # and the delivery is triggered by event producers, not by this route file.
@@ -107,17 +116,194 @@ _webhook_cache: dict[str, dict] = {}
 _cache_lock = threading.Lock()
 
 
+# ── At-rest encryption of HMAC secrets (SEC-API-08-KEK) ─────────────────
+
+# Webhook signing secrets were historically persisted in plaintext inside the
+# PersistentStore JSON blob, so a database dump leaks every tenant's signing
+# key.  Secrets are now stored wrapped with a Fernet key derived from
+# ``DISTLLM_WEBHOOK_KEK`` (base64url of a 32-byte key, or any passphrase that
+# is stretched via SHA-256 for convenience).  When neither the env var nor a
+# 0600 key file is present, a key is generated once, persisted owner-only, and
+# a warning is logged — mirroring ``middleware._persist_api_key``.
+
+_WEBHOOK_KEK_ENV = "DISTLLM_WEBHOOK_KEK"
+_WEBHOOK_KEY_FILE = os.path.join(".distllm", "webhook_kek")
+
+# Values written by this version always start with this tag, so a legacy
+# plaintext secret can be distinguished from a wrapped one on read.
+_SECRET_PREFIX = "enc:"
+
+
+def _kek_file_path() -> str:
+    """Key-file path, overridable via ``DISTLLM_WEBHOOK_KEK_FILE``."""
+    return os.environ.get("DISTLLM_WEBHOOK_KEK_FILE") or _WEBHOOK_KEY_FILE
+
+
+def _derive_fernet_key(kek: str) -> bytes:
+    """Derive a 32-byte urlsafe-b64 Fernet key from *kek*.
+
+    Accepts either a 32-byte key in base64url form (compact or padded) or any
+    passphrase, which is stretched with SHA-256 for operator convenience.
+    """
+    if len(kek) >= 40:
+        try:
+            raw = base64.urlsafe_b64decode(kek + "=" * (-len(kek) % 4))
+            if len(raw) == 32:
+                return base64.urlsafe_b64encode(raw)
+        except Exception:
+            # CQ-08: malformed KEK input: fall through to the SHA-256 passphrase derivation below.
+            pass
+    return base64.urlsafe_b64encode(hashlib.sha256(kek.encode("utf-8")).digest())
+
+
+_kek_cache: str | None | None = None  # None=unresolved, str=resolved KEK
+
+
+def _load_webhook_kek() -> str | None:
+    """Return the raw KEK material, generating+persisting one if missing.
+
+    Never raises: on any failure the caller falls back to plaintext storage,
+    which preserves availability at the cost of the at-rest guarantee.
+    The resolved KEK is memoized so the SQLite/FS work happens once/process.
+    """
+    global _kek_cache
+    if _kek_cache is not None:
+        return _kek_cache
+    kek = os.environ.get(_WEBHOOK_KEK_ENV)
+    if kek:
+        _kek_cache = kek
+        return kek
+    path = _kek_file_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                stored = fh.read().strip()
+            if stored:
+                _kek_cache = stored
+                return stored
+    except OSError:
+        pass
+    if Fernet is None:  # pragma: no cover - cryptography not installed
+        logger.warning(
+            "DISTLLM_WEBHOOK_KEK unset and cryptography unavailable; "
+            "webhook secrets will be stored PLAINTEXT. Set the env var."
+        )
+        _kek_cache = None
+        return None
+    generated = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(generated + "\n")
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.warning(
+            f"Could not persist the generated webhook KEK to {path}: {exc}. "
+            "Webhook secrets will be stored PLAINTEXT this run. Set "
+            "DISTLLM_WEBHOOK_KEK to pin a known key."
+        )
+        _kek_cache = None
+        return None
+    logger.warning(
+        f"DISTLLM_WEBHOOK_KEK not set; generated a key and wrote it to {path} "
+        "with owner-only (0600) permissions. For multi-replica deployments, "
+        "pin DISTLLM_WEBHOOK_KEK so every replica derives the same key."
+    )
+    _kek_cache = generated
+    return generated
+
+
+_fernet_cache: tuple[str | None, object | None] | None = None
+
+
+def _get_fernet() -> Any:
+    """Return a ready-to-use Fernet, or None when no key can be obtained."""
+    global _fernet_cache
+    kek = _load_webhook_kek()
+    if not kek or Fernet is None:
+        return None
+    if _fernet_cache is None or _fernet_cache[0] != kek:
+        _fernet_cache = (kek, Fernet(_derive_fernet_key(kek)))
+    return _fernet_cache[1]
+
+
+def _wrap_secret(secret: str) -> str:
+    """Encrypt *secret* for storage; return it unchanged when no KEK."""
+    f = _get_fernet()
+    if f is None:
+        return secret
+    return _SECRET_PREFIX + f.encrypt(secret.encode("utf-8")).decode("ascii")
+
+
+def _unwrap_secret(value: str) -> str:
+    """Decrypt a wrapped secret; return plaintext values as-is (legacy)."""
+    if not value.startswith(_SECRET_PREFIX):
+        return value
+    f = _get_fernet()
+    if f is None:
+        return value[len(_SECRET_PREFIX):]
+    return f.decrypt(value[len(_SECRET_PREFIX):].encode("ascii")).decode("utf-8")
+
+
+def _is_wrapped_secret(value: str) -> bool:
+    return value.startswith(_SECRET_PREFIX)
+
+
 def _load_webhooks() -> None:
-    """Populate the in-memory cache from the persistent store."""
+    """Populate the in-memory cache from the persistent store.
+
+    Rows written before at-rest encryption was enabled carry a plaintext
+    ``secret``; they are transparently decrypted/re-encrypted here (lazy
+    migration) so old deployments keep working without a one-off script.
+    """
     global _cache_lock
     store = get_store()
     # The store's batch mechanism is repurposed: we store webhooks as
     # batches with a "webhook:" prefix to reuse the existing persistence.
     all_batches = store.list_batches(limit=1000)
     with _cache_lock:
-        for b in all_batches:
-            if b.get("id", "").startswith("webhook:"):
-                _webhook_cache[b["id"]] = b
+        rows = [b for b in all_batches if b.get("id", "").startswith("webhook:")]
+    # Migrate outside the lock: _save_webhook re-acquires it.
+    for b in rows:
+        row, migrated = _migrate_webhook_secret(b, store)
+        if migrated:
+            try:
+                store.save_batch(row["id"], row)
+            except Exception as exc:  # pragma: no cover - disk-level failure
+                logger.warning(f"Could not re-encrypt webhook secret {row['id']}: {exc}")
+        with _cache_lock:
+            _webhook_cache[b["id"]] = row
+    return None
+
+
+def _migrate_webhook_secret(row: dict, store: Any) -> tuple[dict, bool]:
+    """Normalize the ``secret`` field of a loaded row (SEC-API-08-KEK).
+
+    Returns ``(row, migrated)``.  A row that already carries the ``enc:``
+    wrapper is left untouched.  A corrupt wrapper (KEK rotated away) fails
+    closed: the secret is cleared so the hook must be re-registered.
+    """
+    secret = row.get("secret")
+    if not isinstance(secret, str) or not secret:
+        return row, False
+    if not _is_wrapped_secret(secret):
+        # Legacy plaintext row: wrap it and persist the upgrade.
+        return dict(row, secret=_wrap_secret(secret)), True
+    # Already wrapped — prove the active KEK can actually unwrap it.
+    if _get_fernet() is not None:
+        try:
+            _unwrap_secret(secret)
+            return row, False
+        except Exception:
+            # CQ-08: unwrap failed (KEK rotated?): the warning below clears the secret and forces re-registration.
+            pass
+    logger.warning(
+        f"Webhook {row['id']} has a secret the current KEK cannot decrypt "
+        "(key rotated or missing?). Its secret has been cleared; re-register "
+        "the webhook or restore the old DISTLLM_WEBHOOK_KEK."
+    )
+    return dict(row, secret=""), True
 
 
 def _save_webhook(webhook_id: str, data: dict) -> None:
@@ -190,7 +376,7 @@ async def create_webhook(body: WebhookCreate):
     data = {
         "id": webhook_id,
         "url": body.url,
-        "secret": body.secret,
+        "secret": _wrap_secret(body.secret),
         "events": body.events,
         "description": body.description,
         "active": True,
@@ -250,7 +436,7 @@ async def update_webhook(webhook_id: str, body: WebhookUpdate):
         _validate_webhook_url(body.url)
         update_dict["url"] = body.url
     if body.secret is not None:
-        update_dict["secret"] = body.secret
+        update_dict["secret"] = _wrap_secret(body.secret)
     if body.events is not None:
         for ev in body.events:
             if ev not in VALID_EVENTS:
@@ -302,7 +488,7 @@ async def test_webhook(webhook_id: str):
 
     ok = await dispatch_webhook(
         url=data["url"],
-        secret=data["secret"],
+        secret=_unwrap_secret(data["secret"]),
         event="webhook.test",
         data={"message": "This is a test webhook event from DistLLM."},
     )
@@ -343,7 +529,7 @@ async def dispatch_event(event: str, data: dict) -> int:
     tasks = []
     for wh in active:
         tasks.append(
-            dispatch_webhook(wh["url"], wh["secret"], event, data)
+            dispatch_webhook(wh["url"], _unwrap_secret(wh["secret"]), event, data)
         )
 
     results = await asyncio.gather(*tasks)

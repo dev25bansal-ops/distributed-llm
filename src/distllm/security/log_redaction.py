@@ -201,6 +201,7 @@ class RedactingFilter(logging.Filter):
             record.msg = self.redact_message(message)
             record.args = ()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return True
 
@@ -245,6 +246,7 @@ def _loguru_patcher(record: dict) -> None:
                 _SHARED_REDACTOR = RedactingFilter.from_env()
             record["message"] = _SHARED_REDACTOR.redact_message(message)
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
 
 

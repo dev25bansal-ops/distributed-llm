@@ -152,6 +152,7 @@ class HardwareProber:
                     props = torch.cuda.get_device_properties(i)
                     info.gpu_memory_gb.append(props.total_memory / (1024 ** 3))
                 except Exception:
+                    # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                     info.gpu_memory_gb.append(0.0)
 
             if info.gpus_per_node > 1:
@@ -194,6 +195,7 @@ class HardwareProber:
                     if bandwidth_gbps > threshold_gbps:
                         return True
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return False
 

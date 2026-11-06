@@ -204,6 +204,7 @@ class PluginSystem:
                     )
                     metas.append(meta)
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             return metas
         except ImportError:
@@ -607,6 +608,7 @@ class PluginSystem:
                 if lines:
                     return [{"name": f"distllm-plugin-{query}", "versions": lines[0]}]
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         # Fallback: list installed distllm plugins
@@ -621,6 +623,7 @@ class PluginSystem:
                     if p["name"].startswith("distllm-plugin-")
                 ]
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         return []

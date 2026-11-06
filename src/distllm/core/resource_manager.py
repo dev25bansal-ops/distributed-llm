@@ -183,6 +183,7 @@ class NodeRegistration:
             self.gpu_memory_free = resp.memory_total_bytes - resp.memory_used_bytes
             return resp.healthy
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self.healthy = False
             return False
 

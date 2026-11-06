@@ -147,6 +147,7 @@ def _replay_cuda_graph(
         graph.replay()
         return static_output.clone()
     except Exception:
+        # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
         return None
 
 
@@ -290,6 +291,7 @@ class NimNodeAdapter(BackendAdapter):
                     model_name_or_path, trust_remote_code=False
                 )
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 self._tokenizer = None
 
     def forward(
@@ -690,6 +692,7 @@ class NimNodeAdapter(BackendAdapter):
             resp = self._request("GET", _NIM_HEALTH_ENDPOINT)
             return resp.status_code == 200
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def current_load(self) -> float:
@@ -709,6 +712,7 @@ class NimNodeAdapter(BackendAdapter):
             try:
                 self._session.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._session = None
             logger.info(f"[NIM] Session closed for {self.api_url}")
@@ -818,6 +822,7 @@ class NimNodeAdapter(BackendAdapter):
             resp = self._request("GET", path)
             return resp.is_success
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _verify_model_available(self) -> bool:

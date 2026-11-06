@@ -849,6 +849,7 @@ class SparkMLflowIntegration:
                     merged_params["streaming_processed_rows_per_second"] = progress.get("processedRowsPerSecond", 0)
                     merged_params["streaming_num_input_rows"] = progress.get("numInputRows", 0)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         merged_metrics = metrics.to_dict() if metrics else {}
@@ -894,6 +895,7 @@ def _schema_summary(schema: Any) -> str:
     try:
         return ", ".join(f"{f.name}:{f.dataType}" for f in schema.fields)
     except Exception:
+        # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
         return str(schema)[:200]
 
 

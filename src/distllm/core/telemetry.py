@@ -221,6 +221,7 @@ class TelemetryCollector:
             from importlib.metadata import version
             return version("distributed-llm")
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return "unknown"
 
 

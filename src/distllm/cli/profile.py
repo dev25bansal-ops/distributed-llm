@@ -77,6 +77,7 @@ def run_profile(
             console.print(f"  [{i+1}/{num_iterations}] [red]Connection failed[/red]")
             results.append({"iteration": i + 1, "error": "connection_failed"})
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             console.print(f"  [{i+1}/{num_iterations}] [red]Error: {e}[/red]")
             results.append({"iteration": i + 1, "error": str(e)})
 

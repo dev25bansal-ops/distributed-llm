@@ -232,6 +232,7 @@ class MultiDraftVerifier:
                         error="Timeout",
                     )
                 except Exception as exc:
+                    # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                     latency_ms = (time.monotonic() - t0) * 1000
                     return DraftResult(
                         draft_id=draft_id,

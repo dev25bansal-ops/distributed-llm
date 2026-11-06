@@ -129,4 +129,5 @@ class FederationPeerDiscovery:
                     for p in data.get("peers", [])
                 ]
         except Exception:
+            # CQ-08: intentional fail-open: empty-list fallback on failure.
             return []

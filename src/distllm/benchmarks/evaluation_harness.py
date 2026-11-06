@@ -60,6 +60,7 @@ class LMEvalRunner:
             try:
                 results[task] = self._run_task(task)
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 results[task] = {"error": str(e)}
         return results
 

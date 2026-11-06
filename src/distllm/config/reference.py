@@ -22,6 +22,7 @@ def _field_type_str(field_info: Any) -> str:
             return ann.__name__
         return str(ann).replace("typing.", "")
     except Exception:
+        # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
         return "any"
 
 

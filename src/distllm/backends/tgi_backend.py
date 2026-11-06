@@ -66,6 +66,7 @@ class TGIBackendAdapter(GenerateOnly):
 
             return _util.find_spec("text_generation") is not None
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     @classmethod
@@ -87,6 +88,7 @@ class TGIBackendAdapter(GenerateOnly):
             resp = httpx.get(f"{self.config.base_url}/info", timeout=5.0)
             return resp.status_code == 200
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def shutdown(self) -> None:

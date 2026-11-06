@@ -140,6 +140,7 @@ class PyTorchNodeAdapter(BackendAdapter):
                 elif plat == "xpu" and hasattr(torch.xpu, "empty_cache"):
                     torch.xpu.empty_cache()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             logger.info("[PyTorch] Engine shut down")
 

@@ -47,6 +47,7 @@ def _build_registry():
             if hasattr(coord, "list_models"):
                 model_names = coord.list_models() or []
         except Exception:
+            # CQ-08: fail-open: version metadata unavailable -> omit versions rather than fail the model list.
             model_names = [coord.model_name] if getattr(coord, "model_name", None) else []
 
         for m_name in model_names:
@@ -98,6 +99,7 @@ def _build_registry():
     except ImportError:
         pass
     except Exception:
+        # CQ-08: fail-open: optional model-hub feature unavailable -> omit its data rather than fail the list.
         pass
 
     # ── Model Hub cached data ──
@@ -117,6 +119,7 @@ def _build_registry():
     except ImportError:
         pass
     except Exception:
+        # CQ-08: fail-open: optional model-hub feature unavailable -> omit its data rather than fail the list.
         pass
 
     # ── Merge into final model list ──
@@ -228,6 +231,7 @@ async def load_model(body: LoadModelRequest):
         _get_registry(force=True)
         return {"status": "ok", "model": body.model, "result": result}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as {"error": str(e)}; nothing is swallowed.
         return {"error": str(e)}
 
 
@@ -252,4 +256,5 @@ async def unload_model(body: UnloadModelRequest):
         _get_registry(force=True)
         return {"status": "ok", "model": body.model, "result": result}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as {"error": str(e)}; nothing is swallowed.
         return {"error": str(e)}

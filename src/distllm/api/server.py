@@ -645,6 +645,19 @@ class DocsAuthMiddleware(BaseHTTPMiddleware):
 # re-locks it.)
 app.add_middleware(DocsAuthMiddleware)
 
+# SemanticCacheMiddleware — embedding-based similarity cache for non-streaming
+# POST /v1/chat/completions (PERF-05 indexed search: FAISS IndexIDMap when
+# faiss-cpu is installed, brute-force over pre-stored vectors otherwise).
+# Opt-in via DISTLLM_SEMANTIC_CACHE=1 (default off); per-request opt-in is
+# still required via the X-Semantic-Cache header.  Registered BEFORE
+# AuthMiddleware so it runs AFTER auth (add_middleware prepends) — an
+# unauthenticated replay must never receive a cached response, mirroring the
+# DedupMiddleware ordering rationale above.
+if os.environ.get("DISTLLM_SEMANTIC_CACHE", "0") == "1":
+    from distllm.api.semantic_cache import SemanticCacheMiddleware
+    app.add_middleware(SemanticCacheMiddleware)
+    logger.info("SemanticCacheMiddleware registered (DISTLLM_SEMANTIC_CACHE=1)")
+
 
 # AuthMiddleware registered AFTER PluginHookMiddleware so it runs first
 # (outermost) and populates request.state before plugin hooks dispatch.
@@ -1104,6 +1117,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                 if not requested or "coordinator" in requested:
                     snapshot["coordinator"] = coord_metrics
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: one dead metric source must not kill the whole snapshot.
                 pass
 
             # Scheduler metrics
@@ -1113,6 +1127,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                     if not requested or "scheduler" in requested:
                         snapshot["scheduler"] = sched_stats
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: one dead metric source must not kill the whole snapshot.
                 pass
 
             # Prometheus metrics snapshot (if available)
@@ -1126,6 +1141,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                         "tokens_total": _extract_prom_counter(prom_data, "distllm_tokens_total"),
                     }
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: Prometheus missing/unreadable -> omit the section.
                 pass
 
             # Collector metrics
@@ -1145,6 +1161,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                     snapshot["gpu"] = sys_metrics.get("gpu", {})
                     snapshot["cpu"] = sys_metrics.get("cpu", {})
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: one dead metric source must not kill the whole snapshot.
                 pass
 
             await websocket.send_json(snapshot)
@@ -1460,6 +1477,7 @@ async def ha_state_snapshot(request: Request) -> dict:
         coord.apply_state_snapshot(validated)
         return {"status": "ok", "applied_nodes": len(nodes)}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as {"status": "error", "detail": str(e)}; nothing is swallowed.
         return {"status": "error", "detail": str(e)}
 
 
@@ -1519,6 +1537,7 @@ async def ha_heartbeat(request: Request) -> dict:
         peer = election.handle_heartbeat_request(sender_id, term, peer_state)
         return {"status": "ok", "peer": peer}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as {"status": "error", "detail": str(e)}; nothing is swallowed.
         return {"status": "error", "detail": str(e)}
 
 

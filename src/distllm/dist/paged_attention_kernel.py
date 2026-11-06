@@ -156,6 +156,7 @@ def _standard_attention(
                 scale=scale,
             ).squeeze(0)            # (num_heads, 1, head_dim)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     # Manual implementation

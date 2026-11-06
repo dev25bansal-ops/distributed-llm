@@ -791,6 +791,7 @@ def federate_train(
                     data = resp.json()
                     console.print(f"  [green]Merged:[/green] {data.get('path', 'OK')}")
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     console.print("\n[green]Federated training complete[/green]")
@@ -1214,6 +1215,7 @@ def system_slo_report(
         console = Console()
         console.print(table)
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         console = Console()
         console.print(f"[red]Failed to fetch SLO data: {e}[/red]")
 
@@ -1376,6 +1378,7 @@ def daas_benchmark(
                     resp.raise_for_status()
                     latencies.append(time.monotonic() - start)
                 except Exception:
+                    # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
                     errors += 1
 
         async with httpx.AsyncClient() as client:

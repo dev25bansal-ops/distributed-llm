@@ -17,7 +17,9 @@ PERF-08-JSON: the request body must be JSON-parsed once per request.
 
 import json
 
-from tests._import_helper import bootstrap_fake_packages, load_module
+import pytest
+
+from tests._import_helper import SRC_DIR, bootstrap_fake_packages, load_module
 
 bootstrap_fake_packages()
 
@@ -218,3 +220,196 @@ class TestParseOnce:
 
 
 _real_json_loads = json.loads
+
+
+# ---------------------------------------------------------------------------
+# E-02-SEMANTIC-FLAG: DISTLLM_SEMANTIC_CACHE env gate
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticCacheEnvFlag:
+    """The middleware mounts only behind DISTLLM_SEMANTIC_CACHE=1."""
+
+    def test_flag_off_middleware_not_in_stack(self):
+        """Default (unset/0): SemanticCacheMiddleware is NOT mounted."""
+        import os
+
+        if os.environ.get("DISTLLM_SEMANTIC_CACHE", "0") == "1":
+            pytest.skip("DISTLLM_SEMANTIC_CACHE=1 at import time — off-state "
+                        "not observable in this process")
+        from distllm.api.server import app
+
+        assert not _mod.semantic_cache_enabled()
+        names = [mw.cls.__name__ for mw in app.user_middleware]
+        assert "SemanticCacheMiddleware" not in names
+
+    def test_flag_on_middleware_in_stack(self):
+        """DISTLLM_SEMANTIC_CACHE=1: SemanticCacheMiddleware IS mounted,
+        registered BEFORE AuthMiddleware (add_middleware prepends) so the
+        cache lookup runs after auth populates request.state.
+
+        The gate is evaluated at server-module import time, so the flag-on
+        case runs in a fresh subprocess — an in-process reload would rebind
+        the shared ``app`` object other tests already hold.
+        """
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "from distllm.api.server import app\n"
+            "classes = [mw.cls for mw in app.user_middleware]\n"
+            "names = [c.__name__ for c in classes]\n"
+            "assert 'SemanticCacheMiddleware' in names, names\n"
+            "from distllm.api.semantic_cache import SemanticCacheMiddleware\n"
+            "auth_idx = next(\n"
+            "    i for i, c in enumerate(classes)\n"
+            "    if c.__name__ == 'AuthMiddleware'\n"
+            "    and c.__module__ == 'distllm.api.middleware')\n"
+            "assert classes.index(SemanticCacheMiddleware) > auth_idx, names\n"
+            "print('MOUNTED')\n"
+        )
+        env = dict(os.environ, DISTLLM_SEMANTIC_CACHE="1")
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(SRC_DIR), env.get("PYTHONPATH", "")]
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, env=env,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "MOUNTED" in proc.stdout
+
+    def test_flag_gate_semantics(self, monkeypatch):
+        """Only the literal value "1" enables; anything else stays off."""
+        monkeypatch.delenv("DISTLLM_SEMANTIC_CACHE", raising=False)
+        assert _mod.semantic_cache_enabled() is False
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "0")
+        assert _mod.semantic_cache_enabled() is False
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "yes")
+        assert _mod.semantic_cache_enabled() is False
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "1")
+        assert _mod.semantic_cache_enabled() is True
+
+
+class TestSemanticCacheHitPath:
+    """Flag on + X-Semantic-Cache header: second identical request is served
+    from the cache (no route execution, X-Cache: HIT header)."""
+
+    def _fresh_cache(self):
+        cache = _FaissIndex()
+        cache._index = None  # brute-force path: deterministic, no faiss needed
+        cache._dim = 64
+        return cache
+
+    def test_flag_on_hit_returns_cached_response(self, monkeypatch):
+        cache = self._fresh_cache()
+        monkeypatch.setattr(_mod, "_cache", cache)
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "1")
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        hits = {"route": 0}
+
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def chat():
+            hits["route"] += 1
+            return {"choices": [{"message": {"content": "Paris"}}]}
+
+        app.add_middleware(_mod.SemanticCacheMiddleware)
+        client = TestClient(app)
+
+        payload = {"model": "m", "messages": [{"role": "user", "content": "capital of france"}]}
+        first = client.post("/v1/chat/completions", json=payload,
+                            headers={"X-Semantic-Cache": "1"})
+        assert first.status_code == 200
+        assert first.headers["X-Cache"] == "MISS"
+        assert hits["route"] == 1
+
+        second = client.post("/v1/chat/completions", json=payload,
+                             headers={"X-Semantic-Cache": "1"})
+        assert second.status_code == 200
+        assert second.headers["X-Cache"] == "HIT"
+        assert second.headers["X-Cache-Similarity"]  # similarity score reported
+        assert hits["route"] == 1  # route did NOT run again — served from cache
+        assert second.json() == first.json()
+
+    def test_semantic_similarity_hit(self, monkeypatch):
+        """A semantically equivalent (not byte-identical) prompt hits."""
+        cache = self._fresh_cache()
+        monkeypatch.setattr(_mod, "_cache", cache)
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "1")
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def chat():
+            return {"choices": [{"message": {"content": "Paris"}}]}
+
+        app.add_middleware(_mod.SemanticCacheMiddleware)
+        client = TestClient(app)
+
+        client.post("/v1/chat/completions",
+                    json={"model": "m", "messages": [{"role": "user", "content": "what is the capital of france"}]},
+                    headers={"X-Semantic-Cache": "0.9"})
+        resp = client.post("/v1/chat/completions",
+                           json={"model": "m", "messages": [{"role": "user", "content": "what is the capital city of france"}]},
+                           headers={"X-Semantic-Cache": "0.5"})
+        assert resp.status_code == 200
+        assert resp.headers["X-Cache"] == "HIT"
+
+    def test_flag_on_bypasses_without_header(self, monkeypatch):
+        """Flag on but X-Semantic-Cache absent: normal processing, no cache."""
+        cache = self._fresh_cache()
+        monkeypatch.setattr(_mod, "_cache", cache)
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "1")
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def chat():
+            return {"choices": [{"message": {"content": "fresh"}}]}
+
+        app.add_middleware(_mod.SemanticCacheMiddleware)
+        client = TestClient(app)
+
+        payload = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+        r1 = client.post("/v1/chat/completions", json=payload)
+        r2 = client.post("/v1/chat/completions", json=payload)
+        assert r1.headers.get("X-Cache") != "HIT"
+        assert r2.headers.get("X-Cache") != "HIT"
+        assert r1.json() == r2.json() == {"choices": [{"message": {"content": "fresh"}}]}
+
+    def test_streaming_requests_never_cached(self, monkeypatch):
+        """stream=true bypasses the semantic cache entirely."""
+        cache = self._fresh_cache()
+        monkeypatch.setattr(_mod, "_cache", cache)
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "1")
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def chat():
+            return {"choices": [{"message": {"content": "streamed"}}]}
+
+        app.add_middleware(_mod.SemanticCacheMiddleware)
+        client = TestClient(app)
+
+        payload = {"model": "m", "stream": True,
+                   "messages": [{"role": "user", "content": "hi"}]}
+        r1 = client.post("/v1/chat/completions", json=payload,
+                         headers={"X-Semantic-Cache": "1"})
+        assert r1.headers.get("X-Cache") != "HIT"
+        assert len(cache._response_store) == 0  # nothing stored

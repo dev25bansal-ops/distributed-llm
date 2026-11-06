@@ -464,6 +464,7 @@ class RedisRateLimiter:
             oldest = float(result[1])
             return oldest if oldest >= 0 else None
         except Exception:
+            # CQ-08: best-effort: oldest-timestamp probe failed; None means 'unknown' to the caller, not 'not limited'.
             return None
 
     # -- public API ------------------------------------------------------
@@ -511,6 +512,7 @@ class RedisRateLimiter:
             try:
                 self._redis.delete(self._key(key))  # type: ignore[union-attr]
             except Exception:
+                # CQ-08: best-effort cleanup: a failed Redis DELETE must not break reset().
                 pass
 
     def reset_all(self) -> None:
@@ -964,6 +966,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 else:
                     limits_info = _limits.get("endpoint", {})
             except Exception:
+                # CQ-08: fail-open on the informational /limits view: an empty dict is returned rather than failing the whole response.
                 limits_info = {}
             retry_after = self._rate_limiter.retry_after(
                 client_id=client_id,

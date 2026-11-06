@@ -23,7 +23,9 @@ from distllm.api.middleware import _rate_limiter, RequestIDMiddleware
 
 @pytest.fixture(autouse=True)
 def reset_rate_limiter():
-    _rate_limiter._attempts.clear()
+    # _RateLimiter is sharded (PERF-06-RATELOCK); use reset() to clear all
+    # shard buckets instead of poking the removed _attempts dict directly.
+    _rate_limiter.reset()
 
 
 @pytest.fixture
@@ -226,7 +228,7 @@ class TestBruteForceRateLimiting:
                 "/v1/models",
                 headers={"Authorization": "Bearer bad-key"},
             )
-        _rate_limiter._attempts.clear()
+        _rate_limiter.reset()
         resp = client_with_auth.get(
             "/v1/models",
             headers={"Authorization": f"Bearer {client_with_auth._test_api_key}"},
@@ -800,7 +802,7 @@ def rate_limit_app():
     # Override for testing: 3 requests per 60s
     RequestRateLimitMiddleware._rate_limit_value = 3
     _request_rate_limiter.max_attempts = 3
-    _request_rate_limiter._attempts.clear()
+    _request_rate_limiter.reset()
 
 
 class TestObservabilitySpanCreation:
@@ -1069,7 +1071,7 @@ def rate_limit_app():
     # Override for testing: 3 requests per 60s window
     RequestRateLimitMiddleware._rate_limit_value = 3
     _request_rate_limiter.max_attempts = 3
-    _request_rate_limiter._attempts.clear()
+    _request_rate_limiter.reset()
 
     test_app = FastAPI()
 
@@ -1113,7 +1115,7 @@ def rate_limit_app():
     # Restore
     RequestRateLimitMiddleware._rate_limit_value = orig_rate
     _request_rate_limiter.max_attempts = orig_max
-    _request_rate_limiter._attempts.clear()
+    _request_rate_limiter.reset()
 
 
 class TestRateLimitBasic:
@@ -1158,7 +1160,7 @@ class TestRateLimitBasic:
         for _ in range(4):
             resp = client.get("/test")
         assert resp.status_code == 429
-        _request_rate_limiter._attempts.clear()
+        _request_rate_limiter.reset()
         resp = client.get("/test")
         assert resp.status_code == 200
 

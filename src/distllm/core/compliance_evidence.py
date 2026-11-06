@@ -76,6 +76,7 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     try:
         return getattr(obj, key, default)
     except Exception:
+        # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
         return default
 
 
@@ -375,6 +376,7 @@ def bundle_from_settings() -> dict:
         bundle["tls"] = TLSSettings()
         bundle["quota"] = RateLimitSettings()
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     try:
         from distllm.core.cert_rotation import CertificateRotator
@@ -384,6 +386,7 @@ def bundle_from_settings() -> dict:
         if info.not_after is not None:
             bundle["cert_expiry"] = info.not_after
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     return bundle
 

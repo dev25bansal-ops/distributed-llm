@@ -204,6 +204,7 @@ class BackendAdapter(ABC):
         try:
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def health_check(self) -> bool:

@@ -177,6 +177,7 @@ class MLXNodeAdapter(BackendAdapter):
             import mlx.core
             return mlx.core.metal.is_available()
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     # ── Metadata classmethods ─────────────────────────────────────────────
