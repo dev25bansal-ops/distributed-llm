@@ -59,6 +59,9 @@ jobs:
           else:
               print('Running in CPU mode (slower)')
           "
+      - name: Generate protobuf modules
+        run: make proto
+
 
       - name: Start API server
         run: |
