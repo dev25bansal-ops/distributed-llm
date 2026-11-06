@@ -110,3 +110,6 @@ integrations/*/dist/
 # python + hygiene
 *.pyc
 .benchmarks/
+
+# hypothesis property-test artifacts
+.hypothesis/
