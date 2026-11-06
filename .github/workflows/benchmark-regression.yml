@@ -41,9 +41,12 @@ jobs:
 
       - name: Run pytest benchmarks
         run: |
+          # --benchmark-autosave takes no argument (pytest-benchmark 5.x);
+          # --benchmark-save=NAME names the run. A bare "=distllm" on
+          # autosave killed this job with argparse error 4.
           python -m pytest tests/benchmark/ -v \
             --benchmark-json=benchmarks/results.json \
-            --benchmark-autosave=distllm \
+            --benchmark-save=distllm \
             -p no:asyncio
 
       - name: Run custom regression check
