@@ -121,8 +121,15 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
     # Metrics / anomaly helpers
     # ------------------------------------------------------------------ #
     def _record_metrics(self, request, method, path, status_code, duration, error):
-        model = _DEFAULT_MODEL
-        tenant = _DEFAULT_TENANT
+        # Real attribution when available (chat routes set state.model,
+        # SSO sets state.tenant_id); fall back to the defaults so metrics
+        # never crash on unauthenticated or non-model paths.
+        model = getattr(request.state, "model", None) or _DEFAULT_MODEL
+        tenant = (
+            getattr(request.state, "tenant_id", None)
+            or getattr(request.state, "api_key_id", None)
+            or _DEFAULT_TENANT
+        )
 
         exporter = self.metrics_exporter
         if exporter is not None:
