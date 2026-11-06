@@ -38,7 +38,7 @@ def _make_block(
     ref_count: int = 0,
 ) -> MagicMock:
     """Create a mock KVCacheBlock."""
-    d = torch.device("cpu")
+    torch.device("cpu")
 
     def _allocate(num_heads=num_heads, head_dim=head_dim, device="cpu"):
         block.key_cache = torch.zeros(2, num_heads, max_tokens, head_dim, device=device)

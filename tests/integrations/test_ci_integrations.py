@@ -35,7 +35,7 @@ from distllm.integrations.ci.jenkins import JenkinsIntegration
 @pytest.fixture
 def mock_httpx_client() -> Iterator[MagicMock]:
     """Create a mock ``httpx.Client`` that behaves like the real one."""
-    with pytest.MonkeyPatch.context() as mp:
+    with pytest.MonkeyPatch.context():
         client = create_autospec(httpx.Client, instance=True)
         # make the context-manager return self
         client.__enter__.return_value = client

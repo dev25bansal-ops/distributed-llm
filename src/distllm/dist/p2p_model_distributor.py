@@ -23,7 +23,7 @@ from typing import Any
 
 from loguru import logger
 
-from distllm.dist.merkle import MerkleTree
+from distllm.dist.merkle import MerkleTree, verify_proof
 
 
 class P2PModelDistributor:
@@ -87,16 +87,16 @@ class P2PModelDistributor:
             chunk_data: Raw chunk bytes.
 
         Returns:
-            True if the chunk is valid.
+            True if the chunk is valid, False otherwise.
         """
         if self._merkle is None:
             return True
+        # Fail-closed: reject out-of-range indices
+        if chunk_index < 0 or chunk_index >= self._merkle.leaf_count:
+            return False
         chunk_hash = hashlib.sha256(chunk_data).hexdigest()
         proof = self._merkle.get_proof(chunk_index)
-        computed = chunk_hash
-        for sibling in proof:
-            computed = hashlib.sha256((computed + sibling).encode()).hexdigest()
-        return computed == self._merkle.root
+        return verify_proof(chunk_hash, proof, self._merkle.root, chunk_index)
 
     def download_layer(self, layer_index: int, from_peers: list[dict] | None = None) -> bytes | None:
         """Download a single layer's weights from a peer.

@@ -220,6 +220,10 @@ class DeterministicMode:
     def _apply_seed(self) -> None:
         """Set all random seeds for reproducibility."""
         random.seed(self._seed)
+        # CPU-side torch sampling (torch.randn, torch.multinomial, ...) draws
+        # from the global CPU RNG, so it must be seeded too for reproducible
+        # token generation outside of CUDA.
+        torch.manual_seed(self._seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self._seed)
             torch.backends.cudnn.deterministic = True

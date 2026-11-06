@@ -292,7 +292,7 @@ class GitLabCIIntegration:
 
         for job in jobs:
             job_id = job["id"]
-            job_name = job.get("name", "")
+            job.get("name", "")
             if job.get("status") == "success":
                 # Attempt to fetch an eval-metrics.json artifact from each
                 # successful job so downstream evaluation harvesters can store

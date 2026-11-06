@@ -438,7 +438,7 @@ class TestRequestAuditorFileLogging:
     def test_log_dir_creates_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_dir = os.path.join(tmp, "audit_logs")
-            auditor = RequestAuditor(log_dir=log_dir)
+            RequestAuditor(log_dir=log_dir)
             assert os.path.isdir(log_dir)
 
     def test_writes_jsonl(self) -> None:

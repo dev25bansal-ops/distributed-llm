@@ -1,5 +1,51 @@
 # Security Hardening Guide
 
+<!-- TOC -->
+## Table of Contents
+
+- [Pre-Deployment Checklist](#pre-deployment-checklist)
+- [TLS Configuration](#tls-configuration)
+  - [Generate Certificates](#generate-certificates)
+  - [Enable TLS](#enable-tls)
+  - [Verify TLS](#verify-tls)
+- [Authentication](#authentication)
+  - [API Key Management](#api-key-management)
+  - [Cluster Key (gRPC Authentication)](#cluster-key-grpc-authentication)
+  - [RBAC Roles](#rbac-roles)
+- [Network Security](#network-security)
+  - [Firewall Rules](#firewall-rules)
+  - [CORS Configuration](#cors-configuration)
+  - [Disable Public Docs](#disable-public-docs)
+- [Secret Management](#secret-management)
+  - [Environment Variables (Development)](#environment-variables-development)
+  - [HashiCorp Vault (Production)](#hashicorp-vault-production)
+  - [AWS Secrets Manager](#aws-secrets-manager)
+- [Input Validation](#input-validation)
+  - [SSRF Protection](#ssrf-protection)
+  - [Request Size Limits](#request-size-limits)
+  - [Rate Limiting](#rate-limiting)
+- [Container Security](#container-security)
+  - [Non-Root User](#non-root-user)
+  - [Read-Only Filesystem](#read-only-filesystem)
+  - [Security Context (Kubernetes)](#security-context-kubernetes)
+- [Monitoring & Alerting](#monitoring--alerting)
+  - [Log Redaction](#log-redaction)
+  - [Security Metrics](#security-metrics)
+  - [Alerting Rules](#alerting-rules)
+<<<<<<< Updated upstream
+=======
+- [Debug Endpoints](#debug-endpoints)
+>>>>>>> Stashed changes
+- [Incident Response](#incident-response)
+  - [If API Key is Compromised](#if-api-key-is-compromised)
+  - [If Node is Compromised](#if-node-is-compromised)
+  - [If Coordinator is Compromised](#if-coordinator-is-compromised)
+- [Compliance](#compliance)
+  - [GDPR](#gdpr)
+  - [SOC 2](#soc-2)
+  - [HIPAA](#hipaa)
+<!-- /TOC -->
+
 ## Pre-Deployment Checklist
 
 - [ ] Enable TLS for all connections
@@ -223,6 +269,54 @@ securityContext:
 
 ## Monitoring & Alerting
 
+### Log Redaction
+
+<<<<<<< Updated upstream
+All application logs are automatically redacted at startup to prevent secrets and PII leakage. The `install_global_redaction()` function is called in `api/server.py::_init_observability` during server initialization, which installs:
+
+- **Loguru patcher**: A core-level patcher applied to every `loguru.logger` record across all ~794 source files
+- **Stdlib filter**: A `RedactingFilter` attached to the root logger's handlers
+
+This covers all log outputs (stderr, JSON stdout, queues, Loki) regardless of which logger instance emitted the message.
+
+**Redacted patterns:**
+=======
+All application logs are automatically redacted at startup to prevent secrets and PII leakage. `install_global_redaction()` is called in `api/server.py::_init_observability`, which runs from the FastAPI `lifespan` handler (`app = FastAPI(lifespan=lifespan, ...)`) — the live startup path. It installs two layers:
+
+- **Loguru core patcher**: applied by loguru to every `loguru.logger` record (the primary logging path across the codebase) after %-formatting and before any sink writes — covers stderr, JSON stdout, `enqueue=True` queues, and third-party sinks. No call site needs to change.
+- **Stdlib `RedactingFilter`**: attached to the root logger and each of its handlers, covering libraries that log via stdlib logging (including records propagated from child/third-party loggers).
+
+The pattern set lives in `src/distllm/security/log_redaction.py` (`DEFAULT_PATTERNS`):
+>>>>>>> Stashed changes
+
+| Category | Patterns |
+|----------|----------|
+| **PII** | email addresses, SSN, phone numbers, credit card numbers, IP addresses |
+| **API keys** | `sk-...` tokens, `api_key="..."` assignments, AWS access keys (`AKIA...`) |
+<<<<<<< Updated upstream
+| **Long tokens** | Base64url tokens ≥40 chars, hex tokens ≥32 chars |
+| **Credentials** | password/passwd/pwd, secret, client_secret, token, access_token, refresh_token assignments |
+| **Authorization** | Bearer tokens, Authorization/Proxy-Authorization header values |
+
+Configuration: Disable entirely via `DISTLLM_LOG_REDACTION=off` (also accepts `0`, `false`, `no`). Extend patterns via `DISTLLM_REDACT_PATTERNS` (semicolon-separated regex list).
+
+**Test coverage:** `tests/security/test_loguru_redaction.py::TestInstallGlobalRedactionCombined::test_startup_wiring_call_sites_exist` verifies that `install_global_redaction()` appears in both startup paths' `_init_observability`.
+=======
+| **Credential assignments** | password/passwd/pwd, secret, client_secret, token, access_token, refresh_token `= value` |
+| **Authorization headers** | `Bearer <token>`, Authorization / Proxy-Authorization header values |
+| **High-entropy tokens** | base64/base64url runs ≥40 chars (covers `ApiKeyStore` `secrets.token_urlsafe(48)` keys with no prefix), hex runs ≥32 chars |
+
+Redacted spans are replaced with `[REDACTED]`.
+
+Configuration:
+- `DISTLLM_LOG_REDACTION=off` (also `0`, `false`, `no`) disables redaction (checked at emit time as well as install time)
+- `DISTLLM_REDACT_PATTERNS` — extra semicolon-separated regexes layered on top of the defaults
+
+Residual gap: only `record["message"]` is scrubbed on the loguru path — exception traceback text (`record["exception"]`) is not rewritten, so a secret embedded only in an exception repr can still appear in `logger.exception()` traceback output. This is acknowledged in `tests/security/test_loguru_redaction.py::test_exception_logging_redacted`.
+
+**Test coverage:** `tests/security/test_loguru_redaction.py::TestInstallGlobalRedactionCombined::test_startup_wiring_call_sites_exist` asserts that `_init_observability` in `distllm/api/server.py` (and the mirrored copy in `distllm/api/server_lifespan.py`, which currently has no importer) still contains the `install_global_redaction()` call, guarding against the "module tested, wiring untested" regression.
+>>>>>>> Stashed changes
+
 ### Security Metrics
 
 ```bash
@@ -251,6 +345,42 @@ groups:
         annotations:
           summary: "High authentication failure rate"
 ```
+
+---
+
+## Debug Endpoints
+
+The `/v1/debug/*` routes provide debugging/replay capabilities. They are **not mounted on the live server** (`src/distllm/api/server.py` lists `debug_router` under `INTENTIONAL_UNMOUNT` at line 1116) and default to disabled even when mounted.
+
+**Routes provided by `src/distllm/api/routes/debug.py`:**
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/v1/debug/recent` | GET | List last N requests from replay buffer (truncated prompts) |
+| `/v1/debug/request/{id}` | GET | Full details of a single stored request |
+| `/v1/debug/replay` | POST | Replay a stored request through the model |
+| `/v1/debug/deterministic` | POST | Enable/disable deterministic generation mode |
+| `/v1/debug/buffer/export` | GET | Export up to 200 entries from replay buffer (truncated fields) |
+
+**Access controls (layered — all must pass when the router is mounted):**
+
+1. **RBAC**: The router is constructed with `APIRouter(dependencies=[Depends(require_role("admin"))])`, so every endpoint requires an identity with the `admin` role. `require_role` fails closed (401 when no role is attached, 403 on insufficient role) — `src/distllm/api/auth_deps.py`.
+
+2. **Environment gate**: `DISTLLM_ENABLE_DEBUG_ROUTES` must equal `"1"`; otherwise every endpoint returns 404 (indistinguishable from an unmounted route).
+
+3. **Admin key requirement**: `DISTLLM_ADMIN_KEY` must be set; if unset, requests return 503 ("Debug admin API not configured").
+
+4. **Bearer token verification**: The Authorization header must carry `Bearer <key>` matching `DISTLLM_ADMIN_KEY` via `hmac.compare_digest` (constant-time).
+
+**Audit logging:** Replay requests are recorded via `_audit_replay()` — actor key ID, role, request ID, client IP, and path are logged before the replay executes (`routes/debug.py`).
+
+**Security considerations:**
+
+- These routes expose full prompt/response data (including a detail endpoint that returns whole prompts) and should never be mounted in production
+- Replaying requests can re-trigger expensive model inference — monitor usage
+- Exported buffers may contain sensitive data — treat exports as confidential
+
+**Verification:** Access-control structure verified by reading `src/distllm/api/routes/debug.py` (2026-11-05); there is currently no dedicated live-server test for these routes (the section in `tests/api/test_api_routes_comprehensive.py` is inside a module that is `pytest.skip`ped at import).
 
 ---
 

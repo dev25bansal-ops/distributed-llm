@@ -119,7 +119,7 @@ class TestFederatedRounds:
         # Large gradients that should be clipped
         large_grads = [torch.ones(4, 4) * 10.0]
 
-        result = tuner.train_round(lambda steps: large_grads)
+        tuner.train_round(lambda steps: large_grads)
 
         assert tuner.stats["dp_clips"] > 0
         # After clipping, norm should be <= max_grad_norm

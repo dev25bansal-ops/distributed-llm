@@ -10,12 +10,68 @@ import time
 import threading
 from concurrent import futures
 
-import grpc
-import torch
 from loguru import logger
 
+# Optional dependency detection for torch/grpc
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+_GRPC_AVAILABLE: bool
+try:
+    import grpc
+    _GRPC_AVAILABLE = True
+except ImportError:
+    _GRPC_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for node service; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
+
+def _require_grpc() -> None:
+    """Raise a helpful ImportError if grpcio is not installed."""
+    if not _GRPC_AVAILABLE:
+        raise ImportError(
+            "grpcio is required for node service; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
+
 from distllm.dist import node_pb2
-from distllm.dist import node_pb2_grpc
+try:
+    from distllm.dist import node_pb2_grpc
+except ImportError:
+    node_pb2_grpc = None  # type: ignore[assignment]
+
+
+class _NodeServiceServicerBase:
+    """Fallback base when grpc node stubs are unavailable."""
+
+
+_NodeServiceServicerBase = (
+    node_pb2_grpc.NodeServiceServicer
+    if node_pb2_grpc is not None
+    else _NodeServiceServicerBase
+)
+
+
+class _ServerInterceptorBase:
+    """Fallback base when grpc is unavailable."""
+
+
+_ServerInterceptorBase = (
+    grpc.ServerInterceptor if _GRPC_AVAILABLE else _ServerInterceptorBase
+)
+
 from distllm.dist.node_client import compute_weights_hmac
 from distllm.core.kv_cache import KVCache
 from distllm.errors import ConfigError
@@ -24,6 +80,7 @@ from distllm.security.e2e import E2EEncryption, decrypt_tensor_payload, encrypt_
 
 def tensor_to_proto(tensor: torch.Tensor) -> node_pb2.TensorProto:
     """Convert a torch tensor to protobuf TensorProto (raw bytes path)."""
+    _require_torch()
     if tensor is None:
         return node_pb2.TensorProto(shape=[], dtype="none", raw_data=b"")
     t = tensor.detach()
@@ -112,7 +169,7 @@ def kv_cache_from_proto(pb: node_pb2.KVCacheProto):
     return cache
 
 
-class NodeServicer(node_pb2_grpc.NodeServiceServicer):
+class NodeServicer(_NodeServiceServicerBase):
     """gRPC servicer that forwards requests to a WorkerNode's forward_fn."""
 
     MAX_BATCH_SIZE = 1024
@@ -222,7 +279,7 @@ class NodeServicer(node_pb2_grpc.NodeServiceServicer):
             output_pb = tensor_to_proto(output)
             output_pb.raw_data = encrypt_tensor_payload(output_pb.raw_data, self._e2e)
             kv_pb = kv_cache_to_proto(new_kv)
-            elapsed = (time.monotonic() - t0) * 1000
+            elapsed = max((time.monotonic() - t0) * 1000, 0.001)
 
             return node_pb2.ForwardPassResponse(
                 request_id=request.request_id,
@@ -510,6 +567,12 @@ class NodeServer:
         on the cluster key; operators on untrusted networks flip
         ``DISTLLM_TLS_ENABLED=1``.
         """
+        _require_grpc()
+        if not _TORCH_AVAILABLE:
+            raise ImportError(
+                "torch is required to serve tensors; "
+                "install with pip install distributed-llm[self-hosted]"
+            )
         import os
 
         if use_tls is None:
@@ -610,7 +673,7 @@ class NodeServer:
 
 
 
-class ClusterKeyInterceptor(grpc.ServerInterceptor):
+class ClusterKeyInterceptor(_ServerInterceptorBase):
     """gRPC server interceptor that validates cluster_key on every RPC.
 
     Intercepts all incoming requests and checks for a valid ``cluster_key``

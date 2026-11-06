@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chaos engineering fault injection for resilience testing
 - Canary deployment automation with rollback
 
+## [0.4.1] - 2026-08-23
+
+### Distribution
+- Published to PyPI as `distributed-llm` (`pip install distributed-llm[cli,self-hosted]`)
+- Astro marketing website and PyPI release announcement
+
+### Fixes
+- Production engine fixes and security hardening sync
+
 ## [0.4.0] - 2026-05-16
 
 ### Production Readiness
@@ -156,5 +165,9 @@ Initial release of distributed LLM inference system.
 - Fixed config layer mismatch for TinyStories-1M (8 layers)
 - Fixed test.py broken references
 
-[Unreleased]: https://github.com/distributed-llm/distributed-llm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/distributed-llm/distributed-llm/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/distributed-llm/distributed-llm/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/distributed-llm/distributed-llm/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/distributed-llm/distributed-llm/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/distributed-llm/distributed-llm/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/distributed-llm/distributed-llm/releases/tag/v0.1.0

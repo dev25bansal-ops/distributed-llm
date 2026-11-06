@@ -94,8 +94,9 @@ send a chat request as usual — requests now flow laptop 1 → laptop 2 mid-mod
   gRPC. For isolated dev networks only, add `--insecure` on the worker (and
   configure matching TLS settings everywhere else). Mixing a TLS coordinator
   with a plaintext worker fails the handshake.
-- **Unsure what's wrong?** Run `distllm system doctor --network --nodes <ip>` on
-  either machine to measure connectivity and latency between them.
+- **Unsure what's wrong?** Run `distllm system doctor` on either machine to
+  print a full diagnostics report (CUDA, ports, config, disk, Python
+  environment) and check ports 50050–50060 are reachable between nodes.
 
 ## Next Steps
 

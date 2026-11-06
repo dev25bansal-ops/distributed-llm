@@ -11,13 +11,13 @@
 ### 1.1 Install DistLLM
 ```bash
 cd D:\distributed-llm
-pip install -e . --no-deps
+pip install -e ".[dev,self-hosted]"
 ```
 
 ### 1.2 Start the Coordinator
 ```bash
 # Start coordinator with a small model for testing
-distllm run --model roneneldan/TinyStories-1M --local --port 8000
+distllm system run --model roneneldan/TinyStories-1M --local --port 8000
 ```
 
 ### 1.3 Verify it's running
@@ -36,17 +36,22 @@ curl http://localhost:8000/health
 
 ### 2.2 Install DistLLM
 ```bash
-pip install distributed-llm
+pip install "distributed-llm[cli,self-hosted]"
 # OR clone and install from source:
 git clone https://github.com/distributed-llm/distributed-llm.git
 cd distributed-llm
-pip install -e . --no-deps
+pip install -e ".[dev,self-hosted]"
 ```
 
 ### 2.3 Connect as Worker
 ```bash
-# Replace 192.168.1.59 with coordinator's IP
-distllm-node --coordinator 192.168.1.59:50050 --port 50051
+# Easiest: join via the CLI (auto-detects model/layers from coordinator)
+distllm cluster join --coordinator 192.168.1.59 --port 50050
+
+# Or run the raw worker entry point (model and layer range are required):
+distllm-node --node-id laptop --model roneneldan/TinyStories-1M \
+  --start-layer 0 --end-layer 7 --total-layers 8 \
+  --coordinator-host 192.168.1.59 --coordinator-port 50050 --port 50051
 ```
 
 ### 2.4 Verify Connection
@@ -88,5 +93,5 @@ curl http://192.168.1.59:8000/health
 - Check disk space: models need 1-10GB depending on size
 
 ### "CUDA not available"
-- Install PyTorch with CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
+- Install PyTorch with CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu128`
 - Check GPU: `nvidia-smi`

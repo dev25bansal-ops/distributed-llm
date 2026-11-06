@@ -370,7 +370,7 @@ class TestDiskPersistence:
         try:
             mgr.save_checkpoint("r1", None, [1], [2], "n1")
             mgr.save_to_disk(path=path)
-            prev_count = mgr.get_metrics()["checkpoint_count"]
+            mgr.get_metrics()["checkpoint_count"]
 
             mgr2 = NodeRecoveryManager()
             mgr2.load_from_disk(path=path)

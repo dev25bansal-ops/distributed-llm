@@ -44,14 +44,34 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
 from loguru import logger
+
+# Optional dependency detection for cryptography
+_CRYPTOGRAPHY_AVAILABLE: bool
+try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    _CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    _CRYPTOGRAPHY_AVAILABLE = False
+    InvalidSignature = None  # type: ignore[assignment,misc]
+    serialization = None  # type: ignore[assignment]
+    ed25519 = None  # type: ignore[assignment]
+
+
+def _require_cryptography() -> None:
+    """Raise a helpful ImportError if cryptography is not installed."""
+    if not _CRYPTOGRAPHY_AVAILABLE:
+        raise ImportError(
+            "cryptography is required for byzantine fault tolerance; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
 
 
 def _encode_public_key(public_key: ed25519.Ed25519PublicKey) -> str:
     """Serialize an Ed25519 public key to a compact base64 string."""
+    _require_cryptography()
     raw = public_key.public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
@@ -62,6 +82,7 @@ def _decode_public_key(
     value: ed25519.Ed25519PublicKey | bytes | str,
 ) -> ed25519.Ed25519PublicKey:
     """Coerce an Ed25519 public key from an object, raw bytes, or base64 str."""
+    _require_cryptography()
     if isinstance(value, ed25519.Ed25519PublicKey):
         return value
     raw = base64.b64decode(value) if isinstance(value, str) else bytes(value)
@@ -70,6 +91,7 @@ def _decode_public_key(
 
 def _sign_bytes(private_key: ed25519.Ed25519PrivateKey, payload: str) -> str:
     """Sign a canonical payload with an Ed25519 key, returning base64."""
+    _require_cryptography()
     return base64.b64encode(
         private_key.sign(payload.encode("utf-8"))
     ).decode("ascii")
@@ -186,6 +208,7 @@ class PBFTNode:
             str, ed25519.Ed25519PublicKey | bytes | str
         ] | None = None,
     ) -> None:
+        _require_cryptography()
         if node_id not in node_ids:
             raise ValueError(f"node_id {node_id!r} not in node_ids list")
         self._node_id = node_id

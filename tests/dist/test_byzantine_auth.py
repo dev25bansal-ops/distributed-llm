@@ -58,7 +58,7 @@ class TestSignatureEnforcement:
     def test_forged_pre_prepare_rejected(self) -> None:
         """A message claiming sender=a but signed by attacker b is rejected."""
         nodes = _cluster(["a", "b", "c", "d"])
-        a, b = nodes["a"], nodes["b"]
+        _a, b = nodes["a"], nodes["b"]
         assert b.primary == "a"
 
         forged = PBFTMessage(
@@ -208,7 +208,7 @@ class TestSignedThreePhaseCommit:
         assert d.handle_prepare(c_prep) is True
 
         # Each node now holds a signed COMMIT in its own log.
-        b_commit = b._commit_log[seq][0]
+        b._commit_log[seq][0]
         c_commit = c._commit_log[seq][0]
         d_commit = d._commit_log[seq][0]
 

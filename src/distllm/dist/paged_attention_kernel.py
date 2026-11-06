@@ -20,8 +20,15 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-import torch
 from loguru import logger
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 
 _HAS_TRITON = False
 try:
@@ -30,6 +37,15 @@ try:
     _HAS_TRITON = True
 except ImportError:
     pass
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for paged_attention_kernel; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
 
 
 def paged_attention(
@@ -56,6 +72,7 @@ def paged_attention(
     Returns:
         (num_heads, 1, head_dim) — attention output.
     """
+    _require_torch()
     num_heads = query.shape[0]
     head_dim = query.shape[-1]
 
@@ -254,6 +271,7 @@ class PagedAttentionKernel:
     """
 
     def __init__(self, use_triton: bool = False, block_size: int = 16):
+        _require_torch()
         if use_triton and not _HAS_TRITON:
             raise ImportError("Triton is not installed. Install with: pip install triton")
         self.use_triton = use_triton and _HAS_TRITON

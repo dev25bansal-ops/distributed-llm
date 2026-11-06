@@ -19,6 +19,6 @@ class TestInProcessTP:
         model = nn.Linear(64, 64)
         tp = InProcessTP(model=model, world_size=1, rank=0)
 
-        x = torch.randn(2, 64)
+        torch.randn(2, 64)
         # InProcessTP wraps __call__ — may or may not support direct forward
         assert tp is not None

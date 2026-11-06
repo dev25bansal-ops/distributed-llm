@@ -62,7 +62,7 @@ class TestConfigCLIIntegration:
         try:
             try:
                 ModelSettings(name="")
-            except ValidationError as e:
+            except ValidationError:
                 def _raise(*a, **kw):
                     raise e
                 DistLLMSettings.validate_startup = _raise

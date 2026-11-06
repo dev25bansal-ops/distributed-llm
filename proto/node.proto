@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package distllm;
+package distributed_llm;
+
+// ── Tensors / KV cache ─────────────────────────────────────────────────
 
 message TensorProto {
   repeated int32 shape = 1;
@@ -18,6 +20,18 @@ message KVCacheProto {
   }
   repeated LayerCache layers = 1;
 }
+
+message KVCache {
+  message KVLayerCache {
+    TensorProto key_states = 1;
+    TensorProto value_states = 2;
+    TensorProto key_scale = 3;
+    TensorProto value_scale = 4;
+  }
+  repeated KVLayerCache layers = 1;
+}
+
+// ── Forward pass ───────────────────────────────────────────────────────
 
 message ForwardPassRequest {
   string request_id = 1;
@@ -47,6 +61,8 @@ message ForwardPassResponse {
   float processing_time_ms = 8;
   string cluster_key = 9;
 }
+
+// ── Health / profiling ─────────────────────────────────────────────────
 
 message HealthCheckRequest {
   string node_id = 1;
@@ -91,6 +107,8 @@ message ProfileResponse {
   string cluster_key = 8;
 }
 
+// ── Weight transfer ────────────────────────────────────────────────────
+
 message TransferWeightsRequest {
   string model_name = 1;
   int32 start_layer = 2;
@@ -112,6 +130,8 @@ message TransferWeightsResponse {
   bool is_final_chunk = 9;
 }
 
+// ── Model advertisement ────────────────────────────────────────────────
+
 message AdvertiseModelsRequest {
   string node_id = 1;
   string cluster_key = 2;
@@ -131,16 +151,101 @@ message AdvertiseModelsResponse {
   repeated ModelAdvertisement models = 1;
 }
 
-service NodeService {
-  rpc ForwardPass(ForwardPassRequest) returns (ForwardPassResponse);
-  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-  rpc Profile(ProfileRequest) returns (ProfileResponse);
-  rpc TransferWeights(TransferWeightsRequest) returns (TransferWeightsResponse);
-  rpc TransferWeightsStream(TransferWeightsRequest) returns (stream TransferWeightsResponse);
-  rpc AdvertiseModels(AdvertiseModelsRequest) returns (AdvertiseModelsResponse);
+// ── MoE forward ────────────────────────────────────────────────────────
+
+message MoEForwardRequest {
+  string request_id = 1;
+  repeated int32 input_ids = 2;
+  TensorProto hidden_states = 3;
+  int32 layer_id = 4;
+  string model_name = 5;
 }
 
-// ── Draft Model Service ────────────────────────────────────────────────
+message MoEForwardResponse {
+  string request_id = 1;
+  TensorProto output = 2;
+  bool success = 3;
+  string error_message = 4;
+  ErrorCode error_code = 5;
+}
+
+// ── P2P gossip ─────────────────────────────────────────────────────────
+
+message GossipAdvertisement {
+  string node_id = 1;
+  string cluster_key = 2;
+  repeated ModelAdvertisement models = 3;
+  int64 timestamp_ms = 4;
+}
+
+message GossipResponse {
+  string node_id = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// ── Node info / ping ───────────────────────────────────────────────────
+
+message GetNodeInfoRequest {
+  string node_id = 1;
+  string cluster_key = 2;
+}
+
+message GetNodeInfoResponse {
+  string node_id = 1;
+  string gpu_name = 2;
+  int32 start_layer = 3;
+  int32 end_layer = 4;
+  int32 total_layers = 5;
+}
+
+message PingRequest {
+  string node_id = 1;
+  int64 timestamp_ms = 2;
+}
+
+message PingResponse {
+  string node_id = 1;
+  int64 timestamp_ms = 2;
+  bool alive = 3;
+}
+
+// ── Coordinator ────────────────────────────────────────────────────────
+
+message RegisterNodeRequest {
+  string node_id = 1;
+  string host = 2;
+  int32 port = 3;
+  string cluster_key = 4;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message InferRequest {
+  string request_id = 1;
+  repeated int32 input_ids = 2;
+  string model_name = 3;
+}
+
+message InferResponse {
+  string request_id = 1;
+  repeated int32 output_ids = 2;
+  bool success = 3;
+  string error_message = 4;
+}
+
+message ListModelsRequest {
+  string cluster_key = 1;
+}
+
+message ListModelsResponse {
+  repeated ModelAdvertisement models = 1;
+}
+
+// ── Draft model (speculative decoding) ─────────────────────────────────
 
 message DraftRequest {
   repeated int32 prompt_ids = 1;
@@ -159,6 +264,39 @@ message DraftResponse {
   bool success = 4;
   string error_message = 5;
   string model_name = 6;
+}
+
+// ── Error codes ────────────────────────────────────────────────────────
+
+enum ErrorCode {
+  UNKNOWN = 0;
+  MODEL_ERROR = 1;
+  OOM = 2;
+  TIMEOUT = 3;
+  INVALID_INPUT = 4;
+  NODE_UNREACHABLE = 5;
+  CIRCUIT_BREAKER_OPEN = 6;
+}
+
+// ── Services ───────────────────────────────────────────────────────────
+
+service NodeService {
+  rpc ForwardPass(ForwardPassRequest) returns (ForwardPassResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+  rpc MoEForward(MoEForwardRequest) returns (MoEForwardResponse);
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc Profile(ProfileRequest) returns (ProfileResponse);
+  rpc TransferWeights(TransferWeightsRequest) returns (TransferWeightsResponse);
+  rpc TransferWeightsStream(TransferWeightsRequest) returns (stream TransferWeightsResponse);
+  rpc AdvertiseModels(AdvertiseModelsRequest) returns (AdvertiseModelsResponse);
+}
+
+service CoordinatorService {
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc Infer(InferRequest) returns (InferResponse);
+  rpc StreamInfer(InferRequest) returns (stream InferResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
 }
 
 service DraftModelService {

@@ -763,7 +763,7 @@ class TestVerifyTree:
         # Path is [7] from leaf's flatten (single child)
         root = TreeNode(token_id=7, depth=0)
         root.children.append(TreeNode(token_id=3, logprob=0.0, depth=1))
-        all_paths = root.flatten()  # [[7, 3]]
+        root.flatten()  # [[7, 3]]
 
         total_len = prefix.shape[1] + 2
         target_logits = torch.full((1, total_len, 32), -100.0)

@@ -134,7 +134,7 @@ class TestExchangePayload:
 class TestShouldSync:
     def test_should_sync_with_match(self, digest):
         hashes = ["local-a", "local-b"]
-        payload_local = digest.build_exchange_payload(hashes, [1, 2])
+        digest.build_exchange_payload(hashes, [1, 2])
         payload_remote = digest.build_exchange_payload(hashes, [1, 2])
         should, level = digest.should_sync(
             local_hashes=hashes,

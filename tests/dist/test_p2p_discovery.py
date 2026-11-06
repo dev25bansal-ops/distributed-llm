@@ -444,7 +444,7 @@ class TestRegisterSelf:
         with patch(
             "distllm.dist.p2p.discovery.safe_urlopen",
             return_value=mock_resp,
-        ) as mock_open:
+        ):
             result = discovery.register_self("http://peer:8000")
         assert result is True
 

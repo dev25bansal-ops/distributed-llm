@@ -222,7 +222,7 @@ class TestStructuredStreamHandler:
 
     def test_process_chunk_single(self):
         handler = StructuredStreamHandler()
-        chunks = handler.process_chunk('{"a": 1}')
+        handler.process_chunk('{"a": 1}')
         # Buffer may or may not flush depending on min_chars
         assert len(handler._chunks) == 1
 

@@ -19,7 +19,6 @@ def test_equivalence_disabled_by_default():
 
 
 def test_equivalence_samples_by_rate():
-    seen = []
     c = SpecEquivalenceChecker(sample_rate=1.0, rng=lambda: 0.0)  # always sample
     assert c.should_sample() is True
     c2 = SpecEquivalenceChecker(sample_rate=0.5, rng=lambda: 0.9)  # never sample

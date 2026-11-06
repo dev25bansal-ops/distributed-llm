@@ -68,7 +68,7 @@ def test_probe_does_not_follow_redirects():
         # globals via the prober's probe path.
         import distllm.core.provider_health as ph
 
-        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+        __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
         import builtins
 

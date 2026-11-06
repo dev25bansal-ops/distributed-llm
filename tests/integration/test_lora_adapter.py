@@ -111,7 +111,7 @@ class TestCoordinatorAdapterIntegration:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model")
                 # adapter_manager is set when lora_config is provided
                 assert hasattr(coord, 'adapter_manager') or True  # May not be init'd
@@ -133,7 +133,7 @@ class TestCoordinatorAdapterIntegration:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model", lora_config=lora_config)
                 assert coord.adapter_manager is not None
 

@@ -118,7 +118,7 @@ def validate_response(data: dict, endpoint: str) -> list[str]:
     from distllm_sdk.types import (
         ChatCompletionResponse, CompletionResponse,
         EmbeddingResponse, ModelList,
-        BatchJob, BatchList,
+        BatchJob, BatchCancelResult, BatchList,
         TranscriptionResponse, SpeechResponse,
         ImageGenerationResponse, ModerationResponse,
         FileInfo, FineTuningJob,
@@ -129,7 +129,6 @@ def validate_response(data: dict, endpoint: str) -> list[str]:
         "/v1/completions": CompletionResponse,
         "/v1/embeddings": EmbeddingResponse,
         "/v1/models": ModelList,
-        "/v1/batches": BatchList,
         "/v1/moderations": ModerationResponse,
         "/v1/audio/transcriptions": TranscriptionResponse,
         "/v1/audio/speech": SpeechResponse,
@@ -140,11 +139,12 @@ def validate_response(data: dict, endpoint: str) -> list[str]:
 
     schema_type = schema_map.get(endpoint)
     if schema_type is None:
-        return []
-
-    # Batch endpoints can be BatchJob or BatchList depending on whether an ID is present
-    if endpoint.startswith("/v1/batches/"):
-        schema_type = BatchJob
+        if endpoint.startswith("/v1/batch/") and endpoint.endswith("/cancel"):
+            schema_type = BatchCancelResult
+        elif endpoint.startswith("/v1/batch/"):
+            schema_type = BatchJob
+        else:
+            return []
     if endpoint.startswith("/v1/files/"):
         schema_type = FileInfo
     if endpoint.startswith("/v1/fine_tuning/"):

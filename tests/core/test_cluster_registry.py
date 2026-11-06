@@ -222,7 +222,7 @@ class TestRegisterCluster:
 
     def test_register_with_all_fields(self, registry: ClusterRegistry) -> None:
         """Registering with all ClusterInfo fields should persist them."""
-        info = registry.register_cluster(
+        registry.register_cluster(
             cluster_id="c2",
             host="gpu.example.com",
             port=50051,

@@ -17,10 +17,7 @@ import time
 
 import pytest
 
-# Make the ``scenarios`` package importable: the package lives in this
-# test directory, so the PARENT dir must be on sys.path (previously the
-# path pointed *inside* scenarios/, where no ``scenarios`` package exists).
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scenarios"))
 
 
 class TestChaosLatency:

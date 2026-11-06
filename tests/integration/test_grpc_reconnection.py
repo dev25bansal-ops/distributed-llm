@@ -509,7 +509,7 @@ class TestRequestLayerWeightsIntegration:
     def test_weight_transfer_success(self):
         """Successful weight transfer returns bytes."""
         # Arrange
-        mock_channel = _make_mock_channel()
+        _make_mock_channel()
         mock_stub = MagicMock()
         mock_resp = MagicMock()
         mock_resp.success = True

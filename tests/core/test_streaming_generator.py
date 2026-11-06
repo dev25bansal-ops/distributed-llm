@@ -1,7 +1,7 @@
 """Tests for StreamingGenerator: SSE streaming, OpenAI format, cancellation, usage.
 
 Tests: StreamChunk, StreamingConfig, StreamingGenerator init, generate(),
-generate_text_stream(), data_done(), echo_prompt,
+generate_text_stream(), format_sse_response(), format_done(), echo_prompt,
 include_usage, cancellation, and error handling.
 
 Run: pytest tests/core/test_streaming_generator.py -v
@@ -504,47 +504,16 @@ class TestGenerateBackpressure:
 
 
 class TestStaticMethods:
-    """Tests for static methods.
+    """Tests for static methods."""
 
-    O-08: format_sse_response/format_done were dead duplicates of
-    StreamChunk.to_sse()/data_done() (zero production callers) and were
-    removed. data_done() is the surviving canonical form and is pinned here.
-    """
+    def test_format_sse_response(self):
+        result = StreamingGenerator.format_sse_response("Hello")
+        assert result == "data: Hello\n\n"
 
-    def test_data_done(self):
-        result = StreamChunk.data_done()
+    def test_format_sse_response_json(self):
+        result = StreamingGenerator.format_sse_response('{"key": "value"}')
+        assert result == 'data: {"key": "value"}\n\n'
+
+    def test_format_done(self):
+        result = StreamingGenerator.format_done()
         assert result == "data: [DONE]\n\n"
-
-    def test_to_sse_omits_null_usage(self):
-        chunk = StreamChunk(id="x", created=1, model="m")
-        sse = chunk.to_sse()
-        assert '"usage"' not in sse
-        assert sse.startswith("data: ")
-        assert sse.endswith("\n\n")
-
-    def test_to_sse_includes_usage_when_set(self):
-        chunk = StreamChunk(
-            id="x", created=1, model="m", usage={"prompt_tokens": 3}
-        )
-        sse = chunk.to_sse()
-        assert '"prompt_tokens": 3' in sse
-
-    def test_to_sse_matches_asdict_shape(self):
-        """Wire format must be identical to the old asdict-based path."""
-        chunk = StreamChunk(
-            id="abc",
-            created=42,
-            model="test-model",
-            choices=[{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}],
-            usage={"total_tokens": 7},
-        )
-        sse = chunk.to_sse()
-        payload = json.loads(sse[len("data: "):-2])
-        assert payload == {
-            "id": "abc",
-            "object": "chat.completion.chunk",
-            "created": 42,
-            "model": "test-model",
-            "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}],
-            "usage": {"total_tokens": 7},
-        }

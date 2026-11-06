@@ -20,6 +20,8 @@ spec:
             severity: critical
           annotations:
             summary: "DistLLM error rate above 5%"
+        # FIX HIGH-P99-LATENCY: This rule was already correct. distllm_request_latency_seconds_bucket is automatically
+        # emitted by prometheus_client Histogram as registered at exporter.py:23-29. No change needed.
         - alert: HighP99Latency
           expr: |
             histogram_quantile(0.99,
@@ -43,13 +45,10 @@ spec:
             severity: warning
           annotations:
             summary: "DistLLM throughput below 100 tokens/s"
-        - alert: CacheHitRateDrop
-          expr: distllm_kv_cache_hit_rate < 0.2
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            summary: "DistLLM KV cache hit rate below 20%"
+        # FIX CACHE-HIT-RATE-DROP: distllm_kv_cache_hit_rate NEVER EXISTS. Only distllm_kv_cache_usage_ratio is registered
+        # at exporter.py:111-116, and the cache manager only tracks per-tier hit counts (_tier_stats.hits) that are never
+        # exported. Alerting on a non-existent metric produces perpetual NO DATA. The rule is REMOVED rather than re-pointed
+        # because no real cache hit-rate metric exists in the exporter.
         - alert: KVCachePressure
           expr: max(distllm_kv_cache_usage_ratio) > 0.9
           for: 10m
@@ -64,20 +63,30 @@ spec:
             severity: warning
           annotations:
             summary: "DistLLM degradation/circuit-breaker active"
-        - alert: GPUMemoryPressure
-          expr: |
-            distllm_node_gpu_memory_bytes
-              / clamp_min(distllm_node_gpu_memory_total_bytes, 1) > 0.9
-          for: 10m
-          labels:
-            severity: warning
-          annotations:
-            summary: "GPU memory above 90% on a node"
-        - alert: RateLimitViolations
-          expr: sum(rate(distllm_errors_total{code="429"}[5m])) > 1
-          for: 10m
-          labels:
-            severity: info
-          annotations:
-            summary: "Sustained rate-limit rejections (429s)"
+        # FIX GPUMEMORYPRESSURE: distllm_node_gpu_memory_total_bytes NEVER EXISTS. Only distllm_node_gpu_memory_bytes (used) is
+        # registered at exporter.py:65-70. There is no exported total-memory metric anywhere in exporter.py or populate_gauges().
+        # This rule fires on NO DATA because the metric family doesn't exist.
+        # Kept as a COMMENTED-BROKEN-TEMPLATE for reference — operators must implement GPU-total instrumentation first.
+        # - alert: GPUMemoryPressure
+        #   expr: |
+        #     distllm_node_gpu_memory_bytes
+        #       / clamp_min(distllm_node_gpu_memory_total_bytes, 1) > 0.9
+        #   for: 10m
+        #   labels:
+        #     severity: warning
+        #   annotations:
+        #     summary: "GPU memory above 90% on a node"
+        # FIX RATELIMITVIOLATIONS: distllm_errors_total has labels (type, model, tenant) — NO `code` label.
+        # 429 rate-limiting responses are NOT recorded by the exporter at all (see middleware.py:344 — 429 is returned
+        # directly without incrementing errors_total or any other counter). The errors counter only gets `.labels(type=...)`
+        # from request_pipeline.py:372/377 and observability_middleware.py:134 — none use `code`.
+        # This rule fires on NO DATA because the `code` label doesn't exist on any counter.
+        # Kept as a COMMENTED-BROKEN-TEMPLATE for reference — operators must implement rate-limit instrumentation first.
+        # - alert: RateLimitViolations
+        #   expr: sum(rate(distllm_errors_total{code="429"}[5m])) > 1
+        #   for: 10m
+        #   labels:
+        #     severity: info
+        #   annotations:
+        #     summary: "Sustained rate-limit rejections (429s)"
 {{- end }}

@@ -18,8 +18,24 @@ import hashlib
 import os
 from dataclasses import dataclass
 
-import torch
 from loguru import logger
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for privacy obfuscation; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
 
 
 @dataclass
@@ -206,6 +222,7 @@ class PrivacyEnforcer:
     def init_obfuscator(self, hidden_size: int) -> None:
         """Initialize the activation obfuscator for trunk privacy."""
 
+        _require_torch()
         if self.config.enabled and self.config.obfuscate_activations:
             self._obfuscator = ActivationObfuscator(
                 hidden_size, noise_scale=self.config.noise_scale,

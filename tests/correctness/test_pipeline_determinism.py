@@ -81,7 +81,7 @@ class TestPipelineDeterminism:
         # Simulate serialization (node A → wire)
         raw_bytes = hidden.numpy().tobytes()
         shape = list(hidden.shape)
-        dtype = str(hidden.dtype)
+        str(hidden.dtype)
 
         # Simulate deserialization (wire → node B)
         import numpy as np
@@ -135,8 +135,8 @@ class TestPipelineDeterminism:
         num_nodes = 4
 
         for node_idx in range(num_nodes):
-            start_layer = node_idx * (total_layers // num_nodes)
-            end_layer = (node_idx + 1) * (total_layers // num_nodes) - 1
+            node_idx * (total_layers // num_nodes)
+            (node_idx + 1) * (total_layers // num_nodes) - 1
 
             # Position IDs should always be 0..seq_len-1 regardless of layer
             positions = list(range(seq_len))

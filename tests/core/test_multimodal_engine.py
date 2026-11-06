@@ -232,6 +232,6 @@ class TestMultimodalEngineBuildPrompt:
 
     def test_processing_time_increases(self) -> None:
         engine = MultimodalEngine()
-        r1 = engine.process(text="a")
+        engine.process(text="a")
         r2 = engine.process(text="b")
         assert r2.processing_time_ms > 0

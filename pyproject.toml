@@ -116,6 +116,12 @@ examples = [
     "llama-index-llms-openai>=0.1.0",
     "llama-index-core>=0.10.0",
     "crewai>=0.30.0",
+    # examples/haystack_example.py
+    "haystack-ai>=2.0.0",
+    # examples/agency_swarm_example.py (also uses the openai client directly)
+    "agency-swarm>=0.2.0",
+    # examples/openai_agents_example.py and examples/routed_inference.py
+    "openai>=1.0.0",
 ]
 security = [
     "cryptography>=41.0",

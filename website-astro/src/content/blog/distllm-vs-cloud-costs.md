@@ -16,9 +16,10 @@ isn't free. So we built the comparison into our site as a
 
 ## What cloud serving costs
 
-A single always-on A100-class (40 GB) instance lists around **$1.90/hour** on
-major clouds. That's ~$1,370/month if it runs 24/7. Reserved or spot pricing
-improves this, but with two catches:
+A single always-on A100-class (40 GB) instance lists around **$2.50/hour** on
+major clouds — the on-demand reference price in our GPU price table. That's
+~$1,800/month if it runs 24/7. Reserved or spot pricing improves this (down to
+roughly $1.90/hour), but with two catches:
 
 - Spot instances get preempted — your "endpoint" disappears mid-request.
 - You still pay whether anyone is using the endpoint at 3 a.m. or not.

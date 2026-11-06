@@ -96,7 +96,6 @@ async def _fire_requests(client, url: str, json_body: dict, rps: int, duration_s
         batch_size = min(rps, total - sent)
         batch_start = time.monotonic()
 
-        tasks = []
         for _ in range(batch_size):
             t0 = time.monotonic()
             try:
@@ -142,7 +141,7 @@ class TestSustainedThroughput:
             rps=100, duration_s=30 * 60,
         ))
         assert result["sent"] > 0, "No requests were sent"
-        p50_degradation = result.get("p50", 0) / max(result.get("p50_initial", 1), 1)
+        result.get("p50", 0) / max(result.get("p50_initial", 1), 1)
         assert result["p95"] < 5.0, f"P95 latency too high: {result['p95']:.2f}s"
         assert len(result["errors"]) / max(result["sent"], 1) < 0.01, "Error rate exceeds 1%"
 

@@ -163,7 +163,7 @@ class TestNodeJoin:
     def test_join_duplicate_node(self) -> None:
         topo = DynamicClusterTopology()
         topo.on_node_join("node-0", host="10.0.0.1", gpu_count=2)
-        graph = topo.on_node_join("node-0", host="10.0.0.1", gpu_count=8)
+        topo.on_node_join("node-0", host="10.0.0.1", gpu_count=8)
         assert topo.node_count() == 1
         # gpu_count should be updated
         node = topo.get_node("node-0")
@@ -345,7 +345,7 @@ class TestGraphQueries:
         topo.on_node_join("a", host="h1")
         topo.on_node_join("b", host="h2")
         graph1 = topo.get_graph()
-        graph2 = topo.get_graph()
+        topo.get_graph()
         # Mutating the returned graph should not affect the internal state
         graph1.links.clear()
         assert len(topo.get_graph().links) == 1
@@ -628,7 +628,7 @@ class TestLinkBuilding:
 class TestEdgeCases:
     def test_empty_node_id_on_join(self) -> None:
         topo = DynamicClusterTopology()
-        graph = topo.on_node_join("", host="h")
+        topo.on_node_join("", host="h")
         assert topo.node_count() == 1
         assert topo.get_node("") is not None
 

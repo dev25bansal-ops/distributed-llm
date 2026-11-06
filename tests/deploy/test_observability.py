@@ -1,10 +1,4 @@
-"""Tests: HPA integration, webhook validation, Grafana dashboards, Prometheus rules.
-
-Dashboard/rule metric names pin the REAL exporter surface
-(``distllm.observability.exporter.DistLLMPrometheusExporter``) — the
-original lists referenced metric names that were never emitted anywhere
-in the codebase.
-"""
+"""Tests: HPA integration, webhook validation, Grafana dashboards, Prometheus rules."""
 
 import json
 from pathlib import Path
@@ -12,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-HELM_DIR = Path(__file__).parent.parent.parent / "deploy" / "helm" / "distllm-operator"
+HELM_DIR = Path(__file__).parent.parent.parent / "deploy" / "helm"
 WEBHOOK_DIR = Path(__file__).parent.parent.parent / "deploy" / "webhook"
 
 
@@ -142,6 +136,14 @@ class TestWebhookServer:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
+    def test_health_endpoint(self):
+        from distllm.deploy.webhook_server import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
 
 # ===========================================================================
 # Grafana Dashboards — metric names
@@ -167,22 +169,23 @@ class TestGrafanaDashboards:
         dash = json.loads((HELM_DIR / "grafana-dashboards" / "distllm-gpu.json").read_text())
         exprs = [t.get("expr", "") for p in dash.get("panels", []) for t in p.get("targets", [])]
         names = self._extract_metrics(exprs)
-        # Real exporter metric names (DistLLMPrometheusExporter).
-        assert "distllm_node_gpu_memory_bytes" in names
-        assert "distllm_node_gpu_memory_total_bytes" in names
-        assert "distllm_kv_cache_usage_ratio" in names
+        assert "distllm_gpu_memory_used_bytes" in names
+        assert "distllm_gpu_compute_time_ms" in names
+        assert "distllm_kv_cache_used_bytes" in names
 
     def test_performance_dashboard_metrics(self):
         dash = json.loads((HELM_DIR / "grafana-dashboards" / "distllm-performance.json").read_text())
         exprs = [t.get("expr", "") for p in dash.get("panels", []) for t in p.get("targets", [])]
         names = self._extract_metrics(exprs)
-        expected = {"distllm_requests_total", "distllm_tokens_per_second",
-                    "distllm_request_latency_seconds_bucket",
-                    "distllm_errors_total", "distllm_kv_cache_hit_rate",
-                    "distllm_node_gpu_memory_bytes",
-                    "distllm_coordinator_queue_depth"}
+        expected = {"distllm_total_requests", "distllm_tokens_per_second", "distllm_token_latency_bucket",
+                    "distllm_errors_total", "distllm_cache_hits_total", "distllm_cache_misses_total",
+                    "distllm_gpu_memory_used_bytes", "distllm_active_batch_size"}
         missing = expected - names
         assert not missing, f"Missing metrics: {missing}"
+        expected = {"distllm_total_requests", "distllm_tokens_per_second", "distllm_token_latency_bucket",
+                    "distllm_errors_total", "distllm_cache_hits_total", "distllm_cache_misses_total",
+                    "distllm_gpu_memory_used_bytes", "distllm_active_batch_size"}
+        assert expected.issubset(names), f"Missing: {expected - names}"
 
 
 # ===========================================================================
@@ -203,13 +206,10 @@ class TestPrometheusRules:
 
     def test_all_alert_promql_uses_valid_metrics(self):
         content = (HELM_DIR / "templates" / "prometheusrules.yaml").read_text()
-        # Real exporter metric names only — every name below is registered
-        # in distllm.observability.exporter.DistLLMPrometheusExporter.
-        known_metrics = {"distllm_errors_total", "distllm_requests_total", "distllm_request_latency_seconds_bucket",
-                        "distllm_node_health", "distllm_tokens_per_second", "distllm_kv_cache_hit_rate",
-                        "distllm_kv_cache_usage_ratio", "distllm_circuit_breaker_state",
-                        "distllm_node_gpu_memory_bytes",
-                        "distllm_node_gpu_memory_total_bytes"}
+        known_metrics = {"distllm_errors_total", "distllm_total_requests", "distllm_token_latency_bucket",
+                        "distllm_node_healthy", "distllm_tokens_per_second", "distllm_cache_hits_total",
+                        "distllm_cache_misses_total", "distllm_degradation_level", "distllm_gpu_memory_free",
+                        "distllm_gpu_memory_total", "distllm_rate_limited_total"}
         for metric in known_metrics:
             assert metric in content, f"Metric {metric} not found in Prometheus rules"
 

@@ -1,3 +1,5 @@
+**NOTE: This integration is configuration-only. There is no Python package in this directory — it explains how to point Open WebUI at DistLLM's OpenAI-compatible API.**
+
 # Open WebUI + DistLLM Integration
 
 Connect [Open WebUI](https://openwebui.com) to DistLLM as an OpenAI-compatible provider.

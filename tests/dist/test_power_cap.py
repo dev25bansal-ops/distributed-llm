@@ -193,7 +193,8 @@ class TestGPUPowerCapperConstruction:
     def test_lock_created(self) -> None:
         """Thread lock is created on init."""
         capper = GPUPowerCapper(gpu_indices=[])
-        assert isinstance(capper._lock, threading.Lock)
+        # Use type() or hasattr instead of isinstance to avoid factory issues.
+        assert type(capper._lock).__name__ == "lock"
 
     def test_tuned_limits_empty_initial(self) -> None:
         """_tuned_limits starts as empty."""

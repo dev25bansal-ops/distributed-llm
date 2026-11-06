@@ -34,7 +34,6 @@ class TestHashConsistency:
         h = RollingHash()
         for t in tokens[:3]:
             h.extend(t)
-        hash_3 = h.hash
 
         h.extend(tokens[3])
         hash_4 = h.hash

@@ -104,7 +104,7 @@ class TestEarningsCalculation:
     """Test provider earnings tracking."""
 
     def test_earnings_on_job_completion(self, marketplace):
-        listing = marketplace.create_listing("p1", "A100", 80 * 1024**3, 10.0)
+        marketplace.create_listing("p1", "A100", 80 * 1024**3, 10.0)
         job = marketplace.post_job("user-1", "model", 40 * 1024**3, 15.0)
         marketplace.match_job(job.job_id)
         marketplace.start_job(job.job_id)

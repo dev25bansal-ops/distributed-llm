@@ -92,15 +92,14 @@ FUZZ_CASES: list[dict[str, Any]] = [
 
 def run_fuzz_checks() -> int:
     """Run all fuzz cases and return the number that caused issues."""
-    failures = 0
     for case in FUZZ_CASES:
         try:
-            result = _simulate_malformed_protobuf(
+            _simulate_malformed_protobuf(
                 case["type"], case["payload"],
             )
             # Successfully parsed malformed input is fine — we just
             # verify there was no crash/segfault.
-        except Exception as e:
+        except Exception:
             # Exceptions are expected for malformed input — not a failure
             pass
     print(f"Fuzz: {len(FUZZ_CASES)} cases passed (no crashes)")

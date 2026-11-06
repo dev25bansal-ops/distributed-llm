@@ -664,7 +664,7 @@ The fastest way to test changes:
 
 ```bash
 # Run in local mode (no distributed setup needed)
-distllm --model roneneldan/TinyStories-1M --local --chat
+distllm system run --model roneneldan/TinyStories-1M --local --chat
 
 # Run the API server locally
 distllm-api --model roneneldan/TinyStories-1M --local --port 8000
@@ -674,9 +674,10 @@ distllm-api --model roneneldan/TinyStories-1M --local --port 8000
 
 ```bash
 # Enable debug logging
-DISTLLM_LOG_LEVEL=DEBUG distllm-api --model roneneldan/TinyStories-1M --local
+distllm-api --model roneneldan/TinyStories-1M --local --debug
 
 # Or in config.yaml
+```
 logging:
   level: "DEBUG"
   format: "json"
@@ -695,8 +696,11 @@ curl http://localhost:8000/v1/debug/recent
 ### gRPC Debugging
 
 ```bash
-# Enable gRPC debug logging
-GRPC_VERBOSITY=DEBUG GRPC_TRACE=all distllm-node --model roneneldan/TinyStories-1M --local
+# Enable gRPC debug logging on a worker node (worker args are required)
+GRPC_VERBOSITY=DEBUG GRPC_TRACE=all distllm-node \
+  --node-id dev-node --model roneneldan/TinyStories-1M \
+  --start-layer 0 --end-layer 7 --total-layers 8 \
+  --coordinator-host localhost --coordinator-port 50050
 ```
 
 ### Profiling
@@ -776,7 +780,7 @@ python -c "from transformers import AutoConfig; print(AutoConfig.from_pretrained
 # src/distllm/models/partitioner.py
 
 # 3. Test with the model
-distllm --model model-name --local --chat
+distllm system run --model model-name --local
 
 # 4. Add to model compatibility matrix
 # docs/MODEL_COMPATIBILITY.md

@@ -156,7 +156,7 @@ class TestPagedAttentionManager:
         # Manually fill the block so append triggers a new one
         bid = pam.get_block_table("seq-1")[0]
         pam._blocks[bid].num_tokens = 2  # mark as full
-        new_bid = pam.append_token("seq-1")  # should allocate new block
+        pam.append_token("seq-1")  # should allocate new block
         seq = pam._seq_blocks["seq-1"]
         assert len(seq.block_ids) == 2
 

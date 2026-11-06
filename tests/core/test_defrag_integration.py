@@ -168,10 +168,10 @@ def test_defrag_via_defragmentable_protocol():
     ratio_before = MemoryDefragmenter.compute_fragmentation_ratio(
         mgr.get_blocks()
     )
-    result = defrag.defragment(mgr)
+    defrag.defragment(mgr)
 
     # After defrag, all free blocks should be contiguous at the end
-    free_ids = mgr.get_seq_blocks()  # not directly useful for checking
+    mgr.get_seq_blocks()  # not directly useful for checking
     blocks = mgr.get_blocks()
     last_allocated_idx = -1
     free_seen = False
@@ -201,13 +201,13 @@ def test_defrag_with_fragmentation_aware_allocator():
         mgr._blocks[i].ref_count = 0
         mgr._free_blocks.append(i)
 
-    ratio_before = MemoryDefragmenter.compute_fragmentation_ratio(mgr._blocks)
+    MemoryDefragmenter.compute_fragmentation_ratio(mgr._blocks)
 
     # Run defrag
     defrag = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
     defrag.defragment(mgr)
 
-    ratio_after = MemoryDefragmenter.compute_fragmentation_ratio(mgr._blocks)
+    MemoryDefragmenter.compute_fragmentation_ratio(mgr._blocks)
     # After defrag, no allocated block should appear after a free block
     free_seen = False
     for b in mgr._blocks:

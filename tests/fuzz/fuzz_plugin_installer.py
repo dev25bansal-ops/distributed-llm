@@ -110,7 +110,7 @@ def _run_one(data: bytes, *, allow_crash: bool = False) -> None:
 
     # 1. Try install() with the package name
     try:
-        result = installer.install(plugin_name=text)
+        installer.install(plugin_name=text)
     except Exception:
         if not allow_crash:
             raise
@@ -118,14 +118,14 @@ def _run_one(data: bytes, *, allow_crash: bool = False) -> None:
 
     # 2. Try with version
     try:
-        result = installer.install(plugin_name=text, version="1.0.0")
+        installer.install(plugin_name=text, version="1.0.0")
     except Exception:
         if not allow_crash:
             raise
 
     # 3. Try with extras
     try:
-        result = installer.install(plugin_name=text, extras=["gpu", "cuda"])
+        installer.install(plugin_name=text, extras=["gpu", "cuda"])
     except Exception:
         if not allow_crash:
             raise

@@ -88,9 +88,9 @@ DISTLLM__PROFILE=production
 ### Validate Configuration
 
 ```bash
-distllm validate-config
+distllm config validate
 # or
-python -m distllm.api.server --model test --validate-config
+python -m distllm.api.server --validate-config
 ```
 
 ## Local Development
@@ -100,13 +100,13 @@ python -m distllm.api.server --model test --validate-config
 ```bash
 # Install dependencies
 pip install torch --index-url https://download.pytorch.org/whl/cu128
-pip install -e ".[dev]"
+pip install -e ".[dev,self-hosted,cli]"
 
 # Start API server with local model
-distllm api --model meta-llama/Llama-3.2-1B --local --port 8000
+distllm-api --model meta-llama/Llama-3.2-1B --local --port 8000
 
 # Or use config file
-distllm run --model meta-llama/Llama-3.2-1B --local --config config.yaml --port 8000
+distllm system run --model meta-llama/Llama-3.2-1B --local --config config.yaml --port 8000
 
 # Test
 curl http://localhost:8000/v1/chat/completions \
@@ -117,7 +117,8 @@ curl http://localhost:8000/v1/chat/completions \
 ### Interactive Chat
 
 ```bash
-distllm chat --model meta-llama/Llama-3.2-1B --local
+# chat connects to a running API server (default localhost:8000)
+distllm chat --model meta-llama/Llama-3.2-1B
 ```
 
 ## Docker Deployment
@@ -590,7 +591,7 @@ kubectl logs -l app=distllm-coordinator -n distllm
 
 ```bash
 # Enable debug logging
-distllm api --model my-model --local --debug
+distllm-api --model my-model --local --debug
 
 # Or via env var
 export DISTLLM__DEBUG=true

@@ -375,7 +375,7 @@ class TestApplyConstraint:
         mock_constraint.get_logits_mask.return_value = torch.tensor([True, True])
         mock_tokenizer = MagicMock()
         logits = torch.tensor([[1.0, 2.0]])
-        result = gen.apply_constraint(logits, mock_constraint, tokenizer=mock_tokenizer)
+        gen.apply_constraint(logits, mock_constraint, tokenizer=mock_tokenizer)
         mock_constraint.get_logits_mask.assert_called_once_with(2, mock_tokenizer)
 
 

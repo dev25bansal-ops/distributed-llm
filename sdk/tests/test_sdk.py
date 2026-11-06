@@ -237,7 +237,7 @@ class TestTypes:
         assert ml.data[0].id == "model-1"
 
     def test_batch_job(self):
-        job = types.BatchJob(id="batch-1", status="completed", input_file_id="file-1", created_at=1000)
+        job = types.BatchJob(id="batch-1", status="completed", total_items=3, created_at=1000)
         assert job.status == "completed"
 
     def test_transcription_response(self):
@@ -461,7 +461,7 @@ def test_public_api_exports():
         "CompletionResponse", "CompletionChoice",
         "ModelInfo", "ModelList",
         "EmbeddingResponse", "EmbeddingObject",
-        "BatchJob", "BatchList",
+        "BatchItem", "BatchItemResult", "BatchJob", "BatchCancelResult", "BatchList",
         "TranscriptionResponse", "SpeechResponse",
         "ImageGenerationResponse", "ImageObject",
         "ModerationResponse", "ModerationResult",
@@ -469,5 +469,6 @@ def test_public_api_exports():
         "UsageInfo", "ClientStats", "CallStats",
         "ApiError", "AuthenticationError", "RateLimitError", "TimeoutError",
         "ModelNotFoundError", "ServiceUnavailableError", "InvalidRequestError",
+        "__version__",
     }
     assert set(public_api) == expected

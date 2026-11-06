@@ -70,7 +70,7 @@ class TestGet:
 
     def test_get_specific_version(self, repo):
         repo.create("x", "v1")
-        v2 = repo.create("x", "v2")
+        repo.create("x", "v2")
         got = repo.get("x", version=1)
         assert got.template == "v1"
 

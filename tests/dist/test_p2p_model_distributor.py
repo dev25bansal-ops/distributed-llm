@@ -166,33 +166,49 @@ class TestVerifyChunk:
         assert dist.verify_chunk(99, b"") is True
 
     def test_with_merkle_tree(self) -> None:
-        """Verify_chunk uses SHA-256 internally, while MerkleTree may
-        use xxhash (or a second SHA-256 round), so the computed hash
-        never matches the Merkle root directly.  The method always
-        returns False for any data when a Merkle tree is present."""
+        """verify_chunk delegates to merkle.verify_proof which handles:
+        - xxhash backend (leaf normalization when len != _HASH_HEX_LEN)
+        - parity-aware sibling order in proof walk
+        Returns True for valid data and False for tampered data."""
         dist = P2PModelDistributor(model_name="m")
-        dist.build_merkle({"a": WeightWithNumpy(b"hello")})
-        assert dist.verify_chunk(0, b"hello") is False
-        assert dist.verify_chunk(0, b"wrong") is False
+        weights = {
+            "layer0": WeightWithNumpy(b"hello"),
+            "layer1": WeightWithNumpy(b"world"),
+            "layer2": WeightWithNumpy(b"data2"),
+            "layer3": WeightWithNumpy(b"data3"),
+        }
+        dist.build_merkle(weights)
+
+        # Valid data must pass verification at all indices
+        assert dist.verify_chunk(0, b"hello") is True
+        assert dist.verify_chunk(1, b"world") is True
+        assert dist.verify_chunk(2, b"data2") is True
+        assert dist.verify_chunk(3, b"data3") is True
+
+        # Tampered data must fail
+        assert dist.verify_chunk(0, b"wrong0") is False
+        assert dist.verify_chunk(1, b"wrong1") is False
 
     def test_multiple_chunks(self) -> None:
-        """Same hash-algorithm mismatch for multi-chunk trees."""
+        """Odd and even indices exercise both sibling orders in the proof walk."""
         dist = P2PModelDistributor(model_name="m")
         dist.build_merkle({
             "a": WeightWithNumpy(b"data0"),
             "b": WeightWithNumpy(b"data1"),
             "c": WeightWithNumpy(b"data2"),
         })
-        assert dist.verify_chunk(0, b"data0") is False
-        assert dist.verify_chunk(1, b"data1") is False
-        assert dist.verify_chunk(2, b"data2") is False
+        assert dist.verify_chunk(0, b"data0") is True
+        assert dist.verify_chunk(1, b"data1") is True
+        assert dist.verify_chunk(2, b"data2") is True
         assert dist.verify_chunk(1, b"tampered") is False
 
     def test_index_out_of_range(self) -> None:
-        """Out-of-range index returns False gracefully."""
+        """Out-of-range index returns False (fail-closed)."""
         dist = P2PModelDistributor(model_name="m")
         dist.build_merkle({"a": WeightWithNumpy(b"hello")})
         assert dist.verify_chunk(999, b"hello") is False
+        assert dist.verify_chunk(1, b"hello") is False
+        assert dist.verify_chunk(-1, b"hello") is False
 
 
 # ---------------------------------------------------------------------------

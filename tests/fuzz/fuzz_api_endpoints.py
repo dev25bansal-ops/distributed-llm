@@ -110,7 +110,7 @@ class TestApiEndpointFuzzing:
     def test_admin_endpoints_fuzz(self, api_client):
         """Fuzz admin endpoints with random payloads."""
         for _ in range(50):
-            payload = _random_json()
+            _random_json()
             resp = api_client.get(
                 f"/admin/v1/{_random_string(10)}",
                 headers={"Authorization": f"Bearer {_random_string(32)}"},

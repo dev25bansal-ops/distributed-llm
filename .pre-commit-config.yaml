@@ -13,7 +13,7 @@ repos:
         args: ['-c', 'pyproject.toml', '-r', 'src/distllm/']
         additional_dependencies: ['bandit[toml]']
 
-  - repo: https://github.com/pylint-dev/pyroma
+  - repo: https://github.com/regebro/pyroma
     rev: "4.2"
     hooks:
       - id: pyroma

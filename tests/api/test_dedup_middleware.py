@@ -594,7 +594,7 @@ class TestDedupMiddlewareIntegration:
         client = TestClient(app)
         payload = {"messages": [{"role": "user", "content": "secret"}]}
 
-        r1 = client.post("/v1/chat/completions", json=payload, headers={"X-API-Key-ID": "key-a"})
+        client.post("/v1/chat/completions", json=payload, headers={"X-API-Key-ID": "key-a"})
         assert track_calls["handler"] == 1
 
         r2 = client.post("/v1/chat/completions", json=payload)  # no key header

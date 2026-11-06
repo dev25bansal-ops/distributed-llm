@@ -20,6 +20,23 @@ from typing import Any
 
 from loguru import logger
 
+# Optional dependency detection for torch (used lazily by torch_stack)
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for expert forward batching; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
 
 class GrpcClientPool:
     """Process-wide registry of per-node gRPC clients."""
@@ -70,6 +87,5 @@ def call_expert_forward_batch(
 
 
 def torch_stack(tensors):
-    import torch
-
+    _require_torch()
     return torch.stack(list(tensors), dim=0)

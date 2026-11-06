@@ -148,7 +148,7 @@ class TestChatMultiModal:
         assert len(content) > 0
 
     def test_image_input_triggers_vlm_pipeline(self):
-        resp = self.client.post(
+        self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "distributed-llm",

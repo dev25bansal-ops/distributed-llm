@@ -6,12 +6,40 @@ This guide covers all breaking changes, new requirements, and step-by-step instr
 
 ## Table of Contents
 
+<!-- TOC -->
+
 - [Breaking Changes](#breaking-changes)
+  - [1. Structured Error Responses](#1-structured-error-responses)
+  - [2. Docker Non-Root Execution](#2-docker-non-root-execution)
+  - [3. Plugin System Module Prefix Allowlist](#3-plugin-system-module-prefix-allowlist)
+  - [4. Circuit Breaker Thread Safety Fix](#4-circuit-breaker-thread-safety-fix)
+  - [5. Rate Limiter Bounded Memory](#5-rate-limiter-bounded-memory)
+  - [6. Embeddings Fallback Removed](#6-embeddings-fallback-removed)
+  - [7. gRPC Infer/StreamInfer Routing Fix](#7-grpc-inferstreaminfer-routing-fix)
 - [New Required Dependencies](#new-required-dependencies)
 - [Configuration Changes](#configuration-changes)
+  - [YAML Key Changes](#yaml-key-changes)
+  - [New Configuration Options](#new-configuration-options)
+  - [Environment Variable Changes](#environment-variable-changes)
 - [API Changes](#api-changes)
+  - [New Endpoints](#new-endpoints)
+  - [Removed / Changed Endpoints](#removed--changed-endpoints)
+  - [Response Format Changes](#response-format-changes)
 - [Docker / Kubernetes Changes](#docker--kubernetes-changes)
+  - [Docker Image](#docker-image)
+  - [Docker Compose](#docker-compose)
+  - [Kubernetes Probes](#kubernetes-probes)
+  - [TLS Certificates](#tls-certificates)
 - [Upgrade Checklist](#upgrade-checklist)
+  - [Pre-Upgrade](#pre-upgrade)
+  - [Upgrade](#upgrade)
+  - [Configuration](#configuration)
+  - [Docker / Kubernetes](#docker--kubernetes)
+  - [Post-Upgrade Verification](#post-upgrade-verification)
+- [Rollback](#rollback)
+- [Getting Help](#getting-help)
+
+<!-- /TOC -->
 
 ---
 

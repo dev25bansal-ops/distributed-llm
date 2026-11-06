@@ -76,7 +76,7 @@ def _write_signed_manifest(tmp_path, package_name, pubkey, signing_key, tamper=F
 
 class TestSignedManifest:
     def _keys(self):
-        crypt = pytest.importorskip("cryptography")
+        pytest.importorskip("cryptography")
         from cryptography.hazmat.primitives.asymmetric import ed25519
 
         key = ed25519.Ed25519PrivateKey.generate()

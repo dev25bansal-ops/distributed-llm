@@ -14,7 +14,7 @@ def check_slo(csv_path: str, p95_ms: float, p99_ms: float, error_rate: float) ->
         reader = csv.DictReader(f)
         for row in reader:
             if row.get("Name") == "Aggregated":
-                avg_ms = float(row.get("Average Median Response Time", 0))
+                float(row.get("Average Median Response Time", 0))
                 p95_actual = float(row.get("Average 95% Response Time", 0))
                 p99_actual = float(row.get("Average 99% Response Time", 0))
                 total = int(row.get("Num Requests", 0))

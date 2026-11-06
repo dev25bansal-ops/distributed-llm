@@ -29,7 +29,7 @@ class TestKVCacheQuantization:
         """Quantized cache should use less memory (or scales appropriately)."""
         fp16_cache = KVCache()
         fp16_cache.init_cache(num_layers=2, batch_size=1, num_heads=4, head_dim=64, device="cpu")
-        fp16_mem = fp16_cache.memory_usage()
+        fp16_cache.memory_usage()
 
         int8_cache = KVCache()
         int8_cache.init_cache(num_layers=2, batch_size=1, num_heads=4, head_dim=64, device="cpu")
@@ -122,8 +122,8 @@ class TestMemoryLimits:
 
     def test_manager_total_memory(self):
         mgr = KVCacheManager()
-        c1 = mgr.create("r1", num_layers=2, batch_size=1, num_heads=4, head_dim=64, device="cpu")
-        c2 = mgr.create("r2", num_layers=2, batch_size=1, num_heads=4, head_dim=64, device="cpu")
+        mgr.create("r1", num_layers=2, batch_size=1, num_heads=4, head_dim=64, device="cpu")
+        mgr.create("r2", num_layers=2, batch_size=1, num_heads=4, head_dim=64, device="cpu")
         total = mgr.total_memory_usage()
         assert total >= 0
         assert mgr.active_requests == 2

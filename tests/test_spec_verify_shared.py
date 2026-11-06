@@ -70,7 +70,7 @@ def test_verify_chain_rejects_on_wrong_row():
 
 
 def test_accept_token_rejection_sampling_uniform_fallback():
-    prefix = torch.tensor([[1]], dtype=torch.long)  # L=1
+    torch.tensor([[1]], dtype=torch.long)  # L=1
     vocab = 1000
     logits = torch.full((1, 3, vocab), -10.0)
     logits[0, 0, 5] = 10.0  # only token 5 has mass at row 0

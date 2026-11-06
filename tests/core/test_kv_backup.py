@@ -89,7 +89,7 @@ class TestKVBackupManagerConstruction:
     def test_bad_path_creates_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             new_dir = Path(tmpdir) / "subdir" / "backups"
-            mgr = KVBackupManager(backup_dir=str(new_dir))
+            KVBackupManager(backup_dir=str(new_dir))
             assert new_dir.exists()
 
 
@@ -111,7 +111,7 @@ class TestKVBackupManagerSnapshot:
         with tempfile.TemporaryDirectory() as tmpdir:
             mgr = KVBackupManager(backup_dir=tmpdir)
             stub_mgr = _StubManagerWithCaches()
-            backup_id = mgr.create_snapshot(stub_mgr, metadata={"reason": "test"})
+            mgr.create_snapshot(stub_mgr, metadata={"reason": "test"})
             manifests = mgr.list_backups()
             assert len(manifests) == 1
             assert manifests[0]["num_entries"] == 2

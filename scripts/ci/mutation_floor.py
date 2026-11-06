@@ -35,6 +35,11 @@ Exit codes
 The set of critical modules and their accompanying test files is configured in
 ``CRITICAL_MODULES`` below.  Each entry pairs a source module with the test
 file(s) that should catch its mutants.
+
+``--max-mutations`` is applied as a deterministic (seed 42) stratified sample
+across mutation-operator types (``tests/mutation/mutate.py::stratified_sample``),
+not a first-N slice, so every operator type is represented even when the cap
+is far below the total point count.
 """
 
 from __future__ import annotations
@@ -166,7 +171,6 @@ def _run_mutmut(module: dict, floor: float, max_mutations: int) -> ModuleScore |
 
 
 def _render_mutmut_config(source: str, tests: list[str], max_mutations: int) -> str:
-    test_paths = "\n".join(f'    "{t}",' for t in tests)
     return f"""\
 [mutmut]
 paths_to_mutate = ["{source}"]
@@ -237,7 +241,12 @@ def _run_ast_harness(module: dict, floor: float, max_mutations: int) -> ModuleSc
         source_code = f.read()
     points = mutate.find_mutation_points(source_code)
     if max_mutations and max_mutations > 0:
-        points = points[:max_mutations]
+        # Deterministic stratified sample across operator types (seed 42).
+        # The old points[:max_mutations] first-N slice only sampled the first
+        # alphabetically-ordered operators (e.g. only negate_condition when
+        # there were 216 points of 14 types and the first 25 were all
+        # negate_condition).  See tests/mutation/mutate.py::stratified_sample.
+        points = mutate.stratified_sample(points, max_mutations, seed=42)
     if not points:
         return ModuleScore(
             name=name, engine="ast", total=0, killed=0, survived=0,

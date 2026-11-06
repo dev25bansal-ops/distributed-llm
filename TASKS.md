@@ -69,8 +69,8 @@
 ## 🟢 Strategic — Product & Traction (Weeks 8-12)
 
 ### TASK-011: One-command install script (R-01)
-- **Create:** `install.sh` at repo root — `curl -sSL https://distllm.ai/install | bash`
-- **Behavior:** Detect OS, install Python if missing, create venv, `pip install distllm[self-hosted]`, download TinyStories-1M, print "Run: distllm chat".
+- **Create:** `install.sh` at repo root — a local script users can self-host or download from a CDN once available
+- **Behavior:** Detect OS, install Python if missing, create venv, `pip install distributed-llm[self-hosted]`, download TinyStories-1M, print "Run: distllm chat"
 - **Test:** Test on macOS, Ubuntu, Windows (WSL). Document at `docs/QUICKSTART.md`.
 - **Done when:** Script works on 3 OSes, doc updated.
 

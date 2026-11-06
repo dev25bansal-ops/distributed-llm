@@ -35,7 +35,7 @@ def test_record_and_history_returns_entries():
     t = torch.tensor([1.0, 2.0, 3.0])
 
     e1 = store.record("m1", "0-15", d, t, draft_token_id=7, target_token_id=7)
-    e2 = store.record("m1", "0-15", d, t, draft_token_id=3, target_token_id=9)
+    store.record("m1", "0-15", d, t, draft_token_id=3, target_token_id=9)
 
     assert e1["model"] == "m1"
     assert e1["partition"] == "0-15"

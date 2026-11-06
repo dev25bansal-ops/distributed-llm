@@ -1,17 +1,42 @@
-"""Debug and replay routes: GET /v1/debug/recent, POST /v1/debug/replay."""
+"""Debug and replay routes: GET /v1/debug/recent, POST /v1/debug/replay.
+
+SECURITY: These endpoints expose request traces, replays, and reproducible
+outputs. Access requires BOTH layers:
+
+1. RBAC — the router-level ``require_role("admin")`` dependency rejects any
+   request whose OAuth2/SAML/API-key identity does not hold the admin role.
+2. Env gate — ``DISTLLM_ENABLE_DEBUG_ROUTES=1`` plus a matching
+   ``DISTLLM_ADMIN_KEY`` Bearer token, so the routes stay off by default.
+"""
 
 import hmac
 import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..auth_deps import require_role
+from ..ip_utils import get_client_ip
 
-router = APIRouter(tags=["debug"])
+# Router-level RBAC: every endpoint below requires the admin role. Mirrors
+# the pattern in routes/admin.py, which gates its whole router in the
+# APIRouter(dependencies=[...]) constructor.
+router = APIRouter(
+    tags=["debug"],
+    dependencies=[Depends(require_role("admin"))],
+)
 
 
 def _verify_debug_access(request: Request, authorization: str = Header("")) -> None:
+    """Env-var gate: debug routes are off unless explicitly enabled.
+
+    Preserved from the original gate. When the routes are disabled the
+    endpoint 404s (indistinguishable from an unmounted route); when enabled,
+    the Bearer token must match ``DISTLLM_ADMIN_KEY``. This runs in addition
+    to the router-level RBAC dependency — neither layer replaces the other.
+    """
     enabled = os.environ.get("DISTLLM_ENABLE_DEBUG_ROUTES") == "1"
     if not enabled:
         raise HTTPException(status_code=404, detail="Not found")
@@ -23,6 +48,20 @@ def _verify_debug_access(request: Request, authorization: str = Header("")) -> N
         raise HTTPException(status_code=401, detail="Missing authorization")
     if not hmac.compare_digest(authorization[7:], admin_key):
         raise HTTPException(status_code=401, detail="Invalid admin key")
+
+
+def _audit_replay(request: Request, request_id: str) -> None:
+    """Record who asked for a replay and which stored request was replayed."""
+    actor = getattr(request.state, "api_key_id", None) or "unknown"
+    role = getattr(request.state, "api_key_role", None) or "unknown"
+    logger.info(
+        "AUDIT debug replay: actor={} role={} request_id={} client_ip={} path={}",
+        actor,
+        role,
+        request_id,
+        get_client_ip(request),
+        request.url.path,
+    )
 
 
 class ReplayRequest(BaseModel):
@@ -112,8 +151,9 @@ async def get_request_detail(request_id: str, _admin=Depends(_verify_debug_acces
         503: {"description": "No coordinator available"},
     },
 )
-async def replay_request(body: ReplayRequest, _admin=Depends(_verify_debug_access)):  # noqa: B008
+async def replay_request(request: Request, body: ReplayRequest, _admin=Depends(_verify_debug_access)):  # noqa: B008
     """Replay a stored request through the model."""
+    _audit_replay(request, body.request_id)
     coord = g.coordinator
     if coord is None:
         raise HTTPException(status_code=503, detail="No coordinator available")

@@ -170,7 +170,7 @@ def test_property_no_block_id_duplication(seed: int):
     """No block_id may appear in more than one sequence's block_ids."""
     mgr = _random_manager(num_blocks=128, num_sequences=8, seed=seed)
     defrag = MemoryDefragmenter(DefragConfig(policy=DefragPolicy.AGGRESSIVE))
-    blocks = mgr.get_blocks()
+    mgr.get_blocks()
 
     defrag.defragment(mgr)
 

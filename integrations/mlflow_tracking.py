@@ -134,7 +134,7 @@ class MLflowIntegration:
         try:
             experiment = mlflow.set_experiment(experiment_name)
         except MlflowException:
-            experiment_id = mlflow.create_experiment(experiment_name)
+            mlflow.create_experiment(experiment_name)
             experiment = mlflow.set_experiment(experiment_name)
 
         run = mlflow.start_run(

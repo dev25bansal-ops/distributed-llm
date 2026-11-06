@@ -289,7 +289,7 @@ class TestGPUListing:
         assert before <= listing.created_at <= after
 
     def test_mutable_defaults_are_independent(self) -> None:
-        a = GPUListing(listing_id="a", provider_id="p1", tags=["x"])
+        GPUListing(listing_id="a", provider_id="p1", tags=["x"])
         b = GPUListing(listing_id="b", provider_id="p1")
         # Ensure b's default is not contaminated by a's explicit tags
         assert b.tags == []
@@ -1247,8 +1247,8 @@ class TestMarketplaceListJobs:
 
     def test_sorted_by_created_at_desc(self) -> None:
         mp = Marketplace()
-        j1 = mp.post_job("u1", "model-a")
-        j2 = mp.post_job("u2", "model-b")
+        mp.post_job("u1", "model-a")
+        mp.post_job("u2", "model-b")
         result = mp.list_jobs()
         assert len(result) >= 2
         assert result[0].created_at >= result[1].created_at

@@ -11,8 +11,25 @@ import hashlib
 import sys
 from dataclasses import dataclass
 
-import torch
 from loguru import logger
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for worker node; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
 
 @dataclass
 class _SimpleCompressionConfig:
@@ -110,6 +127,7 @@ class WorkerNode:
             weight_source: ``host:port`` of a peer node that can serve weights.
         """
 
+        _require_torch()
         target_device = self._get_device()
 
         # Priority 1: Local model cache
@@ -242,6 +260,7 @@ class WorkerNode:
             ValueError: If checksum doesn't match.
         """
 
+        _require_torch()
         if self.partitioner is None or not hasattr(self.partitioner, "full_model"):
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
@@ -329,6 +348,7 @@ class WorkerNode:
         the raw input embeddings or the final logits.
         """
 
+        _require_torch()
         if self.partitioner is None:
             raise RuntimeError("Model not loaded. Call load_model() before starting the node.")
 

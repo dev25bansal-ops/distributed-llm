@@ -43,7 +43,7 @@ def test_federation_allows_private_opt_in():
 
 def test_cross_cluster_no_longer_passes_allow_private_true():
     # Static check that the insecure literal is gone from the call sites.
-    src = (cross_cluster_path := __import__("pathlib").Path(__file__).resolve().parents[2])
+    src = (_cross_cluster_path := __import__("pathlib").Path(__file__).resolve().parents[2])
     text = (src / "src/distllm/dist/cross_cluster.py").read_text()
     text2 = (src / "src/distllm/dist/p2p/discovery.py").read_text()
     assert "allow_private_hosts=True" not in text

@@ -131,7 +131,7 @@ def _cluster_hash(features: dict[str, float]) -> int:
     first_bucket = int(features["first_token"] * 5.0)      # 0-4
 
     key = f"{entropy_bucket}:{length_bucket}:{first_bucket}"
-    return int(hashlib.md5(key.encode()).hexdigest()[:8], 16)
+    return int(hashlib.md5(key.encode()).hexdigest()[:8], 16)  # nosec B324  # clustering bucket  # noqa: B324
 
 
 class PrefixClusterer:

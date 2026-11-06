@@ -75,7 +75,7 @@ class TestRequestTrackerCancellation:
 
     def test_set_result_signals_event(self):
         tracker = RequestTracker()
-        event = tracker.register_request("req-1")
+        tracker.register_request("req-1")
         tracker.set_result("req-1", "done")
         result = tracker.wait_for_result("req-1", timeout=2.0)
         assert result == "done"

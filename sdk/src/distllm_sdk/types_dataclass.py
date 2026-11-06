@@ -126,15 +126,55 @@ class ModelList:
 
 
 @dataclass(frozen=True)
+class BatchItem:
+    prompt: str
+    request_id: str = ""
+    max_tokens: int = 128
+    temperature: float = 0.7
+
+
+@dataclass(frozen=True)
+class BatchItemResult:
+    request_id: str = ""
+    prompt: str = ""
+    max_tokens: int = 0
+    temperature: float = 0.0
+    status: str = ""
+    result: Any = None
+    error: str | None = None
+    cost: float = 0.0
+    started_at: float | None = None
+    completed_at: float | None = None
+
+
+@dataclass(frozen=True)
 class BatchJob:
     id: str
     status: str
-    input_file_id: str
-    created_at: int
-    completed_at: int | None = None
-    output_file_id: str | None = None
-    error_file_id: str | None = None
-    request_counts: dict[str, int] | None = None
+    total_items: int = 0
+    created_at: float = 0.0
+    message: str = ""
+    pending: int = 0
+    running: int = 0
+    completed: int = 0
+    failed: int = 0
+    timed_out: int = 0
+    cancelled: int = 0
+    total_cost: float = 0.0
+    completed_at: float | None = None
+    items: list[BatchItemResult] = field(default_factory=list)
+
+    @property
+    def batch_id(self) -> str:
+        return self.id
+
+
+@dataclass(frozen=True)
+class BatchCancelResult:
+    batch_id: str
+    status: str
+    cancelled_items: int = 0
+    message: str = ""
 
 
 @dataclass(frozen=True)

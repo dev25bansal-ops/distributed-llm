@@ -6,6 +6,7 @@ Applies single mutations to source code and runs tests to check if they're caugh
 import ast
 import copy
 import os
+import random
 import re
 import subprocess
 import sys
@@ -79,7 +80,7 @@ def find_mutation_points(source: str) -> list[MutationPoint]:
         ast.Div: ("/=", "*=", ast.Mult),
     }
 
-    lines = source.splitlines(keepends=True)
+    source.splitlines(keepends=True)
     points = []
 
     for node in ast.walk(tree):
@@ -104,7 +105,11 @@ def find_mutation_points(source: str) -> list[MutationPoint]:
             points.append(MutationPoint(
                 "replace_bool_op", desc,
                 ast.BoolOp, node.lineno, node.col_offset,
-                lambda n: ast.BoolOp(op=new_cls(), values=n.values)))
+                # Bind new_cls as a default arg: a bare closure would read the
+                # *last* value assigned to the local `new_cls` by the time the
+                # transform runs (late binding), e.g. an ast.IsNot from the
+                # comparison loop -> ast.BoolOp(op=IsNot()) raises.
+                lambda n, nc=new_cls: ast.BoolOp(op=nc(), values=n.values)))
 
         # negate_condition
         if isinstance(node, ast.If):
@@ -254,6 +259,82 @@ def find_mutation_points(source: str) -> list[MutationPoint]:
             unique.append(p)
     unique.sort(key=lambda p: p.description)
     return unique
+
+
+def stratified_sample(
+    points: list[MutationPoint],
+    max_mutations: int,
+    seed: int = 42,
+) -> list[MutationPoint]:
+    """Deterministic stratified sample across operator types.
+
+    Groups points by operator, allocates quota proportionally, then samples
+    within each group.  This replaces the old ``points[:max_mutations]``
+    first-N slice, which only sampled the first alphabetically-ordered
+    operators (on ``crdt.py`` the first 25 of 216 points were all
+    ``negate_condition``/``remove_not``/``remove_decorator``, ignoring the
+    other 11 operator types).
+
+    Parameters
+    ----------
+    points:
+        Sorted list of mutation points (output of ``find_mutation_points``).
+    max_mutations:
+        Maximum number of points to return (0/negative = no cap).
+    seed:
+        Random seed for deterministic sampling (default 42).  Fixed on
+        purpose: the same source tree always yields the same mutants, so the
+        floor gate is reproducible across CI runs.
+
+    Returns
+    -------
+    A list of up to ``max_mutations`` points, spread across operator types.
+    """
+    if max_mutations <= 0:
+        return list(points)
+
+    rng = random.Random(seed)
+
+    # Group by operator type
+    by_op: dict[str, list[MutationPoint]] = {}
+    for p in points:
+        by_op.setdefault(p.operator, []).append(p)
+    ops = sorted(by_op)
+
+    # Fewer slots than operator types: pick whole operator types (seeded).
+    if max_mutations < len(ops):
+        chosen = ops[:]
+        rng.shuffle(chosen)
+        return [rng.choice(by_op[op]) for op in chosen[:max_mutations]]
+
+    # Proportional quota; every operator type gets at least 1 when the
+    # budget allows it (max_mutations >= number of types, handled above).
+    # Distribute leftover by largest fractional remainder (Hamilton method),
+    # clamped to each type's pool size so the result never exceeds the cap.
+    total = len(points)
+    raw = {op: len(by_op[op]) * max_mutations / total for op in ops}
+    quota = {op: max(1, int(raw[op])) for op in ops}
+    # The >=1 floor can overshoot the cap; take back from the largest quotas
+    # first (never below 1).
+    while sum(quota.values()) > max_mutations:
+        op = max(quota, key=lambda o: quota[o])
+        quota[op] -= 1
+    leftover = max_mutations - sum(quota.values())
+    remainders = sorted(ops, key=lambda op: raw[op] - int(raw[op]), reverse=True)
+    for op in remainders * 2:  # second pass picks up any clamped pools
+        if leftover <= 0:
+            break
+        if quota[op] < len(by_op[op]):
+            quota[op] += 1
+            leftover -= 1
+
+    # Within each operator, shuffle deterministically and take the quota.
+    sampled: list[MutationPoint] = []
+    for op in ops:
+        pool = list(by_op[op])
+        rng.shuffle(pool)
+        sampled.extend(pool[: quota[op]])
+    return sampled
 
 
 def _make_compare_transform(node, idx, new_cls):

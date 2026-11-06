@@ -47,7 +47,7 @@ class TestEmptyBatch:
         sched = BatchScheduler(max_batch_size=4)
         # Should not hang
         import time
-        start = time.time()
+        time.time()
         # We can't directly call generate_batch without coordinator,
         # but we can verify schedule returns None
         assert sched.schedule() is None
@@ -310,7 +310,7 @@ class TestConcurrentEdgeCases:
         def scheduler():
             try:
                 for _ in range(10):
-                    batch = sched.schedule()
+                    sched.schedule()
                     time.sleep(0.002)
             except Exception as e:
                 errors.append(e)

@@ -119,8 +119,8 @@ class TestCacheManagerWithKVCache:
         """KVCacheManager eviction score should track access patterns."""
         kv_mgr = KVCacheManager()
 
-        cache1 = kv_mgr.create("req-1", 4, 1, 8, 64)
-        cache2 = kv_mgr.create("req-2", 4, 1, 8, 64)
+        kv_mgr.create("req-1", 4, 1, 8, 64)
+        kv_mgr.create("req-2", 4, 1, 8, 64)
 
         # Access req-1 more
         for _ in range(10):

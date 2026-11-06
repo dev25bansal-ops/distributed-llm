@@ -88,7 +88,7 @@ def test_dynamic_sharder_uses_memory_aware_placement():
     plan = sharder.on_node_join("small", gpu_memory_gb=8)
     # The small node should receive SOME layers but never exceed 8GB*0.9.
     if plan is not None:
-        new_part = {n: m.layer_id for n, m in []}  # noop; check via _current_partition
+        {n: m.layer_id for n, m in []}  # noop; check via _current_partition
     with sharder._lock:
         small_layers = sharder._current_partition.get("small", [])
     # Recompute memory used by small node layers (uniform ~1GB fallback impossible

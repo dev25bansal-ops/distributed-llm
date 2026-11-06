@@ -237,7 +237,7 @@ class TestStateReplicationStoreFile:
 
     def test_directory_created(self, tmp_path):
         sub = Path(tmp_path) / "nested" / "dir"
-        store = StateReplicationStore(backend="file", path=str(sub))
+        StateReplicationStore(backend="file", path=str(sub))
         assert sub.exists()
 
 

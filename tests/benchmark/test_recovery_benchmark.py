@@ -47,7 +47,7 @@ class TestRecoveryBenchmark:
                 )
 
             t0 = time.perf_counter_ns()
-            plan = mgr.on_node_failure("failed-node")
+            mgr.on_node_failure("failed-node")
             elapsed_ns = time.perf_counter_ns() - t0
             return elapsed_ns / 1e6  # ms
 
@@ -98,7 +98,7 @@ class TestDryRunBenchmark:
                     f"req-{i}", torch.zeros(100), [1, 2], [3], "target-node",
                 )
             t0 = time.perf_counter_ns()
-            plan = mgr.dry_run_recovery("target-node")
+            mgr.dry_run_recovery("target-node")
             return (time.perf_counter_ns() - t0) / 1e6
 
         result = benchmark(_run)

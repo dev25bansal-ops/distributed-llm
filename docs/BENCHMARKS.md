@@ -8,14 +8,32 @@
 
 ## Table of Contents
 
+<!-- TOC -->
+
 1. [Methodology](#methodology)
+   - [Principles](#principles)
+   - [Metrics](#metrics)
+   - [Running Benchmarks](#running-benchmarks)
 2. [Hardware Specifications](#hardware-specifications)
+   - [Test Bench A (Consumer)](#test-bench-a-consumer)
+   - [Test Bench B (Datacenter)](#test-bench-b-datacenter)
 3. [Throughput Benchmarks](#throughput-benchmarks)
+   - [Llama 3.1 8B (FP16)](#llama-31-8b-fp16)
+   - [Llama 3.1 70B (FP16)](#llama-31-70b-fp16)
 4. [Latency Benchmarks](#latency-benchmarks)
+   - [TTFT (Llama 3.1 8B, prompt=512 tokens)](#ttft-llama-31-8b-prompt512-tokens)
+   - [ITL (Llama 3.1 8B, decode)](#itl-llama-31-8b-decode)
 5. [Pipeline Efficiency](#pipeline-efficiency)
+   - [Bubble Ratio](#bubble-ratio)
 6. [Competitive Comparison](#competitive-comparison)
 7. [Regression Tracking](#regression-tracking)
+   - [Baseline Files](#baseline-files)
 8. [Raw Results](#raw-results)
+   - [Latest Results](#latest-results)
+9. [License](#license)
+   - [Preview — measured 2026-07-14 (RTX 5060 Laptop, 8 GB)](#preview--measured-2026-07-14-rtx-5060-laptop-8-gb)
+
+<!-- /TOC -->
 
 ---
 

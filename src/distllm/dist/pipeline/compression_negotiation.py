@@ -7,8 +7,26 @@ import threading
 from typing import Any, Callable
 
 import numpy as np
-import torch
+
 from loguru import logger
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for compression negotiation; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
 
 from distllm.dist.pipeline.serialization import (
     get_tensor_copy_stream,
@@ -348,11 +366,12 @@ class AdaptiveSerializer:
     @staticmethod
     def _deserialize_raw(
         data: bytes,
-        dtype: torch.dtype = torch.uint8,
+        dtype: torch.dtype | None = None,
         device: str = "cpu",
     ) -> torch.Tensor:
+        _require_torch()
         arr = np.frombuffer(data, dtype=np.uint8)
-        return torch.from_numpy(arr).view(dtype).to(device)
+        return torch.from_numpy(arr).view(dtype or torch.uint8).to(device)
 
 
 def _pack_scale(scale: bytes, payload: bytes) -> bytes:
@@ -432,12 +451,14 @@ class GPUDirectSerializer:
         self,
         data: bytes,
         device: str | torch.device = "cuda",
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
         """Reconstruct a tensor from *data* and place it on *device* (GPU).
 
         Falls back to CPU construction when CUDA is not available.
         """
+        _require_torch()
+        dtype = dtype or torch.float16
         if not self._cuda_supported():
             arr = np.frombuffer(data, dtype=np.uint8)
             return torch.from_numpy(arr).view(dtype)

@@ -11,7 +11,7 @@ from distllm.models.cache import ModelCache
 
 class TestModelCache:
     def test_init_creates_cache_dir(self, tmp_path):
-        cache = ModelCache(cache_dir=str(tmp_path / "cache"))
+        ModelCache(cache_dir=str(tmp_path / "cache"))
         assert (tmp_path / "cache").exists()
 
     def test_init_default_cache_dir(self):

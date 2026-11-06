@@ -81,7 +81,7 @@ class _EmbeddingModel:
         dims = 64
         vec = [0.0] * dims
         for token in tokens:
-            bucket = int(hashlib.md5(token.encode()).hexdigest(), 16) % dims
+            bucket = int(hashlib.md5(token.encode()).hexdigest(), 16) % dims  # nosec B324  # count-min sketch  # noqa: B324
             vec[bucket] += 1.0
         norm = sum(x * x for x in vec) ** 0.5
         if norm > 0:

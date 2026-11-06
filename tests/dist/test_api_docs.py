@@ -279,7 +279,7 @@ class TestGenerateSpec:
                 tmp_path = f.name
 
             try:
-                spec = generate_spec(output_path=tmp_path)
+                generate_spec(output_path=tmp_path)
                 written = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
                 assert written["servers"][0]["url"] == "https://with-file.example.com"
             finally:

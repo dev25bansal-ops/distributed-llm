@@ -118,7 +118,7 @@ class TestDraftTargetEndToEnd:
     def test_speculation_speeds_up_generation(self, tokenizer):
         """Speculation should generate more tokens per step than without."""
         with_decoder = SpeculativeDecoder(num_assistant_tokens=5, min_acceptance_rate=0.1)
-        without_decoder = SpeculativeDecoder(num_assistant_tokens=0)  # no speculation
+        SpeculativeDecoder(num_assistant_tokens=0)  # no speculation
 
         draft_model = DummyDraftModel(start_id=10, length=5)
         input_ids = torch.tensor([[1, 2, 3]])

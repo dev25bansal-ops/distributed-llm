@@ -1,5 +1,49 @@
 # Performance Tuning Guide
 
+## Table of Contents
+
+<!-- TOC -->
+
+- [Quick Wins](#quick-wins)
+  - [1. Enable Overlap Pipeline (2-4x throughput)](#1-enable-overlap-pipeline-2-4x-throughput)
+  - [2. Enable KV Cache Quantization (50% memory reduction)](#2-enable-kv-cache-quantization-50-memory-reduction)
+  - [3. Use PagedAttention (2-4x throughput)](#3-use-pagedattention-2-4x-throughput)
+  - [4. Enable Chunked Prefill (30% latency reduction)](#4-enable-chunked-prefill-30-latency-reduction)
+- [GPU Optimization](#gpu-optimization)
+  - [CUDA Graph Capture (30-50% kernel launch overhead reduction)](#cuda-graph-capture-30-50-kernel-launch-overhead-reduction)
+  - [Flash Attention (2x attention speed)](#flash-attention-2x-attention-speed)
+  - [Tensor Parallelism (for multi-GPU nodes)](#tensor-parallelism-for-multi-gpu-nodes)
+- [Network Optimization](#network-optimization)
+  - [QUIC Transport for WAN (3-5x WAN throughput)](#quic-transport-for-wan-3-5x-wan-throughput)
+  - [gRPC Compression (50% bandwidth reduction)](#grpc-compression-50-bandwidth-reduction)
+  - [Activation Quantization (2x bandwidth reduction)](#activation-quantization-2x-bandwidth-reduction)
+- [Batch Optimization](#batch-optimization)
+  - [Continuous Batching (default, no action needed)](#continuous-batching-default-no-action-needed)
+  - [Sarathi-Serve Pressure Adaptation](#sarathi-serve-pressure-adaptation)
+  - [Priority Aging (prevent starvation)](#priority-aging-prevent-starvation)
+- [Memory Optimization](#memory-optimization)
+  - [GPU Memory Defragmentation](#gpu-memory-defragmentation)
+  - [CPU Offloading](#cpu-offloading)
+  - [Model Quantization](#model-quantization)
+- [Caching Optimization](#caching-optimization)
+  - [Prefix Caching](#prefix-caching)
+  - [Semantic Cache](#semantic-cache)
+- [Monitoring Performance](#monitoring-performance)
+  - [Key Metrics to Watch](#key-metrics-to-watch)
+  - [Grafana Dashboards](#grafana-dashboards)
+- [Benchmarking](#benchmarking)
+  - [Run Built-in Benchmarks](#run-built-in-benchmarks)
+  - [Custom Benchmarks](#custom-benchmarks)
+- [Roofline Model & Scaling Guidelines](#roofline-model--scaling-guidelines)
+  - [Understanding the Roofline](#understanding-the-roofline)
+  - [Example: Llama-2-70B on A100-80GB](#example-llama-2-70b-on-a100-80gb)
+  - [Scaling Guidelines](#scaling-guidelines)
+  - [Scaling Efficiency](#scaling-efficiency)
+  - [Bottleneck Diagnosis](#bottleneck-diagnosis)
+- [Common Performance Issues](#common-performance-issues)
+
+<!-- /TOC -->
+
 ## Quick Wins
 
 ### 1. Enable Overlap Pipeline (2-4x throughput)

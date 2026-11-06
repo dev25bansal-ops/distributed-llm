@@ -145,7 +145,7 @@ class TestSchemaConstrainedDecoder:
         constraint = SchemaConstrainedDecoder.from_response_format(
             {"type": "json_object"}, tokenizer=tokenizer
         )
-        mask_before = constraint.get_logits_mask(256)
+        constraint.get_logits_mask(256)
         constraint.update("{")
         mask_after = constraint.get_logits_mask(256)
         # After '{', the mask should allow different tokens
@@ -276,7 +276,7 @@ class TestStreamingConstraint:
         constraint = SchemaConstrainedDecoder.from_response_format(
             {"type": "json_object"}, tokenizer=tok
         )
-        mask_before = constraint.get_logits_mask(256)
+        constraint.get_logits_mask(256)
         constraint.update("{")
         mask_after = constraint.get_logits_mask(256)
         assert mask_after.sum() > 0, "After '{', some tokens should be allowed"

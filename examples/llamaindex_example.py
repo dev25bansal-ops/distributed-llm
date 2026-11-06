@@ -2,11 +2,6 @@
 
 This example shows how to use LlamaIndex with the DistLLM OpenAI-compatible API.
 
-## What this demonstrates
-- Configuring LlamaIndex's `OpenAILLM` to call a DistLLM-served model
-- Building a `VectorStoreIndex` over a tiny in-memory corpus
-- Running a query engine that retrieves + generates against DistLLM
-
 Requirements:
     pip install llama-index-llms-openai llama-index-core
 
@@ -44,7 +39,7 @@ def main():
     print("\n\nTesting RAG with documents:")
 
     # Create a simple index from text
-    documents = SimpleDirectoryReader(input_files=[]).load_data()  # Empty for demo
+    SimpleDirectoryReader(input_files=[]).load_data()  # Empty for demo
 
     # Or create from string
     from llama_index.core import Document

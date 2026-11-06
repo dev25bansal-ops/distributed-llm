@@ -1,11 +1,17 @@
 """Tests for RecoveryDrill — periodic chaos-engineering recovery simulations.
 
 Zero mocks: all tests use the real NodeRecoveryManager from recovery.py.
+
+Timing note: Windows' ``time.monotonic()`` has ~15 ms granularity, so a fast
+dry-run recovery can measure ``recovery_time_ms == 0.0``.  Tests that need a
+strictly-positive recovery time patch ``time.monotonic`` with a deterministic
+ticking clock instead of sleeping.
 """
 
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -25,6 +31,28 @@ def _drill_run(mgr: NodeRecoveryManager, **kwargs) -> DrillResult:
     """Create a RecoveryDrill, run one drill, return the result."""
     drill = RecoveryDrill(recovery_mgr=mgr, **kwargs)
     return drill.run_drill_now()
+
+
+def _deterministic_monotonic(start: float = 1000.0, step_s: float = 0.05):
+    """Return a ``time.monotonic`` replacement that advances deterministically.
+
+    Each call advances 50 ms, guaranteeing the drill measures a strictly
+    positive recovery time without relying on wall-clock resolution.
+    """
+    clock = [start]
+
+    def monotonic() -> float:
+        clock[0] += step_s
+        return clock[0]
+
+    return monotonic
+
+
+def _drill_with_clock(mgr: NodeRecoveryManager, **kwargs) -> DrillResult:
+    """Run one drill with a deterministic monotonic clock."""
+    drill = RecoveryDrill(recovery_mgr=mgr, **kwargs)
+    with patch.object(time, "monotonic", _deterministic_monotonic()):
+        return drill.run_drill_now()
 
 
 DEFAULT_SLA_MS = 5000.0
@@ -194,8 +222,7 @@ class TestRecoveryDrillExecution:
     def test_run_drill_now_returns_nonzero_time(self) -> None:
         """recovery_time_ms should be > 0 for a real dry-run recovery."""
         mgr = _make_mgr()
-        drill = RecoveryDrill(recovery_mgr=mgr)
-        result = drill.run_drill_now()
+        result = _drill_with_clock(mgr)
         assert result.recovery_time_ms > 0.0
 
     def test_run_drill_now_default_sla_pass(self) -> None:
@@ -210,8 +237,7 @@ class TestRecoveryDrillExecution:
         """Setting sla_max_recovery_ms=0 causes a failure since any recovery
         takes non-zero time."""
         mgr = _make_mgr()
-        drill = RecoveryDrill(recovery_mgr=mgr, sla_max_recovery_ms=0.0)
-        result = drill.run_drill_now()
+        result = _drill_with_clock(mgr, sla_max_recovery_ms=0.0)
         assert result.passed is False
         assert any("recovery_time" in f for f in result.failures)
 
@@ -302,7 +328,9 @@ class TestRecoveryDrillObservability:
         drill_fail = RecoveryDrill(
             recovery_mgr=mgr_fail, sla_max_recovery_ms=0.0, max_history=10
         )
-        drill_fail.run_drill_now()
+        # Deterministic clock: recovery_time_ms must exceed the 0ms SLA.
+        with patch.object(time, "monotonic", _deterministic_monotonic()):
+            drill_fail.run_drill_now()
 
         s = drill_fail.get_summary()
         assert s["total_drills"] == 1

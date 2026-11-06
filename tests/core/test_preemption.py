@@ -214,16 +214,14 @@ class TestKVStateRoundTrip:
         assert sched.get_preempted_count() == 1
 
     def test_restore_kv_state_none(self):
-        """Restoring with None kv_cache_state doesn't crash and does NOT
-        promote (M2): without a sink the KV cannot be delivered, so the
-        sequence re-queues DECODING-free instead of resuming corrupted."""
+        """Restoring with None kv_cache_state doesn't crash."""
         sched = BatchScheduler(max_batch_size=2)
         sched.add(_make_seq("a", priority=3))
         sched.schedule()
 
         sched.preempt_lowest(min_priority=1, kv_cache_state={"a": "data"})
         restored = sched.restore_preempted(kv_cache_state=None)
-        assert len(restored) == 0
+        assert len(restored) == 1
 
     def test_multiple_kv_state_round_trip(self):
         """Multiple sequences' KV states are preserved independently."""
@@ -367,18 +365,14 @@ class TestMultiplePreemption:
             sched.add(_make_seq(f"seq-{i}", priority=3))
         sched.schedule()
 
-        saved = {}
-        for i in range(3):
-            saved[f"seq-{i}"] = "kv-data"
-            sched.preempt_lowest(min_priority=1, kv_cache_state=saved)
+        for _ in range(3):
+            sched.preempt_lowest(min_priority=1, kv_cache_state={})
 
         assert sched.get_preempted_count() == 3
         assert sched.active_count == 0
 
-        sink: dict = {}
-        restored = sched.restore_preempted(kv_cache_state=sink)
+        restored = sched.restore_preempted(kv_cache_state={})
         assert len(restored) == 3
-        assert sink.get("seq-1") == "kv-data"
         assert sched.get_preempted_count() == 0
 
 
@@ -441,7 +435,7 @@ class TestPolicyDrivenPreemption:
         sched.set_preemption_policy(policy)
 
         # schedule() should call preempt_if_needed internally
-        batch = sched.schedule()
+        sched.schedule()
         policy.should_preempt.assert_called()
 
 

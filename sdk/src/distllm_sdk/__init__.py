@@ -20,7 +20,10 @@ from distllm_sdk.types import (
     ModelList,
     EmbeddingResponse,
     EmbeddingObject,
+    BatchItem,
+    BatchItemResult,
     BatchJob,
+    BatchCancelResult,
     BatchList,
     TranscriptionResponse,
     SpeechResponse,
@@ -45,6 +48,7 @@ from distllm_sdk.errors import (
 )
 
 __all__ = [
+    "__version__",
     "DistLLMClient",
     "DistLLMClientSync",
     "RetryConfig",
@@ -61,7 +65,10 @@ __all__ = [
     "ModelList",
     "EmbeddingResponse",
     "EmbeddingObject",
+    "BatchItem",
+    "BatchItemResult",
     "BatchJob",
+    "BatchCancelResult",
     "BatchList",
     "TranscriptionResponse",
     "SpeechResponse",

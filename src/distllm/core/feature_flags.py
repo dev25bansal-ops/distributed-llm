@@ -106,9 +106,9 @@ class FeatureFlags:
         if flag.rollout_pct <= 0.0:
             return False
 
-        # Deterministic hash-based rollout
+        # Deterministic hash-based rollout — non-crypto use of MD5 for user bucketing
         seed = f"{flag.name}:{user_id or 'anonymous'}"
-        hash_val = int(hashlib.md5(seed.encode()).hexdigest()[:8], 16)
+        hash_val = int(hashlib.md5(seed.encode()).hexdigest()[:8], 16)  # nosec B324  # rollout bucketing  # noqa: B324
         return (hash_val % 100) < flag.rollout_pct
 
     def _check_time_window(self, flag: FlagConfig) -> bool:

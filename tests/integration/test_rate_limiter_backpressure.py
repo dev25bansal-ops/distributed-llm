@@ -552,7 +552,7 @@ class TestRetryAfterHeaderBehavior:
         # Act: first 429
         resp1 = client.get("/test", headers=headers)
         assert resp1.status_code == 429
-        ra1 = int(resp1.headers["Retry-After"])
+        int(resp1.headers["Retry-After"])
 
         # Wait for tokens to refill
         time.sleep(1.2)

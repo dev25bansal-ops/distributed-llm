@@ -24,7 +24,7 @@ from distllm.utils.gbnf_grammar import (
 @st.composite
 def json_schema_strategy(draw):
     """Generate a random but valid JSON schema."""
-    type_ = draw(st.sampled_from(["object", "object"]))  # bias toward object
+    draw(st.sampled_from(["object", "object"]))  # bias toward object
     properties = {}
     num_props = draw(st.integers(min_value=0, max_value=8))
     for i in range(num_props):

@@ -138,7 +138,6 @@ class TestTopologyAwareLoadBalancer:
         lb.register_node("node-1", "group-a")
         lb.pick(request_id="req-1")
         lb.release("node-1")
-        stats = lb.stats
         # After pick + release, connections should be back to initial
 
     def test_mark_unhealthy_healthy(self):

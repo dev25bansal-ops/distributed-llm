@@ -266,7 +266,7 @@ class TestOversizedGrpcMessages:
         worker.forward_fn.return_value = (MagicMock(), None)
         # Patch _get_device to return CPU
         worker._get_device.return_value = "cpu"
-        node = ns_mod.NodeServicer(worker_node=worker, cluster_key="test")
+        ns_mod.NodeServicer(worker_node=worker, cluster_key="test")
         req = MagicMock()
         req.cluster_key = "test"
         req.input_ids = None
@@ -481,7 +481,6 @@ class TestRateLimiterMemoryExhaustion:
             enable_backoff=True,
         )
         # Fill the bucket so check returns False
-        allowed = True
         violations = 0
         for _ in range(20):
             if not lb.check("violator"):

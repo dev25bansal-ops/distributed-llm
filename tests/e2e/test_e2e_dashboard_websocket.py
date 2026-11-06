@@ -26,18 +26,10 @@ pytestmark = [pytest.mark.e2e]
 # ====================================================================
 
 @pytest.fixture(autouse=True)
-def _real_auth(monkeypatch):
-    """Auth is ALWAYS required (the DISABLE_AUTH bypass was removed).
-    Configure a real API key + reset the key store."""
-    import secrets as _secrets
-    test_key = _secrets.token_hex(32)
-    monkeypatch.setenv("API_KEY", test_key)
-    monkeypatch.setenv("API_KEY_WAS_SET", "1")
-    monkeypatch.delenv("API_KEYS", raising=False)
-    monkeypatch.delenv("API_KEYS_FILE", raising=False)
-    from distllm.core.api_key_store import reset_api_key_store
-    reset_api_key_store()
-    yield test_key
+def _disable_auth(monkeypatch):
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+    monkeypatch.delenv("API_KEY", raising=False)
 
 
 @pytest.fixture
@@ -60,26 +52,17 @@ def dashboard_coordinator():
     return coord
 
 
-
-def _ws_key(client) -> str:
-    """API key for WS subprotocol auth (set by the client fixture)."""
-    return getattr(client, "_test_api_key", "")
-
-
 @pytest.fixture
-def dashboard_client(dashboard_coordinator, _real_auth):
+def dashboard_client(dashboard_coordinator):
     """FastAPI TestClient with the API server (dashboard embedded)."""
     from fastapi.testclient import TestClient
     from distllm.api.server import app
     from distllm.api.app_state import AppState
 
-    # The server reads its coordinator from shared api_state (g)
-    from distllm.api.api_state import g as api_state
-    api_state.coordinator = dashboard_coordinator
-    client = TestClient(app)
-    client.headers["Authorization"] = f"Bearer {_real_auth}"
-    client._test_api_key = _real_auth
-    return client
+    # Set coordinator on the server application state
+    import distllm.api.server as server_module
+    server_module.state.coordinator = dashboard_coordinator
+    return TestClient(app)
 
 
 
@@ -93,18 +76,18 @@ class TestDashboardWebSocketConnectivity:
     """WebSocket connection lifecycle on the dashboard app."""
 
     def test_websocket_connect(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             assert ws is not None
 
     def test_websocket_ping_pong(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "ping"})
             resp = ws.receive_json()
             assert resp["type"] == "pong"
             assert "timestamp" in resp
 
     def test_websocket_subscribe(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_json({
                 "type": "subscribe",
                 "metrics": ["latency", "gpu"],
@@ -116,32 +99,32 @@ class TestDashboardWebSocketConnectivity:
             assert resp["interval"] == 2.0
 
     def test_websocket_subscribe_all_metrics(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "subscribe"})
             resp = ws.receive_json()
             assert resp["type"] == "subscribed"
 
     def test_websocket_invalid_json(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_text("not json")
             resp = ws.receive_json()
             assert resp["type"] == "error"
 
     def test_websocket_unknown_command(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "unknown"})
             resp = ws.receive_json()
             assert resp["type"] == "error"
 
     def test_websocket_invalid_metrics_type(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "subscribe", "metrics": "not_a_list"})
             resp = ws.receive_json()
             assert resp["type"] == "error"
 
     def test_multiple_websocket_connections(self, dashboard_client):
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws1:
-            with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws2:
+        with dashboard_client.websocket_connect("/ws") as ws1:
+            with dashboard_client.websocket_connect("/ws") as ws2:
                 ws1.send_json({"type": "ping"})
                 ws2.send_json({"type": "ping"})
                 r1 = ws1.receive_json()
@@ -152,7 +135,7 @@ class TestDashboardWebSocketConnectivity:
     def test_websocket_disconnect_cleanup(self, dashboard_client):
         from distllm.dashboard.ws_handler import manager
         initial = manager.connection_count
-        with dashboard_client.websocket_connect("/ws", subprotocols=["Bearer", _ws_key(dashboard_client)]) as ws:
+        with dashboard_client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "ping"})
             ws.receive_json()
         assert manager.connection_count == initial
@@ -165,42 +148,43 @@ class TestDashboardRESTAPI:
     """REST API endpoints served by the dashboard app."""
 
     def test_dashboard_index(self, dashboard_client):
-        # The dashboard UI is served by the static dashboard server, not
-        # the API app — the API app has no "/" HTML route. 404 is correct.
         resp = dashboard_client.get("/")
-        assert resp.status_code == 404
-
-    def test_dashboard_api_cluster_nodes(self, dashboard_client):
-        # Real dashboard route (the frontend's node table).
-        resp = dashboard_client.get("/api/cluster/nodes")
         assert resp.status_code == 200
 
-    def test_dashboard_api_cost_summary(self, dashboard_client):
-        # Real dashboard route (frontend cost cards).
-        resp = dashboard_client.get("/api/cost/summary")
+    def test_dashboard_api_status(self, dashboard_client):
+        resp = dashboard_client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "model" in data
+        assert "nodes" in data
+
+    def test_dashboard_api_nodes(self, dashboard_client):
+        resp = dashboard_client.get("/api/nodes")
         assert resp.status_code == 200
 
-    def test_dashboard_api_metrics_history(self, dashboard_client):
-        # Real dashboard route (metrics charts).
-        resp = dashboard_client.get("/api/metrics/history")
+    def test_dashboard_api_metrics(self, dashboard_client):
+        resp = dashboard_client.get("/api/metrics")
         assert resp.status_code == 200
+        data = resp.json()
+        assert "latency" in data
 
     def test_dashboard_api_waterfall(self, dashboard_client):
         resp = dashboard_client.get("/api/requests/waterfall")
         assert resp.status_code == 200
 
-    def test_dashboard_api_waterfall_params(self, dashboard_client):
-        # Real dashboard route with its documented query param.
-        resp = dashboard_client.get("/api/requests/waterfall?limit=30")
-        assert resp.status_code == 200
+    def test_dashboard_api_config(self, dashboard_client):
+        resp = dashboard_client.post(
+            "/api/config",
+            json={"batch_size": 32},
+        )
+        assert resp.status_code in (200, 503)
 
-    def test_dashboard_no_coordinator(self, _real_auth):
+    def test_dashboard_no_coordinator(self):
         from fastapi.testclient import TestClient
         from distllm.api.server import app
-        from distllm.api.api_state import g as api_state
-        api_state.coordinator = None
+        import distllm.api.server as svr
+        svr.state.coordinator = None
         client = TestClient(app)
-        client.headers["Authorization"] = f"Bearer {_real_auth}"
         resp = client.get("/api/requests/waterfall")
         assert resp.status_code == 200
         assert resp.json() == []

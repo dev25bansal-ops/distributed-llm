@@ -13,10 +13,30 @@ import os
 import threading
 from dataclasses import dataclass
 
-import grpc
 from loguru import logger
 
-from distllm.dist import node_pb2_grpc
+# Optional dependency detection for grpcio
+_GRPC_AVAILABLE: bool
+try:
+    import grpc
+    _GRPC_AVAILABLE = True
+except ImportError:
+    _GRPC_AVAILABLE = False
+
+
+def _require_grpc() -> None:
+    """Raise a helpful ImportError if grpcio is not installed."""
+    if not _GRPC_AVAILABLE:
+        raise ImportError(
+            "grpcio is required for node client; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
+
+try:
+    from distllm.dist import node_pb2_grpc
+except ImportError:
+    node_pb2_grpc = None  # type: ignore[assignment]
 
 class ChannelPool:
     """Thread-safe channel pool with reference counting.
@@ -197,6 +217,7 @@ def create_node_client(host: str, port: int,
     Raises:
         grpc.FutureTimeoutError: If connection times out.
     """
+    _require_grpc()
     target = f"{host}:{port}"
 
     # Check channel pool first
@@ -253,6 +274,7 @@ async def create_async_node_client(host: str, port: int,
     Uses ``grpc.aio`` for non-blocking I/O, allowing the asyncio event
     loop to handle other tasks while waiting for gRPC responses.
     """
+    _require_grpc()
     target = f"{host}:{port}"
     MAX_MSG_SIZE = 100 * 1024 * 1024
     channel_options = [

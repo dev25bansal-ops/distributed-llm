@@ -528,37 +528,20 @@ class TestDefaultName:
 
 
 class TestDetectDevice:
-    @patch("distllm.core.device_registry.detect_platform", create=True)
-    def test_detect_cuda(self, mock_platform, monkeypatch):
-        """Torch-based CUDA detection in the fallback path of _detect_device.
-
-        The primary path delegates to core.device_registry.detect_platform;
-        forcing an ImportError from it exercises the registry's own
-        torch-based probing (the original verification intent).
-        """
-        import sys
-        import distllm.backends.registry as reg
-
-        mock_platform.side_effect = ImportError  # force the torch fallback path
-        mock_torch = MagicMock()
+    @patch("distllm.backends.registry.torch")
+    def test_detect_cuda(self, mock_torch):
+        from distllm.backends.registry import _detect_device
         mock_torch.cuda.is_available.return_value = True
-        mock_torch.version.hip = None  # CUDA, not ROCm
-        monkeypatch.setitem(sys.modules, "torch", mock_torch)
-        device = reg._detect_device()
+        mock_torch.__version__ = "2.0.0"
+        device = _detect_device()
         assert device == "cuda"
 
-    @patch("distllm.core.device_registry.detect_platform", create=True)
-    def test_detect_cpu_fallback(self, mock_platform, monkeypatch):
-        """No accelerator available anywhere → CPU fallback."""
-        import sys
-        import distllm.backends.registry as reg
-
-        mock_platform.side_effect = ImportError  # force the torch fallback path
-        mock_torch = MagicMock()
+    @patch("distllm.backends.registry.torch")
+    def test_detect_cpu_fallback(self, mock_torch):
+        from distllm.backends.registry import _detect_device
         mock_torch.cuda.is_available.return_value = False
-        mock_torch.version.hip = None
+        mock_torch.backends = MagicMock()
         mock_torch.mps.is_available.return_value = False
         mock_torch.xpu.is_available.return_value = False
-        monkeypatch.setitem(sys.modules, "torch", mock_torch)
-        device = reg._detect_device()
+        device = _detect_device()
         assert device == "cpu"

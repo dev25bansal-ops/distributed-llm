@@ -190,7 +190,7 @@ class TestPipelinedSpeculativeDecoder:
         input_ids = torch.tensor([[1]], dtype=torch.long)
         start = time.time()
         output = decoder.generate(input_ids, max_new_tokens=5)
-        elapsed = time.time() - start
+        time.time() - start
         assert output.shape[1] >= 1 + 5
         # Slow draft takes 0.05s per call. Serial would be ~0.25s+ for 5 tokens.
         # Pipelined should be faster.

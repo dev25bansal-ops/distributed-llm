@@ -24,7 +24,6 @@ Architecture::
 from __future__ import annotations
 
 import math
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -50,35 +49,40 @@ class GradientTracker:
     regression on the sliding window.  A positive gradient means the
     node is slowing down (straggling), while a negative gradient means
     it is recovering.
+
+    Uses sample index instead of wall-clock time to ensure robustness
+    against rapid synchronous recordings where time differences are
+    negligible. Gradient is measured in ms/sample.
     """
 
     def __init__(self, window_size: int = 20):
-        self._window: deque[tuple[float, float]] = deque(maxlen=window_size)
+        self._window: deque[float] = deque(maxlen=window_size)
         self._current_gradient: float = 0.0
 
     def record(self, latency_ms: float) -> None:
         """Record a latency sample and recompute the gradient."""
-        self._window.append((time.monotonic(), latency_ms))
+        self._window.append(latency_ms)
         self._current_gradient = self._compute_gradient()
 
     def _compute_gradient(self) -> float:
-        """Compute the slope of latency over time using least-squares.
+        """Compute the slope of latency over samples using least-squares.
 
         Returns:
-            Gradient in ms/sec.  Positive = slowing down (straggling).
+            Gradient in ms/sample.  Positive = slowing down (straggling).
         """
         n = len(self._window)
         if n < 3:
             return 0.0
 
-        times = [t for t, _ in self._window]
-        lats = [l for _, l in self._window]
+        # Use sample index as time dimension (robust to rapid recordings)
+        indices = list(range(n))
+        lats = list(self._window)
 
-        t_mean = sum(times) / n
+        idx_mean = sum(indices) / n
         l_mean = sum(lats) / n
 
-        num = sum((t - t_mean) * (l - l_mean) for t, l in zip(times, lats))
-        den = sum((t - t_mean) ** 2 for t in times)
+        num = sum((i - idx_mean) * (l - l_mean) for i, l in zip(indices, lats))
+        den = sum((i - idx_mean) ** 2 for i in indices)
 
         if den == 0:
             return 0.0
@@ -90,12 +94,12 @@ class GradientTracker:
 
     @property
     def is_straggling(self) -> bool:
-        """True if latency is consistently increasing."""
-        return self._current_gradient > 0.5  # ms/sec threshold
+        """True if latency is consistently increasing (>0.5 ms/sample)."""
+        return self._current_gradient > 0.5
 
     @property
     def is_recovering(self) -> bool:
-        """True if latency is decreasing."""
+        """True if latency is decreasing (<-0.5 ms/sample)."""
         return self._current_gradient < -0.5
 
 

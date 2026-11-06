@@ -271,7 +271,6 @@ class TestPricingManagerGetCheapest:
         if cheapest_spot and cheapest_on_demand:
             # Spot should be <= on_demand price
             spot_price = cheapest_spot.spot_price if cheapest_spot.spot_price > 0 else cheapest_spot.on_demand_price
-            od_price = cheapest_on_demand.on_demand_price
             # Not strictly guaranteed across different instances, but a reasonable check
             assert spot_price > 0
 

@@ -15,8 +15,7 @@
 //!         messages: vec![Message::user("Hello!")],
 //!         ..Default::default()
 //!     }).await?;
-//!     let content = response.choices[0].message.as_ref().map(|m| &*m.content);
-//!     println!("{:?}", content);
+//!     println!("{}", response.choices[0].message.content);
 //!     Ok(())
 //! }
 //! ```

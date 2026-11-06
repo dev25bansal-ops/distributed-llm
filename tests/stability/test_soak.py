@@ -129,7 +129,7 @@ class TestSoak:
 
         # Verify no unbounded growth
         if len(measurements) >= 2:
-            first = measurements[0]
+            measurements[0]
             last = measurements[-1]
 
             # Checkpoints should not grow unbounded (cleanup should work)

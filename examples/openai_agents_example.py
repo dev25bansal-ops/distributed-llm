@@ -3,12 +3,6 @@
 This example demonstrates how to use the ``openai-agents`` SDK with
 DistLLM as a drop-in inference backend.
 
-## What this demonstrates
-- Building an OpenAI-Agent with custom tools (`@function_tool`)
-- Routing the agent through `DistLLMAgentModel` so every call lands
-  on a DistLLM-served model instead of OpenAI's hosted API
-- Handoffs between agents and streaming token output
-
 Requirements::
 
     pip install openai-agents openai

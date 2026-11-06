@@ -95,7 +95,7 @@ class TestPrefixCache:
     def test_memory_budget_eviction(self):
         c = PrefixCache(min_prefix_len=1, memory_budget_bytes=500)
         huge = torch.randn(10, 10, dtype=torch.float32)
-        entry_bytes = huge.element_size() * huge.numel()
+        huge.element_size() * huge.numel()
         c.store([1], {"x": huge})
         assert c.stats()["prefix_cache_entries"] == 1
         c.store([2], {"y": huge})

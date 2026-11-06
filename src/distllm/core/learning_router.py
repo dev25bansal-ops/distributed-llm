@@ -63,7 +63,7 @@ def _feature_hash(text: str, num_buckets: int = 256) -> list[float]:
             ngram = text_lower[i : i + n].encode("utf-8")
             # M-10: MD5 is acceptable for non-cryptographic feature hashing
             # (bucketing, not security). Performance > collision resistance here.
-            h = int(hashlib.md5(ngram).hexdigest(), 16)
+            h = int(hashlib.md5(ngram).hexdigest(), 16)  # nosec B324  # feature hashing  # noqa: B324
             idx = h % num_buckets
             sign = 1.0 if (h // num_buckets) % 2 == 0 else -1.0
             vec[idx] += sign
@@ -540,7 +540,7 @@ class NeuralBanditRouter:
         ).to(self._device)
 
         self._optimizer = torch.optim.Adam(self._net.parameters(), lr=lr)
-        self._replay_buffer: list[tuple[torch.Tensor, int, float]] = []
+        self._replay_buffer: list[tuple[torch.Tensor, int]] = []
         self._replay_capacity = replay_capacity
         self._batch_size = batch_size
         self._lock = threading.Lock()
@@ -619,7 +619,7 @@ class NeuralBanditRouter:
         action = self._models.index(model)
 
         with self._lock:
-            self._replay_buffer.append((x.cpu(), action, float(reward)))
+            self._replay_buffer.append((x.cpu(), action))
             if len(self._replay_buffer) > self._replay_capacity:
                 self._replay_buffer.pop(0)
             buf_size = len(self._replay_buffer)
@@ -627,31 +627,17 @@ class NeuralBanditRouter:
         if buf_size < self._min_samples:
             return
 
-        # Online mini-batch training: reward-weighted policy gradient.
-        # The reward MUST drive the update — training plain cross_entropy
-        # on the chosen action only taught the net to imitate its own
-        # exploration distribution and the reward signal was discarded.
+        # Online mini-batch training
         import random as _random
         batch = _random.sample(self._replay_buffer, min(self._batch_size, buf_size))
         batch_x = torch.stack([b[0] for b in batch]).to(self._device)
         batch_a = torch.tensor([b[1] for b in batch], device=self._device)
-        batch_r = torch.tensor([b[2] for b in batch], device=self._device)
 
         logits = self._net(batch_x)
-        log_probs = torch.log_softmax(logits, dim=-1)
-        chosen_logp = log_probs.gather(1, batch_a.unsqueeze(1)).squeeze(1)
-        advantage = batch_r - batch_r.mean()
-        std = batch_r.std()
-        if std > 1e-8:
-            advantage = advantage / std
-        loss = -(advantage * chosen_logp).mean()
+        loss = torch.nn.functional.cross_entropy(logits, batch_a)
 
         self._optimizer.zero_grad()
         loss.backward()
-        # Unbounded REINFORCE on an MLP with Adam makes the logit gap run
-        # away (chosen_logp -> -inf dominates the loss); clipping keeps
-        # updates bounded so the policy can also *reverse* when rewards do.
-        torch.nn.utils.clip_grad_norm_(self._net.parameters(), max_norm=5.0)
         self._optimizer.step()
         self._train_count += 1
 

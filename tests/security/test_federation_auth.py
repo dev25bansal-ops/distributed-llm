@@ -103,7 +103,7 @@ class TestFederationAuth:
 
     def test_heartbeat_includes_key(self):
         """Heartbeat exchange should include cluster key when configured."""
-        with patch("distllm.dist.federation.httpx.Client") as MockClient, \
+        with patch("distllm.dist.federation.httpx.Client"), \
              patch("distllm.dist.federation.httpx.AsyncClient"):
 
             from distllm.dist.federation import FederationConfig, FederationCoordinator

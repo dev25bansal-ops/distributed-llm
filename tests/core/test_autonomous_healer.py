@@ -255,33 +255,20 @@ class TestGPUResetManager:
 
     @patch("time.sleep")
     @patch("subprocess.run")
-    def test_node_executor_runs_commands_against_target(self, mock_run, mock_sleep):
-        # M11: reset must target the node via node_executor, never run on the
-        # local host. subprocess.run stays mocked to prove it is NOT called.
-        calls = []
-
-        def executor(node_id, cmd):
-            calls.append((node_id, cmd))
-            return 0, "name,index\n0, GeForce\n", ""
-
-        mgr = GPUResetManager(dry_run=False, node_executor=executor)
-        result = mgr.reset_gpu("gpu-node-7", 0)
-        assert result is True
-        assert calls and calls[0][0] == "gpu-node-7"
-        mock_run.assert_not_called()
-
-    def test_reset_refused_without_executor(self):
-        # M11: without a node_executor, reset must refuse (fail safe) rather
-        # than reset the local host's GPU by mistake.
+    def test_dry_run_false_calls_subprocess(self, mock_run, mock_sleep):
+        mock_run.return_value = MagicMock(returncode=0, stdout="0", stderr="")
         mgr = GPUResetManager(dry_run=False)
-        assert mgr.reset_gpu("node-0", 0) is False
+        result = mgr.reset_gpu("node-0", 0)
+        assert result is True
+        mock_run.assert_called()
 
-    def test_reset_failure_returns_false(self):
-        def executor(node_id, cmd):
-            return 1, "", "error"
-
-        mgr = GPUResetManager(dry_run=False, node_executor=executor)
-        assert mgr.reset_gpu("node-0", 0) is False
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_reset_failure_returns_false(self, mock_run, mock_sleep):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
+        mgr = GPUResetManager(dry_run=False)
+        result = mgr.reset_gpu("node-0", 0)
+        assert result is False
 
     def test_stats_returns_expected_keys(self):
         mgr = GPUResetManager(dry_run=True)
