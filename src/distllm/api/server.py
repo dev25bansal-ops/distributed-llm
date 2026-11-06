@@ -138,6 +138,7 @@ from distllm.api.server_config import (  # noqa: E402
     _get_cors_origins,
     _get_cors_origins_lazy,
     _load_settings,
+    _build_uvicorn_config,
 )
 
 
@@ -1786,6 +1787,14 @@ def main() -> None:
         help="Quantization method for model loading")
     parser.add_argument("--nodes", type=str, nargs="+", help="host:port:start:end per node")
     parser.add_argument("--total-layers", type=int, help="Total layers in model")
+    parser.add_argument("--workers", type=int, default=None,
+        help="Uvicorn worker processes (env DISTLLM_UVICORN_WORKERS, default 1)")
+    parser.add_argument("--limit-concurrency", type=int, default=None,
+        help="Max concurrent uvicorn requests (env DISTLLM_UVICORN_LIMIT_CONCURRENCY, default 10000)")
+    parser.add_argument("--backlog", type=int, default=None,
+        help="Uvicorn socket backlog (env DISTLLM_UVICORN_BACKLOG, default 2048)")
+    parser.add_argument("--timeout-keep-alive", type=int, default=None,
+        help="Uvicorn keep-alive timeout seconds (env DISTLLM_UVICORN_TIMEOUT_KEEP_ALIVE, default 30)")
 
     args = parser.parse_args()
 
@@ -1863,11 +1872,14 @@ def main() -> None:
     _app_obj = app
     _app_obj.router.lifespan_context = _lifespan
 
-    config = uvicorn.Config(
+    config = _build_uvicorn_config(
         app,
         host=settings.coordinator.host,
         port=settings.coordinator.api_port,
-        log_level="info",
+        workers=args.workers,
+        limit_concurrency=args.limit_concurrency,
+        backlog=args.backlog,
+        timeout_keep_alive=args.timeout_keep_alive,
     )
     server = uvicorn.Server(config)
     server.run()

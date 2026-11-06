@@ -25,6 +25,11 @@ from distllm.api.sso_auth import (
     SSOUserInfo,
     get_sso_handler,
 )
+from distllm.api.sso_middleware import (
+    DEFAULT_JWT_ISSUER,
+    _create_jwt,
+    _decode_jwt,
+)
 
 
 # ======================================================================
@@ -389,3 +394,120 @@ class TestSSOAuthHandler:
 
         handler._cleanup_revoked()
         assert "old-hash" not in handler._revoked_tokens
+
+
+# ======================================================================
+# SEC-API-05-JWT: local JWT issuer + expiry enforcement
+# ======================================================================
+
+
+class TestLocalJwtIssuerAndExpiry:
+    """Local SSO JWTs must carry ``iss`` and must require ``exp``.
+
+    The encode/decode pair lives in ``sso_middleware.py`` (``_create_jwt``
+    / ``_decode_jwt``); PyJWT only verifies ``exp`` when the claim is
+    present, so the decode-side ``require`` is what makes expiry
+    mandatory.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fixed_secret(self, monkeypatch):
+        monkeypatch.setenv("SSO_JWT_SECRET", "c" * 64)
+        monkeypatch.delenv("DISTLLM_SSO_ISSUER", raising=False)
+        return None
+
+    def test_issued_token_contains_default_issuer(self):
+        import jwt  # PyJWT
+
+        token = _create_jwt(SSOUserInfo(sub="user1", roles=["user"]))
+        # Inspect without verification so a broken decoder cannot mask a
+        # missing claim on the encode side.
+        payload = jwt.decode(token, options={"verify_signature": False})
+        assert payload["iss"] == DEFAULT_JWT_ISSUER == "distllm"
+        assert "exp" in payload
+
+    def test_issued_token_contains_env_issuer(self, monkeypatch):
+        import jwt  # PyJWT
+
+        monkeypatch.setenv("DISTLLM_SSO_ISSUER", "https://sso.internal.example")
+        token = _create_jwt(SSOUserInfo(sub="user1"))
+        payload = jwt.decode(token, options={"verify_signature": False})
+        assert payload["iss"] == "https://sso.internal.example"
+
+    def test_valid_token_passes(self):
+        token = _create_jwt(SSOUserInfo(sub="user1", roles=["user"]))
+        payload = _decode_jwt(token)
+        assert payload is not None
+        assert payload["sub"] == "user1"
+        assert payload["iss"] == DEFAULT_JWT_ISSUER
+
+    def test_token_without_exp_is_rejected(self):
+        import jwt  # PyJWT
+
+        secret = "c" * 64
+        token = jwt.encode(
+            {"iss": DEFAULT_JWT_ISSUER, "sub": "attacker", "jti": "x"},
+            secret,
+            algorithm="HS256",
+        )
+        # Sanity: the same token decodes fine without requiring exp,
+        # proving the rejection below comes from our ``require`` option.
+        assert jwt.decode(token, secret, algorithms=["HS256"])["sub"] == "attacker"
+        assert _decode_jwt(token) is None
+
+    def test_token_with_wrong_issuer_is_rejected(self):
+        import jwt  # PyJWT
+
+        now = int(time.time())
+        token = jwt.encode(
+            {
+                "iss": "https://evil.example",
+                "sub": "attacker",
+                "iat": now,
+                "exp": now + 3600,
+                "jti": "x",
+            },
+            "c" * 64,
+            algorithm="HS256",
+        )
+        assert _decode_jwt(token) is None
+
+    def test_token_without_issuer_claim_is_rejected(self):
+        import jwt  # PyJWT
+
+        now = int(time.time())
+        token = jwt.encode(
+            {"sub": "attacker", "iat": now, "exp": now + 3600, "jti": "x"},
+            "c" * 64,
+            algorithm="HS256",
+        )
+        assert _decode_jwt(token) is None
+
+    def test_expired_token_is_rejected(self):
+        import jwt  # PyJWT
+
+        now = int(time.time())
+        token = jwt.encode(
+            {
+                "iss": DEFAULT_JWT_ISSUER,
+                "sub": "user1",
+                "iat": now - 7200,
+                "exp": now - 3600,
+                "jti": "x",
+            },
+            "c" * 64,
+            algorithm="HS256",
+        )
+        assert _decode_jwt(token) is None
+
+    def test_issuer_from_env_is_enforced_on_decode(self, monkeypatch):
+        """A token minted under the default issuer fails when the
+        deployment expects a custom issuer (and vice versa)."""
+        default_token = _create_jwt(SSOUserInfo(sub="user1"))
+        assert _decode_jwt(default_token) is not None
+
+        monkeypatch.setenv("DISTLLM_SSO_ISSUER", "https://sso.internal.example")
+        assert _decode_jwt(default_token) is None
+
+        custom_token = _create_jwt(SSOUserInfo(sub="user1"))
+        assert _decode_jwt(custom_token) is not None

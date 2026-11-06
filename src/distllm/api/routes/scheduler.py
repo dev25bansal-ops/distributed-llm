@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 
 from ..auth_deps import require_role
 from ..api_state import g
+from ..errors import error_openapi_entry
 from loguru import logger
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(
@@ -50,7 +55,16 @@ class SchedulerStatsResponse(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────────────────
 
-@router.get("/stats", response_model=SchedulerStatsResponse)
+@router.get(
+    "/stats",
+    response_model=SchedulerStatsResponse,
+    summary="Get current scheduler statistics",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Coordinator or batch scheduler not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def get_scheduler_stats(request: Request):
     """Get current scheduler statistics.
 
@@ -72,7 +86,16 @@ async def get_scheduler_stats(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/config")
+@router.patch(
+    "/config",
+    summary="Live-update scheduler configuration",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("A field is outside its allowed range", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Coordinator or batch scheduler not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def update_scheduler_config(
     update: SchedulerConfigUpdate,
     request: Request,
@@ -139,7 +162,15 @@ async def update_scheduler_config(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/config")
+@router.get(
+    "/config",
+    summary="Get current scheduler configuration",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Coordinator or batch scheduler not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def get_scheduler_config(request: Request):
     """Get current scheduler configuration.
 

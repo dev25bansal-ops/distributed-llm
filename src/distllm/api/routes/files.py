@@ -62,6 +62,16 @@ class FileDeleteResponse(BaseModel):
 
 
 _MAX_FILE_SIZE = 512 * 1024 * 1024  # 512 MB
+# Stream the upload in 1 MiB chunks so the per-request cap is enforced
+# incrementally (mirror of WAFMiddleware._read_body, waf.py:_read_body):
+# memory is bounded to _MAX_FILE_SIZE + one chunk instead of the whole body.
+_CHUNK_SIZE = 1024 * 1024
+# Per-tenant stored-bytes quota.  Owner-scoped total of all files already in
+# the store + the incoming upload must stay under this limit.  Over-quota
+# uploads are rejected with 403 (quota, not size).  Override via
+# DISTLLM_UPLOAD_QUOTA_BYTES env var; 0 disables the quota.
+_DEFAULT_UPLOAD_QUOTA_BYTES = 1024 * 1024 * 1024  # 1 GiB
+_UPLOAD_QUOTA_ENV = "DISTLLM_UPLOAD_QUOTA_BYTES"
 _ALLOWED_PURPOSES = {"fine-tune", "batch", "assistants", "vision"}
 
 
@@ -99,6 +109,30 @@ def _request_owner(request: Request) -> str:
 def _is_admin(request: Request) -> bool:
     """True when the caller holds the admin role (tenant-wide override)."""
     return getattr(request.state, "api_key_role", None) == "admin"
+
+
+def _upload_quota_bytes() -> int:
+    """Per-tenant stored-bytes quota (0 = disabled).
+
+    Read at call time so tests and operators can override via
+    ``DISTLLM_UPLOAD_QUOTA_BYTES`` without restarting the server.
+    """
+    raw = os.environ.get(_UPLOAD_QUOTA_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_UPLOAD_QUOTA_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            f"Invalid {_UPLOAD_QUOTA_ENV}={raw!r}; using default "
+            f"{_DEFAULT_UPLOAD_QUOTA_BYTES}"
+        )
+        return _DEFAULT_UPLOAD_QUOTA_BYTES
+
+
+def _owner_stored_bytes(store, owner: str) -> int:
+    """Total bytes of files already stored for *owner* ('' = unattributed)."""
+    return sum(int(f.get("bytes", 0) or 0) for f in store.list_files(owner=owner))
 
 
 def _require_file_owner(meta: dict, request: Request) -> None:
@@ -140,6 +174,11 @@ async def upload_file(
 
     The file content is written to ``{data_dir}/uploads/{file_id}/{filename}``
     and the metadata is recorded in the persistent store.
+
+    The upload is streamed to disk in 1 MiB chunks with an incremental
+    per-file cap (``_MAX_FILE_SIZE``) and a per-tenant stored-bytes quota
+    (``DISTLLM_UPLOAD_QUOTA_BYTES``, default 1 GiB); both reject mid-stream
+    before the full body is buffered.
     """
     # Validate purpose
     if purpose not in _ALLOWED_PURPOSES:
@@ -152,21 +191,8 @@ async def upload_file(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
-    # Read content (with size limit)
-    try:
-        content = await file.read()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
-
-    if len(content) > _MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds maximum size of {_MAX_FILE_SIZE // (1024*1024)} MB",
-        )
-
     file_id = f"file-{uuid.uuid4().hex[:24]}"
     now = time.time()
-    _ensure_upload_dir()
     upload_dir = _ensure_upload_dir() / file_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     # F-066: never join the raw client filename onto the path — strip any
@@ -176,27 +202,69 @@ async def upload_file(
         safe_name = "unnamed"
     file_path = upload_dir / safe_name
 
+    # Stream the upload to disk in fixed-size chunks, enforcing the per-file
+    # cap incrementally (mirror of WAFMiddleware._read_body in api/waf.py:
+    # the cap fires as soon as the running total exceeds it, so a client
+    # sending gigabytes never gets them buffered in memory).  The per-tenant
+    # quota is re-checked against the running total as bytes land, so an
+    # over-quota tenant is rejected mid-stream, not after the full buffer.
+    owner = _request_owner(request)
+    quota = _upload_quota_bytes()
+    owner_bytes = _owner_stored_bytes(get_store(), owner) if quota else 0
+
+    total = 0
     try:
-        file_path.write_bytes(content)
+        # Write chunks straight to disk as they arrive so RSS never grows
+        # with the upload size (only one _CHUNK_SIZE buffer is live).
+        with open(file_path, "wb") as fh:
+            while True:
+                chunk = await file.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                if total + len(chunk) > _MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum size of "
+                               f"{_MAX_FILE_SIZE // (1024*1024)} MB",
+                    )
+                if quota and owner_bytes + total + len(chunk) > quota:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Upload quota exceeded: tenant has "
+                            f"{owner_bytes + total} bytes stored "
+                            f"(limit {quota}); rejecting {len(chunk)} more bytes"
+                        ),
+                    )
+                fh.write(chunk)
+                total += len(chunk)
+    except HTTPException:
+        # Mid-stream rejection: remove the partial file so the disk does not
+        # accumulate rejected uploads.
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     except OSError as exc:
         logger.error(f"Failed to write uploaded file {file_id}: {exc}")
         raise HTTPException(status_code=500, detail="Failed to store file")
 
     metadata = {
         "id": file_id,
-        "bytes": len(content),
+        "bytes": total,
         "created_at": now,
         "filename": file.filename,
         "purpose": purpose,
         "status": "uploaded",
         "path": str(file_path),
         "object": "file",
-        "owner": _request_owner(request),
+        "owner": owner,
     }
 
     store = get_store()
     store.save_file(file_id, metadata)
-    logger.info(f"File uploaded: {file_id} ({file.filename}, {len(content)} bytes, purpose={purpose})")
+    logger.info(f"File uploaded: {file_id} ({file.filename}, {total} bytes, purpose={purpose})")
 
     return _file_metadata_to_object(metadata)
 

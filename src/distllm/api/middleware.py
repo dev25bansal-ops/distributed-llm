@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import sys
 import hmac
 import threading
 import time
@@ -197,11 +196,49 @@ class _RateLimiter:
                 self._prune(key)
             return True
 
+def _api_key_file_path() -> str:
+    """Return the file used to persist an auto-generated API key.
+
+    Defaults to ``.distllm/api_key`` (git-ignored) and can be overridden
+    with the ``DISTLLM_KEY_FILE`` environment variable.
+    """
+    return os.environ.get("DISTLLM_KEY_FILE") or os.path.join(".distllm", "api_key")
+
+
+def _persist_api_key(path: str, key: str) -> bool:
+    """Write *key* to *path* with owner-only (0600) permissions.
+
+    Returns True on success. Never raises: a persistence failure must not
+    take the server down. The failure is logged without the key (the key
+    stays valid for the running process; operators can pin a known key via
+    the ``API_KEY`` environment variable).
+    """
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(key + "\n")
+        # Re-assert 0600 in case the file pre-existed with broader bits.
+        # On Windows os.chmod only toggles the read-only bit; harmless there.
+        os.chmod(path, 0o600)
+        return True
+    except OSError as exc:
+        logger.error(
+            f"Could not persist the generated API key to {path}: {exc}. "
+            "The key remains active only for this process; set API_KEY in "
+            "the environment to pin a known key."
+        )
+        return False
+
+
 def _get_or_generate_api_key() -> str | None:
     """Get API_KEY from env, or generate one if not set.
 
-    If API_KEY is not set, generates a secure random key and logs it.
-    This ensures auth is never disabled by default in production.
+    If API_KEY is not set, generates a secure random key, persists it to an
+    owner-only (0600) file (``DISTLLM_KEY_FILE`` or ``.distllm/api_key``),
+    and logs only a fingerprint. The full key is never written to stdout or
+    to the logger, so it cannot leak into log files, aggregators, or CI
+    captures. This ensures auth is never disabled by default in production.
     """
     api_key = os.environ.get("API_KEY")
     if api_key:
@@ -218,21 +255,23 @@ def _get_or_generate_api_key() -> str | None:
     # SECURITY: Log a fingerprint, not the full key. Full keys in logs = credential leak.
     # Logs are written to disk, captured by log aggregators, and visible in CI output.
     fingerprint = _safe_key_fingerprint(generated_key)
+    key_file = _api_key_file_path()
+    persisted = _persist_api_key(key_file, generated_key)
+    if persisted:
+        retrieval = (
+            f"The full key was written to {key_file} with owner-only (0600) "
+            "permissions. Read it from that file, set API_KEY=<key> in your "
+            "environment, and restart."
+        )
+    else:
+        retrieval = (
+            "The key could not be persisted to disk. Set API_KEY=<key> in "
+            "your environment and restart."
+        )
     logger.warning(
         f"API_KEY not set. Generated a secure random API key.\n"
         f"Key fingerprint: {fingerprint}\n"
-        "The full key is printed once to stdout (NOT via the logger), so it is "
-        "not persisted in log files, aggregators, or CI. Set API_KEY=<key> in "
-        "your environment and restart."
-    )
-    # Surface the one-time key on stdout only — never through the logger, so the
-    # secret is not written to disk logs or captured by log aggregators.
-    print(
-        "\nGenerated API key (shown once — do NOT paste into logs/screenshots/CI):\n"
-        f"{generated_key}\n"
-        "Set API_KEY=<key> in your environment and restart.\n",
-        file=sys.stdout,
-        flush=True,
+        f"{retrieval}"
     )
     return generated_key
 
@@ -244,10 +283,11 @@ _rate_limit_key_by = os.environ.get("DISTLLM_RATE_LIMIT_KEY_BY", "both")
 if _rate_limit_key_by not in ("ip", "api_key", "both"):
     _rate_limit_key_by = "both"
 _rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60, key_by=_rate_limit_key_by)
-# O-13: no import-time side effect. The auto-generation (and its one-time
-# stdout key print) previously ran at module import — polluting stderr for
-# every library consumer and embedding generated keys into CI captures.
-# It now runs lazily on first server use (lifespan startup / middleware).
+# O-13: no import-time side effect. The auto-generation (and its key
+# write to .distllm/api_key) previously ran at module import — polluting
+# stderr for every library consumer and embedding generated keys into CI
+# captures. It now runs lazily on first server use (lifespan startup /
+# middleware).
 _auto_key_resolved = False
 
 

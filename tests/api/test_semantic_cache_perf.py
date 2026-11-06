@@ -9,13 +9,20 @@ already computed, and ``search()`` reuses it.
 
 Also guards the fallback embedder: ``hashlib`` was used without import, so
 any fallback-path call raised ``NameError``.
+
+PERF-08-JSON: the request body must be JSON-parsed once per request.
+``BodyCacheMiddleware`` parses and stashes ``request.state.parsed_body``;
+``SemanticCacheMiddleware`` must reuse it instead of re-parsing.
 """
+
+import json
 
 from tests._import_helper import bootstrap_fake_packages, load_module
 
 bootstrap_fake_packages()
 
 _mod = load_module("distllm/api/semantic_cache.py")
+_mod_body_cache = load_module("distllm/api/body_cache_middleware.py")
 _FaissIndex = _mod._FaissIndex
 _embedder = _mod._embedder
 
@@ -133,3 +140,81 @@ class TestNoReEmbedOnSearch:
         result2, _ = cache.search(query, threshold=0.5)
         assert result2 == "A cat response"
         assert counter.calls == 0  # now cached, no re-embed
+
+
+_real_json_loads = json.loads
+
+
+# ---------------------------------------------------------------------------
+# PERF-08-JSON: request body must be JSON-parsed once per request
+# ---------------------------------------------------------------------------
+
+
+class _Countingloads:
+    """Pass-through replacement for json.loads that counts invocations."""
+
+    def __init__(self):
+        self.count = 0
+
+    def __call__(self, *args, **kwargs):
+        self.count += 1
+        return _real_json_loads(*args, **kwargs)
+
+
+def _chat_app(body_middleware: bool):
+    """Build a minimal chat app; BodyCacheMiddleware outermost when enabled."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def chat():
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    app.add_middleware(_mod.SemanticCacheMiddleware)
+    if body_middleware:
+        # add_middleware prepends: registering BodyCache LAST makes it the
+        # OUTERMOST middleware, so it reads/parses the body first — same order
+        # as production (server.py registers BodyCacheMiddleware last).
+        app.add_middleware(_mod_body_cache.BodyCacheMiddleware)
+    return TestClient(app)
+
+
+class TestParseOnce:
+    """The same JSON body must be parsed exactly once per request."""
+
+    def test_body_cache_and_semantic_cache_parse_once(self, monkeypatch):
+        counter = _Countingloads()
+        monkeypatch.setattr(_mod.json, "loads", counter)
+        monkeypatch.setattr(_mod_body_cache.json, "loads", counter)
+
+        client = _chat_app(body_middleware=True)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"X-Semantic-Cache": "1"},
+        )
+        assert resp.status_code == 200
+        assert counter.count == 1, (
+            f"request body parsed {counter.count}x; BodyCacheMiddleware "
+            "parses once and SemanticCacheMiddleware must reuse "
+            "request.state.parsed_body instead of re-parsing"
+        )
+
+    def test_semantic_cache_fallback_parses_when_body_cache_absent(self, monkeypatch):
+        """Without BodyCacheMiddleware the fallback parse still works."""
+        counter = _Countingloads()
+        monkeypatch.setattr(_mod.json, "loads", counter)
+
+        client = _chat_app(body_middleware=False)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"X-Semantic-Cache": "1"},
+        )
+        assert resp.status_code == 200
+        assert counter.count == 1  # parsed exactly once, by the fallback path
+
+
+_real_json_loads = json.loads

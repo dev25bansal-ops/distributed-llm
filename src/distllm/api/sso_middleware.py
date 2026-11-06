@@ -71,6 +71,15 @@ AUTH_ROUTES: frozenset[str] = frozenset({
     "/v1/auth/revoke",
 })
 
+# Local-JWT issuer claim (SEC-API-05-JWT).  Overridable through
+# ``DISTLLM_SSO_ISSUER``; tokens whose ``iss`` does not match are rejected.
+DEFAULT_JWT_ISSUER = "distllm"
+
+
+def _get_jwt_issuer() -> str:
+    """Return the expected ``iss`` claim for locally issued SSO JWTs."""
+    return os.environ.get("DISTLLM_SSO_ISSUER", "").strip() or DEFAULT_JWT_ISSUER
+
 HEALTH_ROUTES: frozenset[str] = frozenset({
     "/health",
     "/ready",
@@ -157,7 +166,7 @@ def _create_jwt(
     """Create a signed local JWT containing SSO user information.
 
     The returned token is a signed HS256 JWT with standard claims
-    (``sub``, ``iat``, ``exp``, ``jti``) plus custom claims:
+    (``iss``, ``sub``, ``iat``, ``exp``, ``jti``) plus custom claims:
     ``email``, ``name``, ``roles``, ``groups``, ``provider``, ``tenant_id``.
 
     Raises ``RuntimeError`` if PyJWT is not installed.
@@ -171,6 +180,7 @@ def _create_jwt(
     now = datetime.now(tz=timezone.utc)
     jti = secrets.token_hex(16)
     payload: dict[str, Any] = {
+        "iss": _get_jwt_issuer(),
         "sub": user.sub,
         "email": user.email,
         "name": user.name,
@@ -199,7 +209,16 @@ def _decode_jwt(token: str) -> dict[str, Any] | None:
         return None
     try:
         secret = _get_jwt_secret()
-        return pyjwt.decode(token, secret, algorithms=["HS256"])
+        # SEC-API-05-JWT: require ``exp`` so a stripped-down token can never
+        # become non-expiring, and pin ``issuer`` so only this deployment's
+        # signing context is accepted.
+        return pyjwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            issuer=_get_jwt_issuer(),
+            options={"require": ["exp"]},
+        )
     except pyjwt.ExpiredSignatureError:
         logger.debug("SSO JWT expired")
         return None

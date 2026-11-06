@@ -290,11 +290,17 @@ class SemanticCacheMiddleware(BaseHTTPMiddleware):
         body_bytes = await request.body()
         if not body_bytes:
             return await call_next(request)
-        try:
-            body = json.loads(body_bytes)
-            if body.get("stream", False):
+        # Prefer BodyCacheMiddleware's parse (body_cache_middleware.py) so the
+        # JSON body is parsed once per request instead of once per middleware;
+        # fall back to parsing here when it is not on request.state (e.g.
+        # BodyCacheMiddleware not mounted).
+        body = getattr(request.state, "parsed_body", None)
+        if body is None:
+            try:
+                body = json.loads(body_bytes)
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 return await call_next(request)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        if body.get("stream", False):
             return await call_next(request)
 
         # Extract prompt text for embedding

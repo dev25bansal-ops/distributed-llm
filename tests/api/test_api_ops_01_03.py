@@ -124,3 +124,95 @@ def test_process_reload_queue_survives_transient_error():
 
     result = asyncio.run(_loop())
     assert result == 3, "loop must survive transient errors and keep iterating"
+
+
+# ---------------------------------------------------------------------------
+# 3. API-ARCH-06-UVICORN — production uvicorn knobs are configurable
+# ---------------------------------------------------------------------------
+
+def _make_fake_app():
+    """Minimal ASGI app object; uvicorn.Config only stores the reference."""
+    async def app(scope, receive, send):  # pragma: no cover - never invoked
+        pass
+    return app
+
+
+def test_uvicorn_config_defaults_preserve_behavior(monkeypatch):
+    """With no env/CLI overrides, defaults must match historical behavior."""
+    for var in (
+        "DISTLLM_UVICORN_WORKERS",
+        "DISTLLM_UVICORN_LIMIT_CONCURRENCY",
+        "DISTLLM_UVICORN_BACKLOG",
+        "DISTLLM_UVICORN_TIMEOUT_KEEP_ALIVE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    from distllm.api.server_config import _build_uvicorn_config
+
+    cfg = _build_uvicorn_config(_make_fake_app(), host="127.0.0.1", port=8000)
+    assert cfg.workers == 1  # single-worker behavior preserved
+    assert cfg.limit_concurrency == 10000
+    assert cfg.backlog == 2048
+    assert cfg.timeout_keep_alive == 30
+
+
+def test_uvicorn_config_honors_env_overrides(monkeypatch):
+    """DISTLLM_UVICORN_* env vars must override the defaults."""
+    monkeypatch.setenv("DISTLLM_UVICORN_WORKERS", "2")
+    monkeypatch.setenv("DISTLLM_UVICORN_LIMIT_CONCURRENCY", "500")
+    monkeypatch.setenv("DISTLLM_UVICORN_BACKLOG", "64")
+    monkeypatch.setenv("DISTLLM_UVICORN_TIMEOUT_KEEP_ALIVE", "5")
+
+    from distllm.api.server_config import _build_uvicorn_config
+
+    cfg = _build_uvicorn_config(_make_fake_app(), host="127.0.0.1", port=8000)
+    assert cfg.workers == 2
+    assert cfg.limit_concurrency == 500
+    assert cfg.backlog == 64
+    assert cfg.timeout_keep_alive == 5
+
+
+def test_uvicorn_config_cli_overrides_env(monkeypatch):
+    """Explicit CLI values must win over env vars."""
+    monkeypatch.setenv("DISTLLM_UVICORN_WORKERS", "2")
+
+    from distllm.api.server_config import _build_uvicorn_config
+
+    cfg = _build_uvicorn_config(
+        _make_fake_app(), host="127.0.0.1", port=8000, workers=3
+    )
+    assert cfg.workers == 3
+
+
+def test_uvicorn_config_invalid_env_falls_back(monkeypatch):
+    """Garbage env values must not crash startup; defaults are used."""
+    monkeypatch.setenv("DISTLLM_UVICORN_WORKERS", "not-a-number")
+    monkeypatch.setenv("DISTLLM_UVICORN_BACKLOG", "0")
+
+    from distllm.api.server_config import _build_uvicorn_config
+
+    cfg = _build_uvicorn_config(_make_fake_app(), host="127.0.0.1", port=8000)
+    assert cfg.workers == 1
+    assert cfg.backlog == 2048
+
+
+def test_grpc_max_workers_env_configurable(monkeypatch):
+    """DISTLLM_GRPC_MAX_WORKERS must be honored; default stays 4."""
+    from distllm.api.server_config import _grpc_max_workers
+
+    monkeypatch.delenv("DISTLLM_GRPC_MAX_WORKERS", raising=False)
+    assert _grpc_max_workers() == 4
+
+    monkeypatch.setenv("DISTLLM_GRPC_MAX_WORKERS", "16")
+    assert _grpc_max_workers() == 16
+
+
+def test_server_main_wires_factory_not_bare_uvicorn_config():
+    """server.main() must build its uvicorn config through the factory."""
+    import inspect
+    from distllm.api import server as server_mod
+
+    src = inspect.getsource(server_mod.main)
+    assert "_build_uvicorn_config(" in src
+    # The bare config construction with only log_level must be gone
+    assert "uvicorn.Config(\n        app," not in src
