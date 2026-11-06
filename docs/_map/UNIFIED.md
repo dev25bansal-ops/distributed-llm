@@ -74,9 +74,37 @@ Full per-folder index: `docs/_map/00 Module Index.md`.
 
 `SECURITY.md` (policy), `docs/threat-model.md`, `docs/SECURITY_HARDENING.md`, `docs/GDPR.md`, `docs/EXPORT_CONTROLS.md`, `docs/air-gapped-deployment.md`.
 
-## 9. Doc index (every doc, one line, owner)
+## 9. Doc index (every living doc, one line, owner)
 
-_Filled by the hygiene pass — see `docs/_map/` for the audit vault. Historical audits live in `docs/_map/` (Obsidian vault) and `docs/_audit/`; they are reference material, not living docs._
+_Living docs only. Historical audit snapshots in `docs/_map/` carry a HISTORICAL SNAPSHOT banner — read them as records, not references._
+
+| Doc | What it owns |
+|---|---|
+| `README.md` | Project identity, quick links, badges |
+| `CHANGELOG.md` | Release notes (Keep a Changelog format) |
+| `CONTRIBUTING.md` | Dev setup, PR process, area ownership (`*-CLAUDE.md`) |
+| `DEPLOYMENT.md` | Local/Docker/Compose/K8s deployment |
+| `SECURITY.md` | Security policy, supported versions |
+| `SETUP_2_LAPTOPS.md` | 2-node cluster guide (sanitize personal IPs before reuse) |
+| `TASKS.md` | Priority-ordered engineering task list |
+| `docs/QUICKSTART.md` | Fastest path to a running cluster |
+| `docs/ARCHITECTURE.md` + `docs/ARCHITECTURE_DIAGRAMS.md` | System design + mermaid diagrams |
+| `docs/api.md`, `docs/api-versioning.md`, `docs/API_CHANGELOG.md` | API surface, versioning policy, breaking changes |
+| `docs/CONFIG_REFERENCE.md` | Every config option (authoritative) |
+| `docs/SDK_REFERENCE.md`, `docs/BACKEND_PLUGIN_GUIDE.md`, `docs/PLUGIN_DEVELOPMENT.md` | SDK + plugin extension guides |
+| `docs/OPS_RUNBOOK.md`, `docs/TROUBLESHOOTING.md`, `docs/observability-metrics.md` | Operations, diagnostics, metrics dictionary |
+| `docs/SCALING.md`, `docs/PERFORMANCE_TUNING.md`, `docs/PERFORMANCE_COMPARISON.md`, `docs/load-testing.md`, `docs/benchmark-results.md`, `docs/BENCHMARKS.md` | Perf evidence + how to reproduce |
+| `docs/SECURITY_HARDENING.md`, `docs/threat-model.md`, `docs/GDPR.md`, `docs/EXPORT_CONTROLS.md`, `docs/air-gapped-deployment.md` | Security/compliance evidence |
+| `docs/MIGRATIONS_README.md`, `docs/MIGRATION_*.md` | Migration guides (OpenAI/vLLM/Ollama/v0.3→v0.4) |
+| `docs/MODEL_COMPATIBILITY.md` | Model × backend matrix |
+| `docs/SCALING.md`, `docs/SLA_TIERS.md`, `docs/RELEASE_POLICY.md` | Ops policy |
+| `docs/MARKETING.md`, `docs/FINANCIALS.md`, `docs/CLOUD_MARKETPLACE.md`, `docs/YC_STARTUP_PACKAGE.md`, `docs/competitive-analysis.md`, `docs/demo-script.md`, `docs/ACADEMIC_PARTNERSHIPS.md`, `docs/OPEN_SOURCE_CONTRIBUTIONS.md`, `docs/TERMS.md`, `docs/self-hosted.md`, `docs/REMOTE_CONNECTIONS.md`, `docs/EXAMPLES_APPS_NOTEBOOKS.md`, `docs/FOCUS-AREAS.md`, `docs/HYBRID_CONTROL_PLANE.md` | Go-to-market, legal, partnerships (historical business docs — read-only) |
+| `docs/_map/00–11` | Obsidian MOC vault: per-folder module maps (recounted 2026-11-06) |
+| `docs/_map/UNIFIED.md` | This file — single entry point |
+| `docs/adr/0001–0005` | Architecture decision records |
+| `docs/_audit/` | Raw exhaustive-audit working files (historical) |
+
+**Deleted this pass:** `docs/EXAMPLES_APPS_NOTEBOOKS.md` dead `../apps/README.md` link (apps/ gone), `RELEASE_POLICY.md` phantom `MIGRATION_vX_to_vY.md` (now points at the real template). `TASKS.md:107` names an ADR that does not exist yet — that is a TODO, not a dead link; left as-is.
 
 ## 10. Hygiene log
 
@@ -91,5 +119,24 @@ Every deletion/move with its evidence. Format: `YYYY-MM-DD — path — verdict 
 - `website/index2.html`, `website/index-fixed.html` — DELETE: unreferenced editor stash snapshots.
 - `dashboards/distllm-grafana.json` — DELETE: queries metrics that don't exist (observability-metrics.md:173 says legacy); `distllm-overview.json` is the reference dashboard.
 - `.gitignore` — FIX: added `.distllm/` + `.usage.db*` rules (classifier found the gap; `git check-ignore` confirmed).
+- `integrations/` DELETE: README-only stubs `genkit/`, `openwebui/`, `portkey/`, `spring-ai/` (zero code, zero refs outside audit docs); stale loose duplicates `mlflow_tracking.py`, `spark_connector.py`, `wandb_tracking.py` (live copies in `src/distllm/integrations/` + `integrations/wandb/`); `ANALYSIS.md` (misdescribes tree).
+- `sdk/` DELETE: `dist/distllm_sdk-0.5.0.tar.gz` (stale vs pyproject 1.0.0), `go/_smoke/` (orphan, hardcoded demo key). FIX: `sdk/dist/` + `sdk/js/dist/` gitignored (npm main points at generated output; rebuild in CI).
+- `benchmarks/` DELETE: `competitive_benchmark.py` (unreferenced twin of `run_competitive.py`), `compare.py`, `cost_routing_benchmark.py`, `Dockerfile` (COPY dist/ — no dist/ exists).
+- `tests/benchmarks/` DELETE: plural dupe of CI-wired `tests/benchmark/` (Makefile:44, benchmark-regression.yml:44).
+- `dashboards/distllm-grafana.json` DELETE: queries nonexistent metrics (observability-metrics.md:173 marks legacy); `distllm-overview.json` is the reference.
+- `website/index2.html`, `website/index-fixed.html` DELETE: unreferenced editor stashes.
+- `framework_adapters.py:355` FIX: removed dead `"example": "examples/agno_example.py"` (file never existed); `list_frameworks` now `info.get("example")`.
+- `examples/notebooks/{distllm_kaggle_worker,distllm_lightning_worker,tinylm_colab_worker}.ipynb` FIX: hardcoded `D:\distributed-llm\examples\...` → relative `python distllm_laptop_coordinator.py`.
+- `Makefile` + `.github/workflows/ci.yml` FIX: helm paths `deploy/helm/` → `deploy/helm/distllm-operator/` (Chart.yaml lives one level deeper; CI helm job was failing).
+- `docs/RELEASE_POLICY.md` FIX: phantom `MIGRATION_vX_to_vY.md` → template pointer. `docs/EXAMPLES_APPS_NOTEBOOKS.md` FIX: dead `../apps/README.md` link (apps/ deleted).
+- `docs/_map/*` FIX: 26 historical audit snapshots stamped HISTORICAL SNAPSHOT banner (kept in place — moving breaks Obsidian `[[wikilinks]]`); living MOCs recounted by dedicated agent.
+- `src/distllm/core/framework_adapters.py` FIX: see above.
 
-_The 8-agent classifier pass is still landing; remaining verdicts (dead src modules, doc fixes, SDK/integration dupes) append here._
+**Kept despite looking like junk (verified references):** `requirements.lock` (Makefile+Dockerfile), `config.yaml`/`install.sh`/`docker-entrypoint.sh` (referenced), `integrations/kubernetes/` (helm-publish.yml:45 packages it), `sdk/js/dist/` (npm main), `deploy/ray/`+`deploy/operator/controller.py`+`deploy/webhook/` (REVIEW — orphan deploy surfaces, decided KEEP pending product direction), `src/distllm/ui/` (REVIEW — redundant with dashboard but tested+packaged).
+
+**Open follow-ups (REVIEW items, not deleteable unilaterally):**
+- `src/distllm/dashboard/static/` vs `static_v2/` — v1 still served by server.py; needs one product decision, then delete v1.
+- `src/distllm/dashboard/static_v2/verification_report.html` — one-off snapshot in served static dir.
+- `tauri/COMPREHENSIVE_ANALYSIS.md` — stale analysis artifact inside product code.
+- Permanently-skipped tests (module-level `pytest.skip(allow_module_level=True)`) — list in classifier output; fix env or delete file-by-file.
+- `docs/_map/08 Frontends.md` documents a gone `apps/` tree (recount agent will fix).

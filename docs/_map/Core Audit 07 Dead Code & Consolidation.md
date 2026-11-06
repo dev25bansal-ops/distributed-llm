@@ -7,6 +7,8 @@ tags:
 date: 2026-08-05
 ---
 
+> **⚠️ HISTORICAL SNAPSHOT** — preserved for the audit trail. Do not edit; counts and file:line pins predate the 2026-11-06 hygiene pass. Living docs: [UNIFIED.md](UNIFIED.md) + the 00–11 MOCs.
+
 # Core Audit 07 — Dead Code, Unwired Modules & Consolidation
 
 **← [[Core Comprehensive Audit 2026-08-05]]**

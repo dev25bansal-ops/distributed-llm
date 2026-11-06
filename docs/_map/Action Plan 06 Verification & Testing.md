@@ -5,6 +5,8 @@ tags:
 date: 2026-08-11
 ---
 
+> **⚠️ HISTORICAL SNAPSHOT** — preserved for the audit trail. Do not edit; counts and file:line pins predate the 2026-11-06 hygiene pass. Living docs: [UNIFIED.md](UNIFIED.md) + the 00–11 MOCs.
+
 # Action Plan 06 — Verification & Testing Strategy
 
 **← [[Exhaustive Audit 2026-08-11]]**

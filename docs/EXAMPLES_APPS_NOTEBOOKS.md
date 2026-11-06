@@ -128,6 +128,5 @@ Each notebook prints a clear, non-crashing message if the server is unreachable 
 
 ## References
 - VS Code extension README: [`extensions/vscode/README.md`](../extensions/vscode/README.md)
-- Apps README: [`apps/README.md`](../apps/README.md)
 - Notebooks README: [`examples/notebooks/README.md`](../examples/notebooks/README.md)
 - Framework integration examples: [`examples/README.md`](../examples/README.md)
