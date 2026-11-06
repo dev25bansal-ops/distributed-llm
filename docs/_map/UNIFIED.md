@@ -140,7 +140,28 @@ Every deletion/move with its evidence. Format: `YYYY-MM-DD — path — verdict 
 
 **Kept-despite-junk (verified references):** `requirements.lock`, `config.yaml`, `install.sh`, `docker-entrypoint.sh`, `integrations/kubernetes/` (helm-publish.yml), `sdk/js/dist/` (npm main), `deploy/{ray,operator,webhook}/`, `src/distllm/ui/`, dashboard `static/` + `static_v2/` (both live), deprecated re-export shims (public API compat), `redis_rate_limiter.py` (tests load by path), `evaluation_harness.py` (fixed), `integrations/one-api/` (standalone pkg), `src/distllm/benchmarks/` (orphaned, tiny, flagged).
 
-**Open follow-ups:** product decision on `ui/` vs `dashboard/` duplication; `deploy/operator/controller.py` stub vs integrations operator; `deploy/ray/` hardcoded paths; permanently-skipped tests honest but env-gated; `docs/MIGRATION_OPENAI.md:126` /v1/health aliases live but undocumented in api.md.
+**Open follow-ups:** product decision on `ui/` vs `dashboard/` duplication; `deploy/operator/controller.py` stub vs integrations operator; `deploy/ray/` hardcoded paths; permanently-skipped tests honest but env-gated; `docs/MIGRATION_OPENAI.md:126` /v1/health aliases live but undocumented in api.md; sibling billing path `_dispatch_tenant_billing` has the same SSE output_tokens=0 blind spot as AF-04 (off by default); filelock waiver expires 2026-12-06 (drop if 4.2.1 ships); 1145 pre-existing mypy errors untouched (env py 3.10 vs numpy stubs 3.12 config mismatch).
+
+### P2 batch (landed 2026-11-07, verification in flight)
+
+- SEC-API-07: audit log stores sha256(prompt)[:16] fingerprint, not plaintext (prompt_injection.py); raw text only behind opt-in `DISTLLM_AUDIT_RAW_PROMPTS=1`.
+- SEC-API-08: webhook HMAC secrets encrypted at rest with KEK-derived Fernet (`DISTLLM_WEBHOOK_KEK`, 0600 key file, legacy plaintext migrated on read).
+- E-02: semantic cache mounted behind `DISTLLM_SEMANTIC_CACHE=1` (default off) with FAISS indexed search.
+- AF-04: quota middleware wraps the SSE iterator; output_tokens counted per chunk, record written on generator close.
+- CQ-08: silent `except Exception:` sweep + AST lint regression test.
+- PERF-06: rate limiter sharded locks + O(1) LRU + pipelined Redis.
+- B-05: INT4 memory claim made honest (packed size or corrected label).
+- MYPY: strict list +`distllm.api.server_config` (0 new errors; 1145 pre-existing errors in 219 untouched files left alone).
+
+### CI unblocking (root causes fixed this pass)
+
+- `node_pb2` never generated in CI: Makefile proto targeted `communication/`, code imports `distllm.dist` -> Makefile targets `dist/` + `make proto` steps in memory-profile/benchmark-regression/ci/load-testing workflows.
+- `python-multipart` was `[ui]`-only but files routes need it at import -> core dep (lean installs crashed the whole api package).
+- detect-secrets baseline UTF-16 + CRLF (Windows/Linux hash drift) -> UTF-8 + `.gitattributes eol=lf` + rescan on the committed tree.
+- pip-audit red on transitive filelock/setuptools -> setuptools>=84.1.0 floor + one-flag-per-ID filelock waiver (expiry 2026-12-06).
+- `--benchmark-autosave=NAME` argparse error -> `--benchmark-save`.
+- memory-profile workflow: phantom `--memory-profile` flag + phantom `distllm.profiling.ci_profiler` import -> rewritten with tracemalloc + real APIs, same report schema.
+- observability exporter: prometheus_client hard import -> lazy no-op stubs (lean envs no longer crash).
 - `src/distllm/dashboard/static/` vs `static_v2/` — v1 still served by server.py; needs one product decision, then delete v1.
 - `src/distllm/dashboard/static_v2/verification_report.html` — one-off snapshot in served static dir.
 - `tauri/COMPREHENSIVE_ANALYSIS.md` — stale analysis artifact inside product code.
