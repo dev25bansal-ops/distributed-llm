@@ -13,7 +13,12 @@ from __future__ import annotations
 import time
 
 from fastapi import Request
-from opentelemetry import trace
+
+try:
+    from opentelemetry import trace  # type: ignore[import]
+except ImportError:  # pragma: no cover
+    trace = None  # type: ignore[assignment]
+
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -76,7 +81,8 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                         self._finalize_span(
                             span, request, method, path, status_code, start
                         )
-                        span.set_status(trace.Status(trace.StatusCode.ERROR))
+                        if trace is not None:
+                            span.set_status(trace.Status(trace.StatusCode.ERROR))
                         span.record_exception(exc)
                         raise
                     self._finalize_span(

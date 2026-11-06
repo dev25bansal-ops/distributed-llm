@@ -33,6 +33,7 @@ from typing import Any
 import torch
 from loguru import logger
 
+from distllm.backends.model_validation import resolve_trust_remote_code, validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
 
@@ -79,6 +80,8 @@ class ONNXNodeAdapter(BackendAdapter):
         trust_remote_code: bool | None = None,
         **extra_kwargs: Any,
     ):
+        validate_model_name(model_name, allow_local_paths=True)
+        self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -89,7 +92,6 @@ class ONNXNodeAdapter(BackendAdapter):
         self._optimizer_level = optimizer_level
         self._extra_kwargs = extra_kwargs
 
-        self._session: ort.InferenceSession | None = None
         self._model = None
 
     def load_model(self) -> None:

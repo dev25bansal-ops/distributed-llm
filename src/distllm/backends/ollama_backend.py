@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from distllm.backends.protocol import BackendAdapter
+from distllm.backends.protocol import GenerateOnly
 
 
 @dataclass
@@ -16,8 +16,13 @@ class OllamaBackendConfig:
     timeout_s: float = 120.0
     keep_alive: str = "5m"
 
-class OllamaBackendAdapter(BackendAdapter):
-    """Remote-HTTP adapter for an Ollama inference server."""
+class OllamaBackendAdapter(GenerateOnly):
+    """Remote-HTTP adapter for an Ollama inference server.
+
+    Generate-only: ``forward()`` raises ``NotImplementedError`` (inherited
+    from :class:`GenerateOnly`); ``supports_forward()`` is ``False`` so the
+    registry never selects this adapter for pipeline ``forward()`` calls.
+    """
 
     def __init__(self, config: OllamaBackendConfig | None = None):
         self.config = config or OllamaBackendConfig()
@@ -69,12 +74,14 @@ class OllamaBackendAdapter(BackendAdapter):
         except Exception:
             return False
 
-    def forward(self, hidden_states: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("Ollama adapter does not support layer-level forward")
-
     def shutdown(self) -> None:
         """Nothing to release for a remote HTTP client."""
         pass
+
+    # ``forward()`` is inherited from GenerateOnly: it raises
+    # NotImplementedError and supports_forward() returns False.
+    # (The previous local stub raised the same error; the mixin now
+    # centralises it so every generate-only adapter fails identically.)
 
     # ── Generation ───────────────────────────────────────────────────
 

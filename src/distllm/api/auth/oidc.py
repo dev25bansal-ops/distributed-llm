@@ -20,6 +20,24 @@ from loguru import logger
 
 from .models import SSOUserInfo
 
+# Shared connection pool for all outbound IdP calls (PERF-01). The default
+# sync httpx helpers (httpx.get/post) build a fresh Client — and a fresh TCP
+# + TLS handshake — for every request, and block the event loop when called
+# from async contexts. A module-level AsyncClient with an explicit Limits
+# pool reuses keep-alive connections, keeping p99 latency flat under
+# concurrent login/token-validation bursts.
+_HTTP_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=50)
+_HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+
+
+def _get_async_client() -> httpx.AsyncClient:
+    """Return the process-wide pooled AsyncClient for this module."""
+    client = getattr(_get_async_client, "_client", None)
+    if client is None:
+        client = httpx.AsyncClient(limits=_HTTP_LIMITS, timeout=_HTTP_TIMEOUT)
+        _get_async_client._client = client
+    return client
+
 
 class OIDCHandler:
     """OpenID Connect authentication (Auth0, Okta OIDC, Azure AD, Google).
@@ -133,6 +151,179 @@ class OIDCHandler:
             "code_challenge_method": "S256",
         })
         return f"{self._authorization_endpoint}?{params}"
+
+    async def async_discover(self) -> None:
+        """Async version of :meth:`_discover` using the pooled AsyncClient."""
+        try:
+            discovery_url = f"{self._authority}/.well-known/openid-configuration"
+            resp = await _get_async_client().get(discovery_url, timeout=10.0)
+            if resp.status_code == 200:
+                config = resp.json()
+                self._authorization_endpoint = config.get("authorization_endpoint", "")
+                self._token_endpoint = config.get("token_endpoint", "")
+                self._userinfo_endpoint = config.get("userinfo_endpoint", "")
+                self._discovered_jwks_url = config.get("jwks_uri", "")
+                logger.info(f"OIDC endpoints discovered from {discovery_url}")
+            else:
+                logger.warning(f"OIDC discovery failed: {resp.status_code}")
+                self._set_default_endpoints()
+        except (httpx.HTTPError, json.JSONDecodeError, OSError, ValueError) as e:
+            logger.warning(f"OIDC discovery error: {e}")
+            self._set_default_endpoints()
+
+    async def async_handle_callback(
+        self, code: str, expected_state: str = "", expected_nonce: str = ""
+    ) -> SSOUserInfo | None:
+        """ASYNC version of :meth:`handle_callback`.
+
+        Identical CSRF/nonce/PKCE and fail-closed JWKS semantics, but the
+        token/userinfo HTTP calls go through the pooled AsyncClient and
+        never block the event loop.
+        """
+        if expected_state:
+            stored_expiry = self._state_store.pop(expected_state, None)
+            if stored_expiry is None:
+                logger.error("OAuth state not found — possible CSRF attack")
+                return None
+            if time.time() > stored_expiry:
+                logger.error("OAuth state expired")
+                return None
+        elif expected_nonce:
+            # State is required to bind a nonce; without it there is no
+            # stored nonce to validate against — reject.
+            logger.error("OIDC nonce validation requires state")
+            return None
+
+        if expected_nonce:
+            stored_nonce = self._nonce_store.pop(expected_state, None)
+            if stored_nonce is None or stored_nonce != expected_nonce:
+                logger.error("OIDC nonce mismatch — possible authorization-code replay")
+                return None
+        try:
+            client = _get_async_client()
+            # Exchange code for tokens with PKCE code_verifier
+            code_verifier = self._pkce_store.pop(expected_state, "")
+            token_data = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "redirect_uri": self._callback_url,
+            }
+            if code_verifier:
+                token_data["code_verifier"] = code_verifier
+            token_resp = await client.post(
+                self._token_endpoint,
+                data=token_data,
+                timeout=15.0,
+            )
+            if token_resp.status_code != 200:
+                logger.error(f"Token exchange failed: {token_resp.status_code} {token_resp.text}")
+                return None
+
+            tokens = token_resp.json()
+            access_token = tokens.get("access_token", "")
+            id_token = tokens.get("id_token", "")
+
+            if expected_nonce and id_token:
+                import jwt as pyjwt
+                try:
+                    decoded = pyjwt.decode(id_token, options={"verify_signature": False})
+                    received_nonce = decoded.get("nonce", "")
+                    if received_nonce != expected_nonce:
+                        logger.error("OIDC nonce mismatch — possible authorization code replay attack")
+                        return None
+                except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                    logger.error(f"OIDC nonce validation failed: {exc}")
+                    return None
+
+            if (
+                id_token
+                and not self._discovered_jwks_url
+                and not self._allow_unverified_id_token
+            ):
+                logger.error(
+                    "OIDC id_token signature cannot be verified (JWKS not "
+                    "discovered) and unverified tokens are not allowed — "
+                    "rejecting authentication"
+                )
+                return None
+
+            if id_token and self._discovered_jwks_url:
+                try:
+                    validated = self.validate_token(id_token)
+                    if validated is None:
+                        logger.error("OIDC ID token validation failed — rejecting authentication")
+                        return None
+                except InvalidTokenError as e:
+                    logger.error(f"OIDC ID token validation failed with exception: {e}")
+                    return None
+
+            if access_token and self._userinfo_endpoint:
+                user_resp = await client.get(
+                    self._userinfo_endpoint,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10.0,
+                )
+                if user_resp.status_code == 200:
+                    user_data = user_resp.json()
+                    return SSOUserInfo(
+                        sub=user_data.get("sub", ""),
+                        email=user_data.get("email", ""),
+                        name=user_data.get("name", ""),
+                        roles=user_data.get("roles", []),
+                        groups=user_data.get("groups", user_data.get("groups_v2", [])),
+                        provider="oidc",
+                        raw_attributes=user_data,
+                    )
+
+            return SSOUserInfo(sub=tokens.get("sub", ""), provider="oidc")
+
+        except (httpx.HTTPError, json.JSONDecodeError, OSError, ValueError, KeyError,
+                TypeError, AttributeError, InvalidTokenError) as e:
+            logger.error(f"OIDC async callback handling failed: {e}")
+            return None
+
+    async def async_validate_token(self, access_token: str) -> SSOUserInfo | None:
+        """ASYNC version of :meth:`validate_token` (pooled JWKS fetch)."""
+        jwks_url = self._jwks_url or self._discovered_jwks_url
+        if not jwks_url:
+            logger.warning("No JWKS URL configured — cannot validate token locally")
+            return None
+        try:
+            jwks_resp = await _get_async_client().get(jwks_url, timeout=10.0)
+            if jwks_resp.status_code != 200:
+                return None
+            jwks_data = jwks_resp.json()
+            unverified_header = jwt.get_unverified_header(access_token)
+            kid = unverified_header.get("kid", "")
+            public_key = None
+            for key_data in jwks_data.get("keys", []):
+                if key_data.get("kid") == kid:
+                    public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key_data))
+                    break
+            if public_key is None:
+                logger.warning("No matching JWK found for token kid")
+                return None
+            payload = jwt.decode(
+                access_token,
+                public_key,
+                algorithms=["RS256", "RS384", "RS512"],
+                audience=self._client_id,
+            )
+            return SSOUserInfo(
+                sub=payload.get("sub", ""),
+                email=payload.get("email", ""),
+                name=payload.get("name", ""),
+                roles=payload.get("roles", []),
+                groups=payload.get("groups", []),
+                provider="oidc",
+                raw_attributes=payload,
+            )
+        except (httpx.HTTPError, json.JSONDecodeError, OSError, ValueError, KeyError,
+                TypeError, AttributeError, InvalidTokenError) as e:
+            logger.error(f"Token validation failed: {e}")
+            return None
 
     def handle_callback(self, code: str, expected_state: str = "", expected_nonce: str = "") -> SSOUserInfo | None:
         """Exchange authorization code for tokens and get user info.

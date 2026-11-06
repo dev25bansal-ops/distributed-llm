@@ -22,6 +22,7 @@ Streaming requests are never cached.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -121,6 +122,7 @@ class _FaissIndex:
         self._id_to_key: dict[int, str] = {}           # faiss id → prompt key
         self._response_store: dict[str, str] = {}       # prompt key → response text
         self._ts_store: dict[str, float] = {}           # prompt key → timestamp
+        self._vec_store: dict[str, list[float]] = {}    # prompt key → embedding (cached at insert)
 
     # ------------------------------------------------------------------
     # Lazy init
@@ -175,7 +177,12 @@ class _FaissIndex:
                     if now - ts > _CACHE_TTL:
                         stale.append(key)
                         continue
-                    entry_vec = _embedder.embed(key)
+                    entry_vec = self._vec_store.get(key)
+                    if entry_vec is None:
+                        # Legacy/direct-inserted entry without a cached vector —
+                        # embed once and cache it so future searches don't re-embed.
+                        entry_vec = _embedder.embed(key)
+                        self._vec_store[key] = entry_vec
                     sim = self._cosine(query_vec, entry_vec)
                     if sim > best_sim:
                         best_sim = sim
@@ -206,6 +213,7 @@ class _FaissIndex:
 
             self._response_store[prompt] = response_text
             self._ts_store[prompt] = now
+            self._vec_store[prompt] = vec
 
             # LRU eviction via key-order tracking
             self._evict_lru()
@@ -213,6 +221,7 @@ class _FaissIndex:
     def _evict(self, key: str) -> None:
         self._response_store.pop(key, None)
         self._ts_store.pop(key, None)
+        self._vec_store.pop(key, None)
 
     def _evict_lru(self) -> None:
         """Drop oldest entries when over the size limit."""

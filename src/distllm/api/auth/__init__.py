@@ -122,7 +122,17 @@ class SSOAuthHandler:
         return self._handler.get_login_url(state)
 
     async def async_handle_callback(self, code: str, state: str = "") -> SSOUserInfo | None:
-        """Async wrapper for handle_callback — runs in a thread to avoid blocking the event loop."""
+        """Async callback via the provider's pooled AsyncClient (PERF-01).
+
+        Prefers the provider's native ``async_handle_callback`` (no thread
+        hop, connection-pool reuse); falls back to a worker thread for
+        providers that only expose the sync API (e.g. SAML).
+        """
+        if self._handler is None:
+            return None
+        native = getattr(self._handler, "async_handle_callback", None)
+        if native is not None:
+            return await native(code, expected_state=state)
         return await asyncio.to_thread(self.handle_callback, code, state)
 
     def handle_callback(self, code: str, state: str = "") -> SSOUserInfo | None:
@@ -149,7 +159,19 @@ class SSOAuthHandler:
         self._last_revocation_cleanup = now
 
     async def async_validate_token(self, access_token: str) -> SSOUserInfo | None:
-        """Async wrapper for validate_token."""
+        """ASYNC token validation.
+
+        Checks the revocation blocklist, then delegates to the provider's
+        native async validator (pooled JWKS fetch) when available, else
+        offloads the sync validator to a worker thread.
+        """
+        token_hash = hashlib.sha256(access_token.encode()).hexdigest()
+        self._cleanup_revoked()
+        if token_hash in self._revoked_tokens:
+            return None
+        native = getattr(self._handler, "async_validate_token", None)
+        if native is not None:
+            return await native(access_token)
         return await asyncio.to_thread(self.validate_token, access_token)
 
     def validate_token(self, access_token: str) -> SSOUserInfo | None:

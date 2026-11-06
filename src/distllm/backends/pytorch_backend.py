@@ -6,6 +6,7 @@ from typing import Any
 from loguru import logger
 import torch
 
+from distllm.backends.model_validation import resolve_trust_remote_code, validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
 from distllm.models.partitioner import ModelPartitioner
@@ -41,7 +42,9 @@ class PyTorchNodeAdapter(BackendAdapter):
         layer_end: int = 0,
         total_layers: int = 0,
         trust_remote_code: bool | None = None,
+        allow_local_paths: bool | None = None,
     ):
+        validate_model_name(model_name, allow_local_paths=allow_local_paths)
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -50,7 +53,7 @@ class PyTorchNodeAdapter(BackendAdapter):
         self.layer_start = layer_start
         self.layer_end = layer_end
         self.total_layers = total_layers
-        self._trust_remote_code = trust_remote_code
+        self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
 
         self.partitioner: ModelPartitioner | None = None
         self._is_first = layer_start == 0

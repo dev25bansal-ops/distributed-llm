@@ -143,9 +143,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             logger.info(f"Config reloaded (no coordinator to update)")
                 except Exception:
                     logger.exception(
-                        "Config reload queue processor crashed -- SIGHUP reloads will not work until the process is restarted"
+                        "Config reload queue processor error -- continuing (SIGHUP reloads remain available)"
                     )
-                    return
+                    continue
 
         signal.signal(signal.SIGHUP, _reload_config)
         logger.info("SIGHUP handler registered for config hot-reload")

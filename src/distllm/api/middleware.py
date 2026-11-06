@@ -173,6 +173,30 @@ class _RateLimiter:
                 self._attempts[key].append(time.time())
                 self._prune(key)
 
+    def try_consume(self, ip: str, api_key: str | None = None) -> bool:
+        """Atomically check the limit and record one attempt.
+
+        Returns True if the attempt was recorded (request may proceed),
+        False if the key is already at the limit.
+
+        The whole check+record sequence happens under a single lock
+        acquisition, so concurrent callers cannot both pass the
+        ``is_rate_limited`` check and then both call ``record_attempt``
+        (TOCTOU over-admission).  Callers that historically did
+        ``if not limiter.is_rate_limited(...): limiter.record_attempt(...)``
+        should use ``try_consume`` instead.
+        """
+        with self._lock:
+            keys = self._make_keys(ip, api_key)
+            for key in keys:
+                self._prune(key)
+                if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
+                    return False
+            for key in keys:
+                self._attempts[key].append(time.time())
+                self._prune(key)
+            return True
+
 def _get_or_generate_api_key() -> str | None:
     """Get API_KEY from env, or generate one if not set.
 

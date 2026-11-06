@@ -70,5 +70,7 @@ class TestJWTAlgorithmNone:
         token = pyjwt.encode({"sub": "test"}, "secret", algorithm="HS256")
         # Trying to decode with a different algorithm still requires
         # the correct key material in PyJWT >= 2.0
-        with pytest.raises(pyjwt.InvalidTokenError):
+        # PyJWT >= 2.13: an empty HMAC key raises InvalidKeyError, which no
+        # longer subclasses InvalidTokenError — accept either rejection.
+        with pytest.raises((pyjwt.InvalidTokenError, pyjwt.InvalidKeyError)):
             pyjwt.decode(token, "", algorithms=["HS256"])

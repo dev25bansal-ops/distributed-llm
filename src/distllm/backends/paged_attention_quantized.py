@@ -224,7 +224,18 @@ class QuantizedPagedAttentionManager:
         key: torch.Tensor,
         value: torch.Tensor,
     ) -> None:
-        """Write quantized KV data for a layer."""
+        """Write quantized KV data for a layer.
+
+        Block storage is single-layer (no layer dimension; channels 0/1
+        hold K/V for that one layer), so only ``layer_idx=0`` is
+        supported. Any other layer index raises ``NotImplementedError``
+        rather than silently misattributing the data.
+        """
+        if layer_idx != 0:
+            raise NotImplementedError(
+                f"Per-layer KV writes not supported: blocks store a "
+                f"single layer (layer_idx=0 only), got layer_idx={layer_idx}"
+            )
         with self._lock:
             seq = self._seq_blocks.get(sequence_id)
             if seq is None:
@@ -260,7 +271,18 @@ class QuantizedPagedAttentionManager:
         seq_len: int,
         target_dtype: torch.dtype = torch.float16,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Gather and dequantize KV tensors for attention."""
+        """Gather and dequantize KV tensors for attention.
+
+        Block storage is single-layer (no layer dimension; channels 0/1
+        hold K/V for that one layer), so only ``layer_idx=0`` is
+        supported. Any other layer index raises ``NotImplementedError``
+        rather than silently returning the wrong layer's data.
+        """
+        if layer_idx != 0:
+            raise NotImplementedError(
+                f"Per-layer KV gather not supported: blocks store a "
+                f"single layer (layer_idx=0 only), got layer_idx={layer_idx}"
+            )
         seq = self._seq_blocks.get(sequence_id)
         if seq is None:
             raise KeyError(f"Sequence {sequence_id} not found")

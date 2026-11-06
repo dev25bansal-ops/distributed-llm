@@ -20,7 +20,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.params import File, Form, Query
 from fastapi.responses import FileResponse
 from loguru import logger
@@ -85,6 +85,40 @@ def _file_metadata_to_object(meta: dict) -> FileObject:
     )
 
 
+def _request_owner(request: Request) -> str:
+    """Return the caller's owner identity (api_key_id, falling back to SSO tenant)."""
+    return (
+        getattr(request.state, "api_key_id", None)
+        or getattr(request.state, "tenant_id", None)
+        or getattr(request.state, "tenant", None)
+        or ""
+    )
+
+
+def _is_admin(request: Request) -> bool:
+    """True when the caller holds the admin role (tenant-wide override)."""
+    return getattr(request.state, "api_key_role", None) == "admin"
+
+
+def _require_file_owner(meta: dict, request: Request) -> None:
+    """Enforce that *request*'s caller owns the file described by *meta*.
+
+    Admins bypass the check.  A 404 (not 403) is raised on mismatch so file
+    existence is not leaked across tenants/keys — matching the batch IDOR
+    guard in ``routes/batch.py:_require_owner``.  Files stored before the
+    ``owner`` field existed (``owner`` is None/empty) are treated as owned
+    by nobody specific and remain accessible (backward-compatible backfill:
+    they predate tenancy and cannot be attributed to a different key).
+    """
+    owner = meta.get("owner")
+    if owner is None or owner == "":
+        return
+    if _is_admin(request):
+        return
+    if _request_owner(request) != owner:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
@@ -97,6 +131,7 @@ def _file_metadata_to_object(meta: dict) -> FileObject:
     status_code=201,
 )
 async def upload_file(
+    request: Request,
     file: UploadFile = File(..., description="File to upload"),
     purpose: str = Form("batch", description="Purpose: fine-tune, batch, assistants, vision"),
 ):
@@ -130,6 +165,7 @@ async def upload_file(
 
     file_id = f"file-{uuid.uuid4().hex[:24]}"
     now = time.time()
+    _ensure_upload_dir()
     upload_dir = _ensure_upload_dir() / file_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     file_path = upload_dir / (file.filename or "unnamed")
@@ -149,6 +185,7 @@ async def upload_file(
         "status": "uploaded",
         "path": str(file_path),
         "object": "file",
+        "owner": _request_owner(request),
     }
 
     store = get_store()
@@ -165,11 +202,18 @@ async def upload_file(
     response_model=FileListResponse,
 )
 async def list_files(
+    request: Request,
     purpose: str | None = Query(None, description="Filter by purpose: fine-tune, batch, assistants, vision"),
 ):
-    """List uploaded files, optionally filtered by purpose."""
+    """List uploaded files, optionally filtered by purpose.
+
+    Non-admin callers only see their own files; admins see all (SEC-API-01).
+    """
     store = get_store()
-    files = store.list_files(purpose=purpose)
+    if _is_admin(request):
+        files = store.list_files(purpose=purpose)
+    else:
+        files = store.list_files(purpose=purpose, owner=_request_owner(request))
     return FileListResponse(
         data=[_file_metadata_to_object(f) for f in files],
     )
@@ -181,12 +225,13 @@ async def list_files(
     description="Return metadata for a specific uploaded file.",
     response_model=FileObject,
 )
-async def get_file(file_id: str):
+async def get_file(file_id: str, request: Request):
     """Retrieve metadata for a specific file."""
     store = get_store()
     meta = store.get_file(file_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
+    _require_file_owner(meta, request)
     return _file_metadata_to_object(meta)
 
 
@@ -196,12 +241,13 @@ async def get_file(file_id: str):
     description="Download the raw content of an uploaded file.",
     response_class=FileResponse,
 )
-async def get_file_content(file_id: str):
+async def get_file_content(file_id: str, request: Request):
     """Download the raw content of an uploaded file."""
     store = get_store()
     meta = store.get_file(file_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
+    _require_file_owner(meta, request)
 
     file_path = Path(meta["path"])
     if not file_path.exists():
@@ -221,12 +267,13 @@ async def get_file_content(file_id: str):
     description="Delete a file and its content from the server.",
     response_model=FileDeleteResponse,
 )
-async def delete_file(file_id: str):
+async def delete_file(file_id: str, request: Request):
     """Delete a file and its content from disk."""
     store = get_store()
     meta = store.get_file(file_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
+    _require_file_owner(meta, request)
 
     # Remove from disk
     file_path = Path(meta["path"])

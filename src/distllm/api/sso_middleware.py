@@ -411,9 +411,17 @@ class SsoMiddleware(BaseHTTPMiddleware):
             )
             return await call_next(request)
 
-        # 2. External OIDC provider validation (network call to JWKS endpoint)
+        # 2. External OIDC provider validation (network call to JWKS endpoint).
+        # PERF-01: dispatch is async — use the provider's pooled async
+        # validator when available so a JWKS fetch never blocks the loop.
         for provider_name, handler in self._providers.items():
-            user = handler.validate_token(token)
+            native_validate = getattr(handler, "async_validate_token", None)
+            if native_validate is not None:
+                user = await native_validate(token)
+            else:
+                import asyncio
+
+                user = await asyncio.to_thread(handler.validate_token, token)
             if user is not None:
                 _set_state_from_user(request, user, provider_name)
                 logger.info(
@@ -576,7 +584,13 @@ async def auth_token(request: Request) -> JSONResponse:
     _cleanup_expired_refresh_tokens()
 
     # Exchange the authorisation code for identity information.
-    user = handler.handle_callback(code, expected_state=state)
+    # PERF-01: this route is async — prefer the provider's pooled
+    # AsyncClient path so the token/userinfo calls never block the loop.
+    native_callback = getattr(handler, "async_handle_callback", None)
+    if native_callback is not None:
+        user = await native_callback(code, expected_state=state)
+    else:
+        user = handler.handle_callback(code, expected_state=state)
     if user is None:
         return JSONResponse(
             status_code=401,

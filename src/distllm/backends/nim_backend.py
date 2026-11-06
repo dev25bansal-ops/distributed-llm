@@ -30,6 +30,7 @@ from typing import Any, AsyncIterator, Iterator
 import torch
 from loguru import logger
 
+from distllm.backends.model_validation import validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
 
@@ -187,6 +188,7 @@ class NimNodeAdapter(BackendAdapter):
         local_model: torch.nn.Module | None = None,
         extra_headers: dict[str, str] | None = None,
     ):
+        validate_model_name(model_name)
         self.model_name = model_name
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
@@ -284,7 +286,9 @@ class NimNodeAdapter(BackendAdapter):
                 model_name_or_path = getattr(
                     self._local_model, "name_or_path", self.model_name
                 )
-                self._tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    model_name_or_path, trust_remote_code=False
+                )
             except Exception:
                 self._tokenizer = None
 

@@ -217,6 +217,7 @@ class TestGenericOAuth2Handler:
     def test_handle_callback_validates_state(self):
         handler = GenericOAuth2Handler.__new__(GenericOAuth2Handler)
         handler._state_store = {"valid": time.time() + 600}
+        handler._pkce_store = {"valid": "test-verifier"}
         handler._token_url = "https://example.com/token"
         handler._client_id = "test"
         handler._client_secret = "secret"
@@ -226,6 +227,44 @@ class TestGenericOAuth2Handler:
         # No httpx → ImportError → None
         assert result is None
         assert "valid" not in handler._state_store
+
+    def test_handle_callback_rejects_empty_state(self):
+        """SEC-API-04: empty state must be rejected without calling the IdP.
+
+        Mirrors the OIDCHandler empty-state test (test_csrf_middleware).
+        """
+        handler = GenericOAuth2Handler.__new__(GenericOAuth2Handler)
+        handler._state_store = {}
+        handler._pkce_store = {}
+        with patch("httpx.post") as mock_post:
+            result = handler.handle_callback("code", expected_state="")
+        assert result is None
+        mock_post.assert_not_called()
+
+    def test_handle_callback_rejects_state_without_pkce_verifier(self):
+        """SEC-API-04: a state with no bound PKCE verifier is rejected."""
+        handler = GenericOAuth2Handler.__new__(GenericOAuth2Handler)
+        handler._state_store = {"orphan-state": time.time() + 600}
+        handler._pkce_store = {}
+        with patch("httpx.post") as mock_post:
+            result = handler.handle_callback("code", expected_state="orphan-state")
+        assert result is None
+        mock_post.assert_not_called()
+        assert "orphan-state" not in handler._state_store
+
+    def test_get_login_url_includes_pkce_challenge(self):
+        handler = GenericOAuth2Handler(
+            client_id="test",
+            client_secret="secret",
+            authorize_url="https://github.com/login/oauth/authorize",
+            token_url="https://github.com/login/oauth/access_token",
+            userinfo_url="https://api.github.com/user",
+            callback_url="/auth/callback",
+        )
+        url = handler.get_login_url()
+        assert "code_challenge=" in url
+        assert "code_challenge_method=S256" in url
+        assert len(handler._pkce_store) == 1
 
     def test_handle_callback_rejects_bad_state(self):
         handler = GenericOAuth2Handler.__new__(GenericOAuth2Handler)
