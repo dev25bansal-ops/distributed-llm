@@ -33,6 +33,9 @@ jobs:
         run: |
           python tests/profiling/memory_profiler.py --local --model meta-llama/Llama-3.2-1B || echo "memory_profiler script reported failure (continuing to unit checks)"
 
+      - name: Generate protobuf modules
+        run: make proto
+
       - name: Run defragmentation unit tests
         run: |
           pytest tests/core/test_memory_defragmenter.py -v --timeout=60 -x

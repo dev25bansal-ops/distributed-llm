@@ -39,6 +39,9 @@ jobs:
           path: benchmarks/
         continue-on-error: true
 
+      - name: Generate protobuf modules
+        run: make proto
+
       - name: Run pytest benchmarks
         run: |
           # --benchmark-autosave takes no argument (pytest-benchmark 5.x);

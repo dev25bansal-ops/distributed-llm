@@ -113,3 +113,9 @@ integrations/*/dist/
 
 # hypothesis property-test artifacts
 .hypothesis/
+
+# generated protobuf modules (make proto; CI regenerates)
+node_pb2.py
+node_pb2_grpc.py
+*_pb2.py
+*_pb2_grpc.py
