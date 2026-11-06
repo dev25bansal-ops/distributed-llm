@@ -106,3 +106,7 @@ _dead_code.tsv
 sdk/dist/
 sdk/js/dist/
 integrations/*/dist/
+
+# python + hygiene
+*.pyc
+.benchmarks/
