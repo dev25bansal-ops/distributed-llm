@@ -89,7 +89,7 @@ distllm-coordinator --model /data/models/llama-3.2-7B --port 50050
 For K8s deployments, use the Helm chart with air-gapped overrides:
 
 ```bash
-helm install distllm ./deploy/helm/distllm-operator \
+helm install distllm ./integrations/kubernetes/helm/distllm \
     --set image.repository=registry.internal/distllm \
     --set image.tag=0.4.1 \
     --set image.pullPolicy=Always \

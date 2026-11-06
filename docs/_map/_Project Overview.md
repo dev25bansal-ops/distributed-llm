@@ -70,8 +70,8 @@ graph TD
 
 | Tree | Files | Notes |
 |------|-------|-------|
-| `src/distllm` | 785 .py | 225,119 LOC |
-| `tests` | 788 .py | 152,219 LOC |
+| `src/distllm` | 707 .py | 207,872 LOC |
+| `tests` | 922 .py | 204,578 LOC |
 | `integrations` | 168 | 24 framework adapters + IaC (LangChain, LlamaIndex, CrewAI, K8s operator, TF provider, …) |
 | `sdk` | 61 | multi-language: python + go + js + rust + openapi |
 | `docs` | 99 | this vault + reference docs (98 .md) |
@@ -92,11 +92,11 @@ see [[00 Module Index]] for the **complete per-folder index** with one-line purp
 
 | Dir | #files | LOC | What it is |
 |-----|-------|-----|-----------|
-| `core/` | 274 | 75,171 | Heart: Coordinator, batch scheduler, KV cache, speculative decoders, routers, cost/billing, HA, plugins, multimodal |
+| `core/` | 250 | 70,384 | Heart: Coordinator, batch scheduler, KV cache, speculative decoders, routers, cost/billing, HA, plugins, multimodal |
 | `dist/` | 194 | 71,033 | Distributed execution: pipeline, p2p/gossip, partition auto-partitioner, topology, federation, chaos/byzantine, NAT/ICE |
-| `api/` | 88 | 23,851 | FastAPI OpenAI-compatible server: routes, middleware, SSO, authz/OPA, WAF, rate-limit |
+| `api/` | 73 | 19,577 | FastAPI OpenAI-compatible server: routes, middleware, SSO, authz/OPA, WAF, rate-limit |
 | `cli/` `config/` `client/` | 70 | 12,850 | Typer CLI (`distllm`), pydantic-settings config, HTTP SDK |
-| `observability/` | 20 | 11,755 | Prometheus/OTel/Loguru, SLO config, capacity planning, incident ops |
+| `observability/` | 13 | 7,360 | Prometheus/OTel/Loguru, SLO config, capacity planning, incident ops |
 | `backends/` `models/` | 29 | 8,641 | Inference adapters (vLLM/llama.cpp/Triton/NIM/…) + model partition/adapter/RoPE |
 | `security/` `compliance/` | 18 | 4,656 | E2E encrypt, watermark, content moderation, attestation, compliance evidence |
 | `cloud/` | 7 | 2,455 | AWS/GCP/Azure pricing + spot orchestrator (RunPod/Vast/Salad) |

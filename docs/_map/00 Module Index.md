@@ -10,6 +10,8 @@ tags:
 
 ## 1 · `src/distllm/` — the engine (all packages)
 
+> **Recount 2026-11-06 (post-hygiene):** `src/distllm` = 707 .py files / 207,872 non-empty LOC (79 dead modules removed); `tests/` = 922 files / 204,578 LOC. Per-package counts in [[_Project Overview]] are the living source of truth.
+
 All entries `src/distllm/<pkg>`. Full per-file maps live in the linked MOC.
 
 | Package | # | LOC | Purpose | Covering note |
