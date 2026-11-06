@@ -37,13 +37,6 @@
   --font-display:"IBM Plex Sans",Helvetica,Arial,sans-serif;
   --font-mono:"JetBrains Mono",ui-monospace,monospace;
 }
-body.dark{
-  --color-bg:#0f172a; --color-ink:#f1f5f9; --color-ink-soft:#94a3b8;
-  --color-border:#475569; --color-chip:#1e293b; --color-line:#1e293b;
-  --color-card-1:#1b2336; --color-card-2:#1e293b; --color-card-3:#1b2336; --color-card-4:#1e293b;
-  --color-invert:#0f172a; --color-footer:#020617; --color-footer-text:#94a3b8;
-  --color-accent:#22c55e; --color-accent-soft:#142e1d; --color-accent-ink:#86efac;
-}
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{background:var(--color-bg);color:var(--color-ink);font-family:var(--font-display);line-height:1.6;-webkit-font-smoothing:antialiased}
@@ -76,12 +69,9 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;min-width:132px;padding:10px 26px;border-radius:999px;font-size:15px;font-weight:500;border:1px solid var(--color-line);transition:background .15s,color .15s,transform .15s,border-color .15s;min-height:44px;cursor:pointer;background:var(--color-chip)}
 .btn--primary{background:var(--color-ink);color:#fff;border-color:var(--color-ink)}
 .btn--primary:hover{background:#0f172a;border-color:#0f172a}
-body.dark .btn--primary{background:var(--color-accent);color:#0f172a;border-color:var(--color-accent)}
 .btn--ghost{background:transparent;color:var(--color-ink)}
 .btn--ghost:hover{background:var(--color-chip)}
 .menu-toggle{display:none;background:none;border:1px solid var(--color-line);border-radius:999px;padding:8px 16px;font:inherit;font-size:14px;cursor:pointer;color:var(--color-ink);min-height:44px}
-.theme-toggle{background:none;border:1px solid var(--color-line);border-radius:999px;width:40px;height:40px;font-size:14px;cursor:pointer;color:var(--color-ink-soft);display:inline-flex;align-items:center;justify-content:center;line-height:1}
-.theme-toggle:hover{color:var(--color-ink)}
 .hero__actions{display:inline-flex;gap:10px;align-items:center}
 .hero__actions .btn{height:38px;min-width:0;padding:8px 20px;font-size:14px;min-height:38px}
 
@@ -223,7 +213,6 @@ section{padding:88px 0}
   <div class="wrap">
     <div class="hero__top">
       <a class="hero__logo" href="/">DistLLM</a>
-      <button class="theme-toggle" id="themeBtn" aria-pressed="false" aria-label="Toggle dark mode" title="Dark / light">○</button>
       <button class="menu-toggle" id="menuBtn" aria-expanded="false" aria-controls="mainNav" aria-label="Toggle navigation">Menu</button>
       <span class="hero__actions">
         <a class="btn btn--primary hero__actions-cta" href="/docs.html">Get Started</a>
@@ -538,23 +527,6 @@ section{padding:88px 0}
 <script>
 (function(){
   // dark / light mode
-
-  // dark / light mode
-  var themeBtn=document.getElementById('themeBtn');
-  try{
-    var saved=localStorage.getItem('distllm-theme');
-    var prefersDark=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;
-    function applyTheme(dark){
-      document.body.classList.toggle('dark',dark);
-      if(themeBtn){ themeBtn.setAttribute('aria-pressed',String(dark)); themeBtn.textContent=dark?'●':'○'; }
-    }
-    applyTheme(saved?saved==='dark':prefersDark);
-    if(themeBtn){ themeBtn.addEventListener('click',function(){
-      var dark=!document.body.classList.contains('dark');
-      applyTheme(dark);
-      try{ localStorage.setItem('distllm-theme',dark?'dark':'light'); }catch(e){}
-    }); }
-  }catch(e){}
 
   // mobile nav
   var nav=document.getElementById('mainNav'), btn=document.getElementById('menuBtn');
