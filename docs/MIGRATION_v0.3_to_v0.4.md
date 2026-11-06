@@ -366,7 +366,7 @@ probes:
 docker inspect distributed-llm:latest | jq '.[0].Config.Labels'
 # {
 #   "org.opencontainers.image.source": "https://github.com/distributed-llm/distributed-llm",
-#   "org.opencontainers.image.version": "0.4.0",
+#   "org.opencontainers.image.version": "0.4.1",
 #   "org.opencontainers.image.title": "Distributed LLM",
 #   "org.opencontainers.image.licenses": "Apache-2.0"
 # }
@@ -411,7 +411,7 @@ readinessProbe:
 v0.4 expands certificate SANs to include wildcards, IPv6, and internal DNS names. Regenerate certificates if you use TLS:
 
 ```bash
-distllm cert generate \
+distllm security cert create \
   --hosts "*.distllm.local,localhost,127.0.0.1,::1" \
   --output-dir certs/
 ```

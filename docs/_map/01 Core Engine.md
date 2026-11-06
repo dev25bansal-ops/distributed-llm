@@ -7,11 +7,13 @@ aliases:
 ---
 # Core Engine — `src/distllm/core/`
 
-**296 .py files · ~82K LOC** (incl. sub-packages `advanced_scheduling`, `coordinator*`, `dp_inference`, `evaluation`, `plugins`, `scheduler`, `structured_output`, `vectorstore`).
+**274 .py files · ~75K LOC** (incl. sub-packages `advanced_scheduling`, `coordinator*`, `dp_inference`, `evaluation`, `plugins`, `scheduler`, `structured_output`, `vectorstore`).
 
 > The **heart of the runtime**. One `Coordinator` object orchestrates every subsystem: batch scheduling, speculative decoding, KV-cache hierarchy, model/cost/cross-cloud routing, HA/leader-election, plugins, multimodal/edge inference, usage-metering and compliance. Depends on `distllm.config`, `distllm.backends`, `distllm.dist`, and the `core.*` sub-packages.
 >
-> **Tests:** `python -m pytest tests/core/ -v` (218 files in `tests/core`). Comprehensive audit: [[Core Comprehensive Audit 2026-08-05]] → [[Core Audit 01 Strategic & Opportunities]], [[Core Audit 02 Issues & Required Fixes]], [[Core Audit 03 Enhancements & Modifications]], [[Core Audit 04 Advanced Features]], [[Core Audit 05 New Additions]], [[Core Audit 06 Verification & Testing]], [[Core Audit 07 Dead Code & Consolidation]].
+> **Tests:** `python -m pytest tests/core/ -v` (299 files in `tests/core`). Comprehensive audit: [[Core Comprehensive Audit 2026-08-05]] → [[Core Audit 01 Strategic & Opportunities]], [[Core Audit 02 Issues & Required Fixes]], [[Core Audit 03 Enhancements & Modifications]], [[Core Audit 04 Advanced Features]], [[Core Audit 05 New Additions]], [[Core Audit 06 Verification & Testing]], [[Core Audit 07 Dead Code & Consolidation]].
+
+<!-- recounted 2026-11-06 by hygiene pass -->
 
 ## Orchestration & coordinator core
 
@@ -318,4 +320,6 @@ Most `coordinator_*`, `kv_cache_*`, `request_pipeline`, `resource_manager`, `tok
 
 ## Tests
 
-`tests/core/` (**~220 files**) covers nearly every module above (per-file `test_<module>.py`), plus `tests/core/advanced_scheduling/`, `tests/core/scheduler/`, `tests/core/structured_output/`, `tests/core/vectorstore/`, and in-depth suites on coordinator lifecycle, scheduler policies, ARPN/DP, and structured output.
+`tests/core/` (**~299 files**) covers nearly every module above (per-file `test_<module>.py`), plus `tests/core/advanced_scheduling/`, `tests/core/scheduler/`, `tests/core/structured_output/`, `tests/core/vectorstore/`, and in-depth suites on coordinator lifecycle, scheduler policies, ARPN/DP, and structured output.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

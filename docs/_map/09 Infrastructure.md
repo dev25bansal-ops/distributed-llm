@@ -11,7 +11,9 @@ aliases:
 ---
 # Infrastructure — CI/CD, deployment, packaging, gRPC contract & tooling
 
-**Covers:** root infra (`pyproject.toml`, `Makefile`, Dockerfiles, docker-compose, devcontainer, install scripts), `deploy/` (k8s/helm/kustomize/operator/grafana/ray), `.github/workflows/` (23), `proto/`, and the operators' `benchmarks/` + `scripts/`.
+**Covers:** root infra (`pyproject.toml`, `Makefile`, Dockerfiles, docker-compose, devcontainer, install scripts), `deploy/` (k8s/helm/kustomize/operator/grafana/ray), `.github/workflows/` (25), `proto/`, and the operators' `benchmarks/` + `scripts/`.
+
+<!-- recounted 2026-11-06 by hygiene pass -->
 
 > The operational surface: everything that builds, packages, ships, and reconciles DistLLM as running infrastructure rather than Python source.
 
@@ -27,7 +29,7 @@ aliases:
 | `docker-compose.yml`/`.gpu.yml`/`.pro.yml` | 58/145/243 | baseline / scalable-worker GPU / production (LB + monitoring + auth profiles) |
 | `.devcontainer/` | 66 | VS Code dev container (nvidia dd-in-ddc) |
 
-## CI/CD — `.github/workflows/` (23 workflows + reusable)
+## CI/CD — `.github/workflows/` (25 workflows + reusable)
 `ci.yml` (main: ruff/mypy lint, test matrix, benchmark gates) · `release.yml` · `integration-test.yml` · `gpu-tests.yml` (self-hosted) · `load-testing.yml` · `memory-profile.yml` · `chaos-engineering.yml` · `nightly-{benchmark,loadtest,integration}.yml` · `quality-gates.yml` · `coverage/bandit/secrets` ratchets · `helm-publish.yml` · `deploy-website.yml` + `reusable-{ci,docker,deploy,release}.yml`.
 - Pre-commit hooks (bandit + pip-audit), Dependabot.
 - **Latest work:** E11 SLA tiers, `dist/` audit, scheduling wiring.
@@ -55,6 +57,8 @@ aliases:
 - `deploy/operator/controller.py` is a **stub** (no k8s API calls — `_list_crs` returns empty unless `DISTLLM_CR_SAMPLE` set).
 - Docker/kustomize/helm all target the same `DistributedLLMCluster` CR — parallel, non-shared paths.
 - The K8s operator is effectively uncovered by tests.
+
+<!-- recounted 2026-11-06 by hygiene pass -->
 
 ## Tests
 `tests/deploy/` (`test_gitops`, `test_helm`, `test_kustomize`, `test_operator`, `test_observability`), `tests/chaos/`, `tests/integration/`, `tests/benchmark/`, `tests/load/`, `tests/profiling/`; workflow-driven.

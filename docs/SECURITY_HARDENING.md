@@ -136,8 +136,14 @@ export DISTLLM_CLUSTER_KEY=your-cluster-secret
 # Set role for API key
 from distllm.core.api_key_store import ApiKeyStore
 store = ApiKeyStore()
-store.create_key(name="my-key", role="inference")
+store.add_key(key_str="...", role="inference-only", label="my-key")  # returns key_id
 ```
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — this snippet previously showed
+> `store.create_key(name=..., role=...)`; the real method is `add_key(key_str,
+> role, label, key_id)` per `src/distllm/core/api_key_store.py:320`, and valid
+> roles are admin/model-admin/user-admin/inference-only/read-only/auditor
+> (`VALID_ROLES`, line 68) — `inference` is not a role.
 
 ---
 
@@ -297,13 +303,13 @@ Residual gap: only `record["message"]` is scrubbed on the loguru path — except
 
 ```bash
 # Auth failures
-distllm_metrics_auth_failures_total
+distllm_auth_failures_total  # ⚠️ UNVERIFIED (hygiene pass 2026-11-06): no distllm_metrics_* metric exists; real names are distllm_* per src/distllm/observability/exporter.py — and no auth/rate-limit/SSRF metric is among the 25 defined there
 
 # Rate limit hits
-distllm_metrics_rate_limit_hits_total
+distllm_rate_limit_hits_total  # ⚠️ UNVERIFIED (hygiene pass 2026-11-06): same as above — name pattern corrected, metric not in exporter.py
 
 # SSRF attempts blocked
-distllm_metrics_ssrf_blocked_total
+distllm_ssrf_blocked_total  # ⚠️ UNVERIFIED (hygiene pass 2026-11-06): same as above — name pattern corrected, metric not in exporter.py
 ```
 
 ### Alerting Rules
@@ -314,7 +320,7 @@ groups:
   - name: distllm-security
     rules:
       - alert: HighAuthFailureRate
-        expr: rate(distllm_metrics_auth_failures_total[5m]) > 10
+        expr: rate(distllm_auth_failures_total[5m]) > 10
         for: 5m
         labels:
           severity: warning
@@ -392,6 +398,12 @@ The `/v1/debug/*` routes provide debugging/replay capabilities. They are **not m
 - Enable data residency: `DISTLLM_DATA_RESIDENCY=eu`
 - Enable audit logging: `DISTLLM_AUDIT_LOGGING=true`
 - Configure data retention: `DISTLLM_DATA_RETENTION_DAYS=30`
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06): none of these environment
+> variables exists in `src/` (0 hits each for DISTLLM_DATA_RESIDENCY,
+> DISTLLM_AUDIT_LOGGING, DISTLLM_DATA_RETENTION_DAYS). These are aspirational
+> flags, not shipped config; delete the key names if a source of truth is
+> needed.
 
 ### SOC 2
 

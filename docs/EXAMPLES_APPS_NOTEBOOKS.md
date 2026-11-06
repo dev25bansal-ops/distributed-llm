@@ -3,8 +3,7 @@
 This page summarizes the ready-to-use examples shipped with DistLLM:
 
 - The **VS Code extension** (editor integration)
-- Three **example apps** (chat, RAG, multi-agent) under `apps/`
-- Four **Jupyter notebooks** under `examples/notebooks/`
+- Seven **Jupyter notebooks** under `examples/notebooks/`
 
 All of them connect to the **OpenAI-compatible DistLLM API** (default `http://localhost:8000/v1`).
 
@@ -50,50 +49,13 @@ Real-time cluster health monitoring and inline LLM inference from the editor.
 
 ## 2. Example Apps (`apps/`)
 
-All three apps read configuration from environment variables (defaults: `DISTLLM_BASE_URL=http://localhost:8000/v1`, `DISTLLM_API_KEY=sk-noauth`, `DISTLLM_MODEL=distributed-llm`). They connect to the OpenAI-compatible API at `DISTLLM_BASE_URL`.
-
-### 2.1 `apps/chat/` — Streaming Chat UI
-A small Flask server serving a build-free vanilla-JS `index.html` that proxies **streaming chat completions** via the `openai` Python client. The UI has chat bubbles, live token streaming, and a model-selector dropdown populated from `GET /v1/models`.
-
-**Run**
-```bash
-cd apps/chat
-pip install -r requirements.txt
-python app.py          # open http://localhost:5000
-```
-Files: `app.py`, `index.html`, `requirements.txt`. Uses `DISTLLM_CHAT_PORT` (default 5000).
-
-### 2.2 `apps/rag/` — Retrieval-Augmented Generation
-A RAG web app over a bundled `sample.txt`. Retrieval uses DistLLM embeddings + a **numpy cosine retriever**, with automatic fallback to a LlamaIndex `VectorStoreIndex` when `llama-index` is installed. The active retriever is shown as a UI badge (`/api/backend`).
-
-**Run**
-```bash
-cd apps/rag
-pip install -r requirements.txt
-python app.py          # open http://localhost:5001
-```
-Files: `app.py`, `index.html`, `sample.txt`, `requirements.txt`. Uses `DISTLLM_RAG_PORT` (default 5001), `DISTLLM_EMBED_MODEL`, `DISTLLM_RAG_TOP_K` (default 3).
-
-### 2.3 `apps/multi_agent/` — Multi-Agent Pipeline
-Three DistLLM-powered agents collaborate via plain **`asyncio` + the `openai` client**: `Researcher → Writer → Reviewer`. `openai-agents`/`crewai` are optional. The full conversation is printed to the terminal.
-
-**Run**
-```bash
-cd apps/multi_agent
-pip install -r requirements.txt
-python run.py "Explain vector databases in three paragraphs"
-# or use the built-in default task:
-python run.py
-```
-Files: `agents.py`, `run.py`, `requirements.txt`, `README.md`.
-
-> All three apps degrade gracefully when the backend is unavailable: chat falls back to a default model list, RAG boots and reports errors at query time, and multi-agent prints a clear backend error.
+`apps/` was removed in the 2026-11-06 hygiene pass; live examples are `examples/` + `examples/notebooks/`.
 
 ---
 
 ## 3. Example Notebooks (`examples/notebooks/`)
 
-Four runnable Jupyter notebooks using the `openai` Python client (with a fallback to `distllm_sdk.compat.openai_compat` when `openai` is not installed). All target the OpenAI-compatible endpoint `http://localhost:8000/v1` (override via `DISTLLM_BASE_URL`, `DISTLLM_MODEL`, `DISTLLM_API_KEY`).
+Seven runnable Jupyter notebooks using the `openai` Python client (with a fallback to `distllm_sdk.compat.openai_compat` when `openai` is not installed). All target the OpenAI-compatible endpoint `http://localhost:8000/v1` (override via `DISTLLM_BASE_URL`, `DISTLLM_MODEL`, `DISTLLM_API_KEY`). The four API-demo notebooks below are documented in `examples/notebooks/README.md`; the other three are cloud-worker notebooks (Kaggle, Lightning.ai, Colab) that join a laptop cluster as a DistLLM worker.
 
 | Notebook | What it demonstrates | API endpoint used |
 |----------|----------------------|-------------------|
@@ -101,18 +63,18 @@ Four runnable Jupyter notebooks using the `openai` Python client (with a fallbac
 | `streaming.ipynb` | Token-by-token streaming chat, plus a run with `stream_options={"include_usage": True}` | `/v1/chat/completions` (streaming) |
 | `batch_processing.ipynb` | Batch prompts through chat completions; measures throughput (tokens/sec) sequentially and via `ThreadPoolExecutor` | `/v1/chat/completions` |
 | `cost_analysis.ipynb` | Collects per-request token usage/cost from `response.usage` (incl. optional `cost_usd`), aggregates via `stats().estimate_cost()`, plots a bar chart with `matplotlib` | `/v1/chat/completions` |
+| `distllm_kaggle_worker.ipynb` | Run a real DistLLM worker on free Kaggle GPUs (T4x2) joining a laptop cluster | — |
+| `distllm_lightning_worker.ipynb` | Run a real DistLLM worker on Lightning.ai Studio GPUs joining a laptop cluster | — |
+| `tinylm_colab_worker.ipynb` | Run a real DistLLM worker on free Colab T4 joining a laptop cluster | — |
 
 **Prerequisites**
 ```bash
 pip install jupyter openai distllm_sdk numpy scikit-learn matplotlib
 ```
 
-**Start the server**
-```bash
-pip install -e ./sdk                       # if distllm_sdk is not installed
-distllm-api --model distributed-llm --host 0.0.0.0 --port 8000
-curl http://localhost:8000/v1/models       # verify
-```
+**How to run:** `distllm-api --model <model> --host 0.0.0.0 --port 8000` (entry point `distllm-api = "distllm.api.server:main"`, `pyproject.toml` [project.scripts]; `--model/--host/--port` defined in `src/distllm/api/server.py` `main()`). Then verify with `curl http://localhost:8000/v1/models`.
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06): `distllm-api`'s server-side default model name is config-driven, not the literal `distributed-llm` (no such default found in `src/distllm/config/`); `--model distributed-llm` is kept from the original text.
 
 **Run**
 ```bash

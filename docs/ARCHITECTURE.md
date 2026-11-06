@@ -137,12 +137,19 @@ src/distllm/
 │   ├── batch_scheduler.py   # Continuous batching
 │   ├── kv_cache.py          # KV cache management
 │   ├── token_generator.py   # Sampling
-│   └── model_router.py      # Content-based routing
+│   ├── model_router.py      # Content-based routing
+│   ├── strategies/          # Execution strategies (local/distributed/speculative)
+│   ├── advanced_scheduling/ # Scheduling policies (Sarathi, heterogeneous, ...)
+│   └── scheduler/           # Batch scheduling internals (sequence, budget, chunked prefill)
 ├── dist/             # Distributed infrastructure
 │   ├── pipeline/     # Pipeline orchestrator
 │   ├── worker.py     # Worker node
 │   ├── node_service.py  # gRPC server
-│   └── p2p/          # P2P gossip, discovery
+│   ├── p2p/          # P2P gossip, discovery
+│   ├── speculative/  # Distributed speculative decoding
+│   ├── disagg/       # Disaggregated prefill + decode
+│   └── recovery.py   # Node failure detection, layer redistribution, in-flight recovery
+├── backends/         # Backend adapters (pytorch, vllm, llamacpp, mlx, nim, ollama, tgi, triton, webgpu, ...)
 ├── models/           # Model loading, partitioning
 ├── security/         # Auth, encryption, SSRF protection
 ├── observability/    # Metrics, tracing, logging
@@ -167,7 +174,7 @@ src/distllm/
 
 | State | Location | Persistence |
 |-------|----------|-------------|
-| Node topology | Coordinator (in-memory) | Replicated via etcd |
+| Node topology | Coordinator (in-memory) | Optional replication via `core/state_replication.py` (file or Redis backend) |
 | KV cache | Worker GPUs | Checkpointed to disk |
 | Request state | Coordinator | Thread-safe dicts |
 | Health state | HealthManager | In-memory with history |

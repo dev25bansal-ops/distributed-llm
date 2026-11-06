@@ -15,14 +15,17 @@ aliases:
 ## Desktop app — `tauri/` (Svelte 5 + Tauri 2 + Rust)
 - Runtime dashboard, chat, model management, cluster map, logs.
 - Run: `cd tauri && npm run tauri dev`.
-- (JS/Rust source + config; `node_modules/`/`build/` excluded from the vault.)
+- (JS/Rust source + config; `node_modules/`/`build/` excluded from the vault; 92 files incl. `package-lock.json`/`Cargo.lock`.)
 
 ## VS Code extension — `extensions/vscode/` (TS)
+- VS Code extension (TS)
 - Status-bar items (model, node health, tok/s color-coded) polling `/health` + `/api/metrics/collector`; right-click "send selection" → `/v1/completions`; **DistLLM Models** tree; config validation + snippets (8, Python+JS/TS).
 - Key files: `src/extension.ts` (356), `src/configValidation.ts`, `src/modelsApi.ts`, `src/modelsView.ts`, `snippets/distllm.json`.
 
+<!-- recounted 2026-11-06 by hygiene pass -->
+
 ## Marketing/product website — `website/`
-- Static multi-page site (Vite MPA build + docker/nginx): ~25 HTML pages (home, api, benchmarks, enterprise, playground, i18n) + ~46 JS SDK-widget modules (cluster-viz, benchmark-explorer, deploy-configurator, model-playground, i18n…), 4 locales (en/ja/ko/zh, partially translated), CSS design system, PWA service worker, SEO.
+- Static multi-page site (Vite MPA build + docker/nginx): 23 HTML pages (home, api, benchmarks, enterprise, playground, i18n) + JS SDK-widget modules in `js/` (cluster-viz, benchmark-explorer, deploy-configurator, model-playground, i18n…), 4 locales (en/ja/ko/zh, partially translated), CSS design system, PWA service worker, SEO.
 - Tests: Playwright (`accessibility`, `integration`, `security`, `visual-regression`) + Vitest units (`calculator`, `deploy-wizard`, `gpu-checker`, `model-explorer`, `model-rec`).
 
 ## Demo apps — deleted in 2026-11-06 hygiene pass

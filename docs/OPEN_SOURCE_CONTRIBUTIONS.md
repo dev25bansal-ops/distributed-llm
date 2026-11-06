@@ -23,8 +23,8 @@ We contribute to upstream projects when:
 | Contribution | Status | Impact |
 |-------------|--------|--------|
 | Pipeline parallelism support | Planned | Enables multi-node vLLM |
-| PagedAttention optimizations | Merged | 2x KV cache throughput |
-| Streaming improvements | Merged | Better SSE handling |
+| PagedAttention optimizations | claimed — no PR links on file | 2x KV cache throughput |
+| Streaming improvements | claimed — no PR links on file | Better SSE handling |
 
 **How to contribute**:
 ```bash
@@ -47,8 +47,8 @@ gh pr create --title "feat: pipeline parallelism support"
 
 | Contribution | Status | Impact |
 |-------------|--------|--------|
-| Distributed inference helpers | Merged | Better multi-node support |
-| Model sharding utilities | Merged | Easier model partitioning |
+| Distributed inference helpers | claimed — no PR links on file | Better multi-node support |
+| Model sharding utilities | claimed — no PR links on file | Easier model partitioning |
 | KV cache serialization | Planned | Cross-node cache transfer |
 
 ### PyTorch
@@ -57,8 +57,8 @@ gh pr create --title "feat: pipeline parallelism support"
 
 | Contribution | Status | Impact |
 |-------------|--------|--------|
-| NCCL optimizations | Merged | Faster multi-GPU communication |
-| CUDA graph improvements | Merged | Better decode performance |
+| NCCL optimizations | claimed — no PR links on file | Faster multi-GPU communication |
+| CUDA graph improvements | claimed — no PR links on file | Better decode performance |
 | Memory allocator tuning | Under review | Reduced fragmentation |
 
 ### HuggingFace Hub
@@ -67,8 +67,8 @@ gh pr create --title "feat: pipeline parallelism support"
 
 | Contribution | Status | Impact |
 |-------------|--------|--------|
-| Layer-aware downloads | Merged | Download only needed shards |
-| Parallel shard downloads | Merged | Faster model loading |
+| Layer-aware downloads | claimed — no PR links on file | Download only needed shards |
+| Parallel shard downloads | claimed — no PR links on file | Faster model loading |
 
 ---
 
@@ -113,7 +113,6 @@ How the change was tested.
 
 Contributors who make upstream improvements are recognized in:
 - DistLLM release notes
-- `CONTRIBUTORS.md` file
 - Annual contributor awards
 - Conference presentations
 
