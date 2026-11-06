@@ -636,7 +636,9 @@ class _StunProtocol:
     @staticmethod
     def compute_long_term_key(username: str, realm: str, password: str) -> bytes:
         """MD5(username:realm:password) for long-term credential mechanism."""
-        return hashlib.md5(f"{username}:{realm}:{password}".encode("utf-8")).digest()
+        # RFC 5389 §15.4 mandates MD5 for TURN long-term credentials — protocol
+        # interoperability requirement, not a crypto strength choice.
+        return hashlib.md5(f"{username}:{realm}:{password}".encode("utf-8")).digest()  # nosec B324  # STUN protocol  # noqa: B324
 
     @staticmethod
     def add_message_integrity(msg: bytes, key: bytes, *, include_fingerprint: bool = False) -> bytes:
@@ -2363,7 +2365,8 @@ class TURNServer:
         """Generate a unique nonce for the long-term credential mechanism."""
         now = time.time()
         data = f"{addr[0]}:{addr[1]}:{now}:{self._secret_key}"
-        nonce = hashlib.md5(data.encode()).hexdigest()
+        # Nonce is a unique identifier (not a MAC). Uniqueness + expiry are all that matter.
+        nonce = hashlib.md5(data.encode()).hexdigest()  # nosec B324  # STUN protocol  # noqa: B324
         with self._lock:
             self._nonces[nonce] = now
             # Clean old nonces

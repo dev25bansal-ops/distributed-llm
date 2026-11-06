@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 import uuid
@@ -168,7 +169,12 @@ async def upload_file(
     _ensure_upload_dir()
     upload_dir = _ensure_upload_dir() / file_id
     upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / (file.filename or "unnamed")
+    # F-066: never join the raw client filename onto the path — strip any
+    # directory component so uploads cannot traverse outside upload_dir.
+    safe_name = os.path.basename(file.filename.replace("\\", "/")) or "unnamed"
+    if safe_name in (".", ".."):
+        safe_name = "unnamed"
+    file_path = upload_dir / safe_name
 
     try:
         file_path.write_bytes(content)

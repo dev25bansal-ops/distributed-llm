@@ -60,17 +60,58 @@ class TestJWTAlgorithmNone:
         result = validate_jwt(token, secret="any-secret-key-here")
         assert result is None, "alg=none token must be rejected by validate_jwt"
 
-    def test_rs256_token_with_public_key_as_hmac_secret(self):
-        """RS256 token verified with public key as HMAC secret is rejected."""
+    def test_empty_hmac_key_rejected(self):
+        """PyJWT rejects HS256 tokens with empty HMAC key.
+
+        When an empty string "" is provided as the HMAC secret, PyJWT raises
+        ``InvalidKeyError`` (NOT ``InvalidTokenError``), which blocks any
+        attempt to bypass signature verification via blank secrets.
+
+        Note: InvalidKeyError inherits from PyJWTError but not InvalidTokenError.
+        """
         import jwt as pyjwt
-        # Create a valid RS256-signed token
-        private_key = b"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKjv..."
-        # PyJWT >= 2.0 requires explicit algorithm in the decode options,
-        # so the HMAC-with-public-key attack is blocked by default.
         token = pyjwt.encode({"sub": "test"}, "secret", algorithm="HS256")
-        # Trying to decode with a different algorithm still requires
-        # the correct key material in PyJWT >= 2.0
-        # PyJWT >= 2.13: an empty HMAC key raises InvalidKeyError, which no
-        # longer subclasses InvalidTokenError — accept either rejection.
-        with pytest.raises((pyjwt.InvalidTokenError, pyjwt.InvalidKeyError)):
+        with pytest.raises(pyjwt.InvalidKeyError):
             pyjwt.decode(token, "", algorithms=["HS256"])
+
+    def test_rs256_to_hs256_confusion_attack_blocked(self):
+        """Classical algorithm confusion: forged HS256 with PEM pubkey is rejected.
+
+        Simulates CVE-2015-9235-style confusion where an attacker:
+        1. Obtains the RSA public key (PEM format) from infrastructure/config.
+        2. Forges an HS256 token HMAC'd with the PEM public key as the secret.
+        3. Submits this token expecting it to be accepted with the same PEM as config.
+
+        This must fail-closed because:
+        * HS256 signed with a public key is forgeable by anyone possessing it.
+        * A system configured with a PEM key must ONLY accept RS256 signatures.
+        """
+        import jwt as pyjwt
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+        import hmac, hashlib, json, base64
+
+        # Generate real RSA keypair
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pub = key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+        payload = {"sub": "attacker", "role": "admin"}
+
+        # Forge: HMAC the payload with the PEM public key (anyone can do this!)
+        def b64(b: bytes) -> str:
+            return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+        h = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        p = b64(json.dumps(payload).encode())
+        sig = b64(hmac.new(pub.encode(), f"{h}.{p}".encode(), hashlib.sha256).digest())
+        forged = f"{h}.{p}.{sig}"
+
+        # App's validate_jwt must reject this on ALL paths (PyJWT or fallback).
+        # It returns None for failures — never raises or accepts forged tokens.
+        from distllm.plugins.auth_plugin import validate_jwt
+
+        # The forged token MUST NOT authenticate.
+        assert validate_jwt(forged, pub) is None

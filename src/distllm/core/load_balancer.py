@@ -130,75 +130,65 @@ class LoadBalancer:
     def pick(self, request_id: str = "") -> CoordinatorTarget | None:
         """Select a target coordinator for *request_id*.
 
-        Uses a read-copy-update (RCU) pattern to minimise lock hold time:
-        1. Briefly hold the lock to snapshot target state and counters.
-        2. Perform health filtering and selection logic lock-free on the snapshot.
-        3. Briefly re-acquire the lock only for the connection-count increment.
+        Selection and the connection reservation happen under one lock so
+        concurrent picks cannot all land on the same "least connections"
+        target (thundering herd). Target lists are small, so the O(n)
+        critical section is negligible next to request handling.
+
+        Recovery: an unhealthy target stays excluded until last_checked
+        ages past health_check_interval, then re-enters rotation as a
+        trial — the first real request acts as the probe, and
+        record_success() fully restores it.
         """
-        # ── Phase 1: Snapshot (brief lock) ─────────────────────────────
         with self._lock:
             now = time.time()
-            # snapshot: (target, active_connections, avg_latency_ms, weight,
-            #            is_healthy, stale_health_check)
-            snapshot = [
-                (t, t.active_connections, t.avg_latency_ms, t.weight,
-                 t.is_healthy, (now - t.last_checked) > self._health_check_interval)
-                for t in self._targets
+            candidates = [
+                t for t in self._targets
+                if t.is_healthy or (now - t.last_checked) > self._health_check_interval
             ]
-            strategy = self._strategy
             self._total_requests += 1
 
-        # ── Phase 2: Filter and select (lock-free) ─────────────────────
-        healthy = [e for e in snapshot if e[4] or e[5]]
-        if not healthy:
-            logger.warning("No healthy targets available")
-            if snapshot:
-                logger.warning("Falling back to all targets (may be unhealthy)")
-                healthy = list(snapshot)
-        if not healthy:
-            return None
+            if not candidates:
+                logger.warning("No healthy targets available")
+                if self._targets:
+                    logger.warning("Falling back to all targets (may be unhealthy)")
+                    candidates = list(self._targets)
+            if not candidates:
+                return None
 
-        if strategy == LBStrategy.RANDOM:
-            selected = random.choice(healthy)
+            strategy = self._strategy
+            if strategy == LBStrategy.RANDOM:
+                selected = random.choice(candidates)
 
-        elif strategy == LBStrategy.ROUND_ROBIN:
-            with self._lock:
-                self._rr_index = (self._rr_index + 1) % max(len(healthy), 1)
-                idx = self._rr_index
-            selected = healthy[idx]
+            elif strategy == LBStrategy.ROUND_ROBIN:
+                self._rr_index = (self._rr_index + 1) % max(len(candidates), 1)
+                selected = candidates[self._rr_index]
 
-        elif strategy == LBStrategy.LEAST_CONNECTIONS:
-            selected = min(healthy, key=lambda e: e[1])  # e[1] = active_connections
+            elif strategy == LBStrategy.LEAST_CONNECTIONS:
+                selected = min(candidates, key=lambda t: t.active_connections)
 
-        elif strategy == LBStrategy.LATENCY_WEIGHTED:
-            # score = (latency * connections) / weight, pick minimum
-            scores = [
-                (max(e[2], 1.0) * max(e[1], 1)) / max(e[3], 0.1)
-                for e in healthy
-            ]
-            selected = healthy[min(range(len(scores)), key=scores.__getitem__)]
+            elif strategy == LBStrategy.LATENCY_WEIGHTED:
+                # score = (latency * connections) / weight, pick minimum
+                selected = min(
+                    candidates,
+                    key=lambda t: (
+                        max(t.avg_latency_ms, 1.0) * max(t.active_connections, 1)
+                    ) / max(t.weight, 0.1),
+                )
 
-        elif strategy == LBStrategy.POWER_OF_TWO:
-            if len(healthy) >= 2:
-                a, b = random.sample(healthy, 2)
-                selected = a if a[1] <= b[1] else b  # a[1]/b[1] = active_connections
+            elif strategy == LBStrategy.POWER_OF_TWO:
+                if len(candidates) >= 2:
+                    a, b = random.sample(candidates, 2)
+                    selected = a if a.active_connections <= b.active_connections else b
+                else:
+                    selected = candidates[0]
             else:
-                selected = healthy[0]
-        else:
-            selected = healthy[0]
+                selected = candidates[0]
 
-        target: CoordinatorTarget = selected[0]
+            # Reserve the connection atomically with the selection.
+            selected.active_connections += 1
 
-        # ── Phase 3: Commit mutation (brief lock) ──────────────────────
-        # NOTE: There is a tiny TOCTOU window between releasing the lock
-        # at Phase 1 and re-acquiring it here.  During that window
-        # record_success / record_failure could decrement the same counter.
-        # The count self-corrects over time and the error is bounded by
-        # the number of in-flight requests, so this is benign.
-        with self._lock:
-            target.active_connections += 1
-
-        return target
+        return selected
 
     def record_success(
         self, target: CoordinatorTarget, latency_ms: float = 0.0

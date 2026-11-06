@@ -9,7 +9,7 @@ operator:
   replicaCount: 1
   image:
     repository: ghcr.io/distributed-llm/operator
-    tag: "0.4.0"
+    tag: "0.4.1"
     pullPolicy: IfNotPresent
   serviceAccount:
     create: true
@@ -38,8 +38,8 @@ controller:
   # Max concurrent reconciles.
   maxConcurrentReconciles: 3
   # Default images when not specified in the CR.
-  defaultCoordinatorImage: ghcr.io/distributed-llm/coordinator:0.4.0
-  defaultWorkerImage: ghcr.io/distributed-llm/worker:0.4.0
+  defaultCoordinatorImage: ghcr.io/distributed-llm/coordinator:0.4.1
+  defaultWorkerImage: ghcr.io/distributed-llm/worker:0.4.1
   # Grace period for worker pod termination.
   workerGracePeriodSeconds: 30
   # Grace period for coordinator pod termination.
@@ -80,3 +80,28 @@ tls:
   certManager:
     enabled: false
     issuerName: distllm-selfsigned-issuer
+
+# ── Model configuration (required by coordinator template) ─────────────
+
+model:
+  # Must be set by the user; an empty name renders DISTLLM_MODEL empty.
+  name: ""
+  dtype: "float16"
+
+# ── HPA configuration (required by hpa.yaml template) ─────────────────
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  # Selector consumed by hpa.yaml: "queue_depth" or "tokens_per_second".
+  metric: "queue_depth"
+  targetValue: 10
+
+# ── Monitoring configuration (required by servicemonitor/prometheusrules) ─
+
+monitoring:
+  prometheusRules:
+    enabled: false
+  serviceMonitor:
+    enabled: false

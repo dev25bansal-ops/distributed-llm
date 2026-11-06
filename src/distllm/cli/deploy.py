@@ -9,6 +9,8 @@ import time
 from rich.console import Console
 from rich.panel import Panel
 
+import httpx
+
 console = Console()
 
 
@@ -45,8 +47,6 @@ def run_deploy(
         hf_token: HuggingFace API token for gated models.
         auto_partition: If True, auto-calculate optimal layer partitioning.
     """
-    import httpx
-
     # One-line HuggingFace deploy: estimate model parameters
     if "/" in model:
         console.print(Panel(
@@ -216,23 +216,19 @@ def _estimate_vram_per_layer(params_b: float, dtype: str, quantization: str) -> 
 
 
 def _deploy_local(model: str, dtype: str, quantization: str, nodes: int, console: Console) -> None:
-    """Deploy in local mode without a running coordinator."""
-    console.print("[bold]Starting local deployment...[/bold]")
-    try:
-        from distllm.cli.run import run_inference
-        run_inference(
-            model=model,
-            local=True,
-            config="",
-            port=8000,
-            dtype=dtype,
-            max_tokens=256,
-            temperature=0.7,
-            prompt="",
-            console=console,
-        )
-    except Exception as e:
-        console.print(f"[red]Local deployment failed: {e}[/red]")
+    """Guide local-mode deployment without a running coordinator.
+
+    Deliberately does NOT spawn the blocking inference server from inside
+    ``deploy`` — that would wedge the CLI until Ctrl-C. Print the exact
+    command instead.
+    """
+    console.print("[bold]Local mode instructions:[/bold]")
+    console.print(f"  Run in another terminal:")
+    console.print(
+        f"    [cyan]distllm run --model {model} --local --dtype {dtype}"
+        f"{' --quantization ' + quantization if quantization != 'none' else ''}[/cyan]"
+    )
+    console.print("  The API server comes up on http://localhost:8000")
 
 
 def _print_usage_example(host: str, port: int, model: str) -> None:

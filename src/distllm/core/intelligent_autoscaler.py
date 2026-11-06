@@ -73,6 +73,8 @@ class IntelligentAutoscaler:
         scale_down_threshold: float = 0.3,
         cooldown_seconds: float = 60.0,
         prediction_window: int = 100,
+        hysteresis_band: int = 0,          # opt-in dead-band (M10)
+        stable_cycles: int = 1,
     ):
         self._min_nodes = min_nodes
         self._max_nodes = max_nodes
@@ -81,6 +83,12 @@ class IntelligentAutoscaler:
         self._scale_down = scale_down_threshold
         self._cooldown = cooldown_seconds
         self._last_scale_time = 0.0
+        # M10: hysteresis — a |target-current| strictly inside the dead-band
+        # never scales; at the band edge it scales only after stable_cycles
+        # consecutive evaluations in the same direction (sustained override).
+        self._hysteresis_band = max(hysteresis_band, 0)
+        self._stable_cycles = max(stable_cycles, 1)
+        self._sustained: tuple[int, int] = (0, 0)  # (direction, consecutive count)
 
         self._history: deque[ScalingMetrics] = deque(maxlen=prediction_window)
         self._cost_profiles: dict[str, CostProfile] = {}
@@ -127,13 +135,31 @@ class IntelligentAutoscaler:
         target = max(self._min_nodes, min(target, self._max_nodes))
 
         if target == metrics.current_nodes:
+            self._sustained = (0, 0)
             return ScalingDecision(
                 should_scale=False,
                 target_nodes=target,
                 reason="optimal",
             )
 
-        reason = "scale_up" if target > metrics.current_nodes else "scale_down"
+        # M10 hysteresis gate: hold small oscillations steady; commit only
+        # at the band edge after sustained pressure in one direction.
+        delta = target - metrics.current_nodes
+        direction = 1 if delta > 0 else -1
+        prev_dir, count = self._sustained
+        count = count + 1 if direction == prev_dir else 1
+        self._sustained = (direction, count)
+
+        if abs(delta) < self._hysteresis_band or (
+            abs(delta) == self._hysteresis_band and count < self._stable_cycles
+        ):
+            return ScalingDecision(
+                should_scale=False,
+                target_nodes=metrics.current_nodes,
+                reason="hysteresis",
+            )
+
+        reason = "scale_up" if delta > 0 else "scale_down"
 
         # Cost impact
         cost_change = self._estimate_cost_change(

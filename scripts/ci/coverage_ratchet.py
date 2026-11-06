@@ -226,7 +226,7 @@ def parse_coverage(xml_path: Path) -> dict[str, float]:
     root = tree.getroot()
     out: dict[str, float] = {}
     for pkg in root.iter("package"):
-        pname = pkg.get("name", "")
+        pkg.get("name", "")
         for cls in pkg.iter("class"):
             fname = cls.get("filename", "")
             # Use package dir as the unit of comparison.

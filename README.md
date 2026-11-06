@@ -30,7 +30,7 @@ Friend's PC (RTX 3080) ────┘
 ## Quick Start
 
 ```bash
-pip install distllm
+pip install distributed-llm[cli,self-hosted]
 
 # On your main machine — start a cluster
 distllm cluster start --model meta-llama/Llama-3.2-7B
@@ -61,14 +61,17 @@ Key capabilities:
 ## Installation
 
 ```bash
-# Core package
-pip install distllm
+# Core package + CLI
+pip install distributed-llm[cli]
+
+# With PyTorch/transformers for self-hosted GPU inference (recommended)
+pip install "distributed-llm[cli,self-hosted]"
 
 # With vLLM backend (recommended for NVIDIA GPUs)
-pip install "distllm[vllm]"
+pip install "distributed-llm[self-hosted,backends]"
 
-# With llama.cpp backend (CPU, AMD, Apple Silicon)
-pip install "distllm[llamacpp]"
+# Full install (all backends, integrations, SDKs)
+pip install "distributed-llm[all]"
 
 # Development
 pip install -e ".[dev]"
@@ -78,13 +81,13 @@ pip install -e ".[dev]"
 
 - **Pipeline parallelism** — split any HuggingFace model across N devices
 - **Auto-discovery** — mDNS/zeroconf device finding on LAN
-- **6 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch
+- **10 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch, Triton, NIM, MLX, WebGPU
 - **Auth plugin** — JWT authentication + RBAC role-based access control
-- **Health watchdog** — Continuous node health monitoring with auto circuit-breaking
-- **Semantic caching** — Deduplicate repeated prompts with embedding similarity
+- **Health watchdog** — continuous node health monitoring with auto circuit-breaking
+- **Semantic caching** — deduplicate repeated prompts with embedding similarity
 - **Token streaming** — `generate_stream()` for real-time token-by-token responses
-- **Config validation** — Cross-field validation catches invalid combinations at load time
-- **Circuit breaker** — Graduated backpressure for load shedding
+- **Config validation** — cross-field validation catches invalid combinations at load time
+- **Circuit breaker** — graduated backpressure for load shedding
 - **Auto-partitioning** — hardware-aware DP solver for optimal layer assignment
 - **Node recovery** — checkpoint-based recovery when nodes disconnect
 - **Straggler detection** — statistical outlier detection for slow nodes
@@ -95,46 +98,45 @@ pip install -e ".[dev]"
 - **OpenAI-compatible API** — use any OpenAI client to send requests
 - **Full observability** — Prometheus metrics, OTel tracing, structured logging
 - **Interactive chat** — `distllm chat` for CLI-based interaction
-- **Auth plugin** — JWT authentication with RBAC role-based access control
-- **Health watchdog** — continuous node health monitoring with automatic failover
-- **Semantic cache** — caching plugin with deduplication for repeated prompts
-- **Token streaming** — `generate_stream()` SDK method for token-by-token responses
 - **Health endpoints** — `/healthz` (liveness) and `/readyz` (readiness) for Kubernetes probes
 
 ## CLI Commands
 
 ```bash
-# Start a coordinator node
-distllm-coordinator --model meta-llama/Llama-3.2-1B --local --chat
+# Start the REST API server (local mode)
+distllm system run --model meta-llama/Llama-3.2-1B --local --port 8000
 
-# Start distributed coordinator
-distllm-coordinator --model meta-llama/Llama-3.2-7B \
-  --nodes laptop:50051:0:5 desktop:50052:6:11 friend:50053:12:17
-
-# Start a worker node
-distllm-node --node-id laptop --model meta-llama/Llama-3.2-7B \
-  --start-layer 0 --end-layer 5 --total-layers 18 \
-  --coordinator-host 192.168.1.100 --coordinator-port 50050
-
-# Start the REST API server
+# Start the API server on a cluster node
 distllm-api --model meta-llama/Llama-3.2-1B --local
 
-# System diagnostics (check Python, CUDA, GPU, network, ports)
-distllm doctor
+# Start a coordinator node with workers (modern CLI)
+distllm cluster start --model meta-llama/Llama-3.2-7B
 
-# Quantize a model for smaller footprint
-distllm tune quantize --model meta-llama/Llama-3.2-7B --bits 4
+# Join a cluster as a worker node
+distllm cluster join --coordinator 192.168.1.100
 
-# Batch inference over a dataset
-distllm tune batch --input prompts.jsonl --output results.jsonl
+# System diagnostics (local environment check)
+distllm cli-doctor
 
-# Warm the semantic cache from prior prompts
-distllm tune cache --preload cache_seed.jsonl
+# Cluster diagnostics (check a running coordinator)
+distllm system doctor
+
+# Quantize / optimize model (adaptive precision optimizer)
+distllm tune quantize --model meta-llama/Llama-3.2-7B
+
+# Profile optimal batch size
+distllm tune batch --model meta-llama/Llama-3.2-7B --gpus 1
+
+# Size KV cache for expected concurrency
+distllm tune cache --model meta-llama/Llama-3.2-7B
+
+# Interactive chat
+distllm chat
 ```
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — Pipeline parallelism, node topology, KV cache management
+- [Architecture](docs/ARCHITECTURE.md) — Pipeline parallelism, node topology, KV cache management
 - [Deployment](DEPLOYMENT.md) — Local, Docker, and multi-machine deployment
 - [API Reference](docs/api.md) — OpenAI-compatible API docs
 
@@ -142,23 +144,25 @@ distllm tune cache --preload cache_seed.jsonl
 
 ```
 src/distllm/
-├── core/              # Coordinator, request pipeline, batch scheduler
+├── core/              # Coordinator, engine strategies, schedulers, HA
 ├── dist/              # Distributed inference engine
-│   ├── pipeline.py    # PipelineOrchestrator — multi-node execution
-│   ├── worker.py      # WorkerNode — per-device model subset
-│   ├── recovery.py    # NodeRecoveryManager — failure handling
-│   ├── straggler.py   # StragglerDetector — slow node detection
+│   ├── pipeline/      # PipelineOrchestrator, transport, 1F1B scheduler
+│   ├── partition/     # Hardware-aware auto-partitioner, quantization
+│   ├── p2p/           # P2P gossip protocol, Kademlia DHT, discovery
+│   ├── backends/      # Node-level backend adapters
+│   ├── worker.py      # WorkerNode — per-device model subset (entry point)
+│   ├── recovery.py    # Node failure recovery + checkpoint replay
+│   ├── straggler.py   # Straggler detection
 │   ├── rebalancer.py  # Dynamic pipeline rebalancing
-│   ├── wide_area.py   # WAN-optimized inference
-│   ├── parallel.py    # Hybrid parallelism auto-selector
-│   ├── p2p/           # P2P gossip protocol & discovery
-│   └── partition/     # Hardware-aware auto-partitioner
-├── api/               # OpenAI-compatible REST API
-├── models/            # Model partitioning & loading
-├── cli/               # CLI tool
-├── sdk/               # Python client
-├── observability/     # Metrics, tracing, logging
-└── dashboard/         # Web dashboard
+│   └── wide_area.py   # WAN-optimized inference
+├── api/               # OpenAI-compatible REST API (FastAPI)
+├── backends/          # Inference backends: vLLM, llama.cpp, TensorRT, ONNX, MLX, Triton
+├── models/            # Model loading, partitioning, hub
+├── cli/               # Typer CLI (`distllm`, `distllm cluster`, `distllm tune`)
+├── config/            # Pydantic settings, YAML/env loader
+├── sdk/               # Python client library
+├── observability/     # Prometheus metrics, OTel tracing, structured logging
+└── plugins/           # Auth, caching, watchdog, and other built-in plugins
 ```
 
 ## Supported Model Architectures
@@ -167,10 +171,13 @@ GPT-2, GPT-Neo, Llama 2/3, Mistral, Mixtral, Qwen2.5, Phi, DeepSeek, StableLM, P
 
 ## Roadmap
 
-- **Current**: Pipeline parallelism across LAN devices, manual node configuration
-- **Q3 2026**: Auto-discovery (mDNS), auto-partitioning, node recovery, GUI dashboard
-- **Q4 2026**: NAT traversal (cross-internet), P2P model distribution, GPU reputation system
-- **2027**: Federated clusters, speculative parallelism, privacy-preserving split, incentive system
+- **v0.4.x** (current): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache, RBAC auth, 10 backends
+- **Planned**: 
+  - **mDNS auto-discovery** (in progress — CLI supports `--discover`)
+  - **GPU marketplace reputation system**
+  - **Speculative decoding & distributed draft models**
+  - **Privacy-preserving split inference with differential privacy**
+- **2027**: Federated clusters, cross-internet NAT traversal, incentive systems
 
 ## Contributing
 

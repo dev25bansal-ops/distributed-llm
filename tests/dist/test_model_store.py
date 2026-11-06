@@ -52,14 +52,14 @@ class TestModelStoreConstruction:
     def test_cache_dir_created_if_not_exist(self, tmp_path: Path):
         nested = tmp_path / "a" / "b" / "c"
         assert not nested.exists()
-        store = ModelStore(cache_dir=str(nested))
+        ModelStore(cache_dir=str(nested))
         assert nested.exists()
 
     def test_cache_dir_already_exists(self, tmp_path: Path):
         nested = tmp_path / "already_exists"
         nested.mkdir(parents=True)
         (nested / "some_file.txt").write_text("hello")
-        store = ModelStore(cache_dir=str(nested))
+        ModelStore(cache_dir=str(nested))
         assert nested.exists()
         assert (nested / "some_file.txt").exists()  # did not blow away
 

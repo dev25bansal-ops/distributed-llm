@@ -79,7 +79,7 @@ def chaos_coordinator(request, mock_tokenizer, monkeypatch):
     - ``node_kwargs`` (default {}): extra kwargs for each NodeRegistration
     """
     num_nodes = getattr(request, "param", {}).get("num_nodes", 3)
-    node_kwargs = getattr(request, "param", {}).get("node_kwargs", {})
+    getattr(request, "param", {}).get("node_kwargs", {})
 
     monkeypatch.setattr(NodeRegistration, "init_client", lambda self, **kw: None)
     monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda *a, **kw: mock_tokenizer)

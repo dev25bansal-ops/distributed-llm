@@ -63,7 +63,7 @@ def _feature_hash(text: str, num_buckets: int = 256) -> list[float]:
             ngram = text_lower[i : i + n].encode("utf-8")
             # M-10: MD5 is acceptable for non-cryptographic feature hashing
             # (bucketing, not security). Performance > collision resistance here.
-            h = int(hashlib.md5(ngram).hexdigest(), 16)
+            h = int(hashlib.md5(ngram).hexdigest(), 16)  # nosec B324  # feature hashing  # noqa: B324
             idx = h % num_buckets
             sign = 1.0 if (h // num_buckets) % 2 == 0 else -1.0
             vec[idx] += sign

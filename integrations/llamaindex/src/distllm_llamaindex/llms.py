@@ -183,12 +183,8 @@ class DistLLM(LLM):
     def stream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> Generator[ChatResponse, None, None]:
         payload = self._build_chat_payload(messages, **kwargs)
         for chunk in self._client.chat_completions_stream(**payload):
-            # SDK yields content strings (new) or SSE event dicts (older SDKs/mocks)
-            if isinstance(chunk, str):
-                content = chunk
-            else:
-                delta = chunk
-                content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            delta = chunk if isinstance(chunk, dict) else {}
+            content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
             if not content:
                 continue
             yield ChatResponse(
@@ -199,12 +195,8 @@ class DistLLM(LLM):
     async def astream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponseAsyncGen:
         payload = self._build_chat_payload(messages, **kwargs)
         async for chunk in self._async_client.chat_completions_stream(**payload):
-            # SDK yields content strings (new) or SSE event dicts (older SDKs/mocks)
-            if isinstance(chunk, str):
-                content = chunk
-            else:
-                delta = chunk
-                content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            delta = chunk if isinstance(chunk, dict) else {}
+            content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
             if not content:
                 continue
             yield ChatResponse(
@@ -227,12 +219,8 @@ class DistLLM(LLM):
     def stream_complete(self, prompt: str, formatted: bool = False, **kwargs: Any) -> Generator[CompletionResponse, None, None]:
         payload = self._build_completion_payload(prompt, **kwargs)
         for chunk in self._client.completions_stream(**payload):
-            # SDK yields text strings (new) or SSE event dicts (older SDKs/mocks)
-            if isinstance(chunk, str):
-                text = chunk
-            else:
-                delta = chunk
-                text = delta.get("choices", [{}])[0].get("text", "")
+            delta = chunk if isinstance(chunk, dict) else {}
+            text = delta.get("choices", [{}])[0].get("text", "")
             if not text:
                 continue
             yield CompletionResponse(text=text, delta=text)
@@ -240,12 +228,8 @@ class DistLLM(LLM):
     async def astream_complete(self, prompt: str, formatted: bool = False, **kwargs: Any) -> CompletionResponseAsyncGen:
         payload = self._build_completion_payload(prompt, **kwargs)
         async for chunk in self._async_client.completions_stream(**payload):
-            # SDK yields text strings (new) or SSE event dicts (older SDKs/mocks)
-            if isinstance(chunk, str):
-                text = chunk
-            else:
-                delta = chunk
-                text = delta.get("choices", [{}])[0].get("text", "")
+            delta = chunk if isinstance(chunk, dict) else {}
+            text = delta.get("choices", [{}])[0].get("text", "")
             if not text:
                 continue
             yield CompletionResponse(text=text, delta=text)

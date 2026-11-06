@@ -266,8 +266,7 @@ class TestTLSActualBind:
             # Plaintext connect must fail.
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(2.0)
-                plaintext_err = sock.connect_ex(("127.0.0.1", port))
-                plaintext_ok = (plaintext_err == 0)
+                sock.connect_ex(("127.0.0.1", port))
 
             assert tls_ok, "TLS handshake did not succeed"
             # Note: gRPC's add_secure_port() with TLS credentials does NOT

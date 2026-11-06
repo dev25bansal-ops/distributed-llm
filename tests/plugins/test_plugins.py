@@ -110,7 +110,7 @@ class TestMetricsPlugin:
 
         plugin = MetricsPlugin()
         if hasattr(plugin, "collect"):
-            result = plugin.collect(metric_name="requests_total", value=1.0)
+            plugin.collect(metric_name="requests_total", value=1.0)
             # Verify the metric was recorded
             if hasattr(plugin, "get_metrics"):
                 metrics = plugin.get_metrics()

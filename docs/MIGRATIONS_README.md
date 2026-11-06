@@ -8,6 +8,15 @@ Practical, drop-in migration guides for teams moving to DistLLM's OpenAI-compati
 | [MIGRATION_VLLM.md](MIGRATION_VLLM.md) | vLLM OpenAI-server users | Same `/v1` base URL swap; operational differences (distributed HW, model loading) |
 | [MIGRATION_OLLAMA.md](MIGRATION_OLLAMA.md) | Ollama users | Swap `/v1` host/port or run the Ollama proxy; map tags → DistLLM model ids |
 
+## Table of Contents
+
+<!-- TOC -->
+
+- [Common facts across all three](#common-facts-across-all-three)
+- [References](#references)
+
+<!-- /TOC -->
+
 ## Common facts across all three
 
 - **DistLLM base URL:** `http://localhost:8000/v1`

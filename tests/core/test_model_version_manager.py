@@ -1076,3 +1076,68 @@ class TestModelVersionManagerEdgeCases:
         list2 = mgr.list_versions()
         assert list1 is not list2  # different lists
         assert list1 == list2
+
+
+class TestABBucketingDeterminism:
+    """BUG-5 regression: A/B bucketing must not use Python's per-process
+    salted hash() -- the same request must land in the same variant on
+    every replica and after every restart."""
+
+    _PROBE = (
+        "import json, sys\n"
+        "from tests._import_helper import bootstrap_fake_packages, load_module\n"
+        "bootstrap_fake_packages()\n"
+        "mod = load_module('distllm/core/model_version_manager.py')\n"
+        "m = mod.ModelVersionManager(model_name='llama')\n"
+        "m.register_version('v1', '/models/v1')\n"
+        "m.register_version('v2', '/models/v2')\n"
+        "m.start_ab_test('v1', 'v2', split_ratio=0.9)\n"
+        "print(json.dumps([m.select_ab_version(f'req-{i}') for i in range(20)]))\n"
+    )
+
+    def test_selection_identical_across_hash_seeds(self) -> None:
+        import subprocess
+        import sys
+
+        outputs = []
+        for seed in ("0", "1", "12345"):
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            proc = subprocess.run(
+                [sys.executable, "-c", self._PROBE],
+                capture_output=True, text=True, env=env, timeout=120,
+            )
+            assert proc.returncode == 0, proc.stderr
+            outputs.append(proc.stdout.strip())
+        assert outputs[0] == outputs[1] == outputs[2]
+        # Sanity: with a 90% split the probe must see both variants.
+        selections = json.loads(outputs[0])
+        assert set(selections) == {"v1", "v2"}
+
+    def test_selection_matches_sha256_bucket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import hashlib
+
+        ft = _FrozenTime(1000.0)
+        monkeypatch.setattr(time, "time", ft)
+        mgr = ModelVersionManager(model_name="llama")
+        mgr.register_version("v1", "/models/v1")
+        mgr.register_version("v2", "/models/v2")
+        mgr.start_ab_test("v1", "v2", split_ratio=0.9)
+
+        for i in range(50):
+            rid = f"req-{i}"
+            digest = hashlib.sha256((rid + "v1").encode("utf-8")).hexdigest()
+            bucket = int(digest[:8], 16)
+            expected = "v2" if (bucket % 1000) / 1000.0 < 0.9 else "v1"
+            assert mgr.select_ab_version(rid) == expected
+
+    def test_selection_repeatable_within_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        ft = _FrozenTime(1000.0)
+        monkeypatch.setattr(time, "time", ft)
+        mgr = ModelVersionManager(model_name="llama")
+        mgr.register_version("v1", "/models/v1")
+        mgr.register_version("v2", "/models/v2")
+        mgr.start_ab_test("v1", "v2", split_ratio=0.5)
+
+        first = [mgr.select_ab_version(f"req-{i}") for i in range(30)]
+        again = [mgr.select_ab_version(f"req-{i}") for i in range(30)]
+        assert first == again

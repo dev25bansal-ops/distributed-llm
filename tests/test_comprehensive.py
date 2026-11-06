@@ -386,7 +386,7 @@ class TestKVCacheDelta:
 
     def test_kv_cache_manager_memory_usage(self):
         mgr = _kv_cache.KVCacheManager()
-        c = mgr.create("r1", 1, 1, 2, 32)
+        mgr.create("r1", 1, 1, 2, 32)
         used = mgr.total_memory_usage()
         assert used > 0
 

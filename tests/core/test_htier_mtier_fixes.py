@@ -195,7 +195,6 @@ def test_concurrent_add_flush_no_token_loss():
     buf = tsb.TokenStreamingBuffer(max_batch_size=4)
 
     added = []
-    lost = []
     lock = threading.Lock()
 
     def adder():

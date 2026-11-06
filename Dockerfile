@@ -50,7 +50,7 @@ FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
 
 ARG CUDA_VERSION
 ARG PYTHON_VERSION=3.10
-ARG DISTLLM_VERSION=0.4.0
+ARG DISTLLM_VERSION=0.4.1
 
 LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distributed-llm"
 LABEL org.opencontainers.image.version="${DISTLLM_VERSION}"

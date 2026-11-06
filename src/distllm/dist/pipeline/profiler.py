@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
-import torch
+from loguru import logger
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for pipeline profiler; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
 
 
 class PipelineProfiler:
@@ -19,6 +36,7 @@ class PipelineProfiler:
     """
 
     def __init__(self, history_size: int = 100, use_cuda_events: bool = False):
+        _require_torch()
         self._history: list[dict[str, float]] = []
         self._history_size = history_size
         self._use_cuda = use_cuda_events and torch.cuda.is_available()

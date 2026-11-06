@@ -214,7 +214,7 @@ class TestMemoryPressure:
         """Releasing KV cache should free memory."""
         kv_mgr = KVCacheManager()
 
-        cache = kv_mgr.create("req-1", 8, 1, 16, 128, device="cpu")
+        kv_mgr.create("req-1", 8, 1, 16, 128, device="cpu")
         initial_mem = kv_mgr.total_memory_usage()
         assert initial_mem > 0
 

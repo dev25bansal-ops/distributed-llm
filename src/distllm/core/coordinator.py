@@ -590,6 +590,14 @@ class Coordinator:
         """
         return getattr(self._inference_engine, "local_partitioner", None)
 
+    @local_partitioner.setter
+    def local_partitioner(self, value: Any) -> None:
+        # The engine owns the attribute; the Coordinator property is a
+        # delegate. Writing through keeps test fixtures and any caller that
+        # assigns on the Coordinator working after the fde0d43 delegation.
+        if self._inference_engine is not None:
+            self._inference_engine.local_partitioner = value
+
     @prefix_cache.setter
     def prefix_cache(self, value: Any) -> None:
         if self._cache_mgr is not None:
@@ -1688,8 +1696,28 @@ class Coordinator:
 
 
 # ── CLI entry point (moved to coordinator_cli.py) ────────────────────────
-# Backward-compatible re-exports so existing imports keep working.
-from distllm.core.coordinator_cli import _resolve_cluster_key, main  # noqa: E402
+# Backward-compatible re-exports so existing imports keep working
+# (e.g. the ``distllm-coordinator`` console script, which historically
+# targeted ``distllm.core.coordinator:main``).
+#
+# A plain module-level import of coordinator_cli here would be circular:
+# coordinator_cli imports ``Coordinator`` from this module.  Instead we use
+# PEP 562 module ``__getattr__`` to import lazily, on first attribute
+# access.  This keeps both import orders working:
+#   import distllm.core.coordinator      # no coordinator_cli import
+#   import distllm.core.coordinator_cli  # imports Coordinator from above
+_CLI_REEXPORTS = frozenset({"main", "_resolve_cluster_key"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _CLI_REEXPORTS:
+        from distllm.core import coordinator_cli
+
+        return getattr(coordinator_cli, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 if __name__ == "__main__":
+    from distllm.core.coordinator_cli import main
+
     main()

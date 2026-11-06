@@ -6,6 +6,7 @@ ENDPOINTS: dict[str, tuple[str, str]] = {
     "createEmbedding": ("POST", "/v1/embeddings"),
     "listModels": ("GET", "/v1/models"),
     "getHealth": ("GET", "/health"),
-    "createBatch": ("POST", "/v1/batches"),
-    "listBatches": ("GET", "/v1/batches"),
+    "createBatch": ("POST", "/v1/batch/submit"),
+    "getBatchStatus": ("GET", "/v1/batch/{batch_id}/status"),
+    "cancelBatch": ("POST", "/v1/batch/{batch_id}/cancel"),
 }

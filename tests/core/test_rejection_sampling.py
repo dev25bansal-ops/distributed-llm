@@ -84,7 +84,6 @@ def test_accept_token_partial_acceptance_rate_matches_p_over_q():
 
     Setup: q=0.5, choose logits/temp so p ~= 0.25 -> expected rate ~= 0.5.
     """
-    vocab = 4
     # Make a distribution where token 0 has probability ~0.25 at temp=1
     logits = torch.tensor([[[0.0, 1.0, 1.0, 1.0]]])  # softmax: e^0/(e^0+3e^1)
     temp = 1.0

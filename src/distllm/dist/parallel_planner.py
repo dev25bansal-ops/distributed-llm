@@ -339,7 +339,7 @@ class HybridParallelPlanner:
     ) -> str:
         m = f"{total_layers}:{num_experts}:{hidden_size}:{intermediate_size}:{num_attention_heads}:{num_key_value_heads}"
         t = f"{self.topology.num_nodes}:{self.topology.gpus_per_node}:{self.topology.has_nvlink}:{self.topology.has_infiniband}:{self.topology.total_gpus}"
-        return hashlib.md5((m + "|" + t).encode()).hexdigest()
+        return hashlib.md5((m + "|" + t).encode()).hexdigest()  # nosec B324  # plan cache key  # noqa: B324
 
     def invalidate_plan_cache(self) -> None:
         self._plan_cache.clear()

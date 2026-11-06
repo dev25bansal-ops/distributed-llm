@@ -42,20 +42,38 @@ class ChromaStore(VectorStore):
                 "chromadb is not installed. Install it to use ChromaStore: "
                 "pip install chromadb"
             ) from exc
-        self._client = chromadb.HttpClient(
-            host=self.host,
-            port=self.port,
-            tenant=self.tenant,
-            database=self.database,
-            settings=Settings(anonymized_telemetry=False),
-        )
+        try:
+            self._client = chromadb.HttpClient(
+                host=self.host,
+                port=self.port,
+                tenant=self.tenant,
+                database=self.database,
+                settings=Settings(anonymized_telemetry=False),
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            self._client = None
+            raise RuntimeError(
+                f"Chroma server unreachable at {self.host}:{self.port}: {exc}. "
+                f"Start your Chroma service or point host/port at it."
+            ) from exc
         return self._client
 
     def _require_collection(self):
         if self._collection is not None:
             return self._collection
         client = self._require_client()
-        self._collection = client.get_or_create_collection(name=self.collection_name)
+        try:
+            self._collection = client.get_or_create_collection(name=self.collection_name)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            self._collection = None
+            raise RuntimeError(
+                f"Chroma server unreachable at {self.host}:{self.port}: {exc}. "
+                f"Start your Chroma service or point host/port at it."
+            ) from exc
         return self._collection
 
     def upsert(self, embeddings: list[list[float]], ids: list[str], metadata: list[dict] | None = None) -> None:

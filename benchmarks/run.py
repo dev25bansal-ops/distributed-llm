@@ -148,33 +148,6 @@ def _enable_gpu_optimizations():
         torch.backends.cudnn.benchmark = True
 
 
-def _sync(device: str = "cuda"):
-    """Synchronize CUDA timers; no-op on CPU."""
-    import torch
-    if device.startswith("cuda") and torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
-def _dtype_for_device(device: str):
-    """fp16 on GPU; fp16 matmul is not a realistic CPU path, use fp32 there."""
-    import torch
-    return torch.float16 if device.startswith("cuda") else torch.float32
-
-
-def _load_causal_lm(model_name: str, device: str, **kwargs):
-    """Load a causal LM preferring SDPA attention, falling back to eager for
-    architectures without an SDPA port (e.g. GPT-Neo / TinyStories)."""
-    from transformers import AutoModelForCausalLM
-    try:
-        return AutoModelForCausalLM.from_pretrained(
-            model_name, attn_implementation="sdpa", **kwargs,
-        )
-    except ValueError:
-        return AutoModelForCausalLM.from_pretrained(
-            model_name, attn_implementation="eager", **kwargs,
-        )
-
-
 def get_gpu_memory_mb() -> float:
     try:
         import torch
@@ -207,12 +180,12 @@ def get_gpu_memory_total_mb() -> float:
 
 # ── Optimized Model Loading (all optimizations combined) ─────────────────────
 
-def _load_optimized_model(model_name: str, device: str = "cuda"):
+def _load_optimized_model(model_name: str):
     """Load model with SDPA (PyTorch native FlashAttention) for max performance.
 
     Optimizations applied:
     1. SDPA (scaled dot product attention) - uses FlashAttention via PyTorch CUDA
-    2. FP16 precision on GPU (FP32 on CPU) - 2x less memory bandwidth vs FP32
+    2. FP16 precision - 2x less memory bandwidth vs FP32
     3. TF32 matmul precision - faster GEMM on Ampere+ GPUs
     4. cuDNN autotune - selects fastest convolution algorithms
     5. CUDA warmup - pre-compiles CUDA kernels before benchmark
@@ -231,12 +204,12 @@ def _load_optimized_model(model_name: str, device: str = "cuda"):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    model = _load_causal_lm(
+    model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        device,
-        torch_dtype=_dtype_for_device(device),
-        device_map=device,
+        torch_dtype=torch.float16,
+        device_map="cuda:0",
         trust_remote_code=True,
+        attn_implementation="sdpa",
     )
     model.eval()
     return model, tokenizer
@@ -254,10 +227,10 @@ def _warmup(model, tokenizer, max_tokens: int = 10, device: str = "cuda"):
                 max_new_tokens=max_tokens,
                 do_sample=False,
             )
-    _sync(device)
+    torch.cuda.synchronize()
 
 
-def _load_model_ttft(model_name: str, device: str = "cuda"):
+def _load_model_ttft(model_name: str):
     """Load model for TTFT/ITL benchmarks (no torch.compile to avoid TTFT compilation overhead)."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
@@ -268,12 +241,12 @@ def _load_model_ttft(model_name: str, device: str = "cuda"):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    model = _load_causal_lm(
+    model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        device,
-        torch_dtype=_dtype_for_device(device),
-        device_map=device,
+        torch_dtype=torch.float16,
+        device_map="cuda:0",
         trust_remote_code=True,
+        attn_implementation="sdpa",
     )
     model.eval()
     return model, tokenizer
@@ -281,7 +254,7 @@ def _load_model_ttft(model_name: str, device: str = "cuda"):
 
 # ── Individual Benchmarks ─────────────────────────────────────────────────────
 
-def benchmark_throughput_small(model: str, max_tokens: int, num_prompts: int, device: str = "cuda") -> BenchmarkResult:
+def benchmark_throughput_small(model: str, max_tokens: int, num_prompts: int) -> BenchmarkResult:
     """Measure single-GPU throughput (tok/s) for a small model.
 
     Batches multiple prompts together to maximize GPU utilization
@@ -291,10 +264,9 @@ def benchmark_throughput_small(model: str, max_tokens: int, num_prompts: int, de
     """
     import torch
     result = BenchmarkResult(name="throughput-small", model=model, nodes=1)
-    result.mode = device
 
     try:
-        hf_model, tokenizer = _load_optimized_model(model, device=device)
+        hf_model, tokenizer = _load_optimized_model(model)
     except Exception as e:
         raise RuntimeError(
             f"Benchmark 'throughput-small' failed to load model '{model}'. "
@@ -309,14 +281,14 @@ def benchmark_throughput_small(model: str, max_tokens: int, num_prompts: int, de
     prompts = _test_prompts()[:num_prompts]
 
     # Warmup
-    _warmup(hf_model, tokenizer, max_tokens=10, device=device)
+    _warmup(hf_model, tokenizer, max_tokens=10)
     print("  Warmup complete, starting benchmark...")
 
     # Process prompts in batches (batch_size = num_prompts) for max GPU utilization
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(device)
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to("cuda")
     prompt_lens = inputs["attention_mask"].sum(dim=1)
 
-    _sync(device)
+    torch.cuda.synchronize()
     start = time.perf_counter()
     with torch.no_grad():
         outputs = hf_model.generate(
@@ -324,7 +296,7 @@ def benchmark_throughput_small(model: str, max_tokens: int, num_prompts: int, de
             max_new_tokens=max_tokens,
             do_sample=False,
         )
-    _sync(device)
+    torch.cuda.synchronize()
     elapsed = time.perf_counter() - start
 
     total_gen_tokens = 0
@@ -404,25 +376,24 @@ def benchmark_throughput_dist(model: str, nodes: int, max_tokens: int, num_promp
     return result
 
 
-def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int, device: str = "cuda") -> BenchmarkResult:
+def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int) -> BenchmarkResult:
     """Measure time to first token by timing single-token generation (prefill + first decode).
 
     Uses SDPA attention but NOT torch.compile (compilation overhead would skew TTFT).
     """
     import torch
     result = BenchmarkResult(name="latency-ttft", model=model)
-    result.mode = device
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
-        hf_model = _load_causal_lm(
+        hf_model = AutoModelForCausalLM.from_pretrained(
             model,
-            device,
-            torch_dtype=_dtype_for_device(device),
-            device_map=device,
+            torch_dtype=torch.float16,
+            device_map="cuda:0",
             trust_remote_code=True,
+            attn_implementation="sdpa",
         )
         hf_model.eval()
     except Exception as e:
@@ -432,21 +403,21 @@ def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int, device
         )
 
     # Warmup: one short generation to initialize CUDA kernels
-    warmup_input = tokenizer("Warmup for kernel initialization.", return_tensors="pt").to(device)
+    warmup_input = tokenizer("Warmup for kernel initialization.", return_tensors="pt").to("cuda")
     with torch.no_grad():
         _ = hf_model.generate(**warmup_input, max_new_tokens=5, do_sample=False)
-    _sync(device)
+    torch.cuda.synchronize()
 
     prompts = _test_prompts()[:num_prompts]
     ttfts = []
     itls = []
 
     for prompt in prompts:
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
 
         # TTFT: generate 1 token to measure prefill + first decode
-        _sync(device)
+        torch.cuda.synchronize()
         start = time.perf_counter()
         with torch.no_grad():
             output = hf_model.generate(
@@ -454,11 +425,11 @@ def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int, device
                 max_new_tokens=1,
                 do_sample=False,
             )
-        _sync(device)
+        torch.cuda.synchronize()
         ttft = (time.perf_counter() - start) * 1000
 
         # Full generation for ITL
-        _sync(device)
+        torch.cuda.synchronize()
         start = time.perf_counter()
         with torch.no_grad():
             output = hf_model.generate(
@@ -466,7 +437,7 @@ def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int, device
                 max_new_tokens=max_tokens,
                 do_sample=False,
             )
-        _sync(device)
+        torch.cuda.synchronize()
         total = (time.perf_counter() - start) * 1000
         gen_tokens = max(1, output.shape[1] - prompt_len)
 
@@ -481,13 +452,12 @@ def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int, device
     return result
 
 
-def benchmark_latency_itl(model: str, max_tokens: int, num_prompts: int, device: str = "cuda") -> BenchmarkResult:
+def benchmark_latency_itl(model: str, max_tokens: int, num_prompts: int) -> BenchmarkResult:
     """Measure inter-token latency between consecutive tokens."""
     result = BenchmarkResult(name="latency-itl", model=model)
-    result.mode = device
 
     # Reuse TTFT benchmark and extract ITL
-    ttft_result = benchmark_latency_ttft(model, max_tokens, num_prompts, device)
+    ttft_result = benchmark_latency_ttft(model, max_tokens, num_prompts)
     result.ttft_ms = ttft_result.ttft_ms
     result.itl_ms = ttft_result.itl_ms
     result.samples = ttft_result.samples
@@ -496,22 +466,21 @@ def benchmark_latency_itl(model: str, max_tokens: int, num_prompts: int, device:
     return result
 
 
-def benchmark_memory_efficiency(model: str, max_tokens: int, device: str = "cuda") -> BenchmarkResult:
+def benchmark_memory_efficiency(model: str, max_tokens: int) -> BenchmarkResult:
     """Ramp up concurrent requests until OOM; report max before failure."""
     result = BenchmarkResult(name="memory-efficiency", model=model)
-    result.mode = device
 
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
-        hf_model = _load_causal_lm(
+        hf_model = AutoModelForCausalLM.from_pretrained(
             model,
-            device,
-            torch_dtype=_dtype_for_device(device),
-            device_map=device,
+            torch_dtype=torch.float16,
+            device_map="cuda:0",
             trust_remote_code=True,
             low_cpu_mem_usage=True,
+            attn_implementation="sdpa",
         )
         hf_model.eval()
         if tokenizer.pad_token_id is None:
@@ -537,7 +506,7 @@ def benchmark_memory_efficiency(model: str, max_tokens: int, device: str = "cuda
                 pad_token_id=tokenizer.eos_token_id,
             )
 
-    input_ids = tokenizer.encode(prompt * 5, return_tensors="pt").to(device)
+    input_ids = tokenizer.encode(prompt * 5, return_tensors="pt").to("cuda")
     prompt_len = input_ids.shape[1]
 
     for batch_size in [1, 2, 4, 8, 16]:
@@ -1036,8 +1005,6 @@ def main():
     parser.add_argument("--nodes", type=int, default=1, help="Number of nodes")
     parser.add_argument("--num-prompts", type=int, default=8, help="Test prompts count (batch size for throughput benchmarks)")
     parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate")
-    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"],
-                        help="Device to benchmark on (default: cuda; fp16 on cuda, fp32 on cpu)")
     parser.add_argument("--output", type=str, default="",
                         help="Output JSON path (default: benchmarks/results/<name>.json)")
 
@@ -1056,7 +1023,7 @@ def main():
         print(f"\n{'=' * 60}")
         print(f"  Benchmark: {name}")
         print(f"{'=' * 60}")
-        print(f"  Model: {args.model}, Nodes: {args.nodes}, Device: {args.device}")
+        print(f"  Model: {args.model}, Nodes: {args.nodes}")
 
         fn = BENCHMARK_REGISTRY[name]
 
@@ -1065,13 +1032,13 @@ def main():
         elif name == "network-util":
             result = fn(args.model, args.max_tokens, args.nodes)
         elif name in ("memory-efficiency",):
-            result = fn(args.model, args.max_tokens, args.device)
+            result = fn(args.model, args.max_tokens)
         elif name in ("spec-accept-rate",):
             result = fn(args.num_prompts)
         elif name in ("kv-cache-hit-rate",):
             result = fn(args.model, args.num_prompts)
         else:
-            result = fn(args.model, args.max_tokens, args.num_prompts, args.device)
+            result = fn(args.model, args.max_tokens, args.num_prompts)
 
         results.append(result)
         print(f"  Result: {json.dumps(result.to_dict(), indent=2)}")

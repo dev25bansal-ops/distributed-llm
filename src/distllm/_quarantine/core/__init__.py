@@ -27,6 +27,8 @@ release-blocker item in
 | kv_cache_migration | 137 | One-shot migration shims for old cache formats |
 | kv_cache_adaptive_quantizer | 168 | Adaptive quant thresholds, never wired into kv_cache |
 | kv_cache_metrics | 205 | Prometheus gauges never registered |
+| model_hub_enhanced | — | Enhanced model-hub wrapper; zero production refs (2026-09-12 ARCH-1) |
+| neural_partition_optimizer | 1199 | Neural cost-model partitioner; complete but unwired (2026-09-12 ARCH-1) |
 | dynamic_memory_budget | 179 | Memory budget planner, unreferenced |
 | cache_template_warmer | — | Template pre-warming, unreferenced |
 | auto_discovery | 351 | mDNS discovery, superseded by cli/devices.py |

@@ -15,16 +15,8 @@ class TestConfigMigration:
 
     def test_v0_3_0_config_structure(self):
         """v0.3.0 used flat config keys without nesting."""
-        flat_config = {
-            "model": "test-model",
-            "port": 50050,
-            "log_level": "info",
-            "coordinator_host": "0.0.0.0",
-        }
-        settings_imported = False
         try:
             from distllm.config.settings import DistLLMSettings
-            settings_imported = True
         except ImportError:
             pass
         # Config migration should handle flat keys gracefully

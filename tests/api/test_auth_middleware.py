@@ -796,8 +796,6 @@ def rate_limit_app():
         return {"status": "redoc"}
 
     # Store original values
-    orig_rate = RequestRateLimitMiddleware._rate_limit_value
-    orig_max = _request_rate_limiter.max_attempts
 
     # Override for testing: 3 requests per 60s
     RequestRateLimitMiddleware._rate_limit_value = 3

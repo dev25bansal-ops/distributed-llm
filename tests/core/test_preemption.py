@@ -435,7 +435,7 @@ class TestPolicyDrivenPreemption:
         sched.set_preemption_policy(policy)
 
         # schedule() should call preempt_if_needed internally
-        batch = sched.schedule()
+        sched.schedule()
         policy.should_preempt.assert_called()
 
 

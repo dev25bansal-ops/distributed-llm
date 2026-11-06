@@ -106,25 +106,69 @@ class HealthResponse:
     nodes: int | None
     uptime: float | None
 
-class BatchRequest:
+class BatchSubmitItem:
     """Auto-generated from OpenAPI schema."""
 
-    input_file_id: str
-    endpoint: str
-    metadata: dict[str, Any] | None
+    request_id: str
+    prompt: str
+    max_tokens: int | None
+    temperature: float | None
 
-class BatchJob:
+class BatchSubmitRequest:
     """Auto-generated from OpenAPI schema."""
 
-    id: str | None
+    items: list["BatchSubmitItem"]
+    webhook_url: str | None
+    webhook_token: str | None
+    item_timeout: float | None
+
+class BatchSubmitResponse:
+    """Auto-generated from OpenAPI schema."""
+
+    batch_id: str
+    status: str
+    total_items: int | None
+    created_at: float | None
+    message: str | None
+
+class BatchItemResult:
+    """Auto-generated from OpenAPI schema."""
+
+    request_id: str | None
+    prompt: str | None
+    max_tokens: int | None
+    temperature: float | None
     status: str | None
-    input_file_id: str | None
-    created_at: int | None
+    result: Any | None
+    error: str | None
+    cost: float | None
+    started_at: float | None
+    completed_at: float | None
 
-class BatchList:
+class BatchStatusResponse:
     """Auto-generated from OpenAPI schema."""
 
-    data: list["BatchJob"] | None
+    batch_id: str
+    status: str
+    total_items: int | None
+    pending: int | None
+    running: int | None
+    completed: int | None
+    failed: int | None
+    timed_out: int | None
+    cancelled: int | None
+    total_cost: float | None
+    created_at: float | None
+    completed_at: float | None
+    items: list["BatchItemResult"] | None
+
+class BatchCancelResponse:
+    """Auto-generated from OpenAPI schema."""
+
+    batch_id: str
+    status: str
+    cancelled_items: int | None
+    message: str | None
 
 class UsageInfo:
     """Auto-generated from OpenAPI schema."""

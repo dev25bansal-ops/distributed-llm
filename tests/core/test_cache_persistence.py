@@ -93,7 +93,7 @@ class TestCachePersistence:
         for i in range(5):
             mgr.save(f"req-{i}", "model-a", {})
 
-        removed = mgr.enforce_disk_limit()
+        mgr.enforce_disk_limit()
         # Should have deleted some files
         assert mgr.get_disk_usage() <= int(0.0001 * 1024**3)
 

@@ -126,7 +126,7 @@ class TestIntelligentAutoscalerEvaluate:
         s = IntelligentAutoscaler(cooldown_seconds=3600.0, scale_up_threshold=0.5)
         m = ScalingMetrics(gpu_utilization=95.0, current_nodes=1)
         # First call: should scale up
-        d1 = s.evaluate(m)
+        s.evaluate(m)
         # Second call: should be blocked by cooldown
         d2 = s.evaluate(ScalingMetrics(gpu_utilization=95.0, current_nodes=2))
         assert d2.should_scale is False

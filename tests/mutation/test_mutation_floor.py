@@ -21,7 +21,12 @@ engine can run at all (mutmut missing AND harness broken/missing), the test
 ``pytest.skip`` s with a clear message rather than failing the whole suite.
 
 Time budget: each module is capped at ``MAX_MUTATIONS`` mutants so the test
-finishes quickly in CI.  Run under the project venv, e.g.::
+finishes quickly in CI.  The cap is applied as a deterministic (seed 42)
+*stratified sample across mutation-operator types*, not a first-N slice —
+otherwise alpha-sorted descriptions bias the sample toward whichever operators
+sort first (on ``crdt.py`` the first 25 of 216 points were all
+negate_condition/remove_not/remove_decorator).  Run under the project venv,
+e.g.::
 
     cd /d/distributed-llm
     PYTHONPATH=src .venv311/Scripts/python.exe -m pytest tests/mutation/test_mutation_floor.py \\
@@ -93,7 +98,12 @@ def _run_ast_harness(module: dict) -> dict | None:
         source = f.read()
     points = mutate.find_mutation_points(source)
     if MAX_MUTATIONS and MAX_MUTATIONS > 0:
-        points = points[:MAX_MUTATIONS]
+        # Deterministic stratified sample across operator types (seed 42).
+        # The old points[:MAX_MUTATIONS] first-N slice only sampled the first
+        # alphabetically-ordered operators (e.g. only negate_condition when
+        # there were 216 points of 14 types and the first 25 were all
+        # negate_condition).  See tests/mutation/mutate.py::stratified_sample.
+        points = mutate.stratified_sample(points, MAX_MUTATIONS, seed=42)
     if not points:
         return {"engine": "ast", "total": 0, "killed": 0, "survived": 0,
                 "timeout": 0, "error": 0, "score": 0.0, "below_floor": False,

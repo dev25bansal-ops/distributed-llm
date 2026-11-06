@@ -83,7 +83,7 @@ class MemoryProfiler:
 
             first = self._snapshots[0]
             last = self._snapshots[-1]
-            mid = self._snapshots[len(self._snapshots) // 2]
+            self._snapshots[len(self._snapshots) // 2]
 
             results = {
                 "duration_s": last.timestamp - first.timestamp,

@@ -116,6 +116,12 @@ examples = [
     "llama-index-llms-openai>=0.1.0",
     "llama-index-core>=0.10.0",
     "crewai>=0.30.0",
+    # examples/haystack_example.py
+    "haystack-ai>=2.0.0",
+    # examples/agency_swarm_example.py (also uses the openai client directly)
+    "agency-swarm>=0.2.0",
+    # examples/openai_agents_example.py and examples/routed_inference.py
+    "openai>=1.0.0",
 ]
 security = [
     "cryptography>=41.0",
@@ -188,6 +194,27 @@ all-dev = [
     "distributed-llm[all,dev]",
     "locust>=2.20",
     "safety>=3.0",
+]
+# CI installs ".[dev,testing]": the ML stack below is REQUIRED here so the
+# coverage measurement covers the complete import graph (torch/transformers
+# are not core deps). Keep scripts/ci/import_assert.py in sync with the
+# optional-dep allowlist.
+testing = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
+    "pytest-timeout>=2.2",
+    "pytest-mock>=3.12",
+    "hypothesis>=6.90",
+    "pytest-benchmark>=4.0",
+    "httpx>=0.27",
+    "torch>=2.5.0",
+    "transformers>=4.48.0",
+    "accelerate>=1.0.0",
+    "safetensors>=0.4.0",
+    "huggingface-hub>=0.20.0",
+    "sentencepiece>=0.1.99",
+    "nvidia-ml-py>=12.0",
 ]
 
 [project.scripts]

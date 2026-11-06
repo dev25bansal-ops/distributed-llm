@@ -115,17 +115,28 @@ class StateReplicationStore:
         with self._lock:
             return self._list_keys_raw()
 
-    def watch(self, key: str, callback: Any, interval_s: float = 5.0) -> None:
+    def watch(
+        self,
+        key: str,
+        callback: Any,
+        interval_s: float = 5.0,
+        stop_event: threading.Event | None = None,
+    ) -> threading.Thread:
         """Watch a key for changes and call callback on update.
 
         Args:
             key: Key to watch.
             callback: Callable(new_value, version) invoked on change.
             interval_s: Polling interval.
+            stop_event: M16 — set this event to terminate the watcher;
+                without it the loop polls forever and cannot be stopped.
+
+        Returns:
+            The watcher thread (so callers can join it).
         """
         def _watcher():
             last_version = 0
-            while True:
+            while not (stop_event is not None and stop_event.is_set()):
                 try:
                     state = self.get_versioned(key)
                     if state and state.version > last_version:
@@ -133,10 +144,15 @@ class StateReplicationStore:
                         callback(state.value, state.version)
                 except Exception as e:
                     logger.warning(f"Watch error for key '{key}': {e}")
-                time.sleep(interval_s)
+                # Wake early on stop instead of sleeping the full interval.
+                if stop_event is not None:
+                    stop_event.wait(interval_s)
+                else:
+                    time.sleep(interval_s)
 
         thread = threading.Thread(target=_watcher, daemon=True, name=f"watch-{key}")
         thread.start()
+        return thread
 
     def _get_raw(self, key: str) -> ReplicatedState | None:
         """Get from backend (must hold lock)."""

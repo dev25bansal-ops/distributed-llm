@@ -276,7 +276,7 @@ class TestAuthorizationHeaderFuzz:
         try:
             starts_with_bearer = header.startswith("Bearer ")
             too_short = len(header) < 8
-            token = header[7:] if starts_with_bearer else ""
+            header[7:] if starts_with_bearer else ""
         except GRACEFUL_EXC:
             return  # Acceptable: the header was so malformed that the
                     # slice/string op raised.  The dispatcher will turn

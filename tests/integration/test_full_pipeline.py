@@ -53,7 +53,7 @@ def mock_coordinator_with_nodes():
         TokenGenerator=MagicMock,
         RequestTracker=MagicMock,
     ):
-        with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+        with patch("distllm.core.coordinator.AutoTokenizer"):
             coord = Coordinator(
                 model_name="test-model",
                 dtype="float32",

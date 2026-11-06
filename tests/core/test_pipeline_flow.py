@@ -484,7 +484,7 @@ class TestTokenGenerationLoop:
 
         def mock_model_generate(input_ids=None, **kwargs):
             n = kwargs.get("max_new_tokens", 3)
-            prompt_len = input_ids.shape[1]
+            input_ids.shape[1]
             return torch.cat([input_ids, torch.full((1, n), 42, dtype=torch.long)], dim=1)
 
         mock_model.generate.side_effect = mock_model_generate

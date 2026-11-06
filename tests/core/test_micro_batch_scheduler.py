@@ -156,3 +156,58 @@ class TestMicroBatchSchedulerProperties:
         assert stats["tokens_processed"] == 8
         assert stats["num_stages"] == 4
         assert stats["micro_batch_size"] == 4
+
+
+class TestMicroBatchSchedulerSubmit:
+    """BUG-2 regression: submit() feeds _in_flight so get_next_batch
+    actually dispatches; max_in_flight is admission control on submit."""
+
+    def test_submit_decode_then_dispatch_and_drain(self) -> None:
+        sched = MicroBatchScheduler(num_stages=2, micro_batch_size=2)
+        accepted = sched.submit_decode(num_tokens=6)  # 3 micro-batches
+        assert len(accepted) == 3
+        assert all(b.status == "pending" for b in accepted)
+
+        first = sched.get_next_batch()
+        assert first is not None
+        assert first.status == "in_progress"
+        assert first.start_time > 0.0
+
+        dispatched = [first.batch_id]
+        sched.complete_batch(first.batch_id)
+        while True:
+            nxt = sched.get_next_batch()
+            if nxt is None:
+                break
+            dispatched.append(nxt.batch_id)
+            sched.complete_batch(nxt.batch_id)
+        assert sorted(dispatched) == [b.batch_id for b in accepted]
+        assert sched.stats()["completed"] == 3
+
+    def test_submit_respects_max_in_flight(self) -> None:
+        sched = MicroBatchScheduler(num_stages=2, micro_batch_size=2, max_in_flight=2)
+        accepted = sched.submit_decode(num_tokens=8)  # 4 batches, cap 2
+        assert len(accepted) == 2
+
+        extra = MicroBatch(batch_id=99)
+        assert sched.submit(extra) is False
+        # Pinned white-box behavior: a full queue blocks dispatch.
+        assert sched.get_next_batch() is None
+
+        sched.complete_batch(accepted[0].batch_id)
+        assert sched.submit(extra) is True
+
+    def test_submit_ignores_non_pending_batch(self) -> None:
+        sched = MicroBatchScheduler()
+        busy = MicroBatch(batch_id=1, status="in_progress")
+        assert sched.submit(busy) is True
+        assert sched.in_flight_count == 0
+
+    def test_get_next_batch_returns_pending_after_submit(self) -> None:
+        sched = MicroBatchScheduler()
+        batch = MicroBatch(batch_id=7, token_ids=[1, 2, 3])
+        assert sched.submit(batch) is True
+        nxt = sched.get_next_batch()
+        assert nxt is not None
+        assert nxt.batch_id == 7
+        assert nxt.token_ids == [1, 2, 3]

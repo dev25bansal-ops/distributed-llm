@@ -43,7 +43,7 @@ class TestBlockingWarmup:
 
         # Run the blocking function — this should block the loop
         result = await loop.run_in_executor(None, lambda: "done")
-        elapsed = time.time() - start
+        time.time() - start
         assert result == "done"
 
     @pytest.mark.asyncio
@@ -52,7 +52,7 @@ class TestBlockingWarmup:
         from fastapi import Request
         from unittest.mock import MagicMock
 
-        mock_request = MagicMock(spec=Request)
+        MagicMock(spec=Request)
         # Verify the warmup_model function signature accepts Request
         import inspect
         from distllm.api.routes.health import warmup_model

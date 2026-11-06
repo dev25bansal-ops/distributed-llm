@@ -6,6 +6,19 @@
 # Or mount as ConfigMap in Prometheus:
 #   volumes:
 #     - ./deploy/monitoring/prometheus/alert-rules.yml:/etc/prometheus/rules/distllm.yml
+#
+# ── Rules deliberately NOT present (verified against src/distllm/observability/exporter.py) ──
+# These three alert families exist in deploy/helm/distllm-operator/templates/prometheusrules.yaml
+# in broken form and were removed there too; do not re-add them here until the metrics exist:
+#   1. KV-cache HIT RATE: `distllm_kv_cache_hit_rate` is not registered anywhere. Only
+#      `distllm_kv_cache_usage_ratio` (exporter.py:111) exists; cache_manager.py counts per-tier
+#      hits in `_tier_stats` but never exports them. Use DistLLMLowGPUMemory (usage ratio) instead.
+#   2. GPU MEMORY TOTAL: `distllm_node_gpu_memory_total_bytes` is not registered. Only
+#      `distllm_node_gpu_memory_bytes` (exporter.py:65, "GPU memory used in bytes") exists,
+#      and no total-capacity gauge is exported, so a used/total ratio alert is not expressible.
+#   3. 429 RATE LIMITING: `distllm_errors_total` carries labels `type`, `model`, `tenant`
+#      (exporter.py:103-108) — there is no `code` label, and no code path increments any
+#      counter for a 429 (see api/middleware.py returning 429 directly).
 
 groups:
   - name: distllm-alerts

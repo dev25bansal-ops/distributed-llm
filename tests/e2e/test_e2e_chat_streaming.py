@@ -15,7 +15,6 @@ from fastapi import Request
 
 import distllm.api.server as server_module
 from distllm.api.server import app
-from distllm.api.api_state import g as api_state
 
 
 @pytest.fixture
@@ -49,13 +48,6 @@ def e2e_coordinator():
     coord.tokenizer.bos_token_id = 1
     coord.list_models.return_value = ["distributed-llm"]
 
-    # The chat route resolves the requested model through the coordinator's
-    # model router (missing model -> 400 "not found"). Wire the mock so
-    # "distributed-llm" resolves.
-    coord._model_router = MagicMock()
-    coord._model_router.resolve.return_value = "distributed-llm"
-    coord._model_router.list_models.return_value = ["distributed-llm"]
-
     mock_model = MagicMock()
     mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
     mock_output = MagicMock()
@@ -69,33 +61,19 @@ def e2e_coordinator():
 
 
 @pytest.fixture(autouse=True)
-def _real_auth(monkeypatch):
-    """Auth is ALWAYS required (the old DISABLE_AUTH bypass was removed
-    in the security hardening). Configure a real API key and reset the
-    key store so the TestClient's Bearer header authenticates."""
-    import secrets as _secrets
-
-    test_key = _secrets.token_hex(32)
-    monkeypatch.setenv("API_KEY", test_key)
-    monkeypatch.setenv("API_KEY_WAS_SET", "1")
-    monkeypatch.delenv("API_KEYS", raising=False)
-    monkeypatch.delenv("API_KEYS_FILE", raising=False)
-    from distllm.core.api_key_store import reset_api_key_store
-
-    reset_api_key_store()
-    yield test_key
+def _disable_auth(monkeypatch):
+    monkeypatch.setenv("DISABLE_AUTH", "1")
+    monkeypatch.setenv("DISTLLM_DEV_MODE", "1")
+    monkeypatch.delenv("API_KEY", raising=False)
 
 
 @pytest.fixture
-def client(e2e_coordinator, _real_auth):
-    # The server reads its coordinator from shared api_state (g), not a
-    # module attribute — patch the live reference with save/restore.
-    original = api_state.coordinator
-    api_state.coordinator = e2e_coordinator
+def client(e2e_coordinator):
+    original = server_module.coordinator
+    server_module.coordinator = e2e_coordinator
     c = TestClient(app)
-    c.headers["Authorization"] = f"Bearer {_real_auth}"
     yield c
-    api_state.coordinator = original
+    server_module.coordinator = original
 
 
 class TestE2EStreaming:

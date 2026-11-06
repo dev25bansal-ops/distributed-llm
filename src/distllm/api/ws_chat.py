@@ -54,7 +54,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import WebSocket, WebSocketDisconnect, WebSocketState
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from loguru import logger
 
 from distllm.api.api_state import g

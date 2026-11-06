@@ -1,5 +1,28 @@
 # Plugin Development Guide
 
+## Table of Contents
+
+<!-- TOC -->
+
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+  - [1. Create Plugin File](#1-create-plugin-file)
+  - [2. Register Plugin](#2-register-plugin)
+  - [3. Verify Plugin Loaded](#3-verify-plugin-loaded)
+- [Lifecycle Hooks](#lifecycle-hooks)
+- [Examples](#examples)
+  - [Rate Limiting Plugin](#rate-limiting-plugin)
+  - [Metrics Export Plugin](#metrics-export-plugin)
+  - [Content Filter Plugin](#content-filter-plugin)
+  - [Caching Plugin](#caching-plugin)
+- [Configuration](#configuration)
+  - [Plugin Config in `config.yaml`](#plugin-config-in-configyaml)
+  - [Environment Variables](#environment-variables)
+- [Testing Plugins](#testing-plugins)
+- [Best Practices](#best-practices)
+
+<!-- /TOC -->
+
 ## Overview
 
 DistLLM supports plugins that extend its functionality through lifecycle hooks. Plugins can:

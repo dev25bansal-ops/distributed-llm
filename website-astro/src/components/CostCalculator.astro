@@ -26,17 +26,17 @@
     <div class="mt-6 grid gap-4 sm:grid-cols-3">
       <div class="rounded-xl bg-sunken p-4 text-center">
         <p class="text-xs font-semibold tracking-wider text-faint uppercase">Cloud GPU cost</p>
-        <p data-cc="cloudCost" class="mt-1 font-display text-2xl font-bold">$73</p>
-        <p class="text-xs text-faint">per month (A100 @ ~$1.90/hr)</p>
+        <p data-cc="cloudCost" class="mt-1 font-display text-2xl font-bold">$1,800</p>
+        <p class="text-xs text-faint">per month (A100 @ ~$2.50/hr)</p>
       </div>
       <div class="rounded-xl border-2 border-brand-500 bg-brand-50 p-4 text-center">
         <p class="text-xs font-semibold tracking-wider text-brand-700 uppercase">Your hardware</p>
-        <p data-cc="homeCost" class="mt-1 font-display text-2xl font-bold text-brand-800">~$8</p>
+        <p data-cc="homeCost" class="mt-1 font-display text-2xl font-bold text-brand-800">~$10</p>
         <p class="text-xs text-brand-700">electricity, per month</p>
       </div>
       <div class="rounded-xl bg-sunken p-4 text-center">
         <p class="text-xs font-semibold tracking-wider text-faint uppercase">Yearly savings</p>
-        <p data-cc="savings" class="mt-1 font-display text-2xl font-bold text-accent-600">$780</p>
+        <p data-cc="savings" class="mt-1 font-display text-2xl font-bold text-accent-600">$21,474</p>
         <p class="text-xs text-faint">vs renting equivalent capacity</p>
       </div>
     </div>
@@ -63,8 +63,10 @@
     const savEl = root.querySelector<HTMLElement>('[data-cc="savings"]')!;
     const verdict = root.querySelector<HTMLElement>('[data-cc="verdict"]')!;
 
-    // Assumptions (public cloud list prices, approximate):
-    const A100_HOURLY = 1.9;           // $/hr for an A100 40GB-class instance
+    // Assumptions (public cloud on-demand list prices, approximate — kept in
+    // sync with integrations/gpu_spot_orchestrator.py's GPU_ON_DEMAND_REFERENCE,
+    // where an A100 is $2.50/hr):
+    const A100_HOURLY = 2.5;           // $/hr for an A100 40GB-class instance
     const CONSUMER_TPS = 20;           // tokens/sec sustained per pooled consumer node
     const A100_TPS = 60;               // tokens/sec on the rented instance
     const KWH_PRICE = 0.13;            // $/kWh

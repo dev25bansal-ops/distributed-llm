@@ -24,7 +24,6 @@ class TestGossipKeyRotation:
         # No shared key configured → node-local persistent key path (dev/test
         # mode). The key should still be replaced on rotation.
         proto = GossipProtocol(node_id="node-1", hmac_key="")
-        original = proto._hmac_key
         assert proto._shared_hmac_key is False
         proto._last_key_rotation = 0
         proto.check_key_rotation()

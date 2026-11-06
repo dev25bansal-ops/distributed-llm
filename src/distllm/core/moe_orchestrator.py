@@ -98,52 +98,55 @@ class MoERouter:
             Output hidden states after expert processing, same shape as input.
         """
         batch, seq, hidden = hidden_states.shape
+        top_k = self._top_k
 
         # Select top-k experts per token
         top_k_weights, top_k_indices = torch.topk(
-            F.softmax(gate_weights, dim=-1), self._top_k, dim=-1
+            F.softmax(gate_weights, dim=-1), top_k, dim=-1
         )
 
         output = torch.zeros_like(hidden_states)
+        flat_hidden = hidden_states.view(-1, hidden)
+        flat_weights = top_k_weights.reshape(-1)   # (batch*seq*top_k)
+        flat_experts = top_k_indices.reshape(-1)
 
-        for k in range(self._top_k):
-            expert_ids = top_k_indices[:, :, k].flatten()
-            routing_weights = top_k_weights[:, :, k].flatten()
+        # Group ALL (token, expert-slot) pairs by node — ONE batched RPC per
+        # node for the whole layer (was one synchronous RPC per token per
+        # expert, with a per-token .item() GPU sync on the routing weight).
+        node_rows: dict[str, tuple[list[int], list[int]]] = {}
+        for row, expert_id in enumerate(flat_experts.tolist()):
+            node_id = self._registry.get_node_for_expert(layer_idx, expert_id)
+            if node_id is None:
+                continue
+            rows, eids = node_rows.setdefault(node_id, ([], []))
+            rows.append(row)
+            eids.append(expert_id)
 
-            # Group tokens by their assigned node
-            node_tokens: dict[str, list[tuple[int, torch.Tensor, float]]] = {}
-            for pos, expert_id in enumerate(expert_ids):
-                node_id = self._registry.get_node_for_expert(layer_idx, int(expert_id))
-                if node_id is None:
-                    continue
-                b = pos // seq
-                s = pos % seq
-                token_hidden = hidden_states[b, s:s+1, :]
-                weight = float(routing_weights[pos].item())
-                node_tokens.setdefault(node_id, []).append((pos, token_hidden, weight))
-
-            # Send tokens to their assigned nodes and collect results
-            for node_id, tokens in node_tokens.items():
-                for pos, token_hidden, weight in tokens:
-                    expert_id = int(expert_ids[pos])
-                    expert_output = self._forward_on_node(
-                        expert_id, token_hidden, layer_idx, node_id
-                    )
-                    b = pos // seq
-                    s = pos % seq
-                    output[b, s, :] += expert_output * weight
+        for node_id, (rows, eids) in node_rows.items():
+            # rows are indices into the (batch*seq*top_k) flat routing grid;
+            # gather hidden states by the underlying TOKEN index.
+            tokens = [r // top_k for r in rows]
+            stacked = flat_hidden[tokens]
+            expert_outputs = self._forward_on_node(eids, stacked, layer_idx, node_id)
+            # One GPU->CPU sync per node group.
+            weights = flat_weights[rows].detach().to("cpu")
+            for i, token in enumerate(tokens):
+                b = token // seq
+                s = token % seq
+                output[b, s, :] += expert_outputs[i] * float(weights[i])
 
         return output
 
     def _forward_on_node(
-        self, expert_id: int, hidden: torch.Tensor,
+        self, expert_ids: list[int], hidden: torch.Tensor,
         layer_idx: int, node_id: str,
     ) -> torch.Tensor:
-        """Send a single token to a remote node for expert processing.
+        """Send a stack of tokens to a remote node for expert processing.
 
-        Uses gRPC to forward the token to the node hosting the expert.
-        The remote node applies the expert MLP to the hidden state and
-        returns the result.
+        One gRPC round-trip per node (batched): *hidden* has shape
+        ``(num_tokens, hidden)`` and *expert_ids* the matching expert for
+        each row. The remote node applies the expert MLPs and returns
+        outputs with the same shape.
 
         Falls back to an identity forward if the gRPC call fails
         (logged warning), preserving the model's ability to produce
@@ -154,22 +157,29 @@ class MoERouter:
         try:
             client = GrpcClientPool.get_client(node_id)
             if client is None:
-                logger.warning(f"No gRPC client for node {node_id}, using identity fallback for expert {expert_id}")
+                logger.warning(
+                    f"No gRPC client for node {node_id}, using identity fallback "
+                    f"for experts {expert_ids}"
+                )
                 return hidden
 
-            result = client.call_expert_forward(
-                expert_id=expert_id,
+            result = client.call_expert_forward_batch(
+                expert_ids=expert_ids,
                 hidden_states=hidden,
                 layer_idx=layer_idx,
             )
             if result is None:
-                logger.warning(f"gRPC expert forward returned None for node {node_id}, expert {expert_id}")
+                logger.warning(
+                    f"gRPC expert forward returned None for node {node_id}, "
+                    f"experts {expert_ids}"
+                )
                 return hidden
 
             return result
         except Exception as e:
             logger.warning(
-                f"Expert forward failed: node={node_id} expert={expert_id} layer={layer_idx}: {e}"
+                f"Expert forward failed: node={node_id} experts={expert_ids} "
+                f"layer={layer_idx}: {e}"
             )
             return hidden  # Identity fallback — better than garbage output
 

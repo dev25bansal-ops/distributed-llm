@@ -34,6 +34,23 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+# Optional dependency detection for torch (used lazily by tensor framing)
+_TORCH_AVAILABLE: bool
+try:
+    import torch  # noqa: F401
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for WebRTC tensor serialization; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
 try:
     from distllm.security.e2e import E2EEncryption, decrypt_tensor_payload, encrypt_tensor_payload
     HAS_E2E = True
@@ -152,7 +169,7 @@ class TensorFraming:
 
     @staticmethod
     def serialize_tensor(data: Any) -> bytes:
-        import torch
+        _require_torch()
 
         buffer = io.BytesIO()
         torch.save(data, buffer)
@@ -160,7 +177,7 @@ class TensorFraming:
 
     @staticmethod
     def deserialize_tensor(data: bytes) -> Any:
-        import torch
+        _require_torch()
 
         buffer = io.BytesIO(data)
         return torch.load(buffer, weights_only=True)

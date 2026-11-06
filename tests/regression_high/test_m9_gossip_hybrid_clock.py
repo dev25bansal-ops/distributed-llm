@@ -109,7 +109,7 @@ def test_divergent_wall_clocks_still_resolve_lww():
 
     # B observed A's full history before writing, so B's clock is at least as
     # informed as A's -- ordering is causal (vector clock), not wall-clock.
-    a_meta = a.state.entry_metadata["k"]
+    a.state.entry_metadata["k"]
     b_meta = b.state.entry_metadata["k"]
     assert b_meta.value == "value-from-B"
     assert b.state.vector_clock.clocks.get("A", 0) == a.state.vector_clock.clocks.get("A", 0)

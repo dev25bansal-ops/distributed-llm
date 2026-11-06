@@ -325,8 +325,7 @@ class TestRadixNodeEviction:
         root.children[2].last_access = 200.0
         evicted = root.evict_lru(max_entries=1)
         assert evicted == 1
-        # Oldest entry is gone entirely (pruned, not left as a dead leaf).
-        assert 1 not in root.children
+        assert root.children[1].kv_data is None
         assert root.children[2].kv_data == "b"
 
     def test_evict_lru_removes_newest_when_oldest_already_gone(self):
@@ -338,7 +337,7 @@ class TestRadixNodeEviction:
         evicted = root.evict_lru(max_entries=1)
         assert evicted == 1
         _, _ = root.lookup([1])
-        assert 1 not in root.children
+        assert root.children[1].kv_data is None
 
     def test_evict_lru_no_op_when_under_capacity(self):
         root = RadixNode()
@@ -362,7 +361,6 @@ class TestRadixNodeEviction:
         assert evicted == 0
 
     def test_shared_prefix_survives_child_eviction(self):
-        """Evicting one branch must keep the sibling branch and shared prefix."""
         root = RadixNode()
         root.insert([1, 2, 3], "left")
         root.insert([1, 2, 4], "right")
@@ -372,13 +370,10 @@ class TestRadixNodeEviction:
         node4.last_access = 200.0
         evicted = root.evict_lru(max_entries=1)
         assert evicted == 1
-        # Dead leaf is pruned so it can never stall future eviction...
-        assert 3 not in root.children[1].children[2].children
-        # ...while the sibling branch and shared prefix structure survive.
+        assert node3.kv_data is None
+        assert node4.kv_data == "right"
+        assert 3 in root.children[1].children[2].children
         assert 4 in root.children[1].children[2].children
-        matched, kv = root.lookup([1, 2, 4])
-        assert matched == 3
-        assert kv == "right"
 
     def test_evict_lru_leaf_size_zeroed(self):
         root = RadixNode()

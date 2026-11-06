@@ -182,7 +182,7 @@ def test_ttft_mock_coordinator(benchmark, coordinator_with_mock_nodes):
         start = time.perf_counter()
         coord.tokenizer.encode.return_value = [1] * 32
         coord.tokenizer.decode.return_value = "test output"
-        tokens = coord.generate("Hello, world")
+        coord.generate("Hello, world")
         elapsed = time.perf_counter() - start
         return elapsed * 1000
 
@@ -320,7 +320,7 @@ def test_network_pickle_serialization(benchmark):
         for name, shape in TENSOR_SHAPES.items():
             t = torch.randn(shape)
             serialized = pickle.dumps(t)
-            deserialized = pickle.loads(serialized)
+            pickle.loads(serialized)
             results[name] = len(serialized)
         return sum(results.values())
 

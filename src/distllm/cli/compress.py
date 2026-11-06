@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 CompressionConfig = CompressionMethod = None
 CompressionPipeline = StrategySelector = HardwareProfiler = HardwareClass = None
@@ -25,12 +26,6 @@ def run_compress(
 ):
     """Run model compression and save compressed model."""
     console.print(f"[bold]Compressing model:[/bold] {model_name}")
-
-    try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-    except ImportError:
-        console.print("[red]Error: transformers library required. Install with: pip install transformers[/red]")
-        raise SystemExit(1) from None
 
     # Map target to bits
     target_map = {

@@ -453,7 +453,7 @@ def _minimal_app_with_provider(monkeypatch) -> tuple[FastAPI, FetchCounter]:
     JWKS traffic is captured by FetchCounter."""
     counter = FetchCounter()
     counter.install(monkeypatch)
-    handler = _make_handler()
+    _make_handler()
 
     app = FastAPI()
 

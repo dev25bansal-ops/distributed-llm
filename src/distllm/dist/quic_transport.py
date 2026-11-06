@@ -19,6 +19,24 @@ from typing import Any, Callable
 
 from loguru import logger
 
+# Optional dependency detection for aioquic
+_AIOQUIC_AVAILABLE: bool
+try:
+    import aioquic  # noqa: F401
+    _AIOQUIC_AVAILABLE = True
+except ImportError:
+    _AIOQUIC_AVAILABLE = False
+
+
+def _require_aioquic() -> None:
+    """Raise a helpful ImportError if aioquic is not installed."""
+    if not _AIOQUIC_AVAILABLE:
+        raise ImportError(
+            "aioquic is required for QUIC transport; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
+
 LENGTH_PREFIX_FORMAT = "!I"
 LENGTH_PREFIX_SIZE = struct.calcsize(LENGTH_PREFIX_FORMAT)
 
@@ -60,11 +78,7 @@ def _unframe_message(buffer: bytearray) -> tuple[bytes | None, bytearray]:
 
 def is_quic_available() -> bool:
     """Check whether ``aioquic`` is installed."""
-    try:
-        import aioquic  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return _AIOQUIC_AVAILABLE
 
 
 class QuicStreamHandler:
@@ -132,6 +146,7 @@ class QuicTransportClient:
         self, host: str, port: int, timeout: float = 10.0,
     ) -> None:
         """Establish a QUIC connection to *host*:*port*."""
+        _require_aioquic()
         from aioquic.asyncio.client import connect as _async_connect
         from aioquic.quic.configuration import QuicConfiguration
 
@@ -209,6 +224,7 @@ class QuicTransportServer:
             forward_fn: Optional immediate handler.  Can also be set
                 later via ``handler.forward_fn``.
         """
+        _require_aioquic()
         from aioquic.asyncio.server import serve as _async_serve
         from aioquic.quic.configuration import QuicConfiguration
 

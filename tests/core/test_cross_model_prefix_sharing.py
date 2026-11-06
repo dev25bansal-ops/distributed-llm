@@ -74,13 +74,13 @@ class TestStore:
 
 class TestLookup:
     def test_direct_match(self, sharing):
-        h = sharing.store("llama-70b", [1, 2, 3], kv_data="direct")
+        sharing.store("llama-70b", [1, 2, 3], kv_data="direct")
         entry = sharing.lookup("llama-70b", [1, 2, 3])
         assert entry is not None
         assert entry.kv_data == "direct"
 
     def test_direct_match_updates_access_count(self, sharing):
-        h = sharing.store("llama-70b", [1, 2, 3], kv_data="data")
+        sharing.store("llama-70b", [1, 2, 3], kv_data="data")
         entry = sharing.lookup("llama-70b", [1, 2, 3])
         assert entry is not None
         assert entry.access_count == 1

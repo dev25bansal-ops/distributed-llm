@@ -136,7 +136,6 @@ class TestSpeculativeDecoderFamily:
     def test_self_speculative_decoder_truncates_at_eos(self) -> None:
         from distllm.core.speculative_decoder import SelfSpeculativeDecoder
 
-        seq = [EOS_TOKEN] * 8
 
         def target_fwd(input_ids, **_):
             return torch.full((1, input_ids.shape[1], VOCAB_SIZE), -10.0)
@@ -343,7 +342,6 @@ class TestCompressedSpeculativeDecoder:
         """When ``eos_token_id`` is None, the helper returns len(tokens) — no cutoff."""
         from distllm.core.compressed_speculative import CompressedSpeculativeDecoder
 
-        seq = [42] * 8
 
         def target_fwd(input_ids, **_):
             seq_len = input_ids.shape[1]
@@ -368,7 +366,6 @@ class TestPipelinedSpeculativeDecoder:
     def test_truncates_at_eos(self) -> None:
         from distllm.core.async_pipelined_speculative import PipelinedSpeculativeDecoder
 
-        seq = [EOS_TOKEN] * 8
 
         def target_fwd(input_ids, **_):
             seq_len = input_ids.shape[1]

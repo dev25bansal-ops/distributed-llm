@@ -68,10 +68,8 @@ class TestRegisterNode:
         pipeline.register_node("node-0", "localhost", 50051, 0, 5)
         assert "node-0" in pipeline.nodes
         assert pipeline.node_order == ["node-0"]
-        # nodes maps node_id -> PipelineNode (dataclass), not dict
-        node = pipeline.nodes["node-0"]
-        assert node.start_layer == 0
-        assert node.end_layer == 5
+        assert pipeline.nodes["node-0"]["start_layer"] == 0
+        assert pipeline.nodes["node-0"]["end_layer"] == 5
 
     def test_register_multiple_nodes(self, pipeline):
         pipeline.register_node("node-0", "localhost", 50051, 0, 5)

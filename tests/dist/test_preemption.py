@@ -149,17 +149,24 @@ class TestSLATracker:
     def test_check_sla_exceeds_deadline_violates(self) -> None:
         tracker = SLATracker(sla_deadline_ms=0.0)
         tracker.start_request("req-1")
+        # Backdate start to avoid Windows monotonic clock granularity (~15ms)
+        now = time.monotonic()
+        tracker._request_start["req-1"] = now - 0.05
         assert tracker.check_sla("req-1") is False
 
     def test_check_sla_increments_total_violations(self) -> None:
         tracker = SLATracker(sla_deadline_ms=0.0)
         tracker.start_request("req-1")
+        # Backdate so elapsed exceeds the deadline deterministically.
+        tracker._request_start["req-1"] = time.monotonic() - 0.05
         tracker.check_sla("req-1")
         assert tracker.total_violations == 1
 
     def test_multiple_checks_accumulate_violations(self) -> None:
         tracker = SLATracker(sla_deadline_ms=0.0)
         tracker.start_request("req-1")
+        # Backdate so elapsed exceeds the deadline deterministically.
+        tracker._request_start["req-1"] = time.monotonic() - 0.05
         tracker.check_sla("req-1")
         tracker.check_sla("req-1")
         assert tracker.total_violations == 2
@@ -167,6 +174,8 @@ class TestSLATracker:
     def test_get_violation_count_tracks_per_request(self) -> None:
         tracker = SLATracker(sla_deadline_ms=0.0)
         tracker.start_request("req-1")
+        # Backdate so elapsed exceeds the deadline deterministically.
+        tracker._request_start["req-1"] = time.monotonic() - 0.05
         tracker.check_sla("req-1")
         assert tracker.get_violation_count("req-1") == 1
 
@@ -195,6 +204,8 @@ class TestSLATracker:
     def test_total_violations_after_complete_preserved(self) -> None:
         tracker = SLATracker(sla_deadline_ms=0.0)
         tracker.start_request("req-1")
+        # Backdate so elapsed exceeds the deadline deterministically.
+        tracker._request_start["req-1"] = time.monotonic() - 0.05
         tracker.check_sla("req-1")
         tracker.complete_request("req-1")
         assert tracker.total_violations == 1
@@ -356,6 +367,8 @@ class TestPreemptionPolicy:
         sla = SLATracker(max_violations=0, sla_deadline_ms=0.0)
         policy = PreemptionPolicy(sla_tracker=sla)
         sla.start_request("req-1")
+        # Backdate so elapsed exceeds the deadline deterministically.
+        sla._request_start["req-1"] = time.monotonic() - 0.05
         sla.check_sla("req-1")
         assert policy.should_preempt(pending_count=0, request_id="req-1") is True
 

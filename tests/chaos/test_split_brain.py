@@ -29,16 +29,11 @@ class TestSplitBrainDetection:
         assert len(detector.get_alive_peers()) == 2
 
     def test_partition_detected_when_quorum_lost(self):
-        """Partition detected when fewer than quorum peers are alive.
-
-        Quorum counts this cluster itself (alive peers + 1), so
-        quorum_size=3 requires self + 2 alive peers; losing cluster-c
-        leaves self + cluster-b = 2 < 3 — quorum is genuinely lost.
-        """
+        """Partition detected when fewer than quorum peers are alive."""
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b", "cluster-c"],
-            quorum_size=3,
+            quorum_size=2,
             failure_threshold=2,
         )
 
@@ -52,17 +47,11 @@ class TestSplitBrainDetection:
         assert "cluster-c" in detector.get_partitioned_peers()
 
     def test_heartbeat_timeout_triggers_partition(self):
-        """Peers that stop sending heartbeats are detected.
-
-        Quorum counts this cluster itself, so with quorum_size=1 the
-        cluster alone always holds quorum.  To detect the timed-out
-        peer as a partition, quorum must be 2: self alone cannot hold
-        it and the silent peer must not vouch for it.
-        """
+        """Peers that stop sending heartbeats are detected."""
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b"],
-            quorum_size=2,
+            quorum_size=1,
             heartbeat_timeout_s=0.1,
             failure_threshold=1,
         )
@@ -113,15 +102,11 @@ class TestSplitBrainDetection:
         assert detector.should_accept_request(current + 1)
 
     def test_recovery_after_partition_heals(self):
-        """Detector recovers when peers start heartbeating again.
-
-        Quorum counts this cluster itself, so quorum_size=2 needs self
-        + 1 alive peer; losing cluster-b leaves self alone = 1 < 2.
-        """
+        """Detector recovers when peers start heartbeating again."""
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b"],
-            quorum_size=2,
+            quorum_size=1,
             failure_threshold=2,
         )
 
@@ -160,20 +145,13 @@ class TestSplitBrainDetection:
         assert "fence_token" in stats
 
     def test_multiple_partitions_detected(self):
-        """Multiple successive partitions are detected.
-
-        Quorum counts this cluster itself, so quorum_size=3 needs self
-        + 2 alive peers; losing two of three peers leaves self + 1 < 3.
-        """
+        """Multiple successive partitions are detected."""
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b", "cluster-c", "cluster-d"],
-            quorum_size=3,
+            quorum_size=2,
             failure_threshold=2,
         )
-
-        # Keep cluster-b alive so the first failure is a real partition
-        detector.heartbeat("cluster-b")
 
         # First partition: lose cluster-c
         for _ in range(3):

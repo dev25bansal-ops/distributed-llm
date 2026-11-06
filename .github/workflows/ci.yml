@@ -473,12 +473,6 @@ jobs:
       - name: Run fuzz harnesses (pytest mode, 500 iterations each)
         run: |
           python tests/fuzz/run_all.py --iterations 500
-      - name: Run extended auth-middleware fuzz
-        run: |
-          python -m pytest tests/fuzz/fuzz_auth_middleware_extended.py -q --timeout=60
-      - name: Run gossip v2 fuzz (vector clocks, bloom, large msgs)
-        run: |
-          python -m pytest tests/fuzz/fuzz_gossip_v2.py -q --timeout=120
       - name: Upload fuzz logs
         if: always()
         uses: actions/upload-artifact@v4

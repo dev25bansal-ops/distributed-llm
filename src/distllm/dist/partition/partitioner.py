@@ -68,7 +68,7 @@ class HardwareAwarePartitioner:
             f"{num_layers}:{num_heads}:{intermediate_size}:{vocab_size}:"
             f"{self._batch_size}:{self._seq_len}:{self._allow_oom}"
         )
-        return hashlib.md5(config_str.encode()).hexdigest()
+        return hashlib.md5(config_str.encode()).hexdigest()  # nosec B324  # partition cache key  # noqa: B324
 
     async def partition(
         self,

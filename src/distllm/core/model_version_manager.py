@@ -17,6 +17,8 @@ from typing import Any, Callable
 
 from loguru import logger
 
+from distllm.core.hashing import stable_hash
+
 
 class VersionStatus(Enum):
     STAGED = "staged"
@@ -246,8 +248,11 @@ class ModelVersionManager:
         """Select which version serves *request_id* based on A/B split."""
         if self._ab_test is None:
             return self._active_version or None
-        # Deterministic selection based on request_id hash
-        h = hash(request_id + self._ab_test.version_a)
+        # Deterministic selection based on request_id hash. Must be a
+        # stable hash: builtin hash() is per-process salted, so the same
+        # request would land in different variants across replicas and
+        # restarts, corrupting A/B metrics.
+        h = stable_hash(request_id, self._ab_test.version_a)
         if (h % 1000) / 1000.0 < self._ab_test.split_ratio:
             return self._ab_test.version_b
         return self._ab_test.version_a

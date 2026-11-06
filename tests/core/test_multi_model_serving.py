@@ -509,3 +509,122 @@ class TestMemoryAwarePlacer:
         s = p.stats()
         assert s["placed_models"] == 1
         assert s["gpu_memory_gb"] == 80.0
+
+
+# ── BUG-4 regression: memory-budget admission control ────────────────────────
+
+
+class TestMemoryBudgetAdmission:
+    """load_model must enforce ModelMemoryBudget (can_fit) before serving."""
+
+    def _manager(self, total_gb: float) -> Any:
+        calls = {"unloaded": []}
+
+        def on_load(name: str, path: str):
+            # Deterministic per-model memory: "big" wants 10 GB, others 2 GB
+            mem = 10.0 if "big" in name else 2.0
+            return object(), object(), mem
+
+        def on_unload(name: str, model: object, tokenizer: object) -> None:
+            calls["unloaded"].append(name)
+
+        mgr = ModelHotSwapManager(
+            total_gpu_memory_gb=total_gb,
+            max_models=4,
+            on_load_model=on_load,
+            on_unload_model=on_unload,
+        )
+        mgr._test_unloaded = calls["unloaded"]
+        return mgr
+
+    def test_over_budget_model_refused_and_freed(self) -> None:
+        mgr = self._manager(total_gb=100.0)
+        mgr.register_model("big-model", "/m/big", total_layers=12, memory_budget_gb=4.0)
+
+        assert mgr.load_model("big-model") is False
+        assert "big-model" not in mgr._loaded
+        assert mgr._test_unloaded == ["big-model"]
+        assert mgr.memory_budget.get_usage("big-model") == 0.0
+        assert mgr.get_total_memory_usage() == 0.0
+
+    def test_evicts_lru_to_make_room(self) -> None:
+        mgr = self._manager(total_gb=10.0)
+        mgr.register_model("small-a", "/m/a", total_layers=4)
+        mgr.register_model("small-b", "/m/b", total_layers=4)
+
+        assert mgr.load_model("small-a") is True
+        assert mgr.get_model("small-a") is not None  # touch a so b is older
+        assert mgr.load_model("small-b") is True
+
+        # a (6 GB used by the pair) leaves 4 GB free; reloading "big-model"
+        # (10 GB) cannot fit with a resident, but b (2 GB) can after eviction.
+        mgr.register_model("small-c", "/m/c", total_layers=4)
+        assert mgr.load_model("small-c") is True
+        loaded_names = set(mgr._loaded.keys())
+        assert "small-c" in loaded_names
+        # Something was evicted to keep total within 10 GB.
+        assert mgr.memory_budget.total_allocated_gb() <= 10.0
+
+    def test_unbudgeted_model_still_fits_total_memory(self) -> None:
+        mgr = self._manager(total_gb=5.0)
+        mgr.register_model("big-model", "/m/big", total_layers=12)
+
+        # No budget set, but 10 GB > 5 GB total: refused.
+        assert mgr.load_model("big-model") is False
+        assert "big-model" not in mgr._loaded
+
+
+class TestMemoryAwarePlacerAccounting:
+    """BUG-4 regression: remove_model must release the GPU reservation."""
+
+    def test_remove_model_frees_usage(self) -> None:
+        placer = MemoryAwarePlacer(gpu_memory_gb=10.0)
+        # Fill all 8 GPUs with 6 GB each (9 available per GPU).
+        for i in range(8):
+            assert placer.place_model(f"m{i}", required_gb=6.0) == i
+        # 3 GB free per GPU -> another 6 GB model cannot fit anywhere.
+        assert placer.place_model("m9", required_gb=6.0) is None
+
+        placer.remove_model("m0")
+        stats = placer.stats()
+        assert stats["gpu_usage"].get(0, 0.0) == 0.0
+        # Now m9 fits on GPU 0.
+        assert placer.place_model("m9", required_gb=6.0) == 0
+
+    def test_replace_same_model_does_not_double_charge(self) -> None:
+        placer = MemoryAwarePlacer(gpu_memory_gb=10.0)
+        assert placer.place_model("x", required_gb=4.0) == 0
+        assert placer.place_model("x", required_gb=4.0, preferred_gpu=0) == 0
+        assert placer.stats()["gpu_usage"][0] == 4.0
+
+
+class TestGPUTimeSlicerWeightedFairness:
+    """BUG-6 regression: priority affects selection FREQUENCY (smooth WRR),
+    not just slice duration — total_weight was computed but unused before."""
+
+    def test_priority_1_selected_3x_priority_3(self):
+        s = GPUTimeSlicer()
+        s.register_model(ModelSLA(model_name="high", priority=1))
+        s.register_model(ModelSLA(model_name="mid", priority=2))
+        s.register_model(ModelSLA(model_name="low", priority=3))
+
+        counts = {"high": 0, "mid": 0, "low": 0}
+        for _ in range(330):
+            counts[s.get_next_model()] += 1
+
+        # Weights 1, 0.5, 0.333 -> expected 180/90/60 of 330.
+        assert counts["high"] > counts["mid"] > counts["low"]
+        assert counts["high"] > 150
+        assert counts["low"] < 90
+
+    def test_selections_interleave_not_bunch(self):
+        s = GPUTimeSlicer()
+        s.register_model(ModelSLA(model_name="high", priority=1))
+        s.register_model(ModelSLA(model_name="low", priority=3))
+
+        picks = [s.get_next_model() for _ in range(8)]
+        # Smooth WRR spreads the high-priority model through the cycle
+        # instead of granting all its slices consecutively.
+        assert picks[0] == "high"
+        assert "low" in picks[:4]
+        assert picks != ["high"] * 4 + ["low"] * 4

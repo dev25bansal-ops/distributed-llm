@@ -177,7 +177,7 @@ def test_priority_ordering(num_high_priority, num_medium_priority, num_low_prior
     batch = scheduler.schedule()
     if batch is not None and batch.sequences:
         high_in_batch = sum(1 for s in batch.sequences if s.request_id.startswith("high"))
-        low_in_batch = sum(1 for s in batch.sequences if s.request_id.startswith("low"))
+        sum(1 for s in batch.sequences if s.request_id.startswith("low"))
         if num_high_priority > 0 and num_low_priority > 0:
             assert high_in_batch > 0  # High pri must be present
 

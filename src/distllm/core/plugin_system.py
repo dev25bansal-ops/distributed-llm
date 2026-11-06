@@ -503,11 +503,36 @@ class PluginSystem:
 
         package_name = f"distllm-plugin-{plugin_name}"
 
-        # Warn that we are pulling from a public index
-        logger.warning(
-            f"Installing {package_name} from PyPI — "
-            f"ensure the package is trusted before use in production."
+        # SECURITY (SEC-3): fail-closed — installation runs attacker-controlled
+        # code in-process, so it requires an explicit operator opt-in and, when
+        # a signing key is configured, a verified signed manifest.
+        from distllm.core.plugin_trust import (
+            SIGNING_PUBKEY_ENV,
+            PluginInstallRefused,
+            enforce_install_allowed,
+            verify_plugin_manifest,
         )
+        import os
+
+        try:
+            enforce_install_allowed(package_name)
+        except PluginInstallRefused as e:
+            logger.error(str(e))
+            return False
+
+        pubkey_path = os.environ.get(SIGNING_PUBKEY_ENV, "")
+        if pubkey_path:
+            manifest_dir = getattr(self, "_trusted_dirs", ["."])[0] if getattr(self, "_trusted_dirs", None) else "."
+            verification = verify_plugin_manifest(plugin_name, package_name, manifest_dir, pubkey_path)
+            if not verification.verified:
+                logger.error(f"Plugin install refused: {verification.reason}")
+                return False
+        else:
+            # Warn that we are pulling from a public index with no pinning
+            logger.warning(
+                f"Installing {package_name} from PyPI — "
+                f"ensure the package is trusted before use in production."
+            )
 
         cmd = [sys.executable, "-m", "pip", "install"]
         if upgrade:

@@ -19,10 +19,25 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
-import torch
-
 from loguru import logger
 from pydantic import BaseModel, Field
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for quantization tuning; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
 
 
 # ---------------------------------------------------------------------------

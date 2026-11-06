@@ -86,7 +86,7 @@ optional cross-cluster federation, and an optional HA standby coordinator.
 | Threat | Mitigation | Status |
 |---|---|---|
 | "We never sent that prompt" disputes | Request-ID middleware on every response; prompt-injection audit log setting (`DISTLLM_INJECTION_AUDIT_LOG`) | Partially verified — middleware wired at `server.py:687`; audit log is local-file based |
-| Tampered/PII-leaking logs | Log-redaction module (`LogRedactor`, `RedactingFilter`) | **Implemented but not wired** — `install_global_redaction()` is never called at startup (see gaps) |
+| Tampered/PII-leaking logs | Log-redaction module (`LogRedactor`, `RedactingFilter`) installed at server startup via `_init_observability()` in `api/server.py` | **Verified — wired at live startup path (2026-11-05)** — `install_global_redaction()` called during FastAPI lifespan; covers loguru core patcher + stdlib root handler filter. Residual gap: `record["exception"]` (traceback text) is unscrubbed |
 
 ### Information disclosure
 
@@ -94,7 +94,7 @@ optional cross-cluster federation, and an optional HA standby coordinator.
 |---|---|---|
 | Prompt/completion interception between workers | E2E encryption: X25519 key exchange + XSalsa20-Poly1305 AEAD, signed key exchange, AAD-bound session keys; tensor-payload helpers | Verified module — `src/distllm/security/e2e.py`; wired into gRPC servicer as opt-in constructor arg (`node_service.py:122-126`) |
 | SSRF into private network (webhooks, eval URLs, provider URLs) | `validate_http_url` blocks private/loopback/link-local/multicast/reserved IPs; `safe_urlopen` resolves DNS once and connects to the IP (rebinding protection) while preserving Host header | Verified — `src/distllm/security/utils.py`; regression tests `test_ssrf_bypass.py`, `test_ssrf_federation.py`, `test_dify_provider_urls.py` |
-| Secrets/keys in logs | redaction module (unwired — see gaps); auth fingerprint explicitly redacted in general error context | Gap + partial (`server.py:492`) |
+| Secrets/keys in logs | Log-redaction module active at startup (see Repudiation); auth fingerprint explicitly redacted in general error context | **Mitigated** — `install_global_redaction()` wired in `server.py::_init_observability` (FastAPI lifespan, lines 663-668); residual gap: exception traceback text (`record["exception"]`) is not redacted, only message portion |
 | PII in stored prompts | Content-moderation pipeline incl. `PIIRedactor` wired as middleware | Wired — `server.py:708`; detectors in `src/distllm/security/content_moderation/` |
 | Eavesdropping on coordinator↔worker link | TLS supported end-to-end (client creds, server creds, cert rotation) but **off by default** | Gap — see below |
 
@@ -148,9 +148,17 @@ Honest list of things this threat model cannot claim today:
    silently degrades Kademlia STORE to unauthenticated mode
    (`kademlia_dht.py:876-882`) after a loud warning. Prefer refusing to start
    in P2P deployments where DHT is enabled.
-4. **Log redaction is implemented but never installed.** No startup path calls
-   `install_global_redaction()` (`security/log_redaction.py:197`), so prompts/
-   PII can reach logs unredacted.
+4. **Log redaction — WIRED (2026-11-05).** `install_global_redaction()` is
+   now called from `_init_observability()` in `src/distllm/api/server.py`
+   (lines 663-668), which runs at startup via the FastAPI `lifespan` handler.
+   (A mirrored copy exists in `src/distllm/api/server_lifespan.py` lines
+   37-42, but that module currently has no importer.) Residual gap:
+   loguru's `record["exception"]` (traceback text) is not scrubbed — only
+   `record["message"]` — so an exception raised with a secret embedded in its
+   repr can still reach the log through `logger.exception()`. See
+   `tests/security/test_loguru_redaction.py::test_exception_logging_redacted`
+   which acknowledges this as a "documented residual gap". Disable via
+   `DISTLLM_LOG_REDACTION=off`; extend patterns via `DISTLLM_REDACT_PATTERNS`.
 5. **WAF is implemented but not attached.** `WAFMiddleware`
    (`src/distllm/api/waf.py`) has no default registration in `server.py`;
    deployments must call `add_waf_middleware()` themselves.

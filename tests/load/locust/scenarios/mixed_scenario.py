@@ -77,7 +77,7 @@ class MixedUser(HttpUser):
                         resp.failure("no chunks")
                 else:
                     resp.failure(f"Status {resp.status_code}")
-        except Exception as e:
+        except Exception:
             pass
 
     @task(3)

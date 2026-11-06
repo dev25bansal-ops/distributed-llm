@@ -235,7 +235,7 @@ def test_get_retry_policy_returns_registered_policy():
 def test_get_retry_delay_matches_capped_exponential():
     """get_retry_delay is exactly the capped exponential the retry loop uses:
     ``min(base * 2**attempt, max_delay)``."""
-    policy = get_retry_policy(NodeUnreachableError("n", "h", 1))
+    get_retry_policy(NodeUnreachableError("n", "h", 1))
     assert get_retry_delay(NodeUnreachableError("n", "h", 1), 0) == pytest.approx(1.0)
     assert get_retry_delay(NodeUnreachableError("n", "h", 1), 1) == pytest.approx(2.0)
     # Above the ceiling the delay is capped.

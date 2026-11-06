@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 
 def collect_autopsy(
     coordinator_host: str = "localhost",
@@ -60,8 +62,6 @@ def collect_autopsy(
     if not output_path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = f"distllm-autopsy-{timestamp}.zip"
-
-    import httpx
 
     data: dict[str, Any] = {
         "timestamp": time.time(),
@@ -216,7 +216,15 @@ def _write_report(data: dict, output_path: str) -> str:
 
     print(f"Autopsy report saved to {output_path}")
     print(f"  Health: {data.get('health', {}).get('status', 'unknown')}")
-    print(f"  Nodes: {len(data.get('nodes', {}).get('nodes', [])) if isinstance(data.get('nodes'), dict) else 'unknown'}")
+    nodes_data = data.get("nodes", {})
+    if isinstance(nodes_data, dict):
+        node_list = nodes_data.get("nodes", [])
+        node_count = len(node_list) if isinstance(node_list, (list, dict)) else "unknown"
+    elif isinstance(nodes_data, int):
+        node_count = nodes_data
+    else:
+        node_count = "unknown"
+    print(f"  Nodes: {node_count}")
     print(f"  GPU: {len(data.get('gpu', []))} devices")
     return output_path
 

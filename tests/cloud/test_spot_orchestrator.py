@@ -304,7 +304,7 @@ class TestHttpHelpers:
         mock_response.raise_for_status.return_value = None
         mock_response.json.return_value = {"deleted": True}
 
-        with patch("httpx.delete", return_value=mock_response) as mock_delete:
+        with patch("httpx.delete", return_value=mock_response):
             result = _http_delete("https://api.example.com/instances/1")
             assert result == {"deleted": True}
 

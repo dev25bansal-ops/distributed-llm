@@ -38,7 +38,6 @@ class TestFederationHeartbeatHMAC:
 
     def test_key_rotation_grace_period(self):
         """Old key should be accepted during grace period (5 min after rotation)."""
-        local_key = "new-key-32-chars-minimum!!!!"
         old_key = "old-key-32-chars-minimum!!!!!"
         rotation_time = time.time()
         grace_expiry = rotation_time + 300  # 5 minutes
@@ -52,15 +51,14 @@ class TestFederationHeartbeatHMAC:
         """Old key should be rejected after grace period expires."""
         old_key = "old-key-32-chars-minimum!!!!!"
         rotation_time = time.time() - 600  # 10 min ago
-        grace_expiry = rotation_time + 300  # 5 min grace
+        rotation_time + 300  # 5 min grace
 
-        now = time.time()
+        time.time()
         # If we're past grace, old key should not be the current key
         assert old_key != "new-key-32-chars-minimum!!!!"
 
     def test_empty_key_rejected(self):
         """Empty cluster key should be rejected."""
         received_key = ""
-        local_key = "real-key-32-chars-minimum!!"
         assert not received_key, "Empty key should be rejected"
         assert hmac.compare_digest("real-key", "real-key")

@@ -68,10 +68,9 @@ tuner.train_round(local_train_fn)`,
       label: "Run the suite",
       code: `python -m pytest tests/benchmark -v
 
-# Or benchmark any endpoint:
-python -m distllm.cli.main benchmark \\
-  --url http://localhost:8000 \\
-  --requests 200 --concurrency 8`,
+# Or benchmark against an API server:
+distllm benchmark run --model meta-llama/Llama-3.1-8B \\
+  --host localhost --port 8000 --prompts 100 --max-tokens 64`,
     },
   },
   {

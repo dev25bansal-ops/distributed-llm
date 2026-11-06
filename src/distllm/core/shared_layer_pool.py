@@ -254,9 +254,11 @@ class SharedLayerPool:
         self, layer_name: str, tensor: torch.Tensor
     ) -> LayerFingerprint:
         """Create a fingerprint for a layer tensor."""
-        # Hash first 1024 bytes + shape for fast comparison
+        # H7: hash the FULL tensor (not just the first 1024 bytes) —
+        # same-shape layers with identical leading bytes but different
+        # tails must not collide and get wrongly aliased in the pool.
         raw = tensor.detach().cpu().contiguous().numpy()
-        hash_input = raw.tobytes()[:1024] + str(raw.shape).encode()
+        hash_input = raw.tobytes() + str(raw.shape).encode()
         param_hash = hashlib.sha256(hash_input).hexdigest()[:16]
 
         return LayerFingerprint(

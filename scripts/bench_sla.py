@@ -131,7 +131,7 @@ def run_benchmark(
             )
         t1 = time.perf_counter()
         n_gen = int((out[0][prompt_len:] != tok.eos_token_id).sum().item()) or max_tokens
-        ttft = (t1 - t0) * 1000.0 / max(1, n_gen)  # rough per-token; refined below
+        (t1 - t0) * 1000.0 / max(1, n_gen)  # rough per-token; refined below
         return t0, t1, n_gen
 
     # Warm-up

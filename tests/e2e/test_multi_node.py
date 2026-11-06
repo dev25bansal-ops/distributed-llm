@@ -22,7 +22,7 @@ def test_single_node():
     from distllm.core.coordinator import Coordinator, CoordinatorConfig
 
     config = CoordinatorConfig(
-        model_name="roneneldan/TinyStories-1M",
+        model_name="Qwen/Qwen2.5-0.5B-Instruct",
         port=50050,
     )
     coord = Coordinator(config=config)
@@ -54,7 +54,7 @@ def test_multi_node_simulation():
     from distllm.core.coordinator import Coordinator, CoordinatorConfig
 
     config = CoordinatorConfig(
-        model_name="roneneldan/TinyStories-1M",
+        model_name="Qwen/Qwen2.5-0.5B-Instruct",
         port=50050,
     )
     coord = Coordinator(config=config)
@@ -153,10 +153,9 @@ def main():
 
     # Test 1: Single node
     try:
-        coord = test_single_node()
+        test_single_node()
     except Exception as e:
         print(f"  [FAIL] Single-node test failed: {e}")
-        coord = None
 
     # Test 2: Multi-node simulation
     try:

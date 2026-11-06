@@ -147,8 +147,8 @@ def resolve_variant(experiment_name: str, request_id: str) -> str | None:
         variants = exp.get("_variants", {})
         if not variants:
             return None
-        # Deterministic hash-based assignment
-        h = int(hashlib.md5(f"{experiment_name}:{request_id}".encode()).hexdigest(), 16)
+        # Deterministic hash-based assignment — non-crypto use of MD5 for user bucketing
+        h = int(hashlib.md5(f"{experiment_name}:{request_id}".encode()).hexdigest(), 16)  # nosec B324  # noqa: B324
         pct = h % 100
         cumulative = 0
         for name, vdata in sorted(variants.items()):

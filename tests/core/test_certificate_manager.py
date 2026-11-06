@@ -38,7 +38,7 @@ class TestCertificateManager:
     def test_init_creates_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             cert_dir = Path(tmp) / "certs"
-            mgr = CertificateManager(cert_dir=str(cert_dir))
+            CertificateManager(cert_dir=str(cert_dir))
             assert cert_dir.exists()
 
     def test_create_self_signed(self):

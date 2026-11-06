@@ -308,7 +308,7 @@ class TestArbitrageEngineMigrationRecommendations:
         engine.update_pricing("gcp", "a2-highgpu-8g", "us-central1", 1.0)
         # Very high savings => different provider => HIGH risk
         engine._provider_savings_threshold = 1.0
-        opps = engine.detect_opportunities()
+        engine.detect_opportunities()
         recs = engine.generate_migration_recommendations()
         high_recs = [r for r in recs if r.risk == MigrationRisk.HIGH]
         if high_recs:

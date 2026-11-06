@@ -133,8 +133,8 @@ class TestGPUPagedAttention:
         mgr.allocate_sequence("seq-1", num_tokens=16)
 
         # Write KV data
-        key = torch.randn(4, 16, 32, device="cuda")
-        value = torch.randn(4, 16, 32, device="cuda")
+        torch.randn(4, 16, 32, device="cuda")
+        torch.randn(4, 16, 32, device="cuda")
         # Note: actual write depends on PagedAttentionManager API
 
         mgr.free_sequence("seq-1")
@@ -151,7 +151,7 @@ class TestGPUMemoryPressure:
         # Try to allocate more than available (should raise)
         with pytest.raises((torch.cuda.OutOfMemoryError, RuntimeError)):
             # Allocate 2x GPU memory
-            huge = torch.empty(int(total_mem * 2), dtype=torch.uint8, device=device)
+            torch.empty(int(total_mem * 2), dtype=torch.uint8, device=device)
 
     def test_cache_clear_frees_memory(self):
         """Verify torch.cuda.empty_cache() releases memory."""

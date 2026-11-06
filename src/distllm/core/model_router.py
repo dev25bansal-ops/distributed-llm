@@ -24,6 +24,36 @@ if TYPE_CHECKING:
 from loguru import logger
 
 
+# SEC-5: ReDoS hardening for operator-configured routing regexes. Routing
+# rules are not user-supplied, but a misconfigured rule could still hang the
+# router, so regexes are structurally screened and match input is bounded.
+_MAX_REGEX_PATTERN_LEN = 256
+_MAX_REGEX_INPUT_LEN = 10_000
+_NESTED_QUANTIFIER = re.compile(r"\([^()]*[+*][^()]*\)[+*]")
+
+
+def _regex_is_safe(pattern: str) -> bool:
+    """Structural screen for catastrophic-backtracking risk.
+
+    Rejects overly long patterns and any quantified group (the classic
+    ``(a+)+`` ReDoS shape) regardless of pattern length. A screen, not a
+    proof of safety.
+    """
+    if len(pattern) > _MAX_REGEX_PATTERN_LEN:
+        return False
+    return _NESTED_QUANTIFIER.search(pattern) is None
+
+
+def _safe_regex_search(pattern: str, text: str) -> "re.Match[str] | None":
+    """Bounded, screened ``re.search``; returns None on unsafe/invalid patterns."""
+    if not _regex_is_safe(pattern):
+        return None
+    try:
+        return re.search(pattern, text[:_MAX_REGEX_INPUT_LEN], re.IGNORECASE)
+    except re.error:
+        return None
+
+
 @dataclass
 class RouteRule:
     """A single routing rule."""
@@ -718,16 +748,16 @@ class ModelRouter:
             return rule.pattern.lower() in text_lower
 
         if rule.match_type == "regex":
-            try:
-                # H-16: ReDoS protection — reject patterns with catastrophic backtracking risk
-                # Patterns longer than 100 chars with nested quantifiers are rejected
-                if len(rule.pattern) > 100 and re.search(r'\(.*[+*].*\)[+*]', rule.pattern):
-                    logger.warning(f"Rejected potentially dangerous regex in rule '{rule.name}'")
-                    return False
-                return bool(re.search(rule.pattern, text, re.IGNORECASE))
-            except re.error:
+            if not _regex_is_safe(rule.pattern):
+                logger.warning(
+                    f"Rejected potentially dangerous regex in rule '{rule.name}': {rule.pattern}"
+                )
+                return False
+            matched = _safe_regex_search(rule.pattern, text)
+            if matched is None:
                 logger.warning(f"Invalid regex pattern in rule '{rule.name}': {rule.pattern}")
                 return False
+            return bool(matched)
 
         if rule.match_type == "workload":
             workload = self._classify_workload(text_lower)
@@ -749,13 +779,15 @@ class ModelRouter:
             for kw in patterns.get("keywords", []):
                 if kw in text_lower:
                     score += 1
-            # Regex matching
+            # Regex matching (SEC-5: screened + bounded input)
             for rx in patterns.get("regex", []):
-                try:
-                    if re.search(rx, text_lower, re.IGNORECASE):
-                        score += 2
-                except re.error:
-                    logger.warning(f"Invalid workload regex for '{workload}': {rx}")
+                matched = _safe_regex_search(rx, text_lower)
+                if matched is None:
+                    if not _regex_is_safe(rx):
+                        logger.warning(f"Unsafe workload regex for '{workload}' skipped: {rx}")
+                    continue
+                if matched:
+                    score += 2
             if score > 0:
                 scores[workload] = score
 
@@ -780,10 +812,15 @@ class ModelRouter:
             pattern_lower = rule.pattern.lower()
             hits = text_lower.count(pattern_lower)
         elif rule.match_type == "regex":
-            try:
-                hits = len(re.findall(rule.pattern, text_lower, re.IGNORECASE))
-            except re.error:
+            if not _regex_is_safe(rule.pattern):
                 hits = 0
+            else:
+                try:
+                    hits = len(re.findall(
+                        rule.pattern, text_lower[:_MAX_REGEX_INPUT_LEN], re.IGNORECASE
+                    ))
+                except re.error:
+                    hits = 0
         elif rule.match_type == "workload":
             patterns = self._workload_patterns.get(rule.pattern, {})
             for kw in patterns.get("keywords", []):

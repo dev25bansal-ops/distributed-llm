@@ -216,7 +216,7 @@ def test_noise_deterministic_with_seed():
     g2 = torch.Generator().manual_seed(1234)
 
     t = torch.zeros(200)  # zero tensor -> output is pure noise
-    n1 = dp.add_noise_to_tensor(t.clone())
+    dp.add_noise_to_tensor(t.clone())
     # Re-draw with the same generator produces identical noise.
     noise_a = torch.randn(200, generator=g1) * cfg.sigma
     noise_b = torch.randn(200, generator=g2) * cfg.sigma

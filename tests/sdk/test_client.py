@@ -650,32 +650,33 @@ class TestDistLLMClientBatch:
     async def test_submit_batch(self):
         client = DistLLMClient()
         client._client = httpx.AsyncClient(transport=_make_handler({
-            "id": "batch-1", "status": "validating",
-            "input_file_id": "file-1", "created_at": 1000,
+            "batch_id": "batch-1", "status": "pending",
+            "total_items": 1, "created_at": 1000.0,
         }), base_url="http://test")
-        job = await client.submit_batch("file-1", "/v1/chat/completions")
+        job = await client.submit_batch([{"prompt": "Hello", "request_id": "r1"}])
         assert job.id == "batch-1"
-        assert job.status == "validating"
+        assert job.status == "pending"
         await client.close()
 
     @pytest.mark.asyncio
     async def test_get_batch_by_id(self):
         client = DistLLMClient()
         client._client = httpx.AsyncClient(transport=_make_handler({
-            "id": "batch-1", "status": "in_progress",
-            "input_file_id": "file-1", "created_at": 1000,
+            "batch_id": "batch-1", "status": "running", "total_items": 1,
+            "pending": 0, "running": 1, "completed": 0, "failed": 0,
+            "timed_out": 0, "cancelled": 0, "created_at": 1000.0, "items": [],
         }), base_url="http://test")
         job = await client.get_batch("batch-1")
         assert job.id == "batch-1"
-        assert job.status == "in_progress"
+        assert job.status == "running"
         await client.close()
 
     @pytest.mark.asyncio
     async def test_cancel_batch(self):
         client = DistLLMClient()
         client._client = httpx.AsyncClient(transport=_make_handler({
-            "id": "batch-1", "status": "cancelled",
-            "input_file_id": "file-1", "created_at": 1000,
+            "batch_id": "batch-1", "status": "cancelled",
+            "cancelled_items": 1, "message": "Batch cancelled",
         }), base_url="http://test")
         job = await client.cancel_batch("batch-1")
         assert job.status == "cancelled"

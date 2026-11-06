@@ -110,6 +110,19 @@ class CudaGraphCapture:
             Model output logits tensor.
         """
         batch_size = input_ids.shape[0]
+
+        # H6: the captured graph was recorded WITHOUT a KV cache, so replaying
+        # it for a real decode step would attend over a stale/empty cache and
+        # produce wrong logits every step. KV-aware decode must take the
+        # eager path so the cache is honored.
+        if past_key_values is not None:
+            return self._model(
+                input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+            ).logits[:, -1, :]
+
         entry = self._graphs.get(batch_size)
 
         if entry is None:

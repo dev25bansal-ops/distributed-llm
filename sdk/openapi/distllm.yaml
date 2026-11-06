@@ -112,35 +112,100 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
-  /v1/batches:
+  /v1/batch:
     post:
-      operationId: createBatch
-      summary: Create a batch job
+      operationId: processBatch
+      summary: Process multiple requests concurrently (synchronous batch)
       tags: [Batch]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BatchRequest"
+              $ref: "#/components/schemas/SyncBatchRequest"
       responses:
         "200":
-          description: Batch job created
+          description: Batch processing complete
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BatchJob"
-    get:
-      operationId: listBatches
-      summary: List batch jobs
+                $ref: "#/components/schemas/SyncBatchResponse"
+
+  /v1/batch/submit:
+    post:
+      operationId: submitBackgroundBatch
+      summary: Submit a batch for background processing
       tags: [Batch]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackgroundBatchSubmitRequest"
       responses:
-        "200":
-          description: Batch list
+        "202":
+          description: Batch submitted for background processing
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BatchList"
+                $ref: "#/components/schemas/BackgroundBatchSubmitResponse"
+
+  /v1/batch/{batch_id}/status:
+    get:
+      operationId: getBatchStatus
+      summary: Get status of a background batch
+      tags: [Batch]
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Batch status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackgroundBatchStatusResponse"
+
+  /v1/batch/{batch_id}/stream:
+    get:
+      operationId: streamBatchResults
+      summary: Stream results of a background batch via SSE
+      tags: [Batch]
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /v1/batch/{batch_id}/cancel:
+    post:
+      operationId: cancelBatch
+      summary: Cancel a background batch
+      tags: [Batch]
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Batch cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackgroundBatchCancelResponse"
 
 components:
   securitySchemes:
@@ -372,36 +437,203 @@ components:
         uptime:
           type: number
 
-    BatchRequest:
+    SyncBatchRequest:
       type: object
-      required: [input_file_id, endpoint]
+      required: [requests]
       properties:
-        input_file_id:
-          type: string
-        endpoint:
-          type: string
-        metadata:
-          type: object
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncBatchRequestItem"
+          maxItems: 100
+          description: List of requests (max 100)
 
-    BatchJob:
+    SyncBatchRequestItem:
       type: object
+      required: [method, body]
       properties:
-        id:
+        method:
+          type: string
+          enum: [chat, completion, embedding]
+          description: Request method
+        body:
+          type: object
+          description: Request body (same as individual endpoint)
+        request_id:
+          type: string
+          description: Optional client-assigned request ID
+
+    SyncBatchResponse:
+      type: object
+      required: [batch_id, total_requests, successful, failed, total_latency_ms, results]
+      properties:
+        batch_id:
+          type: string
+        total_requests:
+          type: integer
+        successful:
+          type: integer
+        failed:
+          type: integer
+        total_latency_ms:
+          type: number
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncBatchResultItem"
+
+    SyncBatchResultItem:
+      type: object
+      required: [request_id, status, latency_ms]
+      properties:
+        request_id:
           type: string
         status:
           type: string
-        input_file_id:
+          enum: [success, error]
+        result:
+          type: object
+        error:
           type: string
-        created_at:
-          type: integer
+        latency_ms:
+          type: number
 
-    BatchList:
+    BackgroundBatchSubmitRequest:
       type: object
+      required: [items]
       properties:
-        data:
+        items:
           type: array
           items:
-            $ref: "#/components/schemas/BatchJob"
+            $ref: "#/components/schemas/BackgroundBatchItem"
+          maxItems: 500
+          description: List of items to process (max 500)
+        webhook_url:
+          type: string
+          description: URL to POST batch results to on completion
+        webhook_token:
+          type: string
+          description: Bearer token for the webhook call
+        item_timeout:
+          type: number
+          minimum: 1.0
+          maximum: 600.0
+          default: 30.0
+          description: Per-item timeout in seconds (default 30s, max 600s)
+
+    BackgroundBatchItem:
+      type: object
+      required: [prompt]
+      properties:
+        request_id:
+          type: string
+          description: Optional client-assigned request ID
+        prompt:
+          type: string
+          description: Prompt text to send to the model
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 32768
+          default: 128
+          description: Maximum tokens to generate
+        temperature:
+          type: number
+          minimum: 0.0
+          maximum: 2.0
+          default: 0.7
+          description: Sampling temperature
+
+    BackgroundBatchSubmitResponse:
+      type: object
+      required: [batch_id, status, total_items, created_at, message]
+      properties:
+        batch_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running]
+        total_items:
+          type: integer
+        created_at:
+          type: number
+        message:
+          type: string
+        cancelled_items:
+          type: integer
+
+    BackgroundBatchStatusResponse:
+      type: object
+      required: [batch_id, status, total_items, pending, running, completed, failed, timed_out, cancelled, total_cost, created_at]
+      properties:
+        batch_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, partially_completed, cancelled]
+        total_items:
+          type: integer
+        pending:
+          type: integer
+        running:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        timed_out:
+          type: integer
+        cancelled:
+          type: integer
+        total_cost:
+          type: number
+        created_at:
+          type: number
+        completed_at:
+          type: number
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackgroundBatchItemResult"
+
+    BackgroundBatchItemResult:
+      type: object
+      required: [request_id, status, cost]
+      properties:
+        request_id:
+          type: string
+        prompt:
+          type: string
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+        status:
+          type: string
+          enum: [pending, running, completed, failed, timeout, cancelled]
+        result:
+          type: object
+        error:
+          type: string
+        cost:
+          type: number
+        started_at:
+          type: number
+        completed_at:
+          type: number
+
+    BackgroundBatchCancelResponse:
+      type: object
+      required: [batch_id, status, cancelled_items, message]
+      properties:
+        batch_id:
+          type: string
+        status:
+          type: string
+        cancelled_items:
+          type: integer
+        message:
+          type: string
 
     UsageInfo:
       type: object

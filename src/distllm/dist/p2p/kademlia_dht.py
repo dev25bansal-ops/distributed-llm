@@ -90,10 +90,10 @@ DHT_REQUIRE_SECRET_ENV_VAR: str = "DISTLLM_DHT_REQUIRE_SECRET"
 def _generate_node_id(seed: bytes | None = None) -> bytes:
     """Generate a 160-bit node ID, optionally from a seed."""
     if seed is not None:
-        # Standard Kademlia uses SHA-1 for 160-bit IDs; collision
-        # resistance is not a security requirement of the protocol.
-        return hashlib.sha1(seed).digest()  # noqa: DUO124
-    return hashlib.sha1(random.randbytes(20)).digest()  # noqa: DUO124
+        # Standard Kademlia uses SHA-1 for 160-bit IDs; collision resistance is
+        # not a security requirement — this is a routing identifier.
+        return hashlib.sha1(seed).digest()  # nosec B324  # noqa: DUO124,B324
+    return hashlib.sha1(random.randbytes(20)).digest()  # nosec B324  # noqa: DUO124,B324
 
 
 def _xor_distance(a: bytes, b: bytes) -> int:
@@ -742,7 +742,7 @@ class KademliaDHT:
         """
         self._store[key] = (value, time.time() + EXPIRE_TIME)
 
-        key_id = hashlib.sha1(key.encode()).digest()  # noqa: DUO124
+        key_id = hashlib.sha1(key.encode()).digest()  # nosec B324  # kademlia key  # noqa: DUO124,B324
         nearest = self.routing_table.find_nearest(key_id, self.k)
 
         # Time-bound capability token so a peer only stores on behalf of this
@@ -784,7 +784,7 @@ class KademliaDHT:
         if local is not None:
             return local
 
-        key_id = hashlib.sha1(key.encode()).digest()  # noqa: DUO124
+        key_id = hashlib.sha1(key.encode()).digest()  # nosec B324  # kademlia key  # noqa: DUO124,B324
         await self.iterative_find_node(key_id, lookup_value=True, value_key=key)
 
         # Re-check local store (iterative lookup may have populated it)
@@ -1095,7 +1095,7 @@ class KademliaDHT:
             }
 
         # Fall through: return nearest nodes
-        key_id = hashlib.sha1(key.encode()).digest()  # noqa: DUO124
+        key_id = hashlib.sha1(key.encode()).digest()  # nosec B324  # kademlia key  # noqa: DUO124,B324
         nearest = self.routing_table.find_nearest(key_id, self.k)
         return {"nodes": [n.to_dict() for n in nearest]}
 

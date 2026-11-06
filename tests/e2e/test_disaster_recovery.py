@@ -148,7 +148,7 @@ class TestStateReplicationStoreConsistency:
         # Arrange
         store = StateReplicationStore(backend="memory")
         v1 = store.put("topology", {"nodes": {}}, version=0)
-        v2 = store.put("topology", {"nodes": {"a": 1}}, version=v1)
+        store.put("topology", {"nodes": {"a": 1}}, version=v1)
 
         # Act / Assert
         with pytest.raises(ValueError, match="Version conflict"):
@@ -230,7 +230,7 @@ class TestStateReplicationStoreConsistency:
         store = StateReplicationStore(backend="memory")
 
         # Act
-        v = store.put("test-key", {"hello": "world"})
+        store.put("test-key", {"hello": "world"})
         value = store.get("test-key")
         versioned = store.get_versioned("test-key")
         keys = store.list_keys()

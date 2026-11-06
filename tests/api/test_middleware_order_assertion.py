@@ -47,7 +47,6 @@ def _built_stack(app) -> list[str]:
 @pytest.fixture(scope="module")
 def app():
     # Import fresh so registration side effects run exactly once.
-    sys_modules_pop = None
     try:
         import distllm.api.server as server_mod
 

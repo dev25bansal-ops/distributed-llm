@@ -33,7 +33,7 @@ class TestEstimateTokens:
     def test_empty_string_real_encoder(self):
         """With tiktoken, empty string encodes to zero tokens."""
         import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
+        tiktoken.get_encoding("cl100k_base")
         assert _estimate_tokens("") == 0
 
     def test_short_text_real_encoder(self):

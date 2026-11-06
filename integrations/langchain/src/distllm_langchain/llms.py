@@ -117,12 +117,8 @@ class DistLLM(BaseLLM):
             temperature=kwargs.pop("temperature", self.temperature),
             stop=stop,
         ):
-            # SDK yields text strings (new) or SSE event dicts (older SDKs/mocks)
-            if isinstance(chunk, str):
-                text = chunk
-            else:
-                delta = chunk
-                text = delta.get("choices", [{}])[0].get("text", "")
+            delta = chunk if isinstance(chunk, dict) else {}
+            text = delta.get("choices", [{}])[0].get("text", "")
             if not text:
                 continue
             gen_chunk = GenerationChunk(text=text)
@@ -146,12 +142,8 @@ class DistLLM(BaseLLM):
             temperature=kwargs.pop("temperature", self.temperature),
             stop=stop,
         ):
-            # SDK yields text strings (new) or SSE event dicts (older SDKs/mocks)
-            if isinstance(chunk, str):
-                text = chunk
-            else:
-                delta = chunk
-                text = delta.get("choices", [{}])[0].get("text", "")
+            delta = chunk if isinstance(chunk, dict) else {}
+            text = delta.get("choices", [{}])[0].get("text", "")
             if not text:
                 continue
             gen_chunk = GenerationChunk(text=text)

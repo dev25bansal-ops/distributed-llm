@@ -859,24 +859,18 @@ class TestSharedLayerPoolFingerprint:
         assert fp.memory_bytes == 128 * 4  # float32 = 4 bytes
         assert len(fp.param_hash) == 16
 
-    def test_fingerprint_large_tensor_uses_first_1024_bytes(self) -> None:
-        """Hashing only uses first 1024 bytes + shape."""
+    def test_fingerprint_large_tensor_uses_full_tensor(self) -> None:
+        """Hashing uses the FULL tensor content + shape for safety."""
         pool = SharedLayerPool()
-        # Tensor with more than 1024 bytes of data
-        t_a = make_tensor((1, 1024), dtype=torch.float32, fill_value=1.0)
-        t_b = make_tensor((1, 1024), dtype=torch.float32, fill_value=1.0)
-        fp_a = pool._fingerprint_layer("same", t_a)
-        fp_b = pool._fingerprint_layer("same", t_b)
-        assert fp_a.param_hash == fp_b.param_hash
-        # Now t_a and t_b differ only in the 1025th byte region (first 1024 are same)
-        # With 1024 floats at 4 bytes = 4096 bytes of data, first 1024 bytes = 256 floats
+        # Tensors that match in the first 1024 bytes but differ after must not collide.
+        # This is intentional: same-shape layers with identical leading bytes but different
+        # tails must have different fingerprints and NOT get wrongly aliased in the pool.
         t_a_diff = torch.cat([torch.full((256,), 1.0), torch.full((768,), 2.0)])
         t_b_diff = torch.cat([torch.full((256,), 1.0), torch.full((768,), 3.0)])
-        # Both have same first 256 elements = 1024 bytes
         fp_a_diff = pool._fingerprint_layer("test", t_a_diff.unsqueeze(0))
         fp_b_diff = pool._fingerprint_layer("test", t_b_diff.unsqueeze(0))
-        # Same first 1024 bytes + same shape => same hash
-        assert fp_a_diff.param_hash == fp_b_diff.param_hash
+        # Different tail content => different hashes
+        assert fp_a_diff.param_hash != fp_b_diff.param_hash
 
     def test_fingerprint_layer_name_does_not_affect_hash(self) -> None:
         """The fingerprint hash only considers tensor bytes + shape, not layer_name."""
@@ -906,16 +900,6 @@ class TestSharedLayerPoolIntegration:
         pool = SharedLayerPool()
 
         # Register three models with varying similarity
-        base_layers = {
-            "embed.weight": (32000, 4096),
-            "layers.0.attn.q.weight": (4096, 4096),
-            "layers.0.attn.k.weight": (4096, 1024),
-            "layers.0.attn.v.weight": (4096, 1024),
-            "layers.0.mlp.gate.weight": (4096, 14336),
-            "layers.0.mlp.up.weight": (4096, 14336),
-            "layers.0.mlp.down.weight": (14336, 4096),
-            "head.weight": (32000, 4096),
-        }
 
         # Model A: base Llama
         sd_a = {

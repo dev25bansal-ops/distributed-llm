@@ -336,7 +336,6 @@ class TestUnderLimitFlow:
         from distllm.core.usage_meter import QuotaLimit, UsageMeter
 
         app = FastAPI()
-        state_seen = {}
 
         @app.post("/v1/chat/completions")
         async def chat():

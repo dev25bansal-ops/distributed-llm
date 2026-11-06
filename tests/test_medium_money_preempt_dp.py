@@ -78,7 +78,7 @@ def test_preemption_no_decode_without_kv():
     mgr.preempt_lowest(active, total, pending, counter, None, min_priority=0)
 
     # Restore: KV was never saved.
-    restored = mgr.restore_preempted(active, total, pending, None, kv_cache_state=None)
+    mgr.restore_preempted(active, total, pending, None, kv_cache_state=None)
     # The sequence must NOT be promoted to DECODING (corrupted decode guard).
     assert seq.status != SequenceStatus.DECODING, (
         "M2: sequence resumed DECODING with no restored KV -> corrupted decode"

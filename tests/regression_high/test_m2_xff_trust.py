@@ -109,7 +109,7 @@ def test_empty_env_never_trusts_headers(monkeypatch):
 
 def test_explicit_trust_proxy_true(monkeypatch):
     monkeypatch.delenv("DISTLLM_TRUSTED_PROXIES", raising=False)
-    req = _make_request(peer="8.8.8.8", xff="9.9.9.9, 8.8.8.8")
+    _make_request(peer="8.8.8.8", xff="9.9.9.9, 8.8.8.8")
     # Force-trust: rightmost non-proxy (8.8.8.8 is the peer, not in default set,
     # so it is treated as non-proxy and returned as rightmost) -> 8.8.8.8.
     # Use a chain where the rightmost is a default-trusted proxy to show parsing.

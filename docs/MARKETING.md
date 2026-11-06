@@ -4,6 +4,53 @@ Design across 9 dimensions for DistLLM's open-core monetization.
 
 ---
 
+## Table of Contents
+
+<!-- TOC -->
+
+- [1. Open-Core Free vs Paid Split](#1-open-core-free-vs-paid-split)
+  - [Open-Source Core (Apache 2.0) — Free](#open-source-core-apache-20--free)
+  - [Paid Features](#paid-features)
+  - [Guiding Principle](#guiding-principle)
+- [2. Marketplace Fee Model](#2-marketplace-fee-model)
+  - [DistLLM Hub — GPU Reputation Marketplace](#distllm-hub--gpu-reputation-marketplace)
+  - [Fee Structure](#fee-structure)
+  - [How It Works](#how-it-works)
+  - [Reputation System](#reputation-system)
+  - [Revenue Estimate](#revenue-estimate)
+- [3. Enterprise Tier Features & Pricing](#3-enterprise-tier-features--pricing)
+  - [Enterprise Self-Hosted](#enterprise-self-hosted)
+  - [Included Features](#included-features)
+  - [Enterprise Cloud (Managed, Same Compliance)](#enterprise-cloud-managed-same-compliance)
+  - [Enterprise Annual Contract Terms](#enterprise-annual-contract-terms)
+- [4. Managed Cloud Pricing](#4-managed-cloud-pricing)
+  - [DistLLM Cloud](#distllm-cloud)
+  - [Unit Economics](#unit-economics)
+- [5. Tier Structure](#5-tier-structure)
+  - [Summary Table](#summary-table)
+  - [Upgrade Path](#upgrade-path)
+- [6. Pricing Comparison vs GitLab / HashiCorp / Supabase](#6-pricing-comparison-vs-gitlab--hashicorp--supabase)
+  - [DistLLM Differentiation](#distllm-differentiation)
+- [7. Self-Serve vs Sales-Led Model](#7-self-serve-vs-sales-led-model)
+  - [Hybrid Approach](#hybrid-approach)
+  - [Why Hybrid Works for DistLLM](#why-hybrid-works-for-distllm)
+- [8. Billing Needs](#8-billing-needs)
+  - [Phase 1: MVP Billing (Months 1-6)](#phase-1-mvp-billing-months-1-6)
+  - [Phase 2: Growth Billing (Months 6-18)](#phase-2-growth-billing-months-6-18)
+  - [Phase 3: Enterprise Billing (Months 12+)](#phase-3-enterprise-billing-months-12)
+  - [Billing Data Model (Core)](#billing-data-model-core)
+- [9. Free Tier Limits for Virality](#9-free-tier-limits-for-virality)
+  - [Self-Hosted Free (OSS)](#self-hosted-free-oss)
+  - [Cloud Free Tier](#cloud-free-tier)
+  - [Why These Limits Drive Virality](#why-these-limits-drive-virality)
+  - [Viral KPI Targets](#viral-kpi-targets)
+  - [Ceiling Computations](#ceiling-computations)
+- [Summary: The Flywheel](#summary-the-flywheel)
+
+<!-- /TOC -->
+
+---
+
 ## 1. Open-Core Free vs Paid Split
 
 ### Open-Source Core (Apache 2.0) — Free

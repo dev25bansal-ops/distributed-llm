@@ -6,13 +6,32 @@ and asynchronous operations.
 
 import asyncio
 import inspect
+import random
 import time
 from dataclasses import dataclass, field
-from typing import Callable, TypeVar, Optional, Type
+from typing import Any, Callable, TypeVar, Optional, Type
 
 from loguru import logger
 
 T = TypeVar("T")
+
+
+def _backoff_delay(policy: Any, attempt: int) -> float:
+    """Capped exponential backoff with equal-jitter for *attempt* (0-based).
+
+    The sampled delay lies in ``[(1-jitter) * capped, capped]``. Accepts any
+    policy-like object exposing ``base_delay``, ``backoff_multiplier`` and
+    ``max_delay``; ``jitter`` is honoured when present (default 0 for
+    policy-like objects that predate the field).
+    """
+    capped = min(
+        policy.base_delay * (getattr(policy, "backoff_multiplier", 2.0) ** attempt),
+        policy.max_delay,
+    )
+    j = min(max(getattr(policy, "jitter", 0.0), 0.0), 1.0)
+    if j == 0.0:
+        return capped
+    return capped * (1.0 - j) + random.uniform(0.0, capped * j)
 
 
 @dataclass
@@ -25,12 +44,20 @@ class RetryPolicy:
         max_delay: Maximum delay cap in seconds.
         retryable: Tuple of exception types that trigger retry.
         backoff_multiplier: Multiplier for exponential backoff (default 2).
+        jitter: Fraction of the delay randomised (0..1) so concurrent
+            failures do not retry in lockstep (thundering herd). 0 keeps
+            the delay deterministic.
     """
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 60.0
     retryable: tuple = (IOError, TimeoutError, ConnectionError, OSError)
     backoff_multiplier: float = 2.0
+    jitter: float = 0.25
+
+    def delay_for_attempt(self, attempt: int) -> float:
+        """Capped exponential backoff with equal-jitter for *attempt* (0-based)."""
+        return _backoff_delay(self, attempt)
 
 
 def with_retry(policy: RetryPolicy):
@@ -67,10 +94,7 @@ def with_retry(policy: RetryPolicy):
                     last_exception = e
                     if attempt == policy.max_retries:
                         raise
-                    delay = min(
-                        policy.base_delay * (policy.backoff_multiplier ** attempt),
-                        policy.max_delay,
-                    )
+                    delay = _backoff_delay(policy, attempt)
                     logger.warning(
                         f"{fn_name} failed (attempt {attempt + 1}/{policy.max_retries + 1}): "
                         f"{e}, retrying in {delay:.1f}s"
@@ -100,10 +124,7 @@ def with_retry_async(policy: RetryPolicy):
                     last_exception = e
                     if attempt == policy.max_retries:
                         raise
-                    delay = min(
-                        policy.base_delay * (policy.backoff_multiplier ** attempt),
-                        policy.max_delay,
-                    )
+                    delay = _backoff_delay(policy, attempt)
                     logger.warning(
                         f"{fn.__name__} failed (attempt {attempt + 1}/{policy.max_retries + 1}): "
                         f"{e}, retrying in {delay:.1f}s"
@@ -120,6 +141,7 @@ def retry_grpc_call(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     retryable_exceptions: Optional[tuple] = None,
+    jitter: float = 0.25,
 ) -> T:
     """Retry a gRPC call with exponential backoff.
 
@@ -147,6 +169,7 @@ def retry_grpc_call(
         base_delay=base_delay,
         max_delay=max_delay,
         retryable=retryable_exceptions,
+        jitter=jitter,
     )
 
     last_exception = None
@@ -158,7 +181,7 @@ def retry_grpc_call(
             if attempt == policy.max_retries:
                 raise
 
-            delay = min(policy.base_delay * (policy.backoff_multiplier ** attempt), policy.max_delay)
+            delay = _backoff_delay(policy, attempt)
             logger.warning(
                 f"gRPC call failed (attempt {attempt + 1}/{policy.max_retries + 1}): "
                 f"{e}, retrying in {delay:.1f}s"

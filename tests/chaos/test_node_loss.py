@@ -239,7 +239,7 @@ def _build_health_manager(num_nodes: int = 3, recovery_threshold: int = 1, suppr
 
     def drain_cb(node_id: str) -> None:
         drained.append(node_id)
-        rec = failover_engine.health_store.get(node_id) if hasattr(failover_engine, "health_store") else None
+        failover_engine.health_store.get(node_id) if hasattr(failover_engine, "health_store") else None
         pipeline_node = pipeline.nodes.get(node_id)
         if pipeline_node is not None:
             pipeline_node.is_healthy = False

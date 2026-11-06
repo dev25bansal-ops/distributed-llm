@@ -73,8 +73,25 @@ from distllm.api.routes import (
     api_keys_router,
     files_router,
     fine_tuning_router,
+    # Additional SHOULD_MOUNT routers
+    scheduler_router,       # OPS_RUNBOOK docs; tests/api/test_scheduler.py mounts & exercises
 )
+# Additional SHOULD_MOUNT routers:
+# - defrag_router is imported above (mount below).
+# - exchange_router: testing_verification_report.md documents; standalone test files mount
+# - plugins_router: testing_verification_report.md documents; tests/api/test_plugins.py mounts
+# - fine_tuning_router: SDK client.py uses /v1/fine_tuning/jobs*; OpenAI-compatible API
+# - webhooks_router: admin-gated + coordinator check + SSRF protection in webhook_manager;
+#   tests/security/test_webhook_ssrf.py mounts it and verifies RBAC/SSRF boundaries.
+# Note: EXCLUDED (INTENTIONAL_UNMOUNT/DEAD):
+#   - assistants_router, debug_router, experiments_router, files_router, moderation_router:
+#     see per-file comments below
 from distllm.api.routes.tools import router as tools_router
+from distllm.api.routes.exchange import router as exchange_router
+from distllm.api.routes.plugins import router as plugins_router
+from distllm.api.routes.fine_tuning import router as fine_tuning_router
+from distllm.api.routes.tokenize import router as tokenize_router
+from distllm.api.routes.webhooks import router as webhooks_router
 
 # Re-export models from route modules for backward compatibility
 from distllm.api.routes.chat import (
@@ -483,7 +500,6 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
 # (Observability + plugin init live in server_lifespan; re-exported at top)
 
 
-
 # ── Middleware Stack ─────────────────────────────────────────────────────────
 #
 # STARLETTE MIDDLEWARE vs PLUGIN SYSTEM — when to use each
@@ -873,8 +889,36 @@ app.include_router(metrics_history_router)
 # prior regression left the router defined but never included, so every
 # /v1/api-keys request 404'd on the real server.
 app.include_router(api_keys_router)
+
+# ── Routers mounted after the 2026-11-05 API-audit reconciliation ─────────
+# Each of these was previously defined in routes/ but never passed to
+# include_router, so every request 404'd on the live server despite the
+# router's own tests (which built their own app) passing.
+app.include_router(defrag_router)        # docs/api.md "Defrag API"; admin-gated run
+app.include_router(scheduler_router)     # docs/OPS_RUNBOOK.md; admin-gated (router-level)
+app.include_router(exchange_router)      # tests/api/test_exchange.py, tests/security/test_idor_exchange.py
+app.include_router(plugins_router)       # tests/api/test_plugins.py; admin-gated (router-level)
+app.include_router(fine_tuning_router)   # SDK client.py /v1/fine_tuning/jobs*; coordinator-gated
+app.include_router(tokenize_router)      # docs API surface: POST /v1/tokenize
+app.include_router(webhooks_router)      # tests/security/test_webhook_ssrf.py; admin/user-admin gated
+# /v1/files — mounted after F-066 filename sanitization landed in the router
+# (basename-only writes inside {uploads}/{file_id}/) plus SEC-API-01 owner checks.
 app.include_router(files_router)
-app.include_router(fine_tuning_router)
+
+# INTENTIONAL_UNMOUNT — do NOT mount the routers below without first fixing
+# the stated blocker:
+#   * routes/debug.py      — dev-only replay surface; self-gated behind
+#                            DISTLLM_ENABLE_DEBUG_ROUTES=1 + DISTLLM_ADMIN_KEY.
+#   * routes/moderation.py — moderation runs inline via
+#                            ContentModerationMiddleware (DISTLLM_MODERATION=1);
+#                            the router is an offline-classifier helper, not a
+#                            product surface.
+# DEAD — unreferenced scaffolding, kept for reference but not mounted:
+#   * routes/assistants.py  — OpenAI Assistants scaffolding (threads/vector
+#                             stores); no test, doc, or SDK client references it.
+#   * routes/experiments.py — A/B testing scaffolding; no test, doc, or SDK
+#                             client references it.
+
 # Cost tracking middleware
 try:
     from distllm.api.cost_middleware import CostTrackingMiddleware

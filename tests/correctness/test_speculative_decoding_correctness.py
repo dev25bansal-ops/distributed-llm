@@ -99,7 +99,7 @@ class TestSpeculativeDecodingCorrectness:
             logits = torch.randn(1, 1, vocab_size)
             harness.set_logits(logits)
 
-            target_token = harness.target(None)
+            harness.target(None)
             draft_tokens = harness.draft(None)
 
             # Verify with decoder
@@ -142,7 +142,6 @@ class TestSpeculativeDecodingCorrectness:
             if draft_best == preferred_token:
                 assert accepted, "Draft should be accepted when it matches target"
             else:
-                expected_acceptance = harness.decoder.acceptance_rate
                 if not accepted:
                     pass  # Rejection is valid when draft is wrong
 

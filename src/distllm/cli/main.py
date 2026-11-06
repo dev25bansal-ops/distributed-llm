@@ -132,13 +132,15 @@ router_app = typer.Typer(help="Model router: rules, test, stats, patterns")
 
 # Nested groups
 model_adapters_app = typer.Typer(help="Manage LoRA/QLoRA adapters")
-benchmark_verify_app = typer.Typer(help="Verify distributed inference correctness")
-config_webhook_app = typer.Typer(help="Manage webhook endpoints")
-config_quota_app = typer.Typer(help="Usage quotas and billing")
-config_backup_app = typer.Typer(help="Backup and restore cluster state")
-security_cert_app = typer.Typer(help="Manage TLS certificates")
 system_logs_app = typer.Typer(help="Stream and filter logs")
-system_notify_app = typer.Typer(help="Notifications and alerts")
+
+# Module-owned groups (each module owns its Typer app; see the module files)
+from distllm.cli.verify import verify_app
+from distllm.cli.webhook import webhook_app
+from distllm.cli.quota import quota_app
+from distllm.cli.backup import backup_app
+from distllm.cli.cert import cert_app
+from distllm.cli.notify import notify_app
 
 app.add_typer(cluster_app, name="cluster")
 app.add_typer(model_app, name="model")
@@ -153,13 +155,13 @@ from distllm.cli.prompts import prompt_app
 # Nested group registrations
 model_app.add_typer(model_adapters_app, name="adapters")
 model_app.add_typer(prompt_app, name="prompt")
-benchmark_app.add_typer(benchmark_verify_app, name="verify")
-config_app.add_typer(config_webhook_app, name="webhook")
-config_app.add_typer(config_quota_app, name="quota")
-config_app.add_typer(config_backup_app, name="backup")
-security_app.add_typer(security_cert_app, name="cert")
+benchmark_app.add_typer(verify_app, name="verify")
+config_app.add_typer(webhook_app, name="webhook")
+config_app.add_typer(quota_app, name="quota")
+config_app.add_typer(backup_app, name="backup")
+security_app.add_typer(cert_app, name="cert")
 system_app.add_typer(system_logs_app, name="logs")
-system_app.add_typer(system_notify_app, name="notify")
+system_app.add_typer(notify_app, name="notify")
 defrag_app = typer.Typer(help="GPU memory defragmentation: status, run, stats")
 system_app.add_typer(defrag_app, name="defrag")
 
@@ -915,47 +917,6 @@ def cli_doctor_command(
     sys.exit(_cli_doctor_main(argv))
 
 
-# --- benchmark verify group ---
-@benchmark_verify_app.command("run")
-def verify_run(
-    model: str = typer.Option(..., "--model", "-m", help="Model name or path"),
-    prompts: list[str] = typer.Option(
-        ["The capital of France is", "In the beginning", "The meaning of life is"],
-        "--prompt", "-p",
-        help="Prompt(s) to verify (repeat for multiple)",
-    ),
-    num_nodes: int = typer.Option(2, "--nodes", "-n", help="Number of distributed nodes"),
-    dtype: str = typer.Option("float16", "--dtype", help="Data type"),
-    temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature (0 = greedy)"),
-    max_new_tokens: int = typer.Option(32, "--max-tokens", help="Max tokens to generate per prompt"),
-    collect_hidden: bool = typer.Option(False, "--collect-hidden", help="Collect intermediate hidden states"),
-    backend: str = typer.Option("", "--backend", "-b", help="Preferred inference backend"),
-    grpc: bool = typer.Option(False, "--grpc", help="Use real gRPC workers instead of in-process simulation"),
-    grpc_base_port: int = typer.Option(51050, "--grpc-port", help="Base port for gRPC workers"),
-    output_json: str = typer.Option("", "--output-json", "-o", help="Path to write JSON report"),
-    device: str = typer.Option("auto", "--device", help="Device (auto, cuda, cpu)"),
-    trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="[SECURITY RISK] Allow loading remote code from HuggingFace models (RCE vector)"),
-):
-    """Verify distributed inference accuracy against single-node reference."""
-    if trust_remote_code:
-        logger.warning("--trust-remote-code enabled: loading arbitrary code from HuggingFace repos (RCE risk)")
-    from distllm.cli.verify import verify_run as _verify_run
-    _verify_run(
-        model=model, prompts=prompts, num_nodes=num_nodes, dtype=dtype,
-        temperature=temperature, max_new_tokens=max_new_tokens,
-        collect_hidden=collect_hidden, backend=backend, grpc=grpc,
-        grpc_base_port=grpc_base_port, output_json=output_json,
-        device=device, trust_remote_code=trust_remote_code,
-    )
-
-
-@benchmark_verify_app.command("list-backends")
-def verify_list_backends():
-    """List available inference backends."""
-    from distllm.cli.verify import verify_list_backends as _verify_list_backends
-    _verify_list_backends()
-
-
 # ── eval ─────────────────────────────────────────────────────────────────
 @benchmark_app.command("eval")
 def benchmark_eval(
@@ -1005,225 +966,6 @@ def benchmark_eval(
         port=port,
         api_key=api_key,
     )
-
-
-# --- config backup group ---
-@config_backup_app.command("create")
-def backup_create(
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-    cluster_name: str = typer.Option("default", "--cluster", "-c", help="Cluster name"),
-    config_path: str = typer.Option("config.yaml", "--config", help="Config file path"),
-):
-    """Create a full backup of cluster state."""
-    from distllm.cli.backup import backup_create as _backup_create
-    _backup_create(backup_dir, cluster_name, config_path)
-
-
-@config_backup_app.command("list")
-def backup_list(
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-):
-    """List available backups."""
-    from distllm.cli.backup import backup_list as _backup_list
-    _backup_list(backup_dir)
-
-
-@config_backup_app.command("restore")
-def backup_restore(
-    backup_id: str = typer.Argument(..., help="Backup ID to restore"),
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-    output: str = typer.Option("", "--output", "-o", help="Output file"),
-):
-    """Restore a backup to its original state."""
-    from distllm.cli.backup import backup_restore as _backup_restore
-    _backup_restore(backup_id, backup_dir, output)
-
-
-@config_backup_app.command("delete")
-def backup_delete(
-    backup_id: str = typer.Argument(..., help="Backup ID to delete"),
-    backup_dir: str = typer.Option("./backups", "--dir", "-d", help="Backup directory"),
-):
-    """Delete a backup."""
-    from distllm.cli.backup import backup_delete as _backup_delete
-    _backup_delete(backup_id, backup_dir)
-
-
-# --- security cert group ---
-@security_cert_app.command("create")
-def cert_create(
-    common_name: str = typer.Argument(..., help="Domain name"),
-    alt_names: list[str] = typer.Option([], "--alt-name", "-a", help="Subject alternative names"),
-    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
-    self_signed: bool = typer.Option(True, "--self-signed", help="Self-signed certificate"),
-):
-    """Create a TLS certificate."""
-    from distllm.cli.cert import cert_create as _cert_create
-    _cert_create(common_name, alt_names, cert_dir, self_signed)
-
-
-@security_cert_app.command("info")
-def cert_info(
-    common_name: str = typer.Argument(..., help="Certificate common name"),
-    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
-):
-    """Show certificate details."""
-    from distllm.cli.cert import cert_info as _cert_info
-    _cert_info(common_name, cert_dir)
-
-
-@security_cert_app.command("renew")
-def cert_renew(
-    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
-):
-    """Renew all certificates nearing expiry."""
-    from distllm.cli.cert import cert_renew as _cert_renew
-    _cert_renew(cert_dir)
-
-
-@security_cert_app.command("revoke")
-def cert_revoke(
-    common_name: str = typer.Argument(..., help="Certificate common name"),
-    cert_dir: str = typer.Option("./certs", "--dir", "-d", help="Certificate directory"),
-):
-    """Revoke a certificate."""
-    from distllm.cli.cert import cert_revoke as _cert_revoke
-    _cert_revoke(common_name, cert_dir)
-
-
-# --- config webhook group ---
-@config_webhook_app.command("register")
-def webhook_register(
-    url: str = typer.Argument(..., help="Webhook URL"),
-    events: list[str] = typer.Option([], "--event", "-e", help="Events to subscribe to"),
-    secret: str = typer.Option("", "--secret", "-s", help="HMAC signing secret"),
-    label: str = typer.Option("", "--label", "-l", help="Human-readable label"),
-):
-    """Register a new webhook endpoint."""
-    from distllm.cli.webhook import webhook_register as _webhook_register
-    _webhook_register(url, events, secret, label)
-
-
-@config_webhook_app.command("list")
-def webhook_list():
-    """List registered webhook endpoints."""
-    from distllm.cli.webhook import webhook_list as _webhook_list
-    _webhook_list()
-
-
-@config_webhook_app.command("unregister")
-def webhook_unregister(
-    url: str = typer.Argument(..., help="Webhook URL to remove"),
-):
-    """Unregister a webhook endpoint."""
-    from distllm.cli.webhook import webhook_unregister as _webhook_unregister
-    _webhook_unregister(url)
-
-
-@config_webhook_app.command("test")
-def webhook_test(
-    url: str = typer.Argument(..., help="Webhook URL to test"),
-    event: str = typer.Option("test.ping", "--event", "-e", help="Event type"),
-):
-    """Send a test webhook event."""
-    from distllm.cli.webhook import webhook_test as _webhook_test
-    _webhook_test(url, event)
-
-
-@config_quota_app.command("report")
-def quota_report(
-    tenant_id: str = typer.Argument("", help="Tenant ID (omit for all)"),
-    days: int = typer.Option(30, "--days", "-d", help="Report period in days"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
-):
-    """Generate a detailed usage report with per-model breakdown."""
-    from distllm.cli.quota import quota_report as _quota_report
-    _quota_report(tenant_id, days, json_output)
-
-
-@config_quota_app.command("export")
-def quota_export(
-    filepath: str = typer.Argument(..., help="Output CSV file path"),
-    tenant_id: str = typer.Option("", "--tenant", "-t", help="Filter by tenant"),
-    days: int = typer.Option(30, "--days", "-d", help="Export period in days"),
-):
-    """Export usage records as CSV."""
-    from distllm.cli.quota import quota_export as _quota_export
-    _quota_export(filepath, tenant_id, days)
-
-
-@config_quota_app.command("import")
-def quota_import(
-    filepath: str = typer.Argument(..., help="JSON file with quota definitions"),
-):
-    """Bulk import quotas from a JSON file."""
-    from distllm.cli.quota import quota_import as _quota_import
-    _quota_import(filepath)
-
-
-# --- system notify group ---
-@system_notify_app.command("send")
-def notify_send(
-    title: str = typer.Option(..., "--title", "-t", help="Notification title"),
-    message: str = typer.Option(..., "--message", "-m", help="Notification message"),
-    severity: str = typer.Option("info", "--severity", "-s", help="Severity"),
-    channel: str = typer.Option("console", "--channel", "-c", help="Channel"),
-    webhook_url: str = typer.Option("", "--webhook-url", help="Webhook URL"),
-):
-    """Send a test notification."""
-    from distllm.cli.notify import notify_send as _notify_send
-    _notify_send(title, message, severity, channel, webhook_url)
-
-
-@system_notify_app.command("history")
-def notify_history(
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of recent notifications"),
-    severity: str = typer.Option("", "--severity", "-s", help="Filter by severity"),
-):
-    """Show recent notification history."""
-    from distllm.cli.notify import notify_history as _notify_history
-    _notify_history(limit, severity)
-
-
-# --- config quota group ---
-@config_quota_app.command("set")
-def quota_set(
-    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
-    max_tokens_per_day: int = typer.Option(0, "--tokens-per-day", help="Max tokens per day"),
-    max_requests_per_minute: int = typer.Option(0, "--rpm", help="Max requests per minute"),
-    max_tokens_per_request: int = typer.Option(0, "--tokens-per-request", help="Max tokens per request"),
-    max_concurrent: int = typer.Option(0, "--concurrent", help="Max concurrent requests"),
-    cost_budget: float = typer.Option(0.0, "--budget", "-b", help="Monthly cost budget"),
-    overage: bool = typer.Option(False, "--overage", help="Allow overage"),
-):
-    """Set usage quota for a tenant."""
-    from distllm.cli.quota import quota_set as _quota_set
-    _quota_set(tenant_id, max_tokens_per_day, max_requests_per_minute, max_tokens_per_request, max_concurrent, cost_budget, overage)
-
-
-@config_quota_app.command("show")
-def quota_show(
-    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
-):
-    """Show current quota and usage for a tenant."""
-    from distllm.cli.quota import quota_show as _quota_show
-    _quota_show(tenant_id)
-
-
-@config_quota_app.command("list")
-def quota_list():
-    """List all tenants with usage data."""
-    from distllm.cli.quota import quota_list as _quota_list
-    _quota_list()
-
-
-@config_quota_app.command("invoice")
-def quota_invoice(
-    tenant_id: str = typer.Argument(..., help="Tenant or team ID"),
-):
-    """Generate an invoice for a tenant's current billing period."""
-    from distllm.cli.quota import quota_invoice as _quota_invoice
-    _quota_invoice(tenant_id)
 
 
 @app.command()

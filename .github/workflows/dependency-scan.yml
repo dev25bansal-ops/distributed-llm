@@ -5,10 +5,11 @@
 # sees almost nothing — this workflow installs the package first so the real
 # dependency tree is audited.)
 #
-# ADVISORY MODE: continue-on-error is true while existing findings are
-# triaged. TODO(security): flip continue-on-error to false (and remove this
-# comment) once the initial report is clean — the gate then blocks merges on
-# new known vulnerabilities.
+# BLOCKING GATE (SEC-4, flipped 2026-09-12): the core dependency set was
+# audited clean at flip time (52 packages, 0 known advisories via
+# pip-audit 2.10.1). If a future advisory needs a temporary waiver, pass
+# `--ignore-vuln <ID>` in the pip-audit step AND record the waiver + expiry
+# in docs/_audit/ISSUES_CATALOG_CURRENT.md — silent waivers are not allowed.
 
 name: Dependency Scan
 
@@ -46,11 +47,9 @@ jobs:
         # fast; add extras here if their trees need coverage too.
         run: pip install .
 
-      - name: Run pip-audit
-        # Advisory until triaged — see TODO at top of file.
-        continue-on-error: true
+      - name: Run pip-audit (blocking)
         run: |
-          pip-audit --strict --desc --format json --output dep-audit.json || true
+          pip-audit --strict --desc --format json --output dep-audit.json
           pip-audit --desc
 
       - name: Upload audit report

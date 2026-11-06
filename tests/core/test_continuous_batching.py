@@ -275,9 +275,9 @@ class TestIterationLevelScheduling:
         sched = BatchScheduler(max_batch_size=4, max_tokens_per_batch=100)
         sched.set_iteration_budget(budget)
         sched.add(Sequence(request_id="seq", prompt_tokens=[1] * 9))
-        batch1 = sched.schedule_iteration(budget)
+        sched.schedule_iteration(budget)
         assert sched._chunked_prefill["seq"].tokens_processed == 3
-        batch2 = sched.schedule_iteration(budget)
+        sched.schedule_iteration(budget)
         assert sched._chunked_prefill["seq"].tokens_processed == 6
 
 

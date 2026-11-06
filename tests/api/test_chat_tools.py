@@ -109,7 +109,6 @@ class TestChatToolCalling:
         coord = make_mock_coordinator()
         # Use call_count-based side effect for two-phase tool calling
         _tool_call_count = [0]
-        orig_side_effect = coord.generate.side_effect
         def _gen_side(*args, **kwargs):
             if _tool_call_count[0] == 0:
                 _tool_call_count[0] += 1

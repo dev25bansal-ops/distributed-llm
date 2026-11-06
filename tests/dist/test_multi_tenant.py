@@ -134,8 +134,13 @@ class TestSlidingWindowRateCounter:
         """Use a very short window so records fall out on prune."""
         sw = SlidingWindowRateCounter(window_s=0.0)
         sw.record(10)
-        # With window_s=0.0, any record older than 0s is pruned.
-        # The record timestamp is time.time() which is > 0.0, so it prunes.
+        # On Windows time.time() ticks at ~15.6ms, so record() and count()
+        # can observe the *same* timestamp; _prune uses a strict ``<``
+        # comparison against cutoff=now, which keeps an equal-timestamp slot
+        # and makes this flake.  Backdate the slot so it is strictly older
+        # than the cutoff regardless of clock granularity.
+        ts, n = sw._slots[0]
+        sw._slots[0] = (ts - 1.0, n)
         assert sw.count() == 0
 
     def test_window_can_be_tiny(self) -> None:

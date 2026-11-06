@@ -463,7 +463,7 @@ class TestPartitionStore:
     def test_accuracy_report_skips_missing_actual(self, store: PartitionStore):
         """Runs without an actual metric are skipped."""
         id_ok = store.save_run("model", {"max_node_time_ms": 100.0}, {})
-        id_no_metric = store.save_run("model", {"max_node_time_ms": 100.0}, {})
+        store.save_run("model", {"max_node_time_ms": 100.0}, {})
         store.record_metric(id_ok, "actual_latency_ms", 90.0)
         report = store.get_accuracy_report("model")
         assert report["num_samples"] == 1

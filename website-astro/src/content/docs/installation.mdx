@@ -91,10 +91,11 @@ server), and `distllm-node` (worker nodes).
 - **`import torch` fails with a DLL/symbol error** — usually a mismatched
   torch/CUDA pair. Install a torch build matching your driver, or fall back to
   the CPU wheel above.
-- **Unsure whether your machine is ready?** Run `distllm system doctor`. It
-  checks CUDA, port availability, config validity, disk space, and the Python
-  environment, and exits non-zero if anything critical fails. Use `--gpu`,
-  `--network`, or `--json` to scope the output.
+- **Unsure whether your machine is ready?** Run `distllm system doctor` for a
+  full diagnostics pass (CUDA, ports, config, disk, Python environment; exits
+  non-zero if anything critical fails), or `distllm cli-doctor` to check the
+  local environment only. `cli-doctor` accepts `--fix` to auto-install missing
+  optional packages and `--json` for machine-parseable output.
 
 ## Next Steps
 

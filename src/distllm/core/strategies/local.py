@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import torch
 import uuid
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from distllm.core.inference_engine import InferenceEngine
 
 from distllm.core.spec_verify import accept_token
 

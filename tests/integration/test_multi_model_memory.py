@@ -44,7 +44,7 @@ class TestMultiModelMemory:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model")
                 coord._init_model_hotswap(max_models=3, total_gpu_memory_gb=24.0)
                 assert coord._model_hotswap is not None
@@ -62,7 +62,7 @@ class TestMultiModelMemory:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model")
                 coord._init_model_hotswap(max_models=2, total_gpu_memory_gb=16.0)
                 hs = coord._model_hotswap
@@ -123,7 +123,7 @@ class TestCoordinatorMultiModelIntegration:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model", multi_model_config=config)
                 assert coord._multi_model is not None
 
@@ -140,7 +140,7 @@ class TestCoordinatorMultiModelIntegration:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model")
                 # Initially no multi-model
                 assert coord._multi_model is None
@@ -163,7 +163,7 @@ class TestCoordinatorMultiModelIntegration:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model")
                 models = coord.list_models()
                 assert "test-model" in models
@@ -187,7 +187,7 @@ class TestMemoryBudgeting:
             RequestTracker=MagicMock,
             SubsystemManager=MagicMock,
         ):
-            with patch("distllm.core.coordinator.AutoTokenizer") as mock_tok:
+            with patch("distllm.core.coordinator.AutoTokenizer"):
                 coord = Coordinator(model_name="test-model")
                 # With 8GB GPU and models needing 6GB each, we can fit 1
                 coord._init_model_hotswap(max_models=4, total_gpu_memory_gb=8.0)

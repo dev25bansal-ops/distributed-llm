@@ -57,7 +57,7 @@ class TestProtoFuzzing:
             raw_data=b"\x00" * 4,  # Too small for 1000 elements
         )
         try:
-            result = tensor_from_proto(proto)
+            tensor_from_proto(proto)
         except Exception:
             pass  # Expected
 

@@ -245,11 +245,13 @@ class EventBus:
                 bool(self._async_subscribers.get(event_type))
                 or bool(self._async_subscribers.get("*"))
             )
-        if has_async and self._async_queue is not None:
-            try:
-                self._async_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning(f"Async event queue full, dropping {event_type}")
+        if has_async and self._async_queue is not None and self._async_loop is not None:
+            # M16: asyncio.Queue is NOT thread-safe — putting from the
+            # publishing thread races the loop thread and can spuriously
+            # drop events far below capacity. Marshal the put onto the loop
+            # thread; the bounded queue still gives explicit backpressure at
+            # capacity (loud warning, never a silent loss below it).
+            self._async_loop.call_soon_threadsafe(self._safe_async_put, event)
 
         # Dispatch to webhooks
         self._dispatch_webhook(event)
@@ -397,6 +399,9 @@ class EventBus:
 
         self._async_running = True
         self._async_queue = asyncio.Queue(maxsize=10_000)
+        # Create the loop HERE so an immediate publish() can marshal its put
+        # before the thread body runs (the loop buffers call_soon work).
+        self._async_loop = asyncio.new_event_loop()
 
         thread = threading.Thread(
             target=self._run_async_loop, daemon=True, name="event-bus-async",
@@ -413,14 +418,30 @@ class EventBus:
 
     def _run_async_loop(self) -> None:
         """Target for the background thread."""
-        self._async_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._async_loop)
-        self._async_task = self._async_loop.create_task(self._async_drain())
+        loop = self._async_loop
+        assert loop is not None
+        asyncio.set_event_loop(loop)
+        self._async_task = loop.create_task(self._async_drain())
         try:
-            self._async_loop.run_forever()
+            loop.run_forever()
         finally:
-            self._async_loop.close()
             self._async_loop = None
+            loop.close()
+
+    def _safe_async_put(self, event: Any) -> None:
+        """Put *event* on the async queue from the loop thread."""
+        if self._async_queue is None:
+            return
+        try:
+            self._async_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            self._async_queue.get_nowait()  # drop the oldest rather than the newest
+            self._async_queue.put_nowait(event)
+            logger.error(
+                f"Async event queue full — dropping OLDEST event to admit "
+                f"{event.event_type} (backpressure: cap at publish time if "
+                f"sustained)"
+            )
 
     async def _async_drain(self) -> None:
         """Continuously drain the async event queue."""

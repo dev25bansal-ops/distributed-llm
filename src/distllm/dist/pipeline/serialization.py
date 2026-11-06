@@ -3,14 +3,32 @@
 from __future__ import annotations
 
 import numpy as np
-import torch
+
 from loguru import logger
+
+# Optional dependency detection for torch
+_TORCH_AVAILABLE: bool
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch() -> None:
+    """Raise a helpful ImportError if torch is not installed."""
+    if not _TORCH_AVAILABLE:
+        raise ImportError(
+            "torch is required for pipeline serialization; "
+            "install with pip install distributed-llm[self-hosted]"
+        )
+
 
 from distllm.dist import node_pb2
 from distllm.errors.types import NodeUnreachableError
 
 # Module-level cache for CUDA copy streams
-_tensor_copy_streams: dict[str, torch.cuda.Stream] = {}
+_tensor_copy_streams: dict[str, torch.cuda.Stream] | None = None
 
 
 def cleanup_tensor_copy_streams() -> None:
@@ -19,13 +37,17 @@ def cleanup_tensor_copy_streams() -> None:
     Synchronization is deferred to the serialization path that actually
     consumes the data, avoiding a blocking call here.
     """
-    _tensor_copy_streams.clear()
+    global _tensor_copy_streams
+    if _tensor_copy_streams is not None:
+        _tensor_copy_streams.clear()
 
 
 def get_tensor_copy_stream(device: str = "cuda") -> torch.cuda.Stream | None:
     """Get or create a dedicated CUDA stream for tensor transfers."""
     if not torch.cuda.is_available():
         return None
+    if _tensor_copy_streams is None:
+        _tensor_copy_streams = {}
     if device not in _tensor_copy_streams:
         _tensor_copy_streams[device] = torch.cuda.Stream(device=device)
     return _tensor_copy_streams[device]

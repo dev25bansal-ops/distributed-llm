@@ -44,7 +44,7 @@ class TestAutoScaling:
     def test_burst_load(self, client: httpx.Client):
         """Send NUM_CONCURRENT requests in parallel and wait for all to complete."""
         try:
-            resp = client.get(f"{COORDINATOR_URL}/v1/health")
+            client.get(f"{COORDINATOR_URL}/v1/health")
         except httpx.ConnectError:
             pytest.skip("Coordinator server not available")
         results: list[dict[str, Any]] = []

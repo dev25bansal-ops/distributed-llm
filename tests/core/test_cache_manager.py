@@ -356,7 +356,7 @@ class TestCacheManagerHashTokens:
 
     def test_with_cache_index(self):
         """When cache_index is provided and has index_tokens, it takes priority."""
-        cm = CacheManager()
+        CacheManager()
         # No cache_index by default, so fallback is used
 
 

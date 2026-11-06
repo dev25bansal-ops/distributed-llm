@@ -1,3 +1,5 @@
+**NOTE: This integration is configuration-only. There is no Python package in this directory — it explains how to point Portkey at DistLLM's OpenAI-compatible API.**
+
 # Portkey Observability Integration
 
 [Portkey](https://portkey.ai) is an observability and gateway proxy for LLM

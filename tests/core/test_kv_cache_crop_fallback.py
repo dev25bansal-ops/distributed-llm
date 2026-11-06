@@ -94,7 +94,7 @@ def test_non_4d_tensors_are_passed_through_unchanged():
 
 def test_dynamic_cache_path_still_uses_crop():
     """The preferred path: objects WITH .crop() should use it, not the fallback."""
-    cache = _make_tuple_cache()
+    _make_tuple_cache()
     # Attach a fake crop to emulate a DynamicCache
     calls = []
 

@@ -13,7 +13,7 @@ We take the security of Distributed LLM seriously. If you believe you have found
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to **security@distributed-llm.ai**.
+Instead, please open a draft issue or email **security@distllm.ai** once the domain is configured. For immediate concerns, contact the maintainers directly via GitHub discussions.
 
 You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
 

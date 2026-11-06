@@ -4,8 +4,15 @@ Provides context managers for prefill, decode, and full generation spans,
 plus helpers for recording TTFT (time-to-first-token) events.
 """
 
-from contextlib import contextmanager, asynccontextmanager
+from __future__ import annotations
 
+from contextlib import contextmanager, asynccontextmanager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+from loguru import logger
 from opentelemetry import trace
 
 _tracer = trace.get_tracer("distllm.generation")

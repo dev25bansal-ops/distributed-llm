@@ -129,7 +129,7 @@ async def _reconcile_health(name: str, namespace: str, spec: dict, logger):
     try:
         client = _get_client()
         apps_v1 = client.AppsV1Api()
-        core_v1 = client.CoreV1Api()
+        client.CoreV1Api()
 
         expected_replicas = spec.get("replicas", config.default_replicas)
 

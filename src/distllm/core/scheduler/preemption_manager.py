@@ -219,19 +219,29 @@ class PreemptionManager:
         restored = []
         remove_ids: set[str] = set()
 
+        requeued: list[Sequence] = []
+
         for req_id, seq in list(self._preempted.items()):
-            self._kv_cache_mgr.restore_kv_state(
+            kv_ok = self._kv_cache_mgr.restore_kv_state(
                 req_id, self._preempted_kv_state, kv_cache_state
             )
             remove_ids.add(req_id)
 
-            if paged_attention_mgr is not None:
+            if kv_ok and paged_attention_mgr is not None:
                 try:
                     paged_attention_mgr.pool.restore_block(
                         paged_attention_mgr.get_physical_blocks(req_id)[0]
                     )
                 except Exception as e:
                     logger.debug("PagedAttention restore failed: {}", e)
+
+            if not kv_ok:
+                # M2: without restored KV, resuming DECODING would attend
+                # over a cache that does not exist (corrupted decode).
+                # Re-queue the sequence as PENDING; it will prefill anew.
+                seq.status = SequenceStatus.PENDING
+                requeued.append(seq)
+                continue
 
             seq.status = SequenceStatus.DECODING
             active[req_id] = seq
@@ -246,6 +256,15 @@ class PreemptionManager:
                 if item[2].request_id not in remove_ids
             ]
             heapq.heapify(pending_heap)
+
+        # Re-queue sequences whose KV could not be restored — AFTER the
+        # rebuild so the filter cannot drop them again.
+        for seq in requeued:
+            heapq.heappush(pending_heap, (seq.priority, seq.total_len, seq))
+            logger.info(
+                f"Sequence {seq.request_id} re-queued to pending: "
+                f"KV state was not restorable after preemption"
+            )
 
         self._preempted.clear()
         return restored

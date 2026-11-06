@@ -371,7 +371,7 @@ class TestGossipProtocolChaos:
         """When timestamps are equal, the higher writer_id wins,
         regardless of delivery order.
         """
-        b = gp_factory("node-b")
+        gp_factory("node-b")
 
         # Same timestamp: "z_writer" > "a_writer" so z should win
         reg_a = LWWRegister(value="from_a", timestamp=50.0, writer_id="a_writer")
@@ -397,7 +397,7 @@ class TestGossipProtocolChaos:
         processed, then a slow peer's stale data arrives later.  The slow
         peer's stale data should not overwrite the newer data.
         """
-        a = gp_factory("node-fast")
+        gp_factory("node-fast")
         b = gp_factory("node-slow")
         c = gp_factory("node-observer")
 

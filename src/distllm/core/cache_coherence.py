@@ -20,12 +20,24 @@ class CacheCoherenceProtocol:
     invalidate stale entries across the gossip ring.
     """
 
-    def __init__(self, node_id: str):
+    def __init__(self, node_id: str, broadcast_invalidator: Any = None):
+        """...
+
+        Args:
+            node_id: This node's ID.
+            broadcast_invalidator: M12 — callable ``f(prefix_hash)`` invoked
+                whenever a prefix is invalidated locally so peers can drop
+                their stale copies.
+        """
         self._node_id = node_id
+        self._broadcast_invalidator = broadcast_invalidator
         # prefix_hash -> {node_id -> vector_clock_value}
         self._vector_clocks: dict[str, dict[str, int]] = {}
         # prefix_hash -> timestamp of last invalidation
         self._invalidated: dict[str, float] = {}
+        # prefix_hash -> last local activity (store/receive/invalidate);
+        # drives GC so clocks cannot grow unbounded.
+        self._last_activity: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def on_store(self, prefix_hash: str) -> int:
@@ -43,6 +55,7 @@ class CacheCoherenceProtocol:
             current = self._vector_clocks[prefix_hash].get(self._node_id, 0)
             new_clock = current + 1
             self._vector_clocks[prefix_hash][self._node_id] = new_clock
+            self._last_activity[prefix_hash] = time.time()
             return new_clock
 
     def on_receive(self, prefix_hash: str, remote_node_id: str, remote_clock: int) -> bool:
@@ -98,6 +111,13 @@ class CacheCoherenceProtocol:
             current = self._vector_clocks[prefix_hash].get(self._node_id, 0)
             self._vector_clocks[prefix_hash][self._node_id] = current + 1
             self._invalidated[prefix_hash] = time.time()
+            self._last_activity[prefix_hash] = time.time()
+        # Broadcast outside the lock — the callback may re-enter the protocol.
+        if self._broadcast_invalidator is not None:
+            try:
+                self._broadcast_invalidator(prefix_hash)
+            except Exception as e:
+                logger.warning(f"Invalidation broadcast failed for {prefix_hash}: {e}")
 
     def get_clocks(self, prefix_hash: str) -> dict[str, int]:
         """Get the vector clock for a prefix."""
@@ -120,12 +140,15 @@ class CacheCoherenceProtocol:
         """
         with self._lock:
             cutoff = time.time() - max_age_seconds
+            # M12: GC on last ACTIVITY (not just invalidation) — otherwise
+            # stored-but-never-invalidated prefixes grow unbounded.
             to_remove = [
-                h for h, t in self._invalidated.items()
+                h for h, t in self._last_activity.items()
                 if t < cutoff
             ]
             for h in to_remove:
-                del self._invalidated[h]
+                self._last_activity.pop(h, None)
+                self._invalidated.pop(h, None)
                 self._vector_clocks.pop(h, None)
             return len(to_remove)
 

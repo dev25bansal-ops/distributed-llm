@@ -428,7 +428,7 @@ class TestCallbackThrottling:
         assert call_count >= 1
 
     def test_no_callback_crash_when_not_triggered(self):
-        d = _make_detector(
+        _make_detector(
             on_straggler_cb=lambda r: None,
             consecutive_threshold=1,
             callback_cooldown_s=100.0,

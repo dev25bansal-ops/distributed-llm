@@ -109,7 +109,7 @@ class TestArgumentParsing:
         assert "--host" in result.stdout or "-m" in result.stdout
 
     def test_validate_config_help(self):
-        result = runner.invoke(app, ["config", "validate", "--help"])
+        result = runner.invoke(app, ["validate-config", "--help"])
         assert result.exit_code == 0
 
     def test_status_help(self):
@@ -184,19 +184,19 @@ class TestValidateConfig:
     def test_validate_config_default_valid(self):
         with patch("distllm.config.settings.DistLLMSettings.validate_startup") as mock:
             mock.return_value = MagicMock()
-            result = runner.invoke(app, ["config", "validate"])
+            result = runner.invoke(app, ["validate-config"])
             assert result.exit_code == 0
 
     def test_validate_config_invalid_temperature(self):
         with patch("distllm.config.settings.DistLLMSettings.validate_startup") as mock:
-            mock.side_effect = SystemExit(1)
-            result = runner.invoke(app, ["config", "validate"])
+            mock.side_effect = ValueError("generation.temperature: value out of range")
+            result = runner.invoke(app, ["validate-config"])
             assert result.exit_code == 1
 
     def test_validate_config_invalid_port(self):
         with patch("distllm.config.settings.DistLLMSettings.validate_startup") as mock:
-            mock.side_effect = SystemExit(1)
-            result = runner.invoke(app, ["config", "validate"])
+            mock.side_effect = ValueError("coordinator.port: port out of range")
+            result = runner.invoke(app, ["validate-config"])
             assert result.exit_code == 1
 
 
@@ -260,7 +260,7 @@ class TestChatLoop:
             assert result.exit_code == 0
 
     def test_chat_q_shortcut_exits(self):
-        with patch("distllm.cli.chat.httpx.Client") as mock_client:
+        with patch("distllm.cli.chat.httpx.Client"):
             result = runner.invoke(app, ["chat", "--model", "test"],
                                    input="q\n", catch_exceptions=False)
             assert result.exit_code == 0
@@ -399,7 +399,7 @@ model:
         try:
             with patch("distllm.cli.run.run_inference") as mock_run:
                 mock_run.return_value = None
-                result = runner.invoke(app, ["run", "--model", "cli-override", "--config", path],
+                runner.invoke(app, ["run", "--model", "cli-override", "--config", path],
                                        catch_exceptions=False)
         finally:
             os.unlink(path)
@@ -407,7 +407,7 @@ model:
     def test_run_without_config(self):
         with patch("distllm.cli.run.run_inference") as mock_run:
             mock_run.return_value = None
-            result = runner.invoke(app, ["run", "--model", "test-model", "--local"],
+            runner.invoke(app, ["run", "--model", "test-model", "--local"],
                                    catch_exceptions=False)
 
 
@@ -440,13 +440,13 @@ class TestBenchmarkCommand:
         mock_client.return_value.__enter__.return_value.post.return_value = mock_response
         with patch("distllm.cli.benchmark.run_benchmark") as mock_bench:
             mock_bench.return_value = [{"elapsed": 0.5, "tokens": 10, "tokens_per_sec": 20.0}]
-            result = runner.invoke(app, ["benchmark", "run", "--model", "test", "--prompts", "1", "--max-tokens", "10"],
+            runner.invoke(app, ["benchmark", "run", "--model", "test", "--prompts", "1", "--max-tokens", "10"],
                                    catch_exceptions=False)
 
     @patch("distllm.cli.benchmark.run_benchmark_json")
     def test_benchmark_json_output(self, mock_json):
         mock_json.return_value = '{"avg_throughput_tps": 20.5, "results": []}'
-        result = runner.invoke(app, ["benchmark", "run", "--model", "test", "--json"],
+        runner.invoke(app, ["benchmark", "run", "--model", "test", "--json"],
                                catch_exceptions=False)
 
     def test_benchmark_empty_results_no_crash(self):
@@ -461,10 +461,10 @@ class TestBenchmarkCommand:
         with patch("distllm.cli.benchmark._run_benchmarks") as mock_run:
             mock_run.return_value = [{"elapsed": 0.5, "tokens": 10, "tokens_per_sec": 20.0}]
             with tempfile.TemporaryDirectory() as tmpdir:
-                baseline = os.path.join(tmpdir, "baseline.json")
+                os.path.join(tmpdir, "baseline.json")
                 with patch("distllm.cli.benchmark.run_benchmark_compare") as mock_cmp:
                     mock_cmp.return_value = None
-                    result = runner.invoke(app, ["benchmark", "compare", "--model", "test",
+                    runner.invoke(app, ["benchmark", "compare", "--model", "test",
                                                   "--save-baseline"],
                                            catch_exceptions=False)
 
@@ -485,31 +485,31 @@ class TestCompressCommand:
     def test_compress_target_int4(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4"],
+            runner.invoke(app, ["compress", "--model", "test", "--target", "int4"],
                                    catch_exceptions=False)
 
     def test_compress_target_int8(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int8"],
+            runner.invoke(app, ["compress", "--model", "test", "--target", "int8"],
                                    catch_exceptions=False)
 
     def test_compress_target_int4_awq(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4-awq"],
+            runner.invoke(app, ["compress", "--model", "test", "--target", "int4-awq"],
                                    catch_exceptions=False)
 
     def test_compress_target_int4_gptq(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4-gptq"],
+            runner.invoke(app, ["compress", "--model", "test", "--target", "int4-gptq"],
                                    catch_exceptions=False)
 
     def test_compress_prune_only(self):
         with patch("distllm.cli.compress.run_compress") as mock_compress:
             mock_compress.return_value = None
-            result = runner.invoke(app, ["compress", "--model", "test", "--target", "int4",
+            runner.invoke(app, ["compress", "--model", "test", "--target", "int4",
                                           "--prune", "0.3"],
                                    catch_exceptions=False)
 
@@ -556,8 +556,8 @@ class TestStatusExtended:
                 return MagicMock()
 
             mock_instance.get.side_effect = get_side_effect
-            with patch("distllm.cli.status.Console") as mock_console:
-                result = runner.invoke(app, ["status", "--host", "localhost", "--port", "8000"],
+            with patch("distllm.cli.status.Console"):
+                runner.invoke(app, ["status", "--host", "localhost", "--port", "8000"],
                                        catch_exceptions=False)
 
     def test_status_connection_error_friendly(self):
@@ -565,7 +565,7 @@ class TestStatusExtended:
             mock_instance = MagicMock()
             mock_client.return_value.__enter__.return_value = mock_instance
             mock_instance.get.side_effect = httpx.ConnectError("Connection refused")
-            with patch("distllm.cli.status.Console") as mock_console:
+            with patch("distllm.cli.status.Console"):
                 result = runner.invoke(app, ["status", "--host", "localhost", "--port", "9999"],
                                        catch_exceptions=False)
                 assert result.exit_code == 0
@@ -642,7 +642,7 @@ class TestLogsCommand:
             resp = MagicMock()
             resp.json.return_value = {"logs": []}
             mock_instance.get.return_value = resp
-            with patch("distllm.cli.logs.console") as mock_console:
+            with patch("distllm.cli.logs.console"):
                 result = runner.invoke(app, ["logs", "stream"], catch_exceptions=False)
                 assert result.exit_code == 0
 
@@ -651,7 +651,7 @@ class TestLogsCommand:
             mock_instance = MagicMock()
             mock_client.return_value.__enter__.return_value = mock_instance
             mock_instance.get.side_effect = httpx.ConnectError("refused")
-            with patch("distllm.cli.logs.console") as mock_console:
+            with patch("distllm.cli.logs.console"):
                 result = runner.invoke(app, ["logs", "stream", "--host", "badhost"],
                                        catch_exceptions=False)
                 assert result.exit_code == 0
@@ -784,7 +784,7 @@ class TestClientCommand:
     def test_client_health_mode(self):
         with patch("distllm.core.coordinator.Coordinator") as mock_coord:
             mock_coord.return_value = MagicMock()
-            result = runner.invoke(app, ["client", "--health"], catch_exceptions=False)
+            runner.invoke(app, ["client", "--health"], catch_exceptions=False)
 
 
 # ===========================================================================
@@ -803,5 +803,5 @@ class TestTPCommand:
     def test_tp_with_num_gpus(self):
         with patch("distllm.core.tp_launcher.launch_tp_workers") as mock_launch:
             mock_launch.return_value = MagicMock()
-            result = runner.invoke(app, ["tp", "--model", "test", "--num-gpus", "2"],
+            runner.invoke(app, ["tp", "--model", "test", "--num-gpus", "2"],
                                    catch_exceptions=False)

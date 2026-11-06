@@ -1,3 +1,5 @@
+**NOTE: This integration is configuration-only. There is no Python package in this directory — it explains how to point Dify at DistLLM's OpenAI-compatible API.**
+
 # Dify + DistLLM Integration
 
 Connect [Dify](https://dify.ai) to DistLLM as a custom model provider.

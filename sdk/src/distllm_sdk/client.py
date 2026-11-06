@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator, Iterator
 
 import httpx
 
-from distllm_sdk.constants import DEFAULT_HTTP_TIMEOUT, MAX_RETRIES, RETRY_AFTER_FLOOR, RETRY_DELAY
+from distllm_sdk.constants import DEFAULT_HTTP_TIMEOUT, MAX_RETRIES, RETRY_DELAY
 from distllm_sdk.types import (
     ChatCompletionResponse,
     ChatMessage as DataChatMessage,
@@ -20,7 +20,10 @@ from distllm_sdk.types import (
     ModelInfo,
     EmbeddingResponse,
     EmbeddingObject,
+    BatchItem,
+    BatchItemResult,
     BatchJob,
+    BatchCancelResult,
     BatchList,
     TranscriptionResponse,
     SpeechResponse,
@@ -40,16 +43,11 @@ from distllm_sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, Ci
 from distllm_sdk.errors import AuthenticationError, RateLimitError, TimeoutError
 
 
-def _compute_delay(attempt: int, cfg: "RetryConfig", headers: dict | None = None) -> float:
-    # Honor a server-provided Retry-After header verbatim (with a floor) when
-    # present; otherwise fall back to exponential backoff with jitter.
-    if headers:
-        raw = headers.get("retry-after")
-        if raw is not None:
-            try:
-                return max(float(raw), RETRY_AFTER_FLOOR) * (0.5 + random.random() * 0.5)
-            except (ValueError, TypeError):
-                pass
+def _enum_value(value: Any) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _compute_delay(attempt: int, cfg: "RetryConfig") -> float:
     delay = min(cfg.initial_delay * (cfg.exponential_base ** attempt), cfg.max_delay)
     return delay * (0.5 + random.random() * 0.5)
 
@@ -221,41 +219,59 @@ class _BaseClient:
         objects = [EmbeddingObject(index=e["index"], embedding=e["embedding"]) for e in data.get("data", [])]
         return EmbeddingResponse(model=data.get("model", model), data=objects, usage=_parse_usage(data))
 
-    async def _batch_submit_async(self, input_file_id: str, endpoint: str, metadata: dict | None = None) -> BatchJob:
-        payload = {"input_file_id": input_file_id, "endpoint": endpoint}
-        if metadata:
-            payload["metadata"] = metadata
-        data = await self._request("POST", "/v1/batches", json=payload)
+    async def _batch_submit_async(self, items: list[dict | Any], webhook_url: str | None = None, webhook_token: str | None = None, item_timeout: float = 30.0) -> BatchJob:
+        payload: dict[str, Any] = {"items": [self._batch_item(it) for it in items], "item_timeout": item_timeout}
+        if webhook_url:
+            payload["webhook_url"] = webhook_url
+        if webhook_token:
+            payload["webhook_token"] = webhook_token
+        data = await self._request("POST", "/v1/batch/submit", json=payload)
         return self._parse_batch(data)
 
-    def _batch_submit_sync(self, input_file_id: str, endpoint: str, metadata: dict | None = None) -> BatchJob:
-        payload = {"input_file_id": input_file_id, "endpoint": endpoint}
-        if metadata:
-            payload["metadata"] = metadata
-        data = self._request("POST", "/v1/batches", json=payload)
+    def _batch_submit_sync(self, items: list[dict | Any], webhook_url: str | None = None, webhook_token: str | None = None, item_timeout: float = 30.0) -> BatchJob:
+        payload: dict[str, Any] = {"items": [self._batch_item(it) for it in items], "item_timeout": item_timeout}
+        if webhook_url:
+            payload["webhook_url"] = webhook_url
+        if webhook_token:
+            payload["webhook_token"] = webhook_token
+        data = self._request("POST", "/v1/batch/submit", json=payload)
         return self._parse_batch(data)
 
-    async def _batch_get_async(self, batch_id: str | None = None) -> BatchJob | BatchList:
-        if batch_id:
-            data = await self._request("GET", f"/v1/batches/{batch_id}")
-            return self._parse_batch(data)
-        data = await self._request("GET", "/v1/batches")
-        return BatchList(data=[self._parse_batch(d) for d in data.get("data", [])])
+    @staticmethod
+    def _batch_item(item: dict | Any) -> dict:
+        if isinstance(item, dict):
+            out = {"prompt": item["prompt"]}
+            if item.get("request_id"):
+                out["request_id"] = item["request_id"]
+            if "max_tokens" in item:
+                out["max_tokens"] = item["max_tokens"]
+            if "temperature" in item:
+                out["temperature"] = item["temperature"]
+            return out
+        out = {"prompt": item.prompt}
+        if getattr(item, "request_id", ""):
+            out["request_id"] = item.request_id
+        if hasattr(item, "max_tokens"):
+            out["max_tokens"] = item.max_tokens
+        if hasattr(item, "temperature"):
+            out["temperature"] = item.temperature
+        return out
 
-    def _batch_get_sync(self, batch_id: str | None = None) -> BatchJob | BatchList:
-        if batch_id:
-            data = self._request("GET", f"/v1/batches/{batch_id}")
-            return self._parse_batch(data)
-        data = self._request("GET", "/v1/batches")
-        return BatchList(data=[self._parse_batch(d) for d in data.get("data", [])])
-
-    async def _batch_cancel_async(self, batch_id: str) -> BatchJob:
-        data = await self._request("POST", f"/v1/batches/{batch_id}/cancel")
+    async def _batch_get_async(self, batch_id: str) -> BatchJob:
+        data = await self._request("GET", f"/v1/batch/{batch_id}/status")
         return self._parse_batch(data)
 
-    def _batch_cancel_sync(self, batch_id: str) -> BatchJob:
-        data = self._request("POST", f"/v1/batches/{batch_id}/cancel")
+    def _batch_get_sync(self, batch_id: str) -> BatchJob:
+        data = self._request("GET", f"/v1/batch/{batch_id}/status")
         return self._parse_batch(data)
+
+    async def _batch_cancel_async(self, batch_id: str) -> BatchCancelResult:
+        data = await self._request("POST", f"/v1/batch/{batch_id}/cancel")
+        return self._parse_batch_cancel(data)
+
+    def _batch_cancel_sync(self, batch_id: str) -> BatchCancelResult:
+        data = self._request("POST", f"/v1/batch/{batch_id}/cancel")
+        return self._parse_batch_cancel(data)
 
     async def _moderations_async(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
         data = await self._request("POST", "/v1/moderations", json={"model": model, "input": input})
@@ -387,7 +403,48 @@ class _BaseClient:
 
     @staticmethod
     def _parse_batch(data: dict) -> BatchJob:
-        return BatchJob(id=data["id"], status=data["status"], input_file_id=data["input_file_id"], created_at=data.get("created_at", 0), completed_at=data.get("completed_at"), output_file_id=data.get("output_file_id"), error_file_id=data.get("error_file_id"), request_counts=data.get("request_counts"))
+        from distllm_sdk.types import BatchItemResult
+
+        items = [
+            BatchItemResult(
+                request_id=i.get("request_id", ""),
+                prompt=i.get("prompt", ""),
+                max_tokens=i.get("max_tokens", 0),
+                temperature=i.get("temperature", 0.0),
+                status=_enum_value(i.get("status", "")),
+                result=i.get("result"),
+                error=i.get("error"),
+                cost=i.get("cost", 0.0),
+                started_at=i.get("started_at"),
+                completed_at=i.get("completed_at"),
+            )
+            for i in data.get("items", [])
+        ]
+        return BatchJob(
+            id=data.get("id") or data.get("batch_id", ""),
+            status=_enum_value(data.get("status", "")),
+            total_items=data.get("total_items", 0),
+            created_at=data.get("created_at", 0.0),
+            message=data.get("message", ""),
+            pending=data.get("pending", 0),
+            running=data.get("running", 0),
+            completed=data.get("completed", 0),
+            failed=data.get("failed", 0),
+            timed_out=data.get("timed_out", 0),
+            cancelled=data.get("cancelled", 0),
+            total_cost=data.get("total_cost", 0.0),
+            completed_at=data.get("completed_at"),
+            items=items,
+        )
+
+    @staticmethod
+    def _parse_batch_cancel(data: dict) -> BatchCancelResult:
+        return BatchCancelResult(
+            batch_id=data.get("batch_id", ""),
+            status=_enum_value(data.get("status", "")),
+            cancelled_items=data.get("cancelled_items", 0),
+            message=data.get("message", ""),
+        )
 
     @staticmethod
     def _parse_fine_tuning(data: dict) -> FineTuningJob:
@@ -403,11 +460,10 @@ class DistLLMClient(_BaseClient):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         retry: RetryConfig | None = None,
         pool: PoolConfig | None = None,
-        transport: httpx.AsyncBaseTransport | None = None,
     ):
         super().__init__(base_url, api_key, timeout, retry, pool)
         limits = httpx.Limits(max_connections=self._pool.max_connections, max_keepalive_connections=self._pool.max_keepalive_connections, keepalive_expiry=self._pool.keepalive_expiry)
-        self._client = httpx.AsyncClient(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits, transport=transport)
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits)
 
     async def __aenter__(self):
         return self
@@ -517,19 +573,8 @@ class DistLLMClient(_BaseClient):
             kw["timeout"] = timeout
         async with self._client.stream("POST", "/v1/completions", json=payload, **kw) as response:
             response.raise_for_status()
-            # Yield text STRINGS matching chat_completions_stream (W2-39 /
-            # A2-8): the parser emits full SSE event dicts, but callers
-            # expect the same item type from both stream methods. The server
-            # puts completion text at choices[0].text; also tolerate the
-            # documented delta.text shape.
-            async for event in parse_sse_stream_async(response):
-                if "choices" in event and event["choices"]:
-                    choice = event["choices"][0]
-                    text = choice.get("text")
-                    if not text:
-                        text = choice.get("delta", {}).get("text")
-                    if text:
-                        yield text
+            async for chunk in parse_sse_stream_async(response):
+                yield chunk
 
     async def list_models(self) -> ModelList:
         data = await self._request("GET", "/v1/models")
@@ -541,13 +586,13 @@ class DistLLMClient(_BaseClient):
     async def embeddings(self, input: str | list[str], model: str = "distributed-llm", encoding_format: str = "float", timeout: float | None = None) -> EmbeddingResponse:
         return await self._embeddings_async(input, model, encoding_format=encoding_format)
 
-    async def submit_batch(self, input_file_id: str, endpoint: str = "/v1/chat/completions", metadata: dict | None = None) -> BatchJob:
-        return await self._batch_submit_async(input_file_id, endpoint, metadata)
+    async def submit_batch(self, items: list[dict | Any], webhook_url: str | None = None, webhook_token: str | None = None, item_timeout: float = 30.0) -> BatchJob:
+        return await self._batch_submit_async(items, webhook_url, webhook_token, item_timeout)
 
-    async def get_batch(self, batch_id: str | None = None) -> BatchJob | BatchList:
+    async def get_batch(self, batch_id: str) -> BatchJob:
         return await self._batch_get_async(batch_id)
 
-    async def cancel_batch(self, batch_id: str) -> BatchJob:
+    async def cancel_batch(self, batch_id: str) -> BatchCancelResult:
         return await self._batch_cancel_async(batch_id)
 
     async def moderations(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
@@ -603,7 +648,7 @@ class DistLLMClient(_BaseClient):
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in self._retry.retryable_status_codes and attempt < self._retry.max_retries:
-                    delay = _compute_delay(attempt, self._retry, dict(e.response.headers))
+                    delay = _compute_delay(attempt, self._retry)
                     await asyncio.sleep(delay)
                     last_exc = e
                     continue
@@ -643,8 +688,7 @@ class DistLLMClient(_BaseClient):
                 return response
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
-                    retry_headers = dict(e.response.headers) if isinstance(e, httpx.HTTPStatusError) else None
-                    delay = _compute_delay(attempt, self._retry, retry_headers)
+                    delay = _compute_delay(attempt, self._retry)
                     await asyncio.sleep(delay)
                     last_exc = e
                     continue
@@ -674,11 +718,10 @@ class DistLLMClientSync(_BaseClient):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         retry: RetryConfig | None = None,
         pool: PoolConfig | None = None,
-        transport: httpx.BaseTransport | None = None,
     ):
         super().__init__(base_url, api_key, timeout, retry, pool)
         limits = httpx.Limits(max_connections=self._pool.max_connections, max_keepalive_connections=self._pool.max_keepalive_connections, keepalive_expiry=self._pool.keepalive_expiry)
-        self._client = httpx.Client(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits, transport=transport)
+        self._client = httpx.Client(base_url=self.base_url, headers=self._build_headers(self._api_key), timeout=httpx.Timeout(self._timeout), limits=limits)
 
     def __enter__(self):
         return self
@@ -796,20 +839,7 @@ class DistLLMClientSync(_BaseClient):
             kw["timeout"] = timeout
         with self._client.stream("POST", "/v1/completions", json=payload, **kw) as response:
             response.raise_for_status()
-            # Yield text STRINGS matching chat_completions_stream (W2-39 /
-            # A2-8): the parser emits full SSE event dicts, but callers
-            # expect the same item type from both stream methods (see the
-            # sync chat path's F-036 note). The server puts completion text
-            # at choices[0].text; also tolerate the documented delta.text
-            # shape.
-            for event in parse_sse_stream_sync(response):
-                if "choices" in event and event["choices"]:
-                    choice = event["choices"][0]
-                    text = choice.get("text")
-                    if not text:
-                        text = choice.get("delta", {}).get("text")
-                    if text:
-                        yield text
+            yield from parse_sse_stream_sync(response)
 
     def list_models(self) -> ModelList:
         data = self._request("GET", "/v1/models")
@@ -821,13 +851,13 @@ class DistLLMClientSync(_BaseClient):
     def embeddings(self, input: str | list[str], model: str = "distributed-llm", encoding_format: str = "float", timeout: float | None = None) -> EmbeddingResponse:
         return self._embeddings_sync(input, model, encoding_format=encoding_format)
 
-    def submit_batch(self, input_file_id: str, endpoint: str = "/v1/chat/completions", metadata: dict | None = None) -> BatchJob:
-        return self._batch_submit_sync(input_file_id, endpoint, metadata)
+    def submit_batch(self, items: list[dict | Any], webhook_url: str | None = None, webhook_token: str | None = None, item_timeout: float = 30.0) -> BatchJob:
+        return self._batch_submit_sync(items, webhook_url, webhook_token, item_timeout)
 
-    def get_batch(self, batch_id: str | None = None) -> BatchJob | BatchList:
+    def get_batch(self, batch_id: str) -> BatchJob:
         return self._batch_get_sync(batch_id)
 
-    def cancel_batch(self, batch_id: str) -> BatchJob:
+    def cancel_batch(self, batch_id: str) -> BatchCancelResult:
         return self._batch_cancel_sync(batch_id)
 
     def moderations(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
@@ -883,7 +913,7 @@ class DistLLMClientSync(_BaseClient):
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in self._retry.retryable_status_codes and attempt < self._retry.max_retries:
-                    delay = _compute_delay(attempt, self._retry, dict(e.response.headers))
+                    delay = _compute_delay(attempt, self._retry)
                     time.sleep(delay)
                     last_exc = e
                     continue
@@ -923,8 +953,7 @@ class DistLLMClientSync(_BaseClient):
                 return response
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 if attempt < self._retry.max_retries:
-                    retry_headers = dict(e.response.headers) if isinstance(e, httpx.HTTPStatusError) else None
-                    delay = _compute_delay(attempt, self._retry, retry_headers)
+                    delay = _compute_delay(attempt, self._retry)
                     time.sleep(delay)
                     last_exc = e
                     continue

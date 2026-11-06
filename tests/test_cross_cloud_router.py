@@ -171,7 +171,7 @@ class TestWattTimeTokenCaching:
         provider._watttime_token = "test-token"
         provider._watttime_token_expiry = time.time() + 3600
         # Should not make a new login request
-        with patch("httpx.Client") as mock_client:
+        with patch("httpx.Client"):
             provider._fetch_watttime("us-east-1")
             # The client should be called for index but not for login
             # (since token is cached)

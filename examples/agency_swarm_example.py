@@ -1,23 +1,6 @@
 """Agency Swarm / AutoGPT integration with Distributed LLM.
 
 This example shows how to use Agency Swarm with the DistLLM
-
-## What this demonstrates
-- Multi-agent orchestration with Agency Swarm
-- Each agent calling a DistLLM-served model via the OpenAI-compatible API
-- Use of `ChatOpenAI` against `distllm-api` (running locally) as the
-  agent's underlying LLM
-
-Requirements:
-    pip install agency-swarm langchain-openai
-
-Usage:
-    # Start the API server first:
-    distllm-api --model roneneldan/TinyStories-1M --local
-
-    # Then run this example:
-    python examples/agency_swarm_example.py
-"""
 OpenAI-compatible API for multi-agent orchestration.
 
 Agency Swarm is a framework for creating collaborative AI agents
