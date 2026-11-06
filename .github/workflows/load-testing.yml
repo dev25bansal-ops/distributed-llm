@@ -47,7 +47,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev,testing]"
+          pip install -e ".[dev,testing]" python-multipart
           pip install locust
 
       - name: Verify GPU/CPU availability
