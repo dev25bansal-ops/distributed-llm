@@ -53,16 +53,37 @@ jobs:
         # Coverage is the signal here, not pass/fail: long-standing stale
         # suites (tests/cli, chaos HA) fail on master and would abort the job
         # before coverage.xml exists. The ratchet step below is the blocking
-        # gate. continue-on-collection-errors keeps one broken module from
-        # hiding the rest.
+        # gate. Runs are CHUNKED per top-level test dir: a single 12k-test
+        # process is OOM-killed on the 7 GB runner (exit 137), so each group
+        # runs in its own pytest process and appends to the same coverage data
+        # file (--cov-append), then one final `coverage xml` renders the report.
         continue-on-error: true
         run: |
+          set +e
+          rm -f .coverage coverage.xml
+          run_group() {
+            [ -d "$1" ] || return 0
+            echo "=== coverage chunk: $1 ==="
+            pytest "$1" \
+              -m "not e2e and not slow and not chaos and not benchmark" \
+              --cov=distllm --cov-append --cov-report= \
+              --continue-on-collection-errors \
+              -q
+          }
+          # Non-overlapping chunks: each top-level suite in its own process so
+          # peak RSS stays well under the runner limit (whole-tree run -> 137).
+          for g in tests/core tests/dist tests/api; do run_group "$g"; done
+          run_group tests/security
+          run_group tests/cli
+          # Everything else (root-level tests/*.py, remaining subdirs).
           pytest tests/ \
             -m "not e2e and not slow and not chaos and not benchmark" \
-            --cov=distllm --cov-report=xml --cov-report=term-missing \
+            --cov=distllm --cov-append --cov-report= \
             --continue-on-collection-errors \
-            --ignore=tests/cli/test_cli.py \
+            --ignore=tests/core --ignore=tests/dist --ignore=tests/api \
+            --ignore=tests/security --ignore=tests/cli/test_cli.py \
             -q
+          python -m coverage xml -o coverage.xml || echo "coverage xml failed"
 
       - name: Assert coverage.xml was produced
         run: |
