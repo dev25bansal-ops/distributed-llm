@@ -69,7 +69,7 @@ class ONNXNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default",
         device: str = "auto",
         dtype: str = "float16",
         layer_start: int = 0,
@@ -80,7 +80,8 @@ class ONNXNodeAdapter(BackendAdapter):
         trust_remote_code: bool | None = None,
         **extra_kwargs: Any,
     ):
-        validate_model_name(model_name, allow_local_paths=True)
+        if model_name:
+            validate_model_name(model_name, allow_local_paths=True)
         self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
         self.model_name = model_name
         self.device = device
@@ -239,3 +240,8 @@ class ONNXNodeAdapter(BackendAdapter):
             "xpu": 8,
         }
         return mapping.get(device_type, 1)
+
+
+# Backward compatibility alias
+OnnxBackend = ONNXNodeAdapter
+

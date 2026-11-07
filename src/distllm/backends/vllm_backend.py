@@ -74,7 +74,7 @@ class VLLMNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default/model",
         vllm_config: dict | None = None,
         layer_start: int | None = None,
         layer_end: int | None = None,
@@ -82,7 +82,8 @@ class VLLMNodeAdapter(BackendAdapter):
     ):
         # SECURITY: Validate model name before any loading attempt.
         # See _validate_model_name for the full check.
-        _validate_model_name(model_name)
+        if model_name:
+            _validate_model_name(model_name)
         self.model_name = model_name
         self.layer_start = layer_start
         self.layer_end = layer_end
@@ -489,27 +490,9 @@ class VLLMNodeAdapter(BackendAdapter):
                 # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
-        return info
-
-    def get_metrics(self) -> dict[str, Any]:
-        """Get inference metrics from the vLLM engine.
-
-        Returns:
-            Dict with throughput, latency, cache hit rate, etc.
-        """
-        metrics = {
-            "backend": "vllm",
-            "model_name": self.model_name,
-        }
-
-        if self._llm is not None:
-            try:
-                engine = self._llm.llm_engine
-                if hasattr(engine, 'get_metrics'):
-                    engine_metrics = engine.get_metrics()
-                    metrics.update(engine_metrics)
-            except Exception:
-                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
-                pass
-
         return metrics
+
+
+# Backward compatibility alias
+VLLMBackend = VLLMNodeAdapter
+

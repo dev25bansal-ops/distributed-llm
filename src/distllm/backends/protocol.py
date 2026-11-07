@@ -277,3 +277,21 @@ class GenerateOnly(BackendAdapter):
             f"{type(self).__name__} is generate-only and does not support "
             "layer-level forward()"
         )
+
+
+class InferenceBackend(BackendAdapter):
+    """Backward compatibility alias for BackendAdapter."""
+
+    def load(self, *args: Any, **kwargs: Any) -> None:
+        """Alias for load_model()."""
+        return self.load_model(*args, **kwargs)
+
+    def unload(self) -> None:
+        """Alias for shutdown()."""
+        return self.shutdown()
+
+    @classmethod
+    def health_check(cls) -> bool:
+        """Alias for is_available()."""
+        return cls.is_available()
+

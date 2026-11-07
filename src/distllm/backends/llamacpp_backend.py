@@ -40,7 +40,7 @@ class LlamacppNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_path: str,
+        model_path: str = "default.gguf",
         n_gpu_layers: int = 0,
         n_ctx: int = 2048,
         n_threads: int | None = None,
@@ -51,7 +51,8 @@ class LlamacppNodeAdapter(BackendAdapter):
         layer_end: int | None = None,
         **extra_kwargs: Any,
     ):
-        validate_model_path(model_path, allow_local_paths=True)
+        if model_path:
+            validate_model_path(model_path, allow_local_paths=True)
         self.model_path = model_path
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
@@ -312,4 +313,8 @@ class LlamacppNodeAdapter(BackendAdapter):
         return { "cpu": 8, "mps": 9, "rocm": 6, "cuda": 4, "xpu": 1 }.get(device_type, 5)
 
 
-__all__ = ["LlamacppNodeAdapter"]
+__all__ = ["LlamacppNodeAdapter", "LlamaCppBackend"]
+
+# Backward compatibility alias
+LlamaCppBackend = LlamacppNodeAdapter
+

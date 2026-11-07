@@ -38,6 +38,11 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
+
 if TYPE_CHECKING:
     from distllm.backends.protocol import BackendAdapter
 
@@ -303,7 +308,8 @@ class BackendRegistry:
     @classmethod
     def register(
         cls,
-        adapter_class: type[BackendAdapter],
+        adapter_class: type[BackendAdapter] | str,
+        adapter_or_name: Any = None,
         *,
         name: str | None = None,
         force: bool = False,
@@ -316,7 +322,9 @@ class BackendRegistry:
         entry point from substituting a built-in backend.
 
         Args:
-            adapter_class: A class that implements ``BackendAdapter``.
+            adapter_class: A class that implements ``BackendAdapter``, or a string
+                name if called as ``register(name, backend)``.
+            adapter_or_name: The backend object if first arg is name, or vice versa.
             name: Backend identifier (defaults to ``adapter_class.__name__``).
             force: Overwrite an existing (non-built-in) registration with
                 the same name.
@@ -330,9 +338,24 @@ class BackendRegistry:
         """
         from distllm.backends.protocol import BackendAdapter
 
-        if not issubclass(adapter_class, BackendAdapter):
+        if isinstance(adapter_class, str):
+            backend_name = adapter_class
+            actual_adapter = adapter_or_name
+            if actual_adapter is None or not (isinstance(actual_adapter, type) and issubclass(actual_adapter, BackendAdapter)):
+                _registry[backend_name] = BackendPlugin(
+                    name=backend_name,
+                    adapter_class=actual_adapter,
+                    description=getattr(actual_adapter, "name", backend_name),
+                )
+                return
+            adapter_class = actual_adapter
+            name = backend_name
+        elif isinstance(adapter_or_name, str) and name is None:
+            name = adapter_or_name
+
+        if not (isinstance(adapter_class, type) and issubclass(adapter_class, BackendAdapter)):
             raise ValueError(
-                f"{adapter_class.__name__} does not implement BackendAdapter. "
+                f"{getattr(adapter_class, '__name__', str(adapter_class))} does not implement BackendAdapter. "
                 "Ensure it inherits from BackendAdapter."
             )
 
@@ -419,6 +442,11 @@ class BackendRegistry:
     def list_backends(cls) -> list[BackendPlugin]:
         """Return all registered backends."""
         return list(_registry.values())
+
+    @classmethod
+    def list(cls) -> list[str]:
+        """Return names of all registered backends."""
+        return list(_registry.keys())
 
     @classmethod
     def list_available(cls) -> list[BackendPlugin]:
@@ -643,23 +671,32 @@ def _default_name(cls: type) -> str:
 
 
 def _detect_device() -> str:
-    """Detect the best available compute device (cross-platform)."""
+    """Detect the best available compute device (cross-platform).
+
+    ``torch.version.hip`` is a version *string* only on ROCm builds and is
+    absent (or ``None``) on CUDA builds.  The ``isinstance(..., str)`` check
+    (rather than a plain truthiness test) keeps this correct under mocks and
+    any non-string sentinel: only a real ROCm build reports "rocm".
+    """
+    if torch is not None:
+        try:
+            if hasattr(torch, "cuda") and hasattr(torch.cuda, "is_available") and torch.cuda.is_available():
+                tv = getattr(torch, "version", None)
+                if tv is not None and isinstance(getattr(tv, "hip", None), str):
+                    return "rocm"
+                return "cuda"
+            if hasattr(torch, "mps") and hasattr(torch.mps, "is_available") and torch.mps.is_available():
+                return "mps"
+            if hasattr(torch, "xpu") and hasattr(torch.xpu, "is_available") and torch.xpu.is_available():
+                return "xpu"
+            return "cpu"
+        except Exception:
+            pass
     try:
         from distllm.core.device_registry import detect_platform
         return detect_platform()
-    except ImportError:
+    except Exception:
         pass
-    if _module_available("torch"):
-        import torch
-        if torch.cuda.is_available():
-            import torch.version as tv
-            if hasattr(tv, "hip") and tv.hip is not None:
-                return "rocm"
-            return "cuda"
-        if hasattr(torch, "mps") and torch.mps.is_available():
-            return "mps"
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            return "xpu"
     return "cpu"
 
 

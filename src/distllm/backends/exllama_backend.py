@@ -65,7 +65,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default",
         device: str = "cuda",
         dtype: str = "float16",
         layer_start: int = 0,
@@ -76,7 +76,8 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         trust_remote_code: bool | None = None,
         **extra_kwargs: Any,
     ):
-        validate_model_path(model_name, allow_local_paths=True)
+        if model_name:
+            validate_model_path(model_name, allow_local_paths=True)
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -262,3 +263,8 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
     @classmethod
     def priority_for(cls, device_type: str) -> int:
         return 8 if device_type in ("cuda",) else 0
+
+
+# Backward compatibility alias
+ExLlamaBackend = ExLlamaV2NodeAdapter
+
