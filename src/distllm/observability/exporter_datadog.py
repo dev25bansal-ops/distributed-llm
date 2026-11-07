@@ -304,6 +304,7 @@ class DatadogMetricsExporter:
             socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def close(self) -> None:

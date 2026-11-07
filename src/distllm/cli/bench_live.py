@@ -103,6 +103,7 @@ class LiveBenchmark:
 
             rss_gb = psutil.Process(os.getpid()).memory_info().rss / 1e9
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             rss_gb = 0.2 + 0.001 * self.iteration
         gpu_gb = max(0.0, 14.0 + random.gauss(0, 0.2))
 
@@ -129,6 +130,7 @@ class LiveBenchmark:
             try:
                 await ws.send(payload)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 dead.append(ws)
         for ws in dead:
             await self.unregister(ws)
@@ -155,6 +157,7 @@ async def _ws_handler(ws: Any, benchmark: LiveBenchmark) -> None:
             try:
                 await ws.send(metric.to_json())
             except Exception:
+                # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
                 return
         # Keep the connection alive until the client closes
         async for _msg in ws:
@@ -231,4 +234,4 @@ def run_bench_live(model: str, port: int = 8765, interval: float = 1.0) -> None:
 if __name__ == "__main__":
     console = Console()
     console.print("[yellow]Usage:[/yellow] distllm bench live --model <name>")
-    sys.exit(1)
+    sys.exit(1)

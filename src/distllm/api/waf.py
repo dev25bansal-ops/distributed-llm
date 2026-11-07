@@ -213,16 +213,37 @@ class WAFMiddleware:
     # ── helpers ──
 
     async def _read_body(self, receive) -> bytes:
-        """Read the full request body from the ASGI receive channel."""
-        body = b""
+        """Read the request body from the ASGI receive channel.
+
+        The body is buffered incrementally against a hard cap of
+        ``max_body_size``: as soon as the running total would exceed it,
+        a 413 :class:`WAFViolation` is raised *without consuming the rest
+        of the stream*.  This bounds RSS to ``max_body_size + chunk_size``
+        instead of the previous full-unbounded-buffer behaviour where
+        ``_check_body_size`` only ran after the entire body was in memory.
+        Chunks are collected in a list and joined once (avoids O(n^2)
+        repeated bytes concatenation on many-chunk bodies).
+        """
+        limit = self.config.max_body_size
+        chunks: list[bytes] = []
+        buffered = 0
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":
                 break
-            body += message.get("body", b"")
+            chunk = message.get("body", b"")
+            if limit and buffered + len(chunk) > limit:
+                raise WAFViolation(
+                    413,
+                    "body_too_large",
+                    f"Request rejected by WAF: body exceeds limit {limit}.",
+                )
+            if chunk:
+                chunks.append(chunk)
+                buffered += len(chunk)
             if not message.get("more_body", False):
                 break
-        return body
+        return b"".join(chunks)
 
     def _make_receive(self, body: bytes):
         """Return a ``receive`` coroutine that replays the buffered *body* once."""

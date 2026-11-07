@@ -83,6 +83,7 @@ def show_status(host: str, port: int, console: Console):
         console.print(f"[red]Error:[/red] Could not connect to {base_url}")
         console.print("Is the API server running?")
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         console.print(f"[red]Error:[/red] {e}")
 
 
@@ -114,6 +115,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
                 health_resp.raise_for_status()
                 health = health_resp.json()
             except Exception:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 summary["line"] = (
                     f"DOWN  coordinator={host}:{port}  (health endpoint unreachable)"
                 )
@@ -132,6 +134,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
                             nodes = data
                         break
                 except Exception:
+                    # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                     continue
 
             # /v1/models — model count
@@ -143,6 +146,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
                     if isinstance(models_data, dict):
                         models = list(models_data.get("data", []))
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
             healthy_nodes = sum(
@@ -192,6 +196,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
         summary["line"] = f"DOWN  coordinator={host}:{port}  (connection refused)"
         return json.dumps(summary)
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         summary["line"] = f"DOWN  coordinator={host}:{port}  ({e})"
         return json.dumps(summary)
 

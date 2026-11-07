@@ -266,6 +266,7 @@ def _download_model(model_id: str, console: Console) -> bool:
                 if total_bytes > 0:
                     progress.update(task, total=total_bytes)
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 total_bytes = 0
 
             progress.update(task, description=f"[cyan]Downloading {model_id}...")
@@ -291,6 +292,7 @@ def _download_model(model_id: str, console: Console) -> bool:
             console.print(f"[red]Network error downloading model: {exc}[/red]")
             return False
         except Exception as exc:
+            # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
             progress.remove_task(task)
             console.print(f"[red]Unexpected error: {exc}[/red]")
             return False
@@ -602,6 +604,7 @@ def run_onboard(
                 try:
                     c.load_local_model()
                 except Exception as exc:
+                    # CQ-08: failure is surfaced via console output; not propagated.
                     console.print(
                         f"[yellow]Could not load model locally: {exc}\n"
                         "Will start coordinator and wait for remote workers.[/yellow]"
@@ -619,6 +622,7 @@ def run_onboard(
                 f'"{selected_model["id"]}" --port {coordinator_port}[/bold][/red]'
             )
         except Exception as exc:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(
                 f"[red]Failed to start coordinator: {exc}\n"
                 f"Run manually: [bold]distllm cluster start --model "

@@ -76,4 +76,5 @@ def run_chat(
                     console.print(f"\n[red]Error:[/red] {e}")
 
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         console.print(f"[red]Error:[/red] {e}")

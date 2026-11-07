@@ -447,6 +447,7 @@ class WhatIfEngine:
                         self.what_if_change_seq_len(new_len)
                     )
             except Exception as exc:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 results.append(
                     ProjectedChange(
                         description=(

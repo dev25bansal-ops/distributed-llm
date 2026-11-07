@@ -233,6 +233,7 @@ class PerformanceBaseline:
             data = json.loads(baselines[0].read_text())
             return BaselineMetrics(**data)
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def get_baseline(self) -> BaselineMetrics | None:

@@ -99,24 +99,15 @@ When using federated fine-tuning:
 
 ### Right of Access
 
-Users can query their request history via the API:
-```bash
-curl -H "Authorization: Bearer $KEY" http://localhost:8000/v1/requests?user_id=USER_ID
-```
+No per-user data-subject endpoint exists yet (`grep -rn '/v1/requests' src/distllm/api` returns 0 hits). Request your data via the support contacts below; the closest existing per-user read APIs are the prompt-exchange library (`GET /v1/exchange/library/{user_id}`, `src/distllm/api/routes/exchange.py:336`) and wallet (`GET /v1/exchange/wallet/{user_id}`, line 305) listings. See also `docs/api.md`.
 
 ### Right to Erasure
 
-Users can request deletion of their data:
-```bash
-curl -X DELETE -H "Authorization: Bearer $KEY" http://localhost:8000/v1/requests?user_id=USER_ID
-```
+No per-user data-deletion endpoint exists yet (`grep -rn '/v1/requests' src/distllm/api` returns 0 hits). Submit an erasure request via the support contacts below.
 
 ### Right to Data Portability
 
-Request history can be exported in JSON format:
-```bash
-curl -H "Authorization: Bearer $KEY" http://localhost:8000/v1/requests?user_id=USER_ID&format=json
-```
+No per-user data-export endpoint exists yet (`grep -rn '/v1/requests' src/distllm/api` returns 0 hits). Request a JSON export via the support contacts below; the closest existing per-user read APIs are `GET /v1/exchange/library/{user_id}` and `GET /v1/exchange/wallet/{user_id}` (`src/distllm/api/routes/exchange.py`). See also `docs/api.md`.
 
 ---
 
@@ -124,12 +115,7 @@ curl -H "Authorization: Bearer $KEY" http://localhost:8000/v1/requests?user_id=U
 
 ### Disable Prompt Logging
 
-```yaml
-# config.yaml
-coordinator:
-  audit_log_prompts: false  # Don't log prompt content
-  audit_log_responses: false  # Don't log response content
-```
+No prompt-logging config keys exist yet (`grep -rn 'audit_log_prompts' src/distllm/config` returns 0 hits). Prompts are not persisted to disk by default (see "What Data Does DistLLM NOT Store?" above).
 
 ### Enable TLS
 
@@ -142,20 +128,16 @@ tls:
 
 ### Configure Data Retention
 
-```yaml
-logging:
-  retention_days: 30
-audit:
-  retention_days: 90
-```
+No retention/audit config keys exist yet (`grep -rn 'retention_days' src/distllm/config` returns 0 hits). Retention is operational (log rotation / storage lifecycle), not configurable through `config.yaml`.
 
 ### Enable E2E Encryption
 
 ```yaml
-security:
-  e2e_encryption: true
+coordinator:
   cluster_key: "your-strong-cluster-key"
 ```
+
+(`coordinator.cluster_key`, `src/distllm/core/coordinator_config.py:61`; env var `DISTLLM_CLUSTER_KEY`, read in `src/distllm/cli/cluster.py:317` and `src/distllm/cli/main.py:577`. There is no `security.e2e_encryption` key — 0 hits in `src/distllm/config`.)
 
 ---
 

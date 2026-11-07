@@ -14,6 +14,7 @@ Mounted in ``server.py`` immediately after AuthMiddleware executes
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -117,7 +118,59 @@ def _estimate_token_count(text: str) -> int:
     except ImportError:
         return max(1, len(text) // 4)
     except Exception:
+        # CQ-08: tiktoken failed (optional dep): fall back to the len//4 heuristic so metering never blocks the request.
         return max(1, len(text) // 4)
+
+
+async def _metered_stream(
+    body_iterator,
+    record_usage,
+):
+    """Wrap an SSE ``body_iterator`` and count emitted output tokens.
+
+    Every yielded chunk is parsed as an OpenAI streaming event; the
+    ``delta.content`` / ``text`` string of each choice is estimated into
+    tokens and added to the running count.  ``record_usage`` is invoked
+    exactly once from the wrapper's ``finally`` — i.e. when the generator
+    closes, whether the stream completed, errored, or the client
+    disconnected — with the real output token count.
+
+    Chunk bodies pass through untouched: the wrapper is transparent to
+    the client and to the rest of the middleware stack.
+    """
+    output_tokens = 0
+    try:
+        async for chunk in body_iterator:
+            if isinstance(chunk, (bytes, bytearray)):
+                try:
+                    payload = chunk.decode("utf-8")
+                except UnicodeDecodeError:
+                    payload = ""
+            else:
+                payload = str(chunk)
+            for line in payload.splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(data)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                for choice in event.get("choices") or []:
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content") or delta.get("text") or ""
+                    if text:
+                        output_tokens += _estimate_token_count(text)
+            yield chunk
+    finally:
+        record_usage(output_tokens)
 
 
 class QuotaMiddleware(BaseHTTPMiddleware):
@@ -183,16 +236,28 @@ class QuotaMiddleware(BaseHTTPMiddleware):
 
         start_time = time.monotonic()
         response = None
+        stream_wrapped = False
         try:
             response = await call_next(request)
+            if response is not None and response.status_code < 400:
+                stream_wrapped = self._wrap_streaming_response(
+                    response, request, meter, tenant_id, key_id, start_time
+                )
             return response
         finally:
             elapsed_ms = (time.monotonic() - start_time) * 1000
             meter.release_quota(tenant_id)
 
-            # Record usage for successful streaming endpoints
+            # Record usage for non-streaming responses.  Streaming (SSE)
+            # responses are recorded inside _metered_stream when the body
+            # iterator closes — dispatch's finally fires before the SSE
+            # body has been consumed, so the real token count is not yet
+            # known here.
             if response is not None and response.status_code < 400:
-                self._record_usage(request, response, meter, tenant_id, key_id, elapsed_ms)
+                if not stream_wrapped:
+                    self._record_usage(
+                        request, response, meter, tenant_id, key_id, elapsed_ms,
+                    )
 
     async def _dispatch_tenant_billing(self, request, call_next, tenant_id: str, key_id: str):
         """Enforce via TenantBillingManager (tiered plans) instead of UsageMeter.
@@ -258,6 +323,53 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         """Return True if the path should be tracked for usage."""
         tracked_prefixes = ("/v1/chat/completions", "/v1/completions", "/v1/embeddings")
         return any(path.startswith(p) for p in tracked_prefixes)
+
+    def _wrap_streaming_response(
+        self, response, request, meter, tenant_id: str, key_id: str, start_time: float
+    ) -> bool:
+        """Wrap the response body iterator so SSE output tokens are metered.
+
+        ``BaseHTTPMiddleware`` re-wraps every response in a
+        ``_StreamingResponse`` whose ``body_iterator`` (``body_stream()``)
+        yields the raw SSE chunk bytes.  Wrapping it lets us count tokens
+        per chunk and record the usage row when the stream closes — the
+        only moment the real output token count is known, since dispatch's
+        finally runs before the body is consumed.
+
+        Returns True when the response was wrapped (i.e. it streams);
+        False for plain JSON/Response objects, which ``_record_usage``
+        handles on the normal path.
+        """
+        body_iterator = getattr(response, "body_iterator", None)
+        if body_iterator is None:
+            return False
+        # Only stream responses should be metered this way.  A plain
+        # Response (non-streaming) never exposes body_iterator, so the
+        # guard above already covers it; an explicit stream marker on the
+        # response (media_type=text/event-stream) is the second signal.
+        content_type = response.headers.get("content-type", "") if hasattr(response, "headers") else ""
+        if "text/event-stream" not in content_type:
+            return False
+
+        def _record(output_tokens: int) -> None:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            try:
+                input_tokens, _ = self._estimate_usage(request, response)
+                if input_tokens or output_tokens:
+                    meter.record_request(
+                        tenant_id=tenant_id,
+                        model_name=getattr(request.state, "model", "unknown"),
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        duration_ms=elapsed_ms,
+                        endpoint=request.url.path,
+                        key_id=key_id,
+                    )
+            except Exception as e:  # noqa: BLE001 - metering must never break the stream
+                logger.debug(f"Failed to record streaming usage: {e}")
+
+        response.body_iterator = _metered_stream(body_iterator, _record)
+        return True
 
     def _estimate_usage(self, request: Request, response) -> tuple[int, int]:
         """Estimate ``(input_tokens, output_tokens)`` from request/response."""

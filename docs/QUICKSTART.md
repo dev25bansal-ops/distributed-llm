@@ -17,7 +17,7 @@ git clone https://github.com/distributed-llm/distributed-llm.git
 cd distributed-llm
 
 # Copy example config
-cp config.yaml.example config.yaml
+cp config.yaml config.yaml.example
 ```
 
 ### Step 2: Start the Cluster

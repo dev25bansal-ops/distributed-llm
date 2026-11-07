@@ -213,9 +213,30 @@ class PersistentStore:
             row = conn.execute("SELECT data FROM files WHERE id = ?", (file_id,)).fetchone()
             return json.loads(row["data"]) if row else None
 
-    def list_files(self, purpose: str | None = None, limit: int = 1000) -> list[dict]:
+    def list_files(
+        self,
+        purpose: str | None = None,
+        limit: int = 1000,
+        owner: str | None = None,
+    ) -> list[dict]:
         with self._transaction() as conn:
-            if purpose:
+            if owner is not None:
+                if purpose:
+                    rows = conn.execute(
+                        "SELECT data FROM files "
+                        "WHERE json_extract(data, '$.purpose') = ? "
+                        "AND COALESCE(json_extract(data, '$.owner'), '') = ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (purpose, owner, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT data FROM files "
+                        "WHERE COALESCE(json_extract(data, '$.owner'), '') = ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (owner, limit),
+                    ).fetchall()
+            elif purpose:
                 rows = conn.execute(
                     "SELECT data FROM files WHERE json_extract(data, '$.purpose') = ? ORDER BY created_at DESC LIMIT ?",
                     (purpose, limit),

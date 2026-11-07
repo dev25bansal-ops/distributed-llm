@@ -110,6 +110,7 @@ class GPUResourceManager:
         except ImportError:
             self.register_device(device)
         except Exception:
+            # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
             self.register_device(device)
 
     def unregister_device(self, device: int) -> None:
@@ -224,6 +225,7 @@ class GPUResourceManager:
                 temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
                 temp_c = float(temp)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             device_allocs = [a for a in self._allocations.values() if a.device == device]
             tracked_mb = sum(a.size_mb for a in device_allocs)
@@ -234,6 +236,7 @@ class GPUResourceManager:
                 temperature_c=temp_c, allocations=device_allocs,
             )
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def available_mb(self, device: int = 0) -> float:
@@ -284,6 +287,7 @@ class GPUResourceManager:
                 return 0.0
             return max(0.0, total - alloc)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _evict(
@@ -309,6 +313,7 @@ class GPUResourceManager:
                 try:
                     cb(alloc.key, alloc)
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             logger.info(f"Evicted {alloc.key} ({alloc.size_mb:.0f} MB) from GPU {device}")
         return freed
@@ -334,5 +339,6 @@ def get_gpu_resource_manager() -> GPUResourceManager:
                         try:
                             _global_mgr.register_device(dev.device_id)
                         except Exception:
+                            # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                             continue
     return _global_mgr

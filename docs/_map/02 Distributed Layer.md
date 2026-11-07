@@ -8,11 +8,11 @@ aliases:
 ---
 # Distributed Layer — `src/distllm/dist/`
 
-**193 .py files · ~74K LOC.**
+**194 .py files · ~71K LOC.**
 
 > The **distributed execution plane**: pool GPUs across machines (LAN, WAN, NAT-broken home networks) into one virtual inference cluster. Pipeline/tensor/expert parallelism, PagedAttention KV-cache with distributed prefix sharing, speculative decoding, cross-cluster federation, fault tolerance (byzantine/Raft/chaos), and transport (gRPC, QUIC, WebRTC/ICE, NCCL, zero-copy). The `partition/` sub-package is the **hardware-aware auto-partitioner**.
 >
-> **Tests:** `python -m pytest tests/dist/ -v` (121 files).
+> **Tests:** `python -m pytest tests/dist/ -v` (158 files).
 
 ## `dist/` top level
 
@@ -123,7 +123,7 @@ aliases:
 | `observability.py` | 220 | wire metrics+exporter+tracer |
 | `wandb_integration.py` | 218 | **deprecated shim** → `distllm.integrations.wandb` |
 
-## `dist/partition/` — Hardware-Aware Auto-Partitioner (28 files, ~11.7K LOC)
+## `dist/partition/` — Hardware-Aware Auto-Partitioner (28 files, ~10.1K LOC)
 
 | file | LOC | purpose |
 |------|-----|---------|
@@ -162,15 +162,17 @@ aliases:
 - **`dist/pipeline/`** (15) — **core of the dist layer**: `orchestrator.PipelineOrchestrator` (stage pipeline across nodes), `pipeline_reconfig.PipelineReconfigurator` (live topology reconfig + checkpoint), `bandwidth_controller`, `compression_negotiation`, `serialization`, `transport`, `simulator`, `strategy`, `token_accumulator`, `continuous_batching`, `disagg_orchestrator`, `wan_disagg_orchestrator`.
 - **`dist/p2p/`** (8) — peer mesh: `gossip.GossipProtocol` (cross-node state replication, vectors, LWW, bloom), `kademlia_dht.KademliaDHT`, `quic_transport`, `transport`, `router.FederationRouter`, `discovery`, `load_balancer`.
 - **`dist/scheduling/`** (6) — `deadline_scheduler.DeadlineAwareBatchScheduler` (+ GPU batch packer, preemptive stages), `iteration.IterationScheduler`, `classifier.WorkloadType`, `batcher`, `profiler`.
-- **`dist/speculative/`** (6) — `draft_orchestrator.DraftOrchestrator` (Thompson-sampling bandit), `draft_registry`, `draft_cache`, `multi_draft`, `adaptive_spec`, `online_sisd` (self-correcting).
-- **`dist/routing/`** (7) — `arbitrage_engine`, `composite`, `consistent_hash`, `latency_aware`, `load_aware`.
+- **`dist/speculative/`** (7) — `draft_orchestrator.DraftOrchestrator` (Thompson-sampling bandit), `draft_registry`, `draft_cache`, `multi_draft`, `adaptive_spec`, `online_sisd` (self-correcting).
+- **`dist/routing/`** (6) — `arbitrage_engine`, `composite`, `consistent_hash`, `latency_aware`, `load_aware`.
 - **`dist/backends/`** (7) — distributed deployment backends: `vllm`, `llamacpp`, `ray` pipeline engines; `backend_profiles`, `health_monitor`, `graceful_degradation`. *(distinct from `src/distllm/backends`)*.
 - **`dist/disagg/`** (5) — prefill/decode split + KV transfer: `transfer_engine.KVCacheTransferEngine`, `transfer_compression`, `pool`, `transfer`, `__init__.DisaggManager`.
-- **`dist/daas/`** (5) — multi-tenant DaaS: `tenant_dispatcher`, `usage_meter`, `load_balancer`, `resource_isolation`, `marketplace_integration`.
+- **`dist/daas/`** (6) — multi-tenant DaaS: `tenant_dispatcher`, `usage_meter`, `load_balancer`, `resource_isolation`, `marketplace_integration`.
 - **`dist/simulation/`** (7) — digital-twin & what-if: `cluster_simulator`, `topology_optimizer`, `what_if`, `cost_aware_provisioning`, `chaos_simulator`, `digital_twin`.
 - **`dist/privacy/`** (2) — split inference (`PrivacyEnforcer`, `ActivationObfuscator`, `PromptShamirSplitter`) + DP accounting.
 - **`dist/chaos/`** (3) — `fault_injector.FaultInjector` (gRPC-interceptor fault injection, Litmus/ChaosMesh YAML), `chaos_orchestrator`.
-- **`dist/structured_output/`** — `engine.py` (distributed SO engine).
+- **`dist/structured_output/`** (2) — `engine.py` (distributed SO engine).
+
+<!-- recounted 2026-11-06 by hygiene pass -->
 
 ## Notes / dead code
 
@@ -183,4 +185,6 @@ aliases:
 
 ## Tests
 
-`tests/dist/` (121 files) covers nearly every module + `tests/dist/{pipeline,p2p,simulation,speculative,routing,privacy,daas,chaos}/` + `tests/integration/` + `tests/chaos/`.
+`tests/dist/` (158 files) covers nearly every module + `tests/dist/{pipeline,p2p,simulation,speculative,routing,privacy,daas,chaos}/` + `tests/integration/` + `tests/chaos/`.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

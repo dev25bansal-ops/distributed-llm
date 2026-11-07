@@ -273,6 +273,7 @@ class HealthPlugin(PluginBase):
             counts = metrics_plugin.get_counts()
             current_errors = counts.get("on_error", 0) + counts.get("server_error", 0)
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return
 
         now = time.time()
@@ -316,6 +317,7 @@ class HealthPlugin(PluginBase):
         try:
             metrics = monitor.collect()
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return reasons
 
         # GPU memory

@@ -45,6 +45,7 @@ def run_inference(
         try:
             create_coordinator(model_name=model, dtype=dtype, local=local)
         except Exception as e:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(
                 f"[yellow]Warning: coordinator/model load failed ({e}) — "
                 f"starting API server without a loaded model.[/yellow]"
@@ -60,5 +61,6 @@ def run_inference(
     except KeyboardInterrupt:
         console.print("\nShutting down...")
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         console.print(f"\n[red]Error:[/red] {e}")
         sys.exit(1)

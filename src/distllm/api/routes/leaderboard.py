@@ -11,6 +11,12 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
+
 
 router = APIRouter(tags=["leaderboard"])
 
@@ -140,7 +146,13 @@ def _ensure_loaded():
         _load_seed_data()
 
 
-@router.get("/v1/leaderboard")
+@router.get(
+    "/v1/leaderboard",
+    summary="List benchmark submissions with filters and paging",
+    responses={
+        422: ERR_ENTRY("Invalid paging parameter (limit must be 1-200, offset >= 0)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def list_leaderboard(
     model: Optional[str] = Query(None),
     hardware: Optional[str] = Query(None),
@@ -185,7 +197,13 @@ async def list_leaderboard(
     }
 
 
-@router.get("/v1/leaderboard/{entry_id}")
+@router.get(
+    "/v1/leaderboard/{entry_id}",
+    summary="Fetch a single benchmark submission by its entry ID",
+    responses={
+        404: ERR_ENTRY("Benchmark entry not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def get_leaderboard_entry(entry_id: str):
     """Fetch a single benchmark submission by its entry ID."""
     _ensure_loaded()
@@ -195,7 +213,13 @@ async def get_leaderboard_entry(entry_id: str):
     return entry
 
 
-@router.post("/v1/leaderboard/submit")
+@router.post(
+    "/v1/leaderboard/submit",
+    summary="Submit a benchmark result for a model/hardware/framework combination",
+    responses={
+        422: ERR_ENTRY("Invalid submission payload (missing model/hardware or invalid metrics)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def submit_benchmark(submission: BenchmarkSubmission):
     """Submit a benchmark result for a model/hardware/framework combination."""
     _ensure_loaded()
@@ -217,7 +241,10 @@ async def submit_benchmark(submission: BenchmarkSubmission):
     return entry
 
 
-@router.get("/v1/leaderboard/summary")
+@router.get(
+    "/v1/leaderboard/summary",
+    summary="Return aggregated throughput/latency/memory averages by model and hardware",
+)
 async def leaderboard_summary():
     """Return aggregated throughput/latency/memory averages grouped by model and hardware."""
     _ensure_loaded()
@@ -259,7 +286,10 @@ async def leaderboard_summary():
     return {"summaries": summaries, "total": len(summaries)}
 
 
-@router.get("/v1/leaderboard/top")
+@router.get(
+    "/v1/leaderboard/top",
+    summary="Return the highest-throughput submission for each model/hardware pair",
+)
 async def leaderboard_top():
     """Return the highest-throughput submission for each model/hardware pair, sorted overall."""
     _ensure_loaded()
@@ -301,7 +331,14 @@ class CommunityStats(BaseModel):
     top_contributors: list[dict] = Field(default_factory=list)
 
 
-@router.post("/v1/leaderboard/{entry_id}/vote")
+@router.post(
+    "/v1/leaderboard/{entry_id}/vote",
+    summary="Vote on a benchmark submission",
+    responses={
+        404: ERR_ENTRY("Benchmark entry not found", type_="invalid_request_error", code="not_found"),
+        422: ERR_ENTRY("Invalid vote value (must be -1, 0, or 1)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def vote_entry(entry_id: str, body: VoteRequest):
     """Vote on a benchmark submission."""
     if entry_id not in _store:
@@ -320,7 +357,14 @@ async def vote_entry(entry_id: str, body: VoteRequest):
     return {"entry_id": entry_id, "total_votes": total_votes, "voter_count": len(_votes[entry_id])}
 
 
-@router.post("/v1/leaderboard/{entry_id}/comment")
+@router.post(
+    "/v1/leaderboard/{entry_id}/comment",
+    summary="Add a comment to a benchmark submission",
+    responses={
+        404: ERR_ENTRY("Benchmark entry not found", type_="invalid_request_error", code="not_found"),
+        422: ERR_ENTRY("Invalid comment payload (text is required, max 1000 chars)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def comment_entry(entry_id: str, body: CommentRequest):
     """Add a comment to a benchmark submission."""
     if entry_id not in _store:
@@ -336,13 +380,22 @@ async def comment_entry(entry_id: str, body: CommentRequest):
     return {"entry_id": entry_id, "comment_count": len(_comments[entry_id])}
 
 
-@router.get("/v1/leaderboard/{entry_id}/comments")
+@router.get(
+    "/v1/leaderboard/{entry_id}/comments",
+    summary="Get comments for a benchmark submission",
+)
 async def get_comments(entry_id: str):
     """Get comments for a benchmark submission."""
     return {"entry_id": entry_id, "comments": _comments.get(entry_id, [])}
 
 
-@router.post("/v1/leaderboard/{entry_id}/verify")
+@router.post(
+    "/v1/leaderboard/{entry_id}/verify",
+    summary="Mark a benchmark submission as verified (admin only)",
+    responses={
+        404: ERR_ENTRY("Benchmark entry not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def verify_entry(entry_id: str):
     """Mark a benchmark submission as verified (admin only)."""
     if entry_id not in _store:
@@ -352,7 +405,10 @@ async def verify_entry(entry_id: str):
     return {"entry_id": entry_id, "verified": True}
 
 
-@router.get("/v1/leaderboard/community")
+@router.get(
+    "/v1/leaderboard/community",
+    summary="Get community leaderboard statistics",
+)
 async def community_stats():
     """Get community leaderboard statistics."""
     total_votes = sum(sum(v.values()) for v in _votes.values())
@@ -375,7 +431,10 @@ async def community_stats():
     }
 
 
-@router.get("/v1/leaderboard/verified")
+@router.get(
+    "/v1/leaderboard/verified",
+    summary="Get all verified benchmark submissions",
+)
 async def verified_entries():
     """Get all verified benchmark submissions."""
     entries = [_store[eid] for eid in _verified if eid in _store]

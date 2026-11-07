@@ -28,7 +28,7 @@ from __future__ import annotations
 from loguru import logger
 
 # ── BackendAdapter protocol ────────────────────────────────────────────
-from .protocol import BackendAdapter
+from .protocol import BackendAdapter, ForwardCapable, GenerateOnly
 
 # ── Registry ───────────────────────────────────────────────────────────
 from .registry import (
@@ -62,6 +62,8 @@ from .config import BackendConfig
 __all__ = [
     # Protocol
     "BackendAdapter",
+    "ForwardCapable",
+    "GenerateOnly",
     # Registry
     "BackendPlugin",
     "BackendRegistry",
@@ -179,6 +181,10 @@ def _register_builtins() -> None:
     Import is deferred inside the loop to break the circular chain:
     pytorch_backend → models.partitioner → dist.fsdp → dist.worker → models.partitioner
 
+    Built-in names are protected (see ``registry._PROTECTED_BACKEND_NAMES``),
+    so this is the only path that may register them: the registry's
+    built-in-registration flag is raised for the duration of the loop.
+
     Fail-open design: a broken backend never prevents process startup. However,
     we now distinguish operator-visible signals:
 
@@ -186,30 +192,35 @@ def _register_builtins() -> None:
       • Any other exception (SyntaxError, AttributeError, ImportError for our
         own modules) is logged at WARNING so operators notice immediately.
     """
-    import importlib
-    for mod_name, cls_name, reg_name in _BACKEND_MODULES:
-        try:
-            mod = importlib.import_module(f".{mod_name}", __package__)
-            adapter_cls = getattr(mod, cls_name, None)
-            if adapter_cls is None:
-                logger.warning(f"Backend {mod_name} has no class {cls_name}")
-                continue
-            # Store on this module for direct access
-            globals()[cls_name] = adapter_cls
-            BackendRegistry.register(adapter_cls, name=reg_name, force=False)
-        except KeyError:
-            # Intentional override by another registration — silently accept.
-            pass
-        except Exception as exc:
-            if _is_optional_sdk_error(exc, reg_name):
-                # Optional SDK not installed — expected, stay at debug.
-                logger.debug(f"Backend '{reg_name}' not available: {exc}")
-            else:
-                # Real bug (syntax error, missing internal import, attr error, etc.).
-                logger.warning(
-                    f"Backend '{reg_name}' failed to register: {type(exc).__name__}: {exc}. "
-                    "The backend will be unavailable; please check the backend's implementation."
-                )
+    from .registry import _set_allow_builtin_registration
 
+    import importlib
+    _set_allow_builtin_registration(True)
+    try:
+        for mod_name, cls_name, reg_name in _BACKEND_MODULES:
+            try:
+                mod = importlib.import_module(f".{mod_name}", __package__)
+                adapter_cls = getattr(mod, cls_name, None)
+                if adapter_cls is None:
+                    logger.warning(f"Backend {mod_name} has no class {cls_name}")
+                    continue
+                # Store on this module for direct access
+                globals()[cls_name] = adapter_cls
+                BackendRegistry.register(adapter_cls, name=reg_name, force=False)
+            except KeyError:
+                # Intentional override by another registration — silently accept.
+                pass
+            except Exception as exc:
+                if _is_optional_sdk_error(exc, reg_name):
+                    # Optional SDK not installed — expected, stay at debug.
+                    logger.debug(f"Backend '{reg_name}' not available: {exc}")
+                else:
+                    # Real bug (syntax error, missing internal import, attr error, etc.).
+                    logger.warning(
+                        f"Backend '{reg_name}' failed to register: {type(exc).__name__}: {exc}. "
+                        "The backend will be unavailable; please check the backend's implementation."
+                    )
+    finally:
+        _set_allow_builtin_registration(False)
 
 _register_builtins()

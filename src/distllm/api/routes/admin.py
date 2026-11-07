@@ -133,6 +133,7 @@ def _get_node_state(coord, node_id: str) -> str:
             healthy = node.get("healthy", True) if isinstance(node, dict) else getattr(node, "healthy", True)
             return "healthy" if healthy else "unhealthy"
     except Exception:
+        # CQ-08: fail-open: node state unknown -> reported as 'unknown' rather than failing the cluster view.
         pass
     return "unknown"
 
@@ -310,6 +311,7 @@ async def offline_node(node_id: str):
             try:
                 resource_mgr.simulate_node_failure(node_id)
             except Exception:
+                # CQ-08: best-effort: failure-simulation is a chaos operation; a failed simulation must not break the drain.
                 pass
 
     node = coord.nodes.get(node_id)
@@ -448,6 +450,7 @@ async def view_logs(
             if len(entries) >= limit:
                 break
     except Exception:
+        # CQ-08: fail-open: log buffer unavailable -> the response carries an explanatory entry instead of raising.
         entries.append(LogEntry(
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
             level="INFO",

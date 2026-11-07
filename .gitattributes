@@ -1,0 +1,3 @@
+
+# detect-secrets baseline: hash stability across Windows/Linux checkouts
+.secrets.baseline text eol=lf

@@ -212,22 +212,30 @@ class HierarchicalRateLimiter:
         """Check if request passes all three tiers.
 
         Returns True only if global, tenant, AND model limits are OK.
+
+        A request rejected by any tier consumes no capacity from any
+        other tier (the tiers are checked in reverse-consume order and
+        tokens are only taken once every tier has been verified).
         """
         with self._lock:
-            # Tier 1: Global
-            if not self._global.consume():
-                return False
-
-            # Tier 2: Tenant
+            # Peek at all three tiers before consuming from any — the
+            # need for this is shown by the consume-on-reject bug this
+            # fixes: consuming tier 1 then denying at tier 2 starved
+            # later legitimate requests.
+            global_bucket = self._global
             tenant_bucket = self._get_tenant_bucket(tenant)
-            if not tenant_bucket.consume():
-                return False
-
-            # Tier 3: Model
             model_bucket = self._get_model_bucket(model)
-            if not model_bucket.consume():
-                return False
 
+            # _peek inspects without mutating (refills lazily).
+            for bucket in (global_bucket, tenant_bucket, model_bucket):
+                bucket._refill()
+                if bucket.tokens < 1.0:
+                    return False
+
+            # All tiers pass: now consume exactly one token from each.
+            global_bucket.tokens -= 1.0
+            tenant_bucket.tokens -= 1.0
+            model_bucket.tokens -= 1.0
             return True
 
     def get_limits(self, tenant: str, model: str) -> dict:

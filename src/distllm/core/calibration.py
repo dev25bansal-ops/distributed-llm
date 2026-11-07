@@ -52,6 +52,7 @@ def _get_gpu_memory() -> tuple[int, int]:
             free = torch.cuda.mem_get_info(device)[0] // (1024**2)
             return total, free
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     return 0, 0
 
@@ -115,6 +116,7 @@ def _measure_gpu_cpu_bandwidth(size_mb: int = 64) -> float:
         bandwidth = (size_mb * 10) / elapsed
         return bandwidth
     except Exception:
+        # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
         return 0.0
 
 

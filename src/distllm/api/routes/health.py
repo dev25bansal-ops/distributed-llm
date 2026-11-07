@@ -406,6 +406,7 @@ def _get_health_plugin():
         if inst and inst.instance is not None:
             return inst.instance
     except (AttributeError, Exception):
+        # CQ-08: fail-open: optional health plugin absent -> treated as no health data.
         pass
     return None
 
@@ -437,6 +438,7 @@ async def warmup_model(model_id: str, request: Request):
         )
         return {"status": "ok", "model": model_id, "warmup_tokens": warmup_tokens, "length": len(result)}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as a 503 with str(e); nothing is swallowed.
         return error_response_from_request(503, "Warmup Failed", str(e), "warmup_error", request)
 
 

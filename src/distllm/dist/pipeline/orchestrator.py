@@ -100,6 +100,7 @@ class PipelineNode:
             self.last_health_time = time.time()
             self.last_heartbeat = self.last_health_time
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self.is_healthy = False
             self.last_health_time = time.time()
         return self.is_healthy

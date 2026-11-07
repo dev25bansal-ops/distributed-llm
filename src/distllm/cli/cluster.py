@@ -222,10 +222,12 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
             try:
                 coord_proc.wait(timeout=5)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 coord_proc.kill()
             try:
                 api_proc.wait(timeout=5)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 api_proc.kill()
             console.print("[yellow]Cluster stopped[/yellow]")
     except FileNotFoundError:
@@ -290,6 +292,7 @@ def _cluster_join(
                     if models:
                         model_name = models[0].get("id", "unknown")
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     if model_name == "unknown":
@@ -366,6 +369,7 @@ def _cluster_join(
             else:
                 console.print(f"[yellow]Registration: {resp.status_code} {resp.text[:100]}[/yellow]")
         except Exception as e:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(f"[yellow]Registration: {e}[/yellow]")
         try:
             for line in iter(proc.stdout.readline, ''):

@@ -28,7 +28,7 @@ DistLLM collaborates with universities on federated learning, distributed infere
 - Speculative decoding with tree verification
 - Disaggregated prefill/decode architecture
 
-**Current Status**: Production implementation with pipeline parallelism
+**Current Status**: Pipeline parallelism implementation in `dist/pipeline/` > ⚠️ UNVERIFIED (hygiene pass 2026-11-06): "production" readiness
 
 ### 3. Privacy-Preserving AI
 
@@ -40,7 +40,7 @@ DistLLM collaborates with universities on federated learning, distributed infere
 - Trusted execution environments (TEE)
 - Zero-knowledge proofs for model verification
 
-**Current Status**: E2E encryption, differential privacy implemented
+**Current Status**: E2E encryption (`security/e2e.py`), differential privacy (`core/differential_privacy.py`, `core/dp_inference/`) implemented — in `federated_finetuner.py` DP is opt-in (`dp_mode="enabled"`; default `clip_only` is not DP)
 
 ---
 
@@ -88,8 +88,8 @@ DistLLM collaborates with universities on federated learning, distributed infere
 
 DistLLM-related publications:
 
-1. "Pipeline Parallelism for Distributed LLM Inference" — Architecture description
-2. "Federated Fine-Tuning with Differential Privacy" — DP-SGD implementation
-3. "Speculative Decoding with Tree Verification" — ADR-0003
+1. "Pipeline Parallelism for Distributed LLM Inference" — Architecture description (internal report)
+2. "Federated Fine-Tuning with Differential Privacy" — DP-SGD implementation (internal report)
+3. "Speculative Decoding with Tree Verification" — ADR-0003 (internal report)
 
 See `docs/adr/` for architecture decision records.

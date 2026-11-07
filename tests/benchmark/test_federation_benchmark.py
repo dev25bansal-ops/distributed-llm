@@ -33,11 +33,28 @@ def coord():
         mock_coord.scheduler.stats.return_value = {"active_requests": 0, "pending_requests": 0}
 
         async_client = AsyncMock()
-        mock_resp = AsyncMock()
+        # forward_request awaits the post and then calls raise_for_status() /
+        # json() synchronously (federation.py:597-599) — the response double
+        # must therefore expose sync methods, unlike the client itself.
+        mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"choices": [{"text": "hello"}], "usage": {}}
-        mock_resp.__aenter__.return_value = mock_resp
-        async_client.post.return_value = mock_resp
+        async_client.post = AsyncMock(return_value=mock_resp)
+
+        # forward_request_streaming uses ``async with client.stream(...)``
+        # (federation.py:633) and iterates ``resp.aiter_lines()``.
+        stream_resp = MagicMock()
+        stream_resp.raise_for_status = MagicMock()
+
+        async def _aiter_lines():
+            yield 'data: {"choices": [{"text": "hel"}]}'
+            yield "data: [DONE]"
+
+        stream_resp.aiter_lines = MagicMock(side_effect=_aiter_lines)
+        stream_cm = MagicMock()
+        stream_cm.__aenter__ = AsyncMock(return_value=stream_resp)
+        stream_cm.__aexit__ = AsyncMock(return_value=False)
+        async_client.stream = MagicMock(return_value=stream_cm)
 
         MockClient.return_value = MagicMock()
         MockAsyncClient.return_value = async_client
@@ -78,15 +95,12 @@ class TestFederationOverhead:
             result = await coord.forward_request(peer, request, timeout_s=30.0)
             return result
 
-        async def _bench():
-            result = await _run()
-            return result
-
         # Warmup
-        asyncio.run(_bench())
+        asyncio.run(_run())
 
-        # Benchmark
-        result = benchmark(asyncio.run, _run)
+        # Benchmark — the callable must create a fresh coroutine per
+        # invocation; asyncio.run(_run) would pass the function object.
+        result = benchmark(lambda: asyncio.run(_run()))
         assert result["choices"][0]["text"] == "hello"
 
     def test_forward_request_streaming_overhead(self, benchmark, coord):
@@ -106,11 +120,15 @@ class TestFederationOverhead:
                 chunks.append(chunk)
             return chunks
 
-        async def _bench():
-            return await _run()
+        # Warmup (mirrors the non-streaming benchmark; the previous _bench
+        # helper was defined but never called)
+        asyncio.run(_run())
 
-        result = benchmark(asyncio.run, _run)
-        assert isinstance(result, list)
+        result = benchmark(lambda: asyncio.run(_run()))
+        # Two SSE payload lines are emitted; the [DONE] sentinel stops the
+        # generator without being yielded (federation.py:638-639).
+        assert len(result) == 1
+        assert '"hel"' in result[0]
 
 
 class TestCacheAwareRouting:
@@ -120,12 +138,16 @@ class TestCacheAwareRouting:
         coord.update_cache_digest([101, 202, 303, 404])
 
         async def _run():
-            peer = await coord.forward_with_cache_affinity(
+            # Returns the forwarded response dict tagged with routing
+            # metadata (federation.py:1028-1034), not a bare peer dict.
+            response = await coord.forward_with_cache_affinity(
                 request={"model": "test", "messages": []},
                 prompt_token_ids=[101, 202, 303, 404],
             )
-            return peer
+            return response
 
         import asyncio
-        result = benchmark(asyncio.run, _run)
-        assert result is not None
+        result = benchmark(lambda: asyncio.run(_run()))
+        assert result["x-distllm-federated"] == "peer-1"
+        assert result["x-distllm-cache-affinity"] == 0.0
+        assert result["x-distllm-matched-tokens"] == 0

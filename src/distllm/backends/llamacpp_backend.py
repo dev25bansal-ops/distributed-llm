@@ -7,8 +7,15 @@ import asyncio
 from loguru import logger
 import torch
 
+from distllm.backends.model_validation import validate_model_path
 from distllm.backends.protocol import BackendAdapter, BackendState
-from distllm.errors import ModelLoadError
+from distllm.errors import ModelLoadError, OOMError
+
+
+def _is_oom(exc: Exception) -> bool:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return "out of memory" in str(exc).lower() or "oom" in type(exc).__name__.lower()
 
 
 class LlamacppNodeAdapter(BackendAdapter):
@@ -33,7 +40,7 @@ class LlamacppNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_path: str,
+        model_path: str = "default.gguf",
         n_gpu_layers: int = 0,
         n_ctx: int = 2048,
         n_threads: int | None = None,
@@ -44,6 +51,8 @@ class LlamacppNodeAdapter(BackendAdapter):
         layer_end: int | None = None,
         **extra_kwargs: Any,
     ):
+        if model_path:
+            validate_model_path(model_path, allow_local_paths=True)
         self.model_path = model_path
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
@@ -91,6 +100,8 @@ class LlamacppNodeAdapter(BackendAdapter):
             self._tokenizer = None
             self.state = BackendState.ERROR
             logger.error(f"[llama.cpp] Failed to load model {self.model_path}: {e}")
+            if _is_oom(e):
+                raise OOMError(self.model_path, detail=str(e)) from e
             raise ModelLoadError(self.model_path, str(e)) from e
         self.state = BackendState.READY
         logger.info(f"[llama.cpp] Model loaded: {self.model_path}")
@@ -126,22 +137,44 @@ class LlamacppNodeAdapter(BackendAdapter):
     def _forward_input_ids(
         self, input_ids: torch.Tensor
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Single-node path: run full model via create_completion()."""
+        """Single-node forward: text-API generate of exactly one token.
+
+        PERF-BE-2 (llama.cpp leg): ``create_completion(max_tokens=1)`` is a
+        text API — llama-cpp-python exposes no supported token->logit
+        forward, and its deterministic logits surface is ``_ctx.eval_logits``
+        (the one the pipeline path already uses). Calling create_completion
+        here is the honest single-node contract (return the sampled id), not
+        a native forward; PERF_BE2_NATIVE_FORWARD says so. This path keeps
+        passing input_ids positionally — llama.cpp evaluates the ids
+        directly, with no decode->re-encode round trip (that loss only
+        exists where a text prompt is the only input).
+        """
         if self._llm is None:
             raise ModelLoadError("llamacpp", "llama.cpp not loaded. Call load_model() first.")
 
         ids = input_ids.flatten().tolist()
-        output = self._llm.create_completion(
-            prompt="",
-            input_ids=ids,
-            max_tokens=1,
-            temperature=0.0,
-            echo=False,
-        )
+        try:
+            output = self._llm.create_completion(
+                prompt="",
+                input_ids=ids,
+                max_tokens=1,
+                temperature=0.0,
+                echo=False,
+            )
+        except Exception as e:
+            if _is_oom(e):
+                raise OOMError(self.model_path, detail=str(e)) from e
+            raise
         next_token = output["choices"][0]["text"]
         token_id = output["choices"][0].get("token_id", 0)
         result = torch.tensor([[token_id]], dtype=torch.long)
         return result, []
+
+    # PERF-BE-2: no native token->logit forward on the text-API surface
+    # (see _forward_input_ids). The pipeline _forward_hidden_states path
+    # uses the native eval/eval_logits surface when the installed
+    # llama-cpp-python exposes it, and raises NotImplementedError otherwise.
+    PERF_BE2_NATIVE_FORWARD = False
 
     def _forward_hidden_states(
         self,
@@ -164,9 +197,25 @@ class LlamacppNodeAdapter(BackendAdapter):
 
         try:
             logits_arr = self._llm._ctx.eval_logits
+        except AttributeError as e:
+            # SECURITY/CORRECTNESS: the tensor logits are unavailable without
+            # eval_logits. Returning torch.zeros fabricates logits that decode
+            # as uniform argmax, silently corrupting inference. Fail loudly
+            # instead of serving garbage — same contract as WebGPUNodeAdapter.
+            raise NotImplementedError(
+                "llama.cpp eval_logits is unavailable — llama-cpp-python does "
+                "not expose per-token logits for the loaded model. Refusing to "
+                "fabricate torch.zeros logits for pipeline forward(). "
+                f"(n_tokens={n_tokens}, hidden_dim={hidden_states.shape[-1]})"
+            ) from e
+
+        try:
             logits = torch.tensor(logits_arr, dtype=torch.float32).view(1, n_tokens, -1)
-        except (AttributeError, RuntimeError):
-            logits = torch.zeros(1, n_tokens, hidden_states.shape[-1])
+        except (RuntimeError, ValueError) as e:
+            raise NotImplementedError(
+                "llama.cpp eval_logits shape is incompatible with pipeline "
+                f"forward() (n_tokens={n_tokens}, hidden_dim={hidden_states.shape[-1]})"
+            ) from e
 
         return logits, []
 
@@ -239,6 +288,7 @@ class LlamacppNodeAdapter(BackendAdapter):
                 elif plat == "xpu" and hasattr(torch.xpu, "empty_cache"):
                     torch.xpu.empty_cache()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             logger.info("[llama.cpp] Engine shut down")
         # Idempotent: a second shutdown (or shutdown before load) is a no-op
@@ -263,4 +313,8 @@ class LlamacppNodeAdapter(BackendAdapter):
         return { "cpu": 8, "mps": 9, "rocm": 6, "cuda": 4, "xpu": 1 }.get(device_type, 5)
 
 
-__all__ = ["LlamacppNodeAdapter"]
+__all__ = ["LlamacppNodeAdapter", "LlamaCppBackend"]
+
+# Backward compatibility alias
+LlamaCppBackend = LlamacppNodeAdapter
+

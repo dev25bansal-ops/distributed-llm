@@ -16,6 +16,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from distllm.dist.pipeline import (
     PipelineOrchestrator,
@@ -33,57 +34,44 @@ pytestmark = [
 ]
 
 
-def _make_mock_response(latency_ms=5.0, shape=(1, 768)):
-    resp = MagicMock()
-    resp.success = True
-    resp.error_code = 0
-    resp.error_message = ""
-    resp.processing_time_ms = latency_ms
-    resp.is_logits = False
-    out = MagicMock()
-    out.shape = list(shape)
-    out.dtype = "torch.float32"
-    out.raw_data = b"\x00" * (shape[0] * shape[1] * 4)
-    out.scale = None
-    resp.output = out
-    resp.kv_cache = MagicMock()
-    resp.kv_cache.layers = []
-    return resp
-
-
 def _make_pipeline(num_nodes, total_layers, node_latency_ms=5.0):
-    p = PipelineOrchestrator(total_layers=total_layers)
-    p.resource_mgr = MagicMock()
-    p.resource_mgr.check_circuit_breaker.return_value = False
-    p.resource_mgr.record_success = MagicMock()
-    p.resource_mgr.record_failure = MagicMock()
+    """Build an orchestrator with mock gRPC clients via the public API.
 
+    Uses ``register_node`` (orchestrator.py:256) so layer-ordered
+    ``node_order`` is maintained by the orchestrator itself — the old
+    ``p.node_order.append(...)`` was a silent no-op because the property
+    returns a copy (orchestrator.py:245-248).  The removed
+    ``_rebuild_fallback_map`` / ``_rebuild_stages`` seams are gone: the
+    orchestrator now resolves fallback per call via ``_find_fallback_node``
+    (orchestrator.py:333) and walks ``node_order`` in ``run_pipeline``
+    (orchestrator.py:398).
+    """
+    p = PipelineOrchestrator(resource_mgr=MagicMock(), total_layers=total_layers)
+
+    layers_per_node = total_layers // num_nodes
     for i in range(num_nodes):
-        node = MagicMock()
-        node.node_id = f"n{i}"
-        node.host = "localhost"
-        node.port = 50051 + i
-        node.start_layer = i * (total_layers // num_nodes)
-        node.end_layer = (i + 1) * (total_layers // num_nodes) - 1
-        node.healthy = True
-        node.max_retries = 1
-        node.retry_delay = 0.001
+        node_id = f"n{i}"
+        p.register_node(
+            node_id, "localhost", 50051 + i,
+            start_layer=i * layers_per_node,
+            end_layer=(i + 1) * layers_per_node - 1,
+            total_layers=total_layers,
+        )
+        node = p.nodes[node_id]
+
+        def _forward(hidden_states=None, kv_cache=None, request_id=None,
+                     _latency_ms=node_latency_ms):
+            time.sleep(_latency_ms / 1000.0)
+            return torch.zeros_like(hidden_states)
+
         node.client = MagicMock()
         node.client.cluster_key = None
+        # run_pipeline / run_pipeline_microbatched call
+        # client.forward(hidden_states=..., kv_cache=..., request_id=...)
+        # and pass the return value on as the hidden states.
+        node.client.forward = MagicMock(side_effect=_forward)
         node.gpu_compute_tflops = 312.0
 
-        def _make_forward(lat=node_latency_ms):
-            def forward(req):
-                time.sleep(lat / 1000.0)
-                return _make_mock_response(latency_ms=lat)
-            return forward
-
-        node.client.stub.ForwardPass.side_effect = _make_forward()
-        p.nodes[f"n{i}"] = node
-        p.node_order.append(f"n{i}")
-
-    p._rebuild_fallback_map()
-    p._rebuild_stages()
     return p
 
 
@@ -191,27 +179,20 @@ class TestMockThroughputBenchmark:
         kv = pipeline.create_node_kv_caches()
 
         def run():
-            return pipeline._run_sequential_pipeline(input_ids, kv, "bench-seq")
+            return pipeline.run_pipeline(input_ids, kv, "bench-seq")
 
-        benchmark(run)
+        result = benchmark(run)
+        assert tuple(result.shape) == (1, 64)
 
     def test_overlap_throughput(self, pipeline, benchmark):
         input_ids = torch.randint(0, 1000, (1, 64))
         kv = pipeline.create_node_kv_caches()
 
         def run():
-            return pipeline._run_overlap_impl(input_ids, kv, "bench-ov")
+            return pipeline.run_pipeline_overlap(input_ids, kv, "bench-ov")
 
-        benchmark(run)
-
-    def test_staged_throughput(self, pipeline, benchmark):
-        input_ids = torch.randint(0, 1000, (1, 64))
-        kv = pipeline.create_node_kv_caches()
-
-        def run():
-            return pipeline._run_staged_pipeline(input_ids, kv, "bench-stg")
-
-        benchmark(run)
+        result = benchmark(run)
+        assert tuple(result.shape) == (1, 64)
 
 
 # ─── Batch Size Scaling ─────────────────────────────────────────────
@@ -232,7 +213,7 @@ class TestBatchSizeScaling:
 
         start = time.monotonic()
         for _ in range(5):
-            pipeline._run_sequential_pipeline(input_ids, kv, f"bench-b{batch_size}")
+            pipeline.run_pipeline(input_ids, kv, f"bench-b{batch_size}")
         elapsed = (time.monotonic() - start) / 5
 
         print(f"\n  batch={batch_size}: {elapsed*1000:.1f}ms/step, "
@@ -256,7 +237,7 @@ class TestSeqLenScaling:
         kv = pipeline.create_node_kv_caches()
 
         start = time.monotonic()
-        pipeline._run_sequential_pipeline(input_ids, kv, "bench-seq")
+        pipeline.run_pipeline(input_ids, kv, "bench-seq")
         elapsed = (time.monotonic() - start) * 1000
 
         print(f"\n  seq_len={seq_len}: {elapsed:.1f}ms")

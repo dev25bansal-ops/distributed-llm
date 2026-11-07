@@ -8,6 +8,8 @@ aliases:
   - Strategic Recommendations
 date: 2026-08-08
 ---
+
+> **⚠️ HISTORICAL SNAPSHOT** — preserved for the audit trail. Do not edit; counts and file:line pins predate the 2026-11-06 hygiene pass. Living docs: [UNIFIED.md](UNIFIED.md) + the 00–11 MOCs.
 # Strategic & Technical Recommendations — 2026-08-08
 
 > Full-repository strategic and engineering assessment. Produced after a line-by-line read of every source file (`src/distllm` = 793 files / 222,129 LOC; `tests` = 812 files / 228,741 LOC; plus `integrations`, `sdk`, `frontends`, `deploy`, `.github`). Every "broken / dead / unwired" claim below was confirmed against the current working tree.

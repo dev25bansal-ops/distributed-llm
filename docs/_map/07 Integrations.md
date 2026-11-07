@@ -12,7 +12,7 @@ aliases:
 
 > The **compatibility & client surface**: framework adapters so external LLM orchestration libraries (LangChain, LlamaIndex, CrewAI, AutoGen, Haystack, …) drive DistLLM through their own native API; multi-language client SDKs (python/go/js/rust); a curated **prompt library + exchange**; the **hook-based plugin framework**. Everything talks to the engine over its OpenAI-compatible HTTP/gRPC surface (`distllm.sdk` → [[03 API Server]]).
 
-## Framework adapters (`integrations/` — 28 dirs, 174 files)
+## Framework adapters (`integrations/` — 24 dirs, 168 files)
 
 | Adapter | Purpose |
 |---------|---------|
@@ -36,7 +36,7 @@ aliases:
 | Observability/CI | `wandb/` package (`tracker.py` 654), `mlflow_tracking`, `datadog_monitoring` (1046), `gitlab_ci`, `spark_connector` (764), `vector_db_pack`, `content_moderation` (1200), `gpu_spot_orchestrator` (1536) |
 | **README-only stubs** | `genkit/`, `openwebui/`, `portkey/`, `spring-ai/` |
 
-## Multi-language SDK (`sdk/` — 58 files)
+## Multi-language SDK (`sdk/` — 61 files)
 
 | Root | Purpose |
 |------|---------|
@@ -46,7 +46,7 @@ aliases:
 | `js/` | `src/index.ts` (313) + generated |
 | `openapi/` | `distllm.yaml` spec (446) + `generate.py` emits per-language stubs |
 | `tests/` | `test_sdk.py`, `test_client_extended.py`, `test_grpc_client.py` |
-| in-tree `src/distllm/sdk` | the **self-contained Python SDK** (~1.8K LOC) — `client.py` (1108), streaming (WS/client), transport, circuit_breaker, types, observability |
+| in-tree `src/distllm/sdk` | the **self-contained Python SDK** (~1.9K LOC) — `client.py` (1108), streaming (WS/client), transport, circuit_breaker, types, observability |
 
 ## In-tree `integrations/` (src/distllm/integrations — 12 files)
 
@@ -93,3 +93,5 @@ aliases:
 
 ## Tests
 Per-adapter suites: `integrations/{langchain,llamaindex,crewai}/tests`, `kubernetes/operator/tests`, Go provider `provider_test.go`; `sdk/tests/*`; `tests/integrations/` (CI, MLflow, Spark, OpenAI-Agents); `src/distllm/integrations` → `tests/integrations/`. Prompts/plugins → `tests/prompts/`, `tests/plugins/`, `tests/api/test_exchange.py`.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

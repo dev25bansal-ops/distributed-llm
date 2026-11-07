@@ -12,6 +12,7 @@ Thresholds:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -59,54 +60,43 @@ def _save_baselines(baselines: dict):
 
 
 def _make_pipeline(num_nodes=2, total_layers=32, latency_ms=2.0):
-    p = PipelineOrchestrator(total_layers=total_layers)
-    p.resource_mgr = MagicMock()
-    p.resource_mgr.check_circuit_breaker.return_value = False
-    p.resource_mgr.record_success = MagicMock()
-    p.resource_mgr.record_failure = MagicMock()
+    """Build an orchestrator with mock gRPC clients via the public API.
 
-    # Use a monotonic counter instead of time.sleep for deterministic tests
-    _simulated_time = [0.0]
+    Uses ``register_node`` (orchestrator.py:256) so ``_node_order`` and the
+    real ``PipelineNode.is_healthy`` flag are set by the orchestrator itself
+    — assigning a bare MagicMock into ``p.nodes[...]`` never populates the
+    private ``_node_order`` run_pipeline walks, which raised "No healthy
+    nodes in pipeline".
+    """
+    p = PipelineOrchestrator(resource_mgr=MagicMock(), total_layers=total_layers)
+    _rm = p._resource_mgr
+    _rm.check_circuit_breaker.return_value = False
+
+    _simulated_time = [0.0]  # deterministic latency counter (no real sleep)
+    layers_per_node = total_layers // num_nodes
 
     for i in range(num_nodes):
-        node = MagicMock()
-        node.node_id = f"n{i}"
-        node.host = "localhost"
-        node.port = 50051 + i
-        node.start_layer = i * (total_layers // num_nodes)
-        node.end_layer = (i + 1) * (total_layers // num_nodes) - 1
-        node.healthy = True
-        node.max_retries = 1
-        node.retry_delay = 0.001
+        node_id = f"n{i}"
+        p.register_node(
+            node_id, "localhost", 50051 + i,
+            start_layer=i * layers_per_node,
+            end_layer=(i + 1) * layers_per_node - 1,
+            total_layers=total_layers,
+        )
+        node = p.nodes[node_id]
+
+        def _forward(hidden_states=None, kv_cache=None, request_id=None,
+                     _lat=latency_ms):
+            _simulated_time[0] += _lat / 1000.0
+            return torch.zeros_like(hidden_states)
+
         node.client = MagicMock()
         node.client.cluster_key = None
+        # run_pipeline calls client.forward(hidden_states=..., ...) and
+        # forwards the return value as the next node's hidden states.
+        node.client.forward = MagicMock(side_effect=_forward)
+        node.gpu_compute_tflops = 312.0
 
-        def make_fwd(lat=latency_ms):
-            def fwd(req):
-                # Simulate latency by advancing counter instead of sleeping
-                _simulated_time[0] += lat / 1000
-                return MagicMock(
-                    success=True,
-                    error_code=0,
-                    error_message="",
-                    processing_time_ms=lat,
-                    is_logits=True,
-                    output=MagicMock(
-                        shape=[1, 1, 32000],
-                        dtype="torch.float32",
-                        raw_data=b"\x00" * 128000,
-                        scale=None,
-                    ),
-                    kv_cache=MagicMock(layers=[]),
-                )
-            return fwd
-
-        node.client.stub.ForwardPass.side_effect = make_fwd()
-        p.nodes[f"n{i}"] = node
-        p.node_order.append(f"n{i}")
-
-    p._rebuild_fallback_map()
-    p._rebuild_stages()
     return p
 
 
@@ -123,13 +113,13 @@ class TestRegressionBenchmarks:
         kv = pipeline.create_node_kv_caches()
 
         # Warmup
-        pipeline._run_sequential_pipeline(input_ids, kv, "warmup")
+        pipeline.run_pipeline(input_ids, kv, "warmup")
 
         # Measure
         times = []
         for i in range(5):
             start = time.monotonic()
-            pipeline._run_sequential_pipeline(input_ids, kv, f"bench-{i}")
+            pipeline.run_pipeline(input_ids, kv, f"bench-{i}")
             times.append((time.monotonic() - start) * 1000)
 
         avg_ms = sum(times) / len(times)
@@ -149,13 +139,13 @@ class TestRegressionBenchmarks:
         kv = pipeline.create_node_kv_caches()
 
         # Warmup
-        pipeline._run_overlap_impl(input_ids, kv, "warmup")
+        pipeline.run_pipeline_overlap(input_ids, kv, "warmup")
 
         # Measure
         times = []
         for i in range(5):
             start = time.monotonic()
-            pipeline._run_overlap_impl(input_ids, kv, f"bench-{i}")
+            pipeline.run_pipeline_overlap(input_ids, kv, f"bench-{i}")
             times.append((time.monotonic() - start) * 1000)
 
         avg_ms = sum(times) / len(times)
@@ -195,7 +185,7 @@ class TestUpdateBaselines:
     """Update baseline metrics (run manually, not in CI)."""
 
     @pytest.mark.skipif(
-        not pytest.importorskip("DISTLLM_UPDATE_BASELINES"),
+        os.environ.get("DISTLLM_UPDATE_BASELINES", "") != "1",
         reason="Set DISTLLM_UPDATE_BASELINES=1 to update baselines",
     )
     def test_update_baselines(self):
@@ -208,7 +198,7 @@ class TestUpdateBaselines:
         times = []
         for i in range(10):
             start = time.monotonic()
-            pipeline._run_sequential_pipeline(input_ids, kv, f"seq-{i}")
+            pipeline.run_pipeline(input_ids, kv, f"seq-{i}")
             times.append((time.monotonic() - start) * 1000)
         seq_baseline = sum(times) / len(times)
 
@@ -216,7 +206,7 @@ class TestUpdateBaselines:
         times = []
         for i in range(10):
             start = time.monotonic()
-            pipeline._run_overlap_impl(input_ids, kv, f"ov-{i}")
+            pipeline.run_pipeline_overlap(input_ids, kv, f"ov-{i}")
             times.append((time.monotonic() - start) * 1000)
         ov_baseline = sum(times) / len(times)
 

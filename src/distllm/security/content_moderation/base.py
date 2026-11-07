@@ -292,6 +292,7 @@ class _ONNXBackend(_TextClassifierBackend):
                             tokenizer_file=tok_path
                         )
                 except Exception:
+                    # CQ-08: intentional fail-open: fallback default assigned on failure.
                     self._tokenizer = None
 
             # Read labels from model metadata, if present.

@@ -330,6 +330,7 @@ class GPUProfiler:
                 tflops = (flops * iterations / elapsed_s) / 1e12
                 return round(tflops, 2)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _bench_memory_bandwidth(self, gpu_id: int, iterations: int = 20) -> float:
@@ -387,6 +388,7 @@ class GPUProfiler:
                 bw_gbps = (bytes_total / elapsed_s) / 1e9
                 return round(bw_gbps, 2)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _device_count(self) -> int:
@@ -401,6 +403,7 @@ class GPUProfiler:
                 return 1
             return 0
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0
 
     def _bench_strided_bandwidth(self, gpu_id: int, iterations: int = 10) -> float:
@@ -450,6 +453,7 @@ class GPUProfiler:
                 bytes_total = (size // stride) * 2 * iterations * 2
                 return round((bytes_total / elapsed_s) / 1e9, 2)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _bench_p2p_bandwidth(self, gpu_id: int, iterations: int = 10) -> float:
@@ -494,6 +498,7 @@ class GPUProfiler:
             bytes_total = size * 2 * iterations * 2
             return round((bytes_total / elapsed_s) / 1e9, 2)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _bench_cpu_flops(self, iterations: int = 5) -> float:
@@ -522,6 +527,7 @@ class GPUProfiler:
             tflops = flops / elapsed_s / 1e12
             return round(tflops, 2)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _get_device_name(self, gpu_id: int) -> str:
@@ -537,6 +543,7 @@ class GPUProfiler:
                 return f"Apple {_platform.machine()}"
             return f"GPU-{gpu_id}"
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return f"GPU-{gpu_id}"
 
     def _get_memory_info(self, gpu_id: int) -> tuple[int, int]:
@@ -558,6 +565,7 @@ class GPUProfiler:
                 return total, total - used
             return 0, 0
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0, 0
 
     def _estimate_tflops_from_name(self, name: str) -> float:

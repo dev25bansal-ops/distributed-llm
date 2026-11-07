@@ -27,6 +27,7 @@ def _get_otel_labels() -> dict[str, str]:
                 "span_id": f"{ctx.span_id:016x}",
             }
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     return {}
 

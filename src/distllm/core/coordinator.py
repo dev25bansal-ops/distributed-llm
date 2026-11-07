@@ -378,6 +378,7 @@ class Coordinator:
                 hb = GPUHeartbeat(node_id=node_id)
                 self._auto_healer.record_heartbeat(hb)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     def _on_node_redistribute(self, node_id: str, plan: Any) -> None:
@@ -831,6 +832,7 @@ class Coordinator:
             temps = self._batch_scheduler.get_active_temperatures()
             return sum(temps) / len(temps) if temps else None
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def _get_paged_backends(self) -> list[Any]:
@@ -1126,6 +1128,7 @@ class Coordinator:
                 from distllm.core.monitor import SystemMonitor
                 monitor = SystemMonitor()
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 monitor = False
             self._system_monitor = monitor
         return monitor or None
@@ -1152,6 +1155,7 @@ class Coordinator:
                 raw = gpu_info.get("utilization_gpu")
                 gpu_util = float(raw) if raw is not None else None
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 gpu_util = None
         if gpu_util is None:
             gpu_util = min(100.0, (active + pending) / max_batch * 100.0)
@@ -1509,6 +1513,7 @@ class Coordinator:
                 try:
                     await self._async_shutdown.wait()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
                 finally:
                     if on_stop:

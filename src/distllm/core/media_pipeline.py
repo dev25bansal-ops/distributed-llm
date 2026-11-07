@@ -70,6 +70,7 @@ class VoiceActivityDetector:
         try:
             return self._vad.is_speech(audio_frame, sample_rate)
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     @property

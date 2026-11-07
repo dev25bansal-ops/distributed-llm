@@ -71,6 +71,8 @@ from distllm.api.routes import (
     eval_router,
     metrics_history_router,
     api_keys_router,
+    files_router,
+    fine_tuning_router,
     # Additional SHOULD_MOUNT routers
     scheduler_router,       # OPS_RUNBOOK docs; tests/api/test_scheduler.py mounts & exercises
 )
@@ -125,150 +127,35 @@ KEY_ROTATION_RATE_LIMIT = 60.0          # Min interval between key rotations (se
 CLUSTER_KEY_ROTATION_GRACE_PERIOD = 300  # Old key grace period after rotation (seconds, 5 min)
 DEFAULT_COORD_PORT = 50050               # Default gRPC port for coordinator node server
 
-def _get_cors_origins() -> list[str]:
-    """Get CORS origins from env var (falls back to settings default).
-
-    Security: Rejects wildcard origins unless DISTLLM_DEV_MODE=1 is set.
-    Validates that all origins are well-formed URLs.
-    Returns safe defaults if configuration is invalid.
-    """
-    DEFAULT_ORIGINS = ["http://localhost:3000", "http://localhost:8080"]
-
-    raw = os.environ.get("DISTLLM_CORS_ORIGINS")
-    origins: list[str] = []
-    if raw:
-        origins = [o.strip() for o in raw.split(",") if o.strip()]
-    else:
-        try:
-            settings_val = DistLLMSettings().coordinator.cors_origins
-            origins = [o.strip() for o in settings_val.split(",") if o.strip()]
-        except Exception:
-            origins = list(DEFAULT_ORIGINS)
-
-    if not origins:
-        origins = list(DEFAULT_ORIGINS)
-
-    valid = []
-    for origin in origins:
-        if origin == "*":
-            if os.environ.get("DISTLLM_CORS_ALLOW_ALL", "").lower() in ("1", "true"):
-                logger.critical(
-                    "SECURITY: Wildcard CORS origins are enabled via DISTLLM_CORS_ALLOW_ALL. "
-                    "This allows ANY origin to make cross-origin requests. "
-                    "Do NOT use in production. Set DISTLLM_CORS_ALLOW_ALL=0 or unset to disable."
-                )
-                valid.append(origin)
-            else:
-                valid.extend(DEFAULT_ORIGINS)
-            continue
-        valid.append(origin)
-    return valid
+# CORS helpers live in server_config (canonical extraction); this
+# module re-exports them for back-compat (tests/regression_high/test_m4_cors.py
+# accesses server._get_cors_origins and server._get_cors_origins_lazy).
+from distllm.api.server_config import (  # noqa: E402
+    _CORS_ORIGINS,
+    _cors_origins_lock,
+    _extract_prom_counter,
+    _extract_prom_gauge,
+    _get_cors_origins,
+    _get_cors_origins_lazy,
+    _load_settings,
+    _build_uvicorn_config,
+)
 
 
-# Lazy-initialized CORS origins (avoids import-time side effects)
-_CORS_ORIGINS: list[str] | None = None
-_cors_origins_lock = threading.Lock()
-
-
-def _get_cors_origins_lazy() -> list[str]:
-    """Get CORS origins, initializing on first call."""
-    global _CORS_ORIGINS
-    if _CORS_ORIGINS is None:
-        with _cors_origins_lock:
-            if _CORS_ORIGINS is None:
-                _CORS_ORIGINS = _get_cors_origins()
-    return _CORS_ORIGINS
+# Lifespan logic lives in server_lifespan (canonical extraction). server.py
+# re-exports it for back-compat. server_lifespan.create_lifespan() returns
+# the async generator that FastAPI expects; we wrap it so `lifespan(app)`
+# keeps its historic call signature (was @asynccontextmanager def lifespan(app)).
+from distllm.api.server_lifespan import _init_observability, _init_plugins, _start_ws_broadcaster  # noqa: E402
+from distllm.api.server_lifespan import create_lifespan as _create_lifespan_impl  # noqa: E402
+from distllm.api.server_coordinator import create_coordinator  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: initialize on startup, clean up on shutdown."""
-    import signal
-    import os
-
-    _init_observability()
-
-    # Initialize plugin system and register built-in plugins
-    plugin_config = {"verify_plugins": getattr(state, "verify_plugins", False)}
-    state.plugin_system = PluginSystem(config=plugin_config)
-    _init_plugins(state.plugin_system)
-
-    # Register SIGHUP handler for configuration hot-reload (Unix only)
-    if hasattr(signal, 'SIGHUP'):
-        def _reload_config(signum, frame):
-            """Reload configuration on SIGHUP without restarting."""
-            try:
-                from distllm.config.settings import DistLLMSettings
-                config_path = os.environ.get("DISTLLM_CONFIG", "config.yaml")
-                if os.path.exists(config_path):
-                    new_settings = DistLLMSettings.from_yaml(config_path=config_path)
-                    # Update coordinator settings if available
-                    coord = getattr(state, 'coordinator', None)
-                    if coord is not None:
-                        logger.info(f"Config reloaded from {config_path}")
-                        # Update rate limits, timeouts, etc. from new settings
-                        # Use lock to prevent race condition with scheduler
-                        if hasattr(coord, '_batch_scheduler') and coord._batch_scheduler is not None:
-                            scheduler = coord._batch_scheduler
-                            if hasattr(new_settings, 'batching'):
-                                with scheduler._lock if hasattr(scheduler, '_lock') else nullcontext():
-                                    scheduler.max_batch_size = new_settings.batching.max_batch_size
-                                    scheduler.max_tokens_per_batch = new_settings.batching.max_tokens_per_batch
-                    else:
-                        logger.info(f"Config reloaded (no coordinator to update)")
-                else:
-                    logger.warning(f"Config file not found: {config_path}")
-            except Exception as e:
-                logger.error(f"Config reload failed: {e}")
-
-        signal.signal(signal.SIGHUP, _reload_config)
-        logger.info("SIGHUP handler registered for config hot-reload")
-
-    # Security warning when TLS is disabled
-    if not os.environ.get("DISTLLM_TLS_ENABLED", "").lower() in ("1", "true"):
-        logger.warning(
-            "TLS is DISABLED. API keys and data are transmitted in plaintext. "
-            "Set DISTLLM_TLS_ENABLED=true for production deployments."
-        )
-
-    # Log API key presence (never log the raw key)
-    from distllm.core.api_key_store import get_api_key_store
-    from distllm.api.middleware import ensure_api_key_resolved, _safe_key_fingerprint
-
-    # O-13: the middleware's lazy key resolution runs here (server startup),
-    # not at module import — library imports stay side-effect free.
-    ensure_api_key_resolved()
-
-    store = get_api_key_store()
-    display_key = store.get_display_key()
-    if display_key:
-        fingerprint = _safe_key_fingerprint(display_key)
-        logger.info("API key configured (fingerprint: {})...", fingerprint)
-        # O-13 companion: the real auto-generated key used to exist NOWHERE
-        # user-visible (the old import-time print emitted a different,
-        # discarded key — a decoy that authenticated nothing). Print the
-        # actual store key once to stdout, only when it was auto-generated,
-        # so a first-time operator can actually connect.
-        auto_key = getattr(store, "_auto_generated_key", None)
-        if auto_key:
-            print(
-                "\nGenerated admin API key (shown once — do NOT paste into "
-                "logs/screenshots/CI):\n"
-                f"{auto_key}\n"
-                "Set API_KEY=<key> (or API_KEYS) in your environment and "
-                "restart to pin it.\n",
-                file=sys.stdout,
-                flush=True,
-            )
-    else:
-        logger.info("API keys loaded from config file. Use 'distllm config keys' to manage.")
-
-    _start_ws_broadcaster()
-    yield
-    if state.plugin_system:
-        state.plugin_system.stop_all()
-    if state.ws_broadcast_task:
-        state.ws_broadcast_task.cancel()
+    async with _create_lifespan_impl()(app) as _cleanup:
+        yield _cleanup
 
 
 # OpenAPI docs enabled by default (set DISTLLM_DISABLE_DOCS=1 to disable)
@@ -375,8 +262,9 @@ def custom_openapi() -> dict:
 app.openapi = custom_openapi  # type: ignore[method-assign]
 
 # Security headers middleware
-# Version identifiers mirror the canonical APIVersion registry in
-# api_versioning.py (date-based YYYY-MM strings).
+# Version identifiers mirror the canonical APIVersion registry
+# (date-based YYYY-MM strings; api_versioning.py was deleted in the
+# 2026-11-06 hygiene pass — this inline dict is the live source).
 _API_VERSIONS: dict[str, str] = {
     "v1": "2026-01",
     "v2": "2026-07",
@@ -436,14 +324,16 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 
-# Structured error responses
-class ErrorResponse(BaseModel):
-    """Standardized error response format."""
-    error: str
-    message: str
-    type: str = "api_error"
-    code: str | None = None
-    request_id: str | None = None
+# Structured error responses live in server_errors (canonical extraction);
+# server.py re-exports them for back-compat.
+from distllm.api.server_errors import (  # noqa: E402
+    ErrorResponse,
+    _error_response,
+    general_exception_handler,
+    http_exception_handler,
+    register_exception_handlers,
+    validation_exception_handler,
+)
 
 
 # ── API Response Models ────────────────────────────────────────────
@@ -504,81 +394,13 @@ class RotateClusterKeyResponse(BaseModel):
     detail: str = ""
 
 
-def _error_response(
-    status_code: int,
-    error: str,
-    message: str,
-    type: str = "api_error",
-    request: Request | None = None,
-    exc: Exception | None = None,
-) -> JSONResponse:
-    """Build a standardized error response."""
-    return error_response_from_request(status_code, error, message, type, request, exc=exc)
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """Convert Pydantic validation errors to OpenAI-compatible 422."""
-    messages = []
-    for err in exc.errors():
-        loc = " -> ".join(str(p) for p in err.get("loc", []))
-        messages.append(f"{loc}: {err.get('msg', '')}" if loc else err.get("msg", ""))
-    return _error_response(
-        status_code=422,
-        error="Invalid Request",
-        message="; ".join(messages),
-        type="invalid_request_error",
-        request=request,
-    )
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Convert HTTPException to structured error response."""
-    return _error_response(
-        status_code=exc.status_code,
-        error=f"HTTP {exc.status_code}",
-        message=exc.detail,
-        type="http_error",
-        request=request,
-    )
-
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Catch-all for unhandled exceptions with structured response."""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return _error_response(
-        status_code=500,
-        error="Internal Server Error",
-        message="An unexpected error occurred. Please try again later.",
-        type="internal_error",
-        request=request,
-        exc=exc,
-    )
+register_exception_handlers(app)
 
 
 # ── Single source of truth for application state ─────────────────────
-# Routes use `g` from api_state.py. Server code uses `state` below.
+# Routes use `g` from api_state.py. Server code uses `state` from server_state.
 # Both MUST reference the same AppState instance to stay in sync.
-from distllm.api.api_state import _state as _shared_state
-
-
-class _ServerState:
-    """Server-side state proxy that delegates to the shared AppState.
-
-    This ensures ``state.coordinator`` and ``g.coordinator`` always
-    return the same object — no dual bookkeeping.
-    """
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(_shared_state, name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        setattr(_shared_state, name, value)
-
-
-state = _ServerState()
+from distllm.api.server_state import _ServerState, state  # noqa: E402
 
 # Created at module load so middleware mounted below (ObservabilityMiddleware)
 # can hold a direct reference; _init_observability reuses it at startup.
@@ -677,27 +499,7 @@ class PluginHookMiddleware(BaseHTTPMiddleware):
 
 
 
-def _init_observability() -> None:
-    """Initialize tracing, logging, metrics exporter."""
-    setup_logging(level="INFO", json_format=True)
-
-    from distllm.security.log_redaction import install_global_redaction
-    install_global_redaction()  # redact secrets/PII in loguru + stdlib output
-
-    # Tracing sampling: default to 10% (head-based) in production.
-    # Set DISTLLM_TRACE_SAMPLE_RATE=1.0 for full traces during debugging.
-    import os as _os
-    _trace_sample_rate = float(_os.environ.get("DISTLLM_TRACE_SAMPLE_RATE", "0.1"))
-    setup_tracing(
-        service_name="distllm-api",
-        sampling_strategy="head",
-        sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
-    )
-
-    # Reuse the exporter created at module load so the middleware mounted above
-    # keeps recording into the same registry.
-    if getattr(state, "metrics_exporter", None) is None:
-        state.metrics_exporter = DistLLMPrometheusExporter()
+# (Observability + plugin init live in server_lifespan; re-exported at top)
 
 
 # ── Middleware Stack ─────────────────────────────────────────────────────────
@@ -765,10 +567,15 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
             timeout = per_request
 
         try:
-            async with asyncio.timeout(timeout):
+            # asyncio.timeout() is Python 3.11+; the project supports 3.10.
+            # anyio.fail_after is the supported 3.10-compatible equivalent
+            # (and converts to asyncio.TimeoutError on the asyncio backend).
+            import anyio
+
+            with anyio.fail_after(timeout):
                 response = await call_next(request)
                 return response
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return _error_response(
                 status_code=504,
                 error="Gateway Timeout",
@@ -842,6 +649,19 @@ class DocsAuthMiddleware(BaseHTTPMiddleware):
 # correct and was later reverted; the middleware-order assertion test
 # re-locks it.)
 app.add_middleware(DocsAuthMiddleware)
+
+# SemanticCacheMiddleware — embedding-based similarity cache for non-streaming
+# POST /v1/chat/completions (PERF-05 indexed search: FAISS IndexIDMap when
+# faiss-cpu is installed, brute-force over pre-stored vectors otherwise).
+# Opt-in via DISTLLM_SEMANTIC_CACHE=1 (default off); per-request opt-in is
+# still required via the X-Semantic-Cache header.  Registered BEFORE
+# AuthMiddleware so it runs AFTER auth (add_middleware prepends) — an
+# unauthenticated replay must never receive a cached response, mirroring the
+# DedupMiddleware ordering rationale above.
+if os.environ.get("DISTLLM_SEMANTIC_CACHE", "0") == "1":
+    from distllm.api.semantic_cache import SemanticCacheMiddleware
+    app.add_middleware(SemanticCacheMiddleware)
+    logger.info("SemanticCacheMiddleware registered (DISTLLM_SEMANTIC_CACHE=1)")
 
 
 # AuthMiddleware registered AFTER PluginHookMiddleware so it runs first
@@ -1062,14 +882,8 @@ app.add_middleware(CircuitBreakerMiddleware)
 # See the "Middleware Stack" guide above for a full comparison between
 # Starlette middleware and the plugin system.
 
-def _init_plugins(ps: PluginSystem) -> None:
-    """Register + load + init + start built-in plugins."""
-    for cls in (RateLimitPlugin, AuditLogPlugin, MetricsPlugin, HealthPlugin, AuthPlugin):
-        ps.register(cls)
-    ps.load_all()
-    ps.init_all()
-    ps.start_all()
-    logger.info(f"Plugin system ready: {len(ps.list_plugins())} plugins active")
+# (plugin init lives in server_lifespan; re-exported at module top)
+
 
 
 # Include route routers
@@ -1107,12 +921,12 @@ app.include_router(plugins_router)       # tests/api/test_plugins.py; admin-gate
 app.include_router(fine_tuning_router)   # SDK client.py /v1/fine_tuning/jobs*; coordinator-gated
 app.include_router(tokenize_router)      # docs API surface: POST /v1/tokenize
 app.include_router(webhooks_router)      # tests/security/test_webhook_ssrf.py; admin/user-admin gated
+# /v1/files — mounted after F-066 filename sanitization landed in the router
+# (basename-only writes inside {uploads}/{file_id}/) plus SEC-API-01 owner checks.
+app.include_router(files_router)
 
 # INTENTIONAL_UNMOUNT — do NOT mount the routers below without first fixing
 # the stated blocker:
-#   * routes/files.py      — F-066: upload_file joins the raw client filename
-#                            (upload_dir / file.filename); arbitrary-file-write
-#                            risk. Sanitize the filename before mounting.
 #   * routes/debug.py      — dev-only replay surface; self-gated behind
 #                            DISTLLM_ENABLE_DEBUG_ROUTES=1 + DISTLLM_ADMIN_KEY.
 #   * routes/moderation.py — moderation runs inline via
@@ -1308,6 +1122,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                 if not requested or "coordinator" in requested:
                     snapshot["coordinator"] = coord_metrics
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: one dead metric source must not kill the whole snapshot.
                 pass
 
             # Scheduler metrics
@@ -1317,6 +1132,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                     if not requested or "scheduler" in requested:
                         snapshot["scheduler"] = sched_stats
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: one dead metric source must not kill the whole snapshot.
                 pass
 
             # Prometheus metrics snapshot (if available)
@@ -1330,6 +1146,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                         "tokens_total": _extract_prom_counter(prom_data, "distllm_tokens_total"),
                     }
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: Prometheus missing/unreadable -> omit the section.
                 pass
 
             # Collector metrics
@@ -1349,6 +1166,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
                     snapshot["gpu"] = sys_metrics.get("gpu", {})
                     snapshot["cpu"] = sys_metrics.get("cpu", {})
             except Exception:
+                # CQ-08: best-effort dashboard snapshot: one dead metric source must not kill the whole snapshot.
                 pass
 
             await websocket.send_json(snapshot)
@@ -1664,6 +1482,7 @@ async def ha_state_snapshot(request: Request) -> dict:
         coord.apply_state_snapshot(validated)
         return {"status": "ok", "applied_nodes": len(nodes)}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as {"status": "error", "detail": str(e)}; nothing is swallowed.
         return {"status": "error", "detail": str(e)}
 
 
@@ -1723,6 +1542,7 @@ async def ha_heartbeat(request: Request) -> dict:
         peer = election.handle_heartbeat_request(sender_id, term, peer_state)
         return {"status": "ok", "peer": peer}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as {"status": "error", "detail": str(e)}; nothing is swallowed.
         return {"status": "error", "detail": str(e)}
 
 
@@ -1961,182 +1781,18 @@ async def api_changelog(request: Request) -> dict:
     return _API_CHANGELOG_DATA
 
 
-def _extract_prom_gauge(data: bytes, metric_name: str) -> float | None:
-    """Extract a single gauge value from Prometheus text format."""
-    try:
-        for line in data.decode("utf-8").splitlines():
-            if line.startswith(metric_name) and " " in line:
-                parts = line.rsplit(" ", 1)
-                return float(parts[-1]) if len(parts) == 2 else None
-    except Exception:
-        return None
-    return None
-
-
-def _extract_prom_counter(data: bytes, metric_name: str) -> float | None:
-    """Extract a counter value from Prometheus text format."""
-    try:
-        for line in data.decode("utf-8").splitlines():
-            if line.startswith(metric_name) and not line.startswith("#"):
-                parts = line.rsplit(" ", 1)
-                if len(parts) == 2:
-                    return float(parts[-1])
-    except Exception:
-        return None
-    return None
-
-
-def _start_ws_broadcaster() -> None:
-    """Start the WebSocket metrics broadcaster background task."""
-    if state.coordinator is not None:
-        state.ws_broadcast_task = asyncio.create_task(metrics_broadcaster(state.coordinator))
+# (Prometheus helpers, ws broadcaster, coordinator factory and settings
+# loader live in their canonical modules; re-exported at module top:
+#   server_config: _extract_prom_gauge/_extract_prom_counter/_load_settings
+#   server_lifespan: _start_ws_broadcaster
+#   server_coordinator: create_coordinator, _CoordinatorNode)
+# — body deleted below —
 
 
 
 
 
-def create_coordinator(
-    model_name: str,
-    dtype: str = "float16",
-    local: bool = False,
-    max_batch_size: int = 1,
-    max_tokens_per_batch: int = 4096,
-    settings: DistLLMSettings | None = None,
-) -> Coordinator:
-    """Create and configure the coordinator."""
-    if settings:
-        max_batch_size = settings.batching.max_batch_size
-        max_tokens_per_batch = settings.batching.max_tokens_per_batch
-
-    try:
-        from distllm.dist.config import WideAreaConfig
-    except ImportError:
-        WideAreaConfig = None
-
-    wide_area_config = None
-    if settings and settings.wide_area.enabled:
-        wa = settings.wide_area
-        wide_area_config = WideAreaConfig(
-            enabled=wa.enabled,
-            p2p_forwarding=wa.p2p_forwarding,
-            tokens_before_forward=wa.tokens_before_forward,
-            wan_timeout_seconds=wa.wan_timeout_seconds,
-            max_retries=wa.max_retries,
-            backoff_base_seconds=wa.backoff_base_seconds,
-        )
-
-    coord = Coordinator(
-        model_name=model_name,
-        dtype=dtype,
-        max_batch_size=max_batch_size,
-        max_tokens_per_batch=max_tokens_per_batch,
-        metrics_exporter=state.metrics_exporter,
-        wide_area_config=wide_area_config,
-        plugin_system=getattr(state, "plugin_system", None),
-    )
-
-    if local:
-        coord.load_local_model()
-        logger.info(f"Coordinator loaded model locally: {model_name}")
-    else:
-        logger.info(f"Coordinator ready for distributed mode: {model_name}")
-
-    # Start gRPC server for worker connections
-    # Create a minimal node-like object for the gRPC server
-    coord_port = DEFAULT_COORD_PORT  # Default coordinator gRPC port
-    try:
-        from distllm.dist.node_service import NodeServer
-
-        # Determine TLS config from settings
-        coord_tls = False
-        coord_cert_file: str | None = None
-        coord_key_file: str | None = None
-        coord_ca_cert: str | None = None
-        if settings and settings.tls.enabled:
-            coord_tls = True
-            coord_cert_file = settings.tls.cert_file
-            coord_key_file = settings.tls.key_file
-            coord_ca_cert = settings.tls.ca_cert_file
-
-        # Create a wrapper that provides the interface NodeServer expects
-        class _CoordinatorNode:
-            def __init__(self, coordinator: Coordinator) -> None:
-                self._coord = coordinator
-                self.node_id = "coordinator"
-                self.host = "0.0.0.0"
-                self.port = coord_port
-                self.start_layer = 0
-                self.end_layer = 0
-                self.total_layers = 0
-                self.healthy = True
-                self.partitioner = None
-
-            def forward_fn(self, **kwargs: Any) -> Any:
-                return self._coord.generate(**kwargs)
-
-            def health_check(self) -> bool:
-                return True
-
-        coord._node_wrapper = _CoordinatorNode(coord)
-        coord._node_server = NodeServer(
-            coord._node_wrapper,
-            port=coord_port,
-            max_workers=4,
-            cluster_key=getattr(coord.config, "cluster_key", None),
-        )
-        coord._node_server.start(
-            use_tls=coord_tls,
-            cert_file=coord_cert_file,
-            key_file=coord_key_file,
-            ca_cert=coord_ca_cert,
-        )
-        if coord_tls:
-            logger.info(f"Coordinator gRPC server started on port {coord_port} with TLS for worker connections")
-        else:
-            logger.info(f"Coordinator gRPC server started on port {coord_port} for worker connections (no TLS)")
-    except Exception as e:
-        logger.warning(f"Could not start gRPC server on port {coord_port}: {e}")
-        logger.warning("Workers will not be able to connect. Run 'system coordinator' separately.")
-
-    monitor_inst = SystemMonitor()
-    state.coordinator = coord
-    state.monitor = monitor_inst
-
-    return coord
-
-
-def _load_settings(args: Any) -> DistLLMSettings:
-    """Load settings via :class:`ConfigResolver` with full precedence.
-
-    Precedence (lowest to highest):
-    1. Pydantic defaults
-    2. YAML config file
-    3. Environment variables (``DISTLLM__*``) — handled by pydantic-settings
-    4. CLI arguments (highest)
-    """
-    # Resolve config path
-    config_path = args.config
-    if config_path is None:
-        # M-08: Use public resolve_config_path instead of private _resolve_config_path
-        config_path = ConfigResolver.resolve_config_path("api", args)
-
-    # Build CLI overrides
-    cli_overrides = {}
-    if args.model:
-        cli_overrides.setdefault("model", {})["name"] = args.model
-    if args.dtype:
-        cli_overrides.setdefault("model", {})["dtype"] = args.dtype
-    if args.host:
-        cli_overrides.setdefault("coordinator", {})["host"] = args.host
-    if args.port:
-        cli_overrides.setdefault("coordinator", {})["api_port"] = args.port
-    if args.quantization and args.quantization != "none":
-        cli_overrides.setdefault("quantization", {})["method"] = args.quantization
-
-    return DistLLMSettings.from_yaml(
-        config_path=config_path,
-        cli_overrides=cli_overrides or None,
-    )
+# (Coordinator factory + settings loader live in server_coordinator/server_config; re-exported at module top)
 
 
 def main() -> None:
@@ -2155,6 +1811,14 @@ def main() -> None:
         help="Quantization method for model loading")
     parser.add_argument("--nodes", type=str, nargs="+", help="host:port:start:end per node")
     parser.add_argument("--total-layers", type=int, help="Total layers in model")
+    parser.add_argument("--workers", type=int, default=None,
+        help="Uvicorn worker processes (env DISTLLM_UVICORN_WORKERS, default 1)")
+    parser.add_argument("--limit-concurrency", type=int, default=None,
+        help="Max concurrent uvicorn requests (env DISTLLM_UVICORN_LIMIT_CONCURRENCY, default 10000)")
+    parser.add_argument("--backlog", type=int, default=None,
+        help="Uvicorn socket backlog (env DISTLLM_UVICORN_BACKLOG, default 2048)")
+    parser.add_argument("--timeout-keep-alive", type=int, default=None,
+        help="Uvicorn keep-alive timeout seconds (env DISTLLM_UVICORN_TIMEOUT_KEEP_ALIVE, default 30)")
 
     args = parser.parse_args()
 
@@ -2232,11 +1896,14 @@ def main() -> None:
     _app_obj = app
     _app_obj.router.lifespan_context = _lifespan
 
-    config = uvicorn.Config(
+    config = _build_uvicorn_config(
         app,
         host=settings.coordinator.host,
         port=settings.coordinator.api_port,
-        log_level="info",
+        workers=args.workers,
+        limit_concurrency=args.limit_concurrency,
+        backlog=args.backlog,
+        timeout_keep_alive=args.timeout_keep_alive,
     )
     server = uvicorn.Server(config)
     server.run()

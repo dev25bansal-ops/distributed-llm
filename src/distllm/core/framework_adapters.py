@@ -352,7 +352,6 @@ FRAMEWORK_COMPAT = {
         "class": "OpenAIChat",
         "adapter": get_agno_client,
         "features": ["agents", "tools", "rag", "multi-modal"],
-        "example": "examples/agno_example.py",
     },
 }
 
@@ -365,7 +364,7 @@ def list_frameworks() -> list[dict]:
             "package": info["package"],
             "class": info["class"],
             "features": info["features"],
-            "example": info["example"],
+            "example": info.get("example"),
         }
         for name, info in FRAMEWORK_COMPAT.items()
     ]

@@ -183,6 +183,7 @@ def _check_gpu_benchmarks() -> list[dict[str, Any]]:
         torch.cuda.empty_cache()
 
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         results.append({"check": "GPU benchmark", "status": "error", "value": str(e)})
 
     return results
@@ -349,6 +350,7 @@ def _check_config() -> list[dict[str, Any]]:
                     if data.get("rate_limiting", {}).get("enabled") is False:
                         results.append({"check": "Rate limiting", "status": "warn", "value": "disabled"})
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 results.append({"check": f"config {path}", "status": "error", "value": str(e)})
         else:
             results.append({"check": f"config {path}", "status": "info", "value": "not found (OK for defaults)"})

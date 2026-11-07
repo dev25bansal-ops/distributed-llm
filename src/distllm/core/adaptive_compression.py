@@ -49,6 +49,7 @@ class IdleDetector:
         try:
             util = self._utilization_fn()
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self._idle_since = None
             return False
         below = util < (self._config.utilization_threshold_pct / 100.0)
@@ -288,6 +289,7 @@ class AdaptiveCompressionManager:
         try:
             return self._utilization_fn()
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def start(self) -> None:
@@ -344,6 +346,7 @@ class AdaptiveCompressionManager:
         try:
             loaded = self._hot_swap_mgr.list_loaded_models()
         except Exception:
+            # CQ-08: intentional fail-open: empty-container fallback assigned on failure.
             loaded = []
 
         if not loaded:

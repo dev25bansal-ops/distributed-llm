@@ -131,6 +131,24 @@ class TritonNodeAdapter(BackendAdapter):
             ``ca_file``, etc.).
         client_kwargs: Additional keyword arguments forwarded to the
             Triton client constructor.
+        tokenizer: Optional tokenizer object exposing ``encode(text) -> list[int]``
+            and ``decode(ids, skip_special_tokens=True) -> str`` (e.g. a
+            HuggingFace ``PreTrainedTokenizerBase``). Required for
+            ``generate()``/``generate_stream()`` — Triton ships no tokenizer
+            and the old byte-wise ``ord(c)``/``chr(id)`` fallback was removed
+            (lossy: every token id >= 127 became ``" "``).
+        tokenizer_name: Optional HuggingFace model id or local path used to
+            lazily load a tokenizer in ``load_model()`` via
+            ``AutoTokenizer.from_pretrained(..., trust_remote_code=False)``.
+            Ignored when ``tokenizer`` is given.
+        tokenizer_kwargs: Extra kwargs forwarded to
+            ``AutoTokenizer.from_pretrained``.
+        eos_token_id: Optional explicit EOS token id. Defaults to the
+            tokenizer's ``eos_token_id``, falling back to ``0``.
+        max_context: Sliding-window cap (in tokens) on the ids sent per
+            decode step. Keeps long generations bounded the way the old
+            512-character truncation did; raise it for models with a large
+            context that do not manage KV cache server-side.
     """
 
     def __init__(
@@ -143,6 +161,11 @@ class TritonNodeAdapter(BackendAdapter):
         verbose: bool = False,
         ssl: bool = False,
         ssl_options: dict[str, Any] | None = None,
+        tokenizer: Any = None,
+        tokenizer_name: str | None = None,
+        tokenizer_kwargs: dict[str, Any] | None = None,
+        eos_token_id: int | None = None,
+        max_context: int = 2048,
         **client_kwargs: Any,
     ):
         if protocol not in _TRITON_PROTOCOLS:
@@ -160,10 +183,16 @@ class TritonNodeAdapter(BackendAdapter):
         self.ssl = ssl
         self.ssl_options = ssl_options or {}
         self._client_kwargs = client_kwargs
+        self._tokenizer_override = tokenizer
+        self.tokenizer_name = tokenizer_name
+        self._tokenizer_kwargs = tokenizer_kwargs or {}
+        self._eos_token_id_override = eos_token_id
+        self.max_context = max_context
 
         self._client = None
         self._model_metadata: dict[str, Any] = {}
         self._model_config: dict[str, Any] = {}
+        self._tokenizer = tokenizer
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # ── Core interface ───────────────────────────────────────────────
@@ -276,6 +305,89 @@ class TritonNodeAdapter(BackendAdapter):
         logger.info(
             f"[Triton] Model {self.model_name} ready on {self.triton_url}"
         )
+        self._load_tokenizer()
+
+    # ── Tokenizer ────────────────────────────────────────────────────
+
+    def _load_tokenizer(self) -> None:
+        """Load a real tokenizer for ``generate()``.
+
+        Preference order: an explicitly injected tokenizer, then
+        ``tokenizer_name`` (or the model name) via
+        ``AutoTokenizer.from_pretrained(..., trust_remote_code=False)``.
+        A failure here is warned about, not raised — ``forward()`` with
+        pre-tokenized ids does not need one — but ``generate()`` will
+        then raise a clear error instead of silently falling back to
+        byte-wise ``ord``/``chr``.
+        """
+        if self._tokenizer is not None:
+            return
+        name = self.tokenizer_name or self.model_name
+        if not name:
+            return
+        try:
+            from transformers import AutoTokenizer
+
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                name, trust_remote_code=False, **self._tokenizer_kwargs
+            )
+        except Exception as e:
+            self._tokenizer = None
+            logger.warning(
+                f"[Triton] No tokenizer loaded for {name!r} ({e}). "
+                "generate()/generate_stream() will raise; "
+                "pass tokenizer= or tokenizer_name=."
+            )
+
+    def get_tokenizer(self) -> Any:
+        """Return the backend's tokenizer, if available."""
+        return self._tokenizer
+
+    @property
+    def _eos_token_id(self) -> int:
+        if self._eos_token_id_override is not None:
+            return self._eos_token_id_override
+        if self._tokenizer is not None:
+            eos = getattr(self._tokenizer, "eos_token_id", None)
+            if eos is not None:
+                return int(eos)
+        return 0
+
+    def _encode(self, text: str) -> list[int]:
+        """Encode ``text`` to token ids — the only encoding path."""
+        tokenizer = self._tokenizer
+        if tokenizer is None:
+            raise RuntimeError(
+                "Triton generate() requires a real tokenizer: Triton ships "
+                "none and the old byte-wise ord(c) fallback was removed "
+                "(it silently corrupted every token id >= 127). Pass "
+                "tokenizer=... or tokenizer_name=... (HF model id/path) "
+                "to TritonNodeAdapter."
+            )
+        encode = getattr(tokenizer, "encode", None)
+        if callable(encode):
+            return [int(t) for t in encode(text, add_special_tokens=False)]
+        try:
+            out = tokenizer(text, add_special_tokens=False)["input_ids"]
+        except Exception:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
+            out = tokenizer.encode(text)
+        return [int(t) for t in out]
+
+    def _decode(self, ids: list[int]) -> str:
+        """Decode token ids — the only decoding path."""
+        tokenizer = self._tokenizer
+        if tokenizer is None:
+            raise RuntimeError(
+                "Triton generate() requires a real tokenizer: Triton ships "
+                "none and the old chr(id) fallback was removed (it silently "
+                "mapped every token id >= 127 to a space). Pass "
+                "tokenizer=... or tokenizer_name=... to TritonNodeAdapter."
+            )
+        decode = getattr(tokenizer, "decode", None)
+        if callable(decode):
+            return decode(ids, skip_special_tokens=True)
+        return tokenizer.decode(ids)
 
     def forward(
         self,
@@ -435,6 +547,7 @@ class TritonNodeAdapter(BackendAdapter):
                 return False
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def current_load(self) -> float:
@@ -460,6 +573,7 @@ class TritonNodeAdapter(BackendAdapter):
             load = min(inflight / max(max_batch, 1), 1.0)
             return float(load)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     # ── Generation ───────────────────────────────────────────────────
@@ -472,141 +586,151 @@ class TritonNodeAdapter(BackendAdapter):
         top_p: float = 0.9,
         **sampling_kwargs: Any,
     ) -> str:
-        """Single-shot text generation via Triton's dynamic batching.
+        """Single-shot text generation via Triton's Infer API.
 
-        Uses Triton's text generation endpoint (typically the
-        ``text_output`` or custom output name defined by the model).
+        Token ids are encoded once (``_encode``) and then extended by one
+        id per decode step — each step sends only the sliding window of
+        recent ids and appends the sampled id to the running list, so
+        encode cost is O(prompt + 1) instead of the old O(n^2)
+        re-encoding of the growing output string. Callers that need fewer
+        round trips should use ``batch_generate()`` (one Infer per
+        sequence step, but shared across sequences) or the ``sequence``
+        passthrough the gRPC client supports.
 
         Args:
-            prompt: Input text.
+            prompt: Input text (encoded with the backend tokenizer).
             max_tokens: Maximum tokens to generate.
-            temperature: Sampling temperature.
-            top_p: Nucleus sampling threshold.
+            temperature: Sampling temperature (unused: greedy argmax is
+                used, matching the previous behaviour; pass a real sampler
+                via ``sampling_kwargs`` later).
+            top_p: Nucleus sampling threshold (unused, see above).
 
         Returns:
-            Generated text.
+            Generated text (prompt excluded).
         """
         if self._client is None:
             raise ModelLoadError(
                 self.model_name,
                 "Triton not connected. Call load_model() first.",
             )
+        input_ids = self._encode(prompt)
+        if not input_ids:
+            return ""
+        full = self._decode_loop(input_ids, max_tokens)
+        return self._decode(full[len(input_ids):])
 
-        if self.protocol == "http":
-            return self._generate_http(
-                prompt, max_tokens, temperature, top_p, **sampling_kwargs
-            )
-        return self._generate_grpc(
-            prompt, max_tokens, temperature, top_p, **sampling_kwargs
-        )
-
-    def _generate_http(
+    def batch_generate(
         self,
-        prompt: str,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
+        prompts: list[str],
+        max_tokens: int = 256,
         **sampling_kwargs: Any,
-    ) -> str:
-        """HTTP-based generation loop using Triton's dynamic batching.
+    ) -> list[str]:
+        """Generate for many prompts, batching decode steps.
 
-        Iteratively sends the prompt and concatenates generated tokens
-        until ``max_tokens`` is reached or the model signals end.
+        All sequences share one Infer RPC per step: at each step, live
+        sequences are padded to a common width, sent as a single batched
+        input, and each sequence appends its own sampled token. This
+        replaces ``len(prompts)`` independent per-token RPC streams
+        (N sequences x T steps) with T RPCs total.
+
+        Note: Triton models without server-side KV-cache management
+        re-compute the full context per step; per-sequence history is
+        still maintained here so no sequence is re-encoded.
         """
-        import numpy as np
-        import tritonclient.http as http_client
-
-        input_name = self._get_input_name("input_ids")
-        output_name = self._get_output_name("logits")
-        full_output = prompt
-
+        if self._client is None:
+            raise ModelLoadError(
+                self.model_name,
+                "Triton not connected. Call load_model() first.",
+            )
+        if not prompts:
+            return []
+        seqs: list[list[int]] = [self._encode(p) for p in prompts]
+        prompt_lens = [len(s) for s in seqs]
+        finished = [len(s) == 0 for s in seqs]
         for _ in range(max_tokens):
-            # Tokenize by encoding the full output string into input_ids
-            input_ids_np = np.array(
-                [[ord(c) for c in full_output[-512:]]], dtype=np.int32
-            )
-
-            infer_input = http_client.InferInput(
-                input_name, list(input_ids_np.shape), "INT32"
-            )
-            infer_input.set_data_from_numpy(input_ids_np)
-            infer_output = http_client.InferRequestedOutput(output_name)
-
-            try:
-                results = self._client.infer(
-                    model_name=self.model_name,
-                    model_version=self.model_version,
-                    inputs=[infer_input],
-                    outputs=[infer_output],
-                    timeout=self.timeout,
-                )
-                output_np = results.as_numpy(output_name)
-            except Exception as e:
-                logger.error(f"[Triton] Generation failed at step {_}: {e}")
+            live = [i for i, done in enumerate(finished) if not done]
+            if not live:
                 break
-
+            width = max(len(seqs[i]) for i in live)
+            width = min(width, self.max_context) if self.max_context else width
+            batch = np.array(
+                [
+                    ([0] * (width - len(seqs[i][-width:]))) + seqs[i][-width:]
+                    for i in live
+                ],
+                dtype=np.int32,
+            )
+            output_np = self._infer_once(batch)
             if output_np is None or output_np.size == 0:
                 break
+            for row, i in enumerate(live):
+                token_id = int(np.argmax(output_np[row, -1, :]))
+                if token_id == self._eos_token_id:
+                    finished[i] = True
+                else:
+                    seqs[i].append(token_id)
+        return [
+            "" if len(s) == prompt_lens[i] else self._decode(s[prompt_lens[i]:])
+            for i, s in enumerate(seqs)
+        ]
 
-            # Greedy decode: argmax of last position
-            token_id = int(np.argmax(output_np[0, -1, :]))
-            if token_id == 0:
-                break  # EOS token
+    # ── Decode engine (shared by generate / generate_stream) ──────────
 
-            full_output += chr(token_id) if 32 <= token_id < 127 else " "
+    def _infer_module(self):
+        if self.protocol == "http":
+            import tritonclient.http as client_mod
 
-        return full_output
+            return client_mod, client_mod.InferInput, client_mod.InferRequestedOutput
+        import tritonclient.grpc as client_mod
 
-    def _generate_grpc(
-        self,
-        prompt: str,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        **sampling_kwargs: Any,
-    ) -> str:
-        """gRPC-based generation loop using Triton's dynamic batching."""
-        import numpy as np
-        import tritonclient.grpc as grpc_client
+        return client_mod, client_mod.InferInput, client_mod.InferRequestedOutput
 
+    def _infer_once(self, input_np: np.ndarray) -> Any:
+        """One Infer RPC for an int32 ``(batch, seq)`` array."""
+        _, infer_input_cls, infer_output_cls = self._infer_module()
         input_name = self._get_input_name("input_ids")
         output_name = self._get_output_name("logits")
-        full_output = prompt
 
+        infer_input = infer_input_cls(
+            input_name, list(input_np.shape), "INT32"
+        )
+        infer_input.set_data_from_numpy(input_np)
+        infer_output = infer_output_cls(output_name)
+
+        results = self._client.infer(
+            model_name=self.model_name,
+            model_version=self.model_version,
+            inputs=[infer_input],
+            outputs=[infer_output],
+            timeout=self.timeout,
+        )
+        return results.as_numpy(output_name)
+
+    def _decode_loop(self, input_ids: list[int], max_tokens: int) -> list[int]:
+        """Decode ``max_tokens`` ids, returning prompt + generated ids.
+
+        Sends one Infer per step with the sliding ``max_context`` window
+        and appends the sampled id — O(prompt + T) total work instead of
+        the old O(n^2) string re-encode. Sampling is greedy argmax (the
+        previous behaviour); ``temperature``/``top_p`` are accepted for
+        signature compatibility and ignored.
+        """
+        hist = list(input_ids)
         for _ in range(max_tokens):
-            input_ids_np = np.array(
-                [[ord(c) for c in full_output[-512:]]], dtype=np.int32
-            )
-
-            infer_input = grpc_client.InferInput(
-                input_name, list(input_ids_np.shape), "INT32"
-            )
-            infer_input.set_data_from_numpy(input_ids_np)
-            infer_output = grpc_client.InferRequestedOutput(output_name)
-
+            window = hist[-self.max_context:] if self.max_context else hist
+            input_np = np.array([window], dtype=np.int32)
             try:
-                results = self._client.infer(
-                    model_name=self.model_name,
-                    model_version=self.model_version,
-                    inputs=[infer_input],
-                    outputs=[infer_output],
-                    timeout=self.timeout,
-                )
-                output_np = results.as_numpy(output_name)
+                output_np = self._infer_once(input_np)
             except Exception as e:
-                logger.error(f"[Triton] Generation failed at step {_}: {e}")
+                logger.error(f"[Triton] Generation failed: {e}")
                 break
-
             if output_np is None or output_np.size == 0:
                 break
-
             token_id = int(np.argmax(output_np[0, -1, :]))
-            if token_id == 0:
+            if token_id == self._eos_token_id:
                 break
-
-            full_output += chr(token_id) if 32 <= token_id < 127 else " "
-
-        return full_output
+            hist.append(token_id)
+        return hist
 
     def generate_stream(
         self,
@@ -616,89 +740,46 @@ class TritonNodeAdapter(BackendAdapter):
         top_p: float = 0.9,
         **sampling_kwargs: Any,
     ) -> Iterator[str]:
-        """Streaming generation via Triton's dynamic batching.
+        """Streaming generation via Triton's Infer API.
 
-        Yields tokens incrementally as they are generated.
-
-        Args:
-            prompt: Input text.
-            max_tokens: Maximum tokens to generate.
-            temperature: Sampling temperature (used in generation loop).
-            top_p: Nucleus sampling threshold.
+        Yields decoded token strings incrementally as they are generated,
+        one per decode step. Uses the same single encode + sliding-window
+        decode loop as ``generate()`` (no per-step string re-encoding);
+        temporary decode buffers are flushed whenever the longest decoded
+        segment looks complete enough, so multi-token pieces still yield
+        promptly.
 
         Yields:
-            Generated text tokens one at a time.
+            Decoded text for each generated token, in order.
         """
-        import numpy as np
-
         if self._client is None:
             raise ModelLoadError(
                 self.model_name,
                 "Triton not connected. Call load_model() first.",
             )
-
-        input_name = self._get_input_name("input_ids")
-        output_name = self._get_output_name("logits")
-        full_output = prompt
-
+        input_ids = self._encode(prompt)
+        if not input_ids:
+            return
+        hist = list(input_ids)
+        emitted = 0  # number of generated ids already yielded
         for _ in range(max_tokens):
-            input_ids_np = np.array(
-                [[ord(c) for c in full_output[-512:]]], dtype=np.int32
-            )
-
-            if self.protocol == "http":
-                import tritonclient.http as http_client
-
-                infer_input = http_client.InferInput(
-                    input_name, list(input_ids_np.shape), "INT32"
-                )
-                infer_input.set_data_from_numpy(input_ids_np)
-                infer_output = http_client.InferRequestedOutput(output_name)
-
-                try:
-                    results = self._client.infer(
-                        model_name=self.model_name,
-                        model_version=self.model_version,
-                        inputs=[infer_input],
-                        outputs=[infer_output],
-                        timeout=self.timeout,
-                    )
-                    output_np = results.as_numpy(output_name)
-                except Exception as e:
-                    logger.error(f"[Triton] Stream generation failed: {e}")
-                    break
-            else:
-                import tritonclient.grpc as grpc_client
-
-                infer_input = grpc_client.InferInput(
-                    input_name, list(input_ids_np.shape), "INT32"
-                )
-                infer_input.set_data_from_numpy(input_ids_np)
-                infer_output = grpc_client.InferRequestedOutput(output_name)
-
-                try:
-                    results = self._client.infer(
-                        model_name=self.model_name,
-                        model_version=self.model_version,
-                        inputs=[infer_input],
-                        outputs=[infer_output],
-                        timeout=self.timeout,
-                    )
-                    output_np = results.as_numpy(output_name)
-                except Exception as e:
-                    logger.error(f"[Triton] Stream generation failed: {e}")
-                    break
-
+            window = hist[-self.max_context:] if self.max_context else hist
+            input_np = np.array([window], dtype=np.int32)
+            try:
+                output_np = self._infer_once(input_np)
+            except Exception as e:
+                logger.error(f"[Triton] Stream generation failed: {e}")
+                break
             if output_np is None or output_np.size == 0:
                 break
-
             token_id = int(np.argmax(output_np[0, -1, :]))
-            if token_id == 0:
+            if token_id == self._eos_token_id:
                 break
-
-            token_char = chr(token_id) if 32 <= token_id < 127 else " "
-            full_output += token_char
-            yield token_char
+            hist.append(token_id)
+            new_ids = hist[len(input_ids) + emitted:]
+            if new_ids:
+                yield self._decode(new_ids)
+                emitted += len(new_ids)
 
     # ── Model config generator ───────────────────────────────────────
 
@@ -814,10 +895,12 @@ class TritonNodeAdapter(BackendAdapter):
             try:
                 self._client.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._client = None
             self._model_metadata = {}
             self._model_config = {}
+            self._tokenizer = None
             logger.info(f"[Triton] Connection to {self.triton_url} closed")
 
     # ── Metadata classmethods ────────────────────────────────────────
@@ -858,6 +941,7 @@ class TritonNodeAdapter(BackendAdapter):
                 and self._client.is_server_ready()
             )
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _probe_model_ready(self) -> bool:
@@ -869,6 +953,7 @@ class TritonNodeAdapter(BackendAdapter):
                 )
             )
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
 

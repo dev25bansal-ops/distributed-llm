@@ -270,6 +270,7 @@ def run_tune_batch(
                         resp.raise_for_status()
                         latencies.append(time.monotonic() - start)
                     except Exception:
+                        # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
                         errors += 1
 
             avg_lat = sum(latencies) / len(latencies) * 1000 if latencies else float("inf")

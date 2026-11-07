@@ -161,6 +161,7 @@ class SubsystemManager:
             temps = bs.get_active_temperatures()
             return sum(temps) / len(temps) if temps else None
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def _get_paged_backends(self) -> list[Any]:
@@ -432,6 +433,7 @@ class SubsystemManager:
                 try:
                     await coord._async_shutdown.wait()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
                 finally:
                     if on_stop:

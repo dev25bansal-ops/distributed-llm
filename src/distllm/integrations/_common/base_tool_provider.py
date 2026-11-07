@@ -149,6 +149,7 @@ class BaseToolProvider:
                 return json.dumps(data.get("result", data))
             return json.dumps({"error": f"Tool call failed: HTTP {resp.status_code}"})
         except Exception as e:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return json.dumps({"error": str(e)})
 
     def make_callable(self, tool_def: dict) -> callable:

@@ -438,6 +438,7 @@ def _apply_seccomp(audit: IsolationAudit) -> None:
             Arg,
         )
     except Exception:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         audit.note_skipped(
             "seccomp",
             "seccomp not available (libseccomp not importable); "
@@ -733,6 +734,7 @@ def verify_artifact_signature(artifact_path: str, *, identity: str | None = None
     except ImportError:
         pass
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
     # 2. cosign CLI fallback.
@@ -747,5 +749,6 @@ def verify_artifact_signature(artifact_path: str, *, identity: str | None = None
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         return proc.returncode == 0
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 

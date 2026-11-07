@@ -103,10 +103,12 @@ def test_concurrent_append_tokens():
     for t in threads:
         t.join()
 
-    # Lazy allocation contract: block N+1 allocates on the first append AFTER
-    # block N is full. 16 init + 32 appends = 48 tokens = 2 full blocks used
-    # (the 3rd would appear on append #33). 16 seqs x 2 blocks = 32.
-    assert m.num_used_blocks == 16 * 2
+    # Lazy allocation contract: a block counts as used on allocation; the
+    # append-after-full allocation of block N+1 happens inside the same
+    # append_token() call. 16 init + 32 appends = 48 tokens = 3 blocks per
+    # seq (16 in block 1; tokens 17-32 fill block 2; token 33 opens block 3,
+    # tokens 34-48 fill it). 16 seqs x 3 blocks = 48.
+    assert m.num_used_blocks == 16 * 3
 
 
 def test_cow_under_concurrency():

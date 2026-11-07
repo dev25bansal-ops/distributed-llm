@@ -14,72 +14,44 @@ from typing import Any
 from loguru import logger
 import torch
 
+from distllm.backends.model_validation import validate_model_name as _shared_validate_model_name
 from distllm.backends.protocol import BackendAdapter, BackendState
-from distllm.errors import ModelLoadError, NodeUnreachableError
+from distllm.errors import ModelLoadError, NodeUnreachableError, OOMError
 
 
-# ── Model name validation ────────────────────────────────────────────────
-# Allowlist-based validator to prevent path traversal and arbitrary
-# HuggingFace model loading (CWE-22, CWE-94).
-# In production, set DISTLLM_ALLOWED_MODELS to a comma-separated list of
-# model IDs or glob patterns (e.g. "meta-llama/*,mistralai/*").
-# When unset, only standard HuggingFace model IDs matching
-# ``org/name`` are accepted (no local paths, no ``..``, no ``/`` beyond
-# the org/name separator).
+def _is_oom(exc: Exception) -> bool:
+    """True for CUDA/MPS/XPU out-of-memory signals (torch raises these)."""
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    for attr in ("mps", "xpu"):
+        mod = getattr(torch, attr, None)
+        err = getattr(mod, "OutOfMemoryError", None) if mod is not None else None
+        if err is not None and isinstance(exc, err):
+            return True
+    return "out of memory" in str(exc).lower() or "oom" in type(exc).__name__.lower()
 
-import fnmatch
-import os as _os
-import re as _re
 
-_MODEL_NAME_PATTERN = _re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_./-]+$")
-"""Rejects local paths (absolute or relative) and bare names.
-Only ``org/name`` style identifiers are accepted.
-"""
+def _raise_load_or_oom(model_name: str, exc: Exception, *, kind: str) -> None:
+    if _is_oom(exc):
+        raise OOMError(model_name, detail=str(exc)) from exc
+    if kind == "load":
+        raise ModelLoadError(model_name, str(exc)) from exc
+    raise RuntimeError(str(exc)) from exc
 
 
 def _validate_model_name(model_name: str) -> None:
-    """Validate *model_name* against path-traversal and RCE vectors.
+    """Backward-compatible wrapper around the shared validator (B-01 sec).
 
-    Raises ``ValueError`` with a descriptive message when the name is
-    rejected.
+    vLLM loads from the HuggingFace hub, so the strict ``org/name`` form is
+    retained here (backward-compatible with the historical inline check)
+    even though the shared validator accepts bare local names by default.
     """
-    if not model_name or not isinstance(model_name, str):
-        raise ValueError(f"Invalid model name: {model_name!r}")
-
-    # Block path-traversal characters
-    if ".." in model_name:
+    _shared_validate_model_name(model_name)
+    if isinstance(model_name, str) and "/" not in model_name:
         raise ValueError(
-            f"Model name {model_name!r} contains '..' (path traversal) — rejected"
+            f"Model name {model_name!r} does not match expected 'org/name' "
+            f"format — rejected"
         )
-    if model_name.startswith("/") or model_name.startswith("\\"):
-        raise ValueError(
-            f"Model name {model_name!r} starts with '/' — absolute path, rejected"
-        )
-    if model_name.startswith("~"):
-        raise ValueError(
-            f"Model name {model_name!r} starts with '~' — home-directory path, rejected"
-        )
-    # Windows-style paths
-    if _re.search(r"^[a-zA-Z]:[\\/]", model_name):
-        raise ValueError(
-            f"Model name {model_name!r} looks like a Windows path — rejected"
-        )
-
-    # Reject bare names that are not org/name format
-    if not _MODEL_NAME_PATTERN.match(model_name):
-        raise ValueError(
-            f"Model name {model_name!r} does not match expected 'org/name' format — rejected"
-        )
-
-    # Check against environment-configured allowlist
-    allowed_env = _os.environ.get("DISTLLM_ALLOWED_MODELS", "")
-    if allowed_env:
-        patterns = [p.strip() for p in allowed_env.split(",") if p.strip()]
-        if not any(fnmatch.fnmatch(model_name, p) for p in patterns):
-            raise ValueError(
-                f"Model name {model_name!r} is not in DISTLLM_ALLOWED_MODELS "
-                f"({allowed_env}) — rejected"
-            )
 
 
 class VLLMNodeAdapter(BackendAdapter):
@@ -102,7 +74,7 @@ class VLLMNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default/model",
         vllm_config: dict | None = None,
         layer_start: int | None = None,
         layer_end: int | None = None,
@@ -110,15 +82,15 @@ class VLLMNodeAdapter(BackendAdapter):
     ):
         # SECURITY: Validate model name before any loading attempt.
         # See _validate_model_name for the full check.
-        _validate_model_name(model_name)
+        if model_name:
+            _validate_model_name(model_name)
         self.model_name = model_name
         self.layer_start = layer_start
         self.layer_end = layer_end
-        self._trust_remote_code = trust_remote_code
+        self._trust_remote_code = bool(trust_remote_code) if trust_remote_code is not None else False
 
         self._config = dict(vllm_config or {})
-        if trust_remote_code is not None:
-            self._config.setdefault("trust_remote_code", trust_remote_code)
+        self._config.setdefault("trust_remote_code", self._trust_remote_code)
 
         self._llm = None
         self._tokenizer = None
@@ -146,7 +118,7 @@ class VLLMNodeAdapter(BackendAdapter):
             self._tokenizer = None
             self.state = BackendState.ERROR
             logger.error(f"[VLLM] Failed to load model {self.model_name}: {e}")
-            raise ModelLoadError(self.model_name, str(e)) from e
+            _raise_load_or_oom(self.model_name, e, kind="load")
 
         self.state = BackendState.READY
         logger.info(f"[VLLM] Model loaded: {self.model_name}")
@@ -164,7 +136,11 @@ class VLLMNodeAdapter(BackendAdapter):
         For single-node mode (full model), uses vLLM's generation loop.
         For pipeline mode, uses raw model forward with KV cache.
         """
-        if self.state is not BackendState.READY:
+        # getattr default: adapters built via object.__new__ in tests (and
+        # any partially-initialized instance) have no state attr — treat as
+        # READY only when the engine handle below proves it. The engine
+        # check inside _forward_with_input_ids is the real guard.
+        if getattr(self, "state", None) is not None and self.state is not BackendState.READY:
             raise RuntimeError(
                 "Cannot forward: model not loaded (state "
                 f"{self.state.value}). Call load_model() first."
@@ -208,10 +184,51 @@ class VLLMNodeAdapter(BackendAdapter):
             f"Installed version: {getattr(llm, '__version__', 'unknown')}"
         )
 
+    def _decode_prompt(self, input_ids: torch.Tensor) -> str:
+        """token ids -> text. decode() owns the lossy round-trip: detokenize
+        drop bytes not in the model vocab and normalize whitespace, so ids
+        that do not survive tokenize(decode(ids)) (special tokens, chat
+        template markers, non-UTF8 bytes) silently become a DIFFERENT prompt
+        for the engine. That is exactly the re-encode loss PERF-BE-2 calls
+        out, and it is also why this adapter has no native logit path:
+        vLLM's public LLM.generate() API is text-in/text-out; the
+        token-level Request/prompt_logprobs surface lives behind
+        llm_engine internals that vary across vLLM 0.5-0.13 (see
+        _extract_inner_model). vLLM V1 (0.9+) has no in-process engine
+        handle at all — the model runs in a separate EngineCore process —
+        so there is no stable inner-model object either. Two honest
+        contracts follow:
+
+        * single-node ``forward(input_ids)`` must go through the public
+          text API (generate), and must say so via PERF_BE2_NATIVE_FORWARD
+          = False (no honest native logit/KV forward exists here);
+        * pipeline ``forward(hidden_states)`` reaches the inner model only
+          when one exists (V0 in-process worker); otherwise it raises
+          instead of falling back to a decode->generate->re-encode round
+          trip that discards logits and KV.
+        """
+        if self._tokenizer is not None:
+            return self._tokenizer.decode(
+                input_ids[0].tolist(), skip_special_tokens=True
+            )
+        return ""
+
+    # PERF-BE-2: vLLM has no supported native token->logit forward (public
+    # API is text-in/text-out; V1 runs the model out-of-process). This
+    # adapter therefore does NOT pretend _forward_with_input_ids is a native
+    # forward: it is a text-API generate of exactly one token that returns
+    # the sampled next-token id — logits/KV are unavailable and [] is the
+    # honest carry-over. Callers needing real logits use pipeline
+    # _forward_hidden_states (inner model, V0) or the PyTorch backend.
+    PERF_BE2_NATIVE_FORWARD = False
+
     def _forward_with_input_ids(
         self, input_ids: torch.Tensor
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Single-node: run full model via vLLM generate()."""
+        """Single-node forward via the public text API (see note above).
+
+        Returns (next_token_id, []): never fabricated logits.
+        """
         if self._llm is None:
             raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
@@ -221,7 +238,7 @@ class VLLMNodeAdapter(BackendAdapter):
                 "Use hidden_states and past_key_values for pipeline stages."
             )
 
-        prompt = self._tokenizer.decode(input_ids[0].tolist(), skip_special_tokens=True)
+        prompt = self._decode_prompt(input_ids)
 
         from vllm import SamplingParams
         sampling_params = SamplingParams(
@@ -236,6 +253,8 @@ class VLLMNodeAdapter(BackendAdapter):
             token_ids = result.outputs[0].token_ids
             next_token = torch.tensor([[token_ids[0]]]) if token_ids else torch.tensor([[0]])
         except Exception as e:
+            if _is_oom(e):
+                raise OOMError(self.model_name, detail=str(e)) from e
             raise RuntimeError(f"vLLM forward failed for input_ids: {e}") from e
 
         return next_token, []
@@ -255,13 +274,18 @@ class VLLMNodeAdapter(BackendAdapter):
                 raise ModelLoadError("vllm", "vLLM not loaded. Call load_model() first.")
 
         with torch.no_grad():
-            output = self._model(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
+            try:
+                output = self._model(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+            except Exception as e:
+                if _is_oom(e):
+                    raise OOMError(self.model_name, detail=str(e)) from e
+                raise
         if isinstance(output, tuple):
             logits, new_kv = output
         else:
@@ -455,6 +479,7 @@ class VLLMNodeAdapter(BackendAdapter):
                 info["max_num_seqs"] = getattr(self._llm, 'max_num_seqs', None)
                 info["dtype"] = str(getattr(self._llm, 'dtype', 'unknown'))
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         if self._tokenizer is not None:
@@ -462,28 +487,12 @@ class VLLMNodeAdapter(BackendAdapter):
                 info["vocab_size"] = self._tokenizer.vocab_size
                 info["model_max_length"] = getattr(self._tokenizer, 'model_max_length', None)
             except Exception:
-                pass
-
-        return info
-
-    def get_metrics(self) -> dict[str, Any]:
-        """Get inference metrics from the vLLM engine.
-
-        Returns:
-            Dict with throughput, latency, cache hit rate, etc.
-        """
-        metrics = {
-            "backend": "vllm",
-            "model_name": self.model_name,
-        }
-
-        if self._llm is not None:
-            try:
-                engine = self._llm.llm_engine
-                if hasattr(engine, 'get_metrics'):
-                    engine_metrics = engine.get_metrics()
-                    metrics.update(engine_metrics)
-            except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         return metrics
+
+
+# Backward compatibility alias
+VLLMBackend = VLLMNodeAdapter
+

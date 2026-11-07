@@ -1,6 +1,8 @@
 """Integration with EleutherAI lm-evaluation-harness."""
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 
 import httpx
@@ -58,11 +60,20 @@ class LMEvalRunner:
             try:
                 results[task] = self._run_task(task)
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 results[task] = {"error": str(e)}
         return results
 
     def _run_task(self, task_name):
-        return {"task": task_name, "accuracy": round(random.uniform(0.5, 0.8), 4), "samples": self.config.limit or 100}
+        # Honest-contract (hygiene pass 2026-11-06): the previous body returned
+        # a *random* accuracy — fabricated benchmark numbers. Until the real
+        # lm-eval wiring lands, fail loudly instead of inventing data.
+        raise NotImplementedError(
+            "LMEvalRunner._run_task is not implemented against lm_eval yet; "
+            "it previously returned random.uniform(0.5, 0.8) as 'accuracy', "
+            "which is not a measurement. Wire lm_eval.simple_evaluate() with "
+            "DistLLMModelAdapter before using this runner."
+        )
 
     def save_results(self, output_path):
         with open(output_path, "w") as f:

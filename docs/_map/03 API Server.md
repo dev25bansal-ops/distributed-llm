@@ -9,11 +9,11 @@ aliases:
 ---
 # API Server — `src/distllm/api/`
 
-**89 .py files · ~22K LOC.**
+**88 .py files · ~24K LOC.**
 
 > The outward-facing HTTP surface — a **FastAPI app** presenting an OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, assistants, files, fine-tuning, moderations, batch, tools, tokenize) fronting the distributed coordinator/backends, plus enterprise auth (SAML/OIDC/OAuth2 SSO, API-key RBAC, JWT, OPA/Rego) and ops (health/dashboard/metrics, admin, WebSocket chat).
 >
-> **Tests:** `python -m pytest tests/api/ -v` (~46 files).
+> **Tests:** `python -m pytest tests/api/ -v` (~65 files).
 
 ## Root (`api/`)
 
@@ -31,7 +31,7 @@ aliases:
 | `api_state.py` | 34 | cross-module `g` state proxy (coordinator/store) |
 | `app_state.py` | 22 | single `AppState` source of truth |
 | `api_settings.py` | 91 | consolidated Pydantic `BaseSettings` |
-| `api_versioning.py` | 828 | Accept-Version negotiation, deprecation scheduling, compat map |
+| `api_versioning.py (deleted 2026-11-06 hygiene pass; inline _API_VERSIONS in server.py is live)` | 828 | Accept-Version negotiation, deprecation scheduling, compat map |
 | `errors.py` | 219 | standardized OpenAI-compatible error responses |
 | `validation.py` | 45 | input validation utilities |
 | `auth_deps.py` | 35 | `require_role(*roles)` RBAC dependency |
@@ -142,4 +142,6 @@ _Raw-ASGI `WAF` (`waf.py`) runs apart from this stack. SSO middleware (`sso_midd
 
 ## Tests
 
-`tests/api/` (~46 files) — auth, chat, batch, middleware chain, passive. Plus `tests/security/`, `tests/fuzz/fuzz_*`, `tests/e2e/` for streaming/chat.
+`tests/api/` (~65 files) — auth, chat, batch, middleware chain, passive. Plus `tests/security/`, `tests/fuzz/fuzz_*`, `tests/e2e/` for streaming/chat.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

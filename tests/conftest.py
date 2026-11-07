@@ -147,11 +147,14 @@ def mock_coordinator(mock_tokenizer, monkeypatch):
         coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
         coord.total_layers = 12
 
-        # Mock local partitioner
-        coord.local_partitioner = MagicMock()
+        # Mock local partitioner. Coordinator.local_partitioner is a
+        # read-only property delegating to the inference engine, so set it
+        # on the engine (the property's backing store).
+        mock_partitioner = MagicMock()
         mock_model = MagicMock()
         mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-        coord.local_partitioner.full_model = mock_model
+        mock_partitioner.full_model = mock_model
+        coord._inference_engine.local_partitioner = mock_partitioner
 
         return coord
     finally:
@@ -179,10 +182,11 @@ def mock_coordinator_with_scheduler(mock_tokenizer, monkeypatch):
         coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
         coord.total_layers = 12
 
-        coord.local_partitioner = MagicMock()
+        mock_partitioner = MagicMock()
         mock_model = MagicMock()
         mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-        coord.local_partitioner.full_model = mock_model
+        mock_partitioner.full_model = mock_model
+        coord._inference_engine.local_partitioner = mock_partitioner
 
         return coord
     finally:
@@ -498,10 +502,11 @@ def coordinator_with_speculative(mock_tokenizer):
         coord.tokenizer = mock_tokenizer
         coord.num_assistant_tokens = 3
 
-        coord.local_partitioner = MagicMock()
+        mock_partitioner = MagicMock()
         mock_model = MagicMock()
         mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-        coord.local_partitioner.full_model = mock_model
+        mock_partitioner.full_model = mock_model
+        coord._inference_engine.local_partitioner = mock_partitioner
 
         # Mock draft model
         coord.draft_model = MagicMock()

@@ -57,6 +57,7 @@ def _discover_pkg_dirs() -> list[str]:
         # Some Python versions need different entry_points() call
         pass
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     return discovered
 

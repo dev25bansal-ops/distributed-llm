@@ -452,6 +452,7 @@ class NodeServicer(_NodeServiceServicerBase):
                 num_layers_loaded=len(node.partitioner.layers) if node.partitioner and node.partitioner.layers else 0,
             )
         except Exception as e:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return node_pb2.HealthCheckResponse(healthy=False, error_message=str(e))
 
     def Profile(self, request, context):
@@ -505,6 +506,7 @@ class NodeServicer(_NodeServiceServicerBase):
                 memory_bandwidth_gbps=mem_bw,
             )
         except Exception as e:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return node_pb2.ProfileResponse(node_id=request.node_id)
 
     def AdvertiseModels(self, request, context):

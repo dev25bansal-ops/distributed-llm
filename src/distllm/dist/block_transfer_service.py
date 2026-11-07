@@ -133,6 +133,7 @@ class BlockTransferServer:
             return BlockTransferResponse(blocks=blocks, success=True)
 
         except Exception as e:
+            # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
             self._stats["errors"] += 1
             return BlockTransferResponse(blocks=[], success=False, error=str(e))
 

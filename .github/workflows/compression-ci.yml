@@ -2,12 +2,12 @@ name: Compression Pipeline CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - 'src/distllm/core/compression_pipeline.py'
       - 'src/distllm/core/compression_config.py'
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths:
       - 'src/distllm/core/compression_pipeline.py'
 

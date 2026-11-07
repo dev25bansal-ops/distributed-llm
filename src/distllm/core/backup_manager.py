@@ -126,6 +126,7 @@ class BackupManager:
                 data = json.loads(manifest_file.read_text())
                 manifests.append(BackupManifest(**data))
             except Exception:
+                # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                 continue
         return manifests
 

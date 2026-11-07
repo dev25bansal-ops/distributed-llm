@@ -179,6 +179,7 @@ class DisaggOrchestrator:
             kv_caches = await self._run_prefill(input_ids, request_id)
             self._kv_caches[request_id] = kv_caches
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             future.set_exception(e)
             return await future
 
@@ -190,6 +191,7 @@ class DisaggOrchestrator:
             self._metrics["completed"] += 1
             future.set_result(generated)
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             if not future.done():
                 future.set_exception(e)
         finally:

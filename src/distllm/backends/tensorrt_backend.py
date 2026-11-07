@@ -33,8 +33,15 @@ from typing import Any
 from loguru import logger
 import torch
 
+from distllm.backends.model_validation import validate_model_name
 from distllm.backends.protocol import BackendAdapter
-from distllm.errors import ModelLoadError
+from distllm.errors import ModelLoadError, OOMError
+
+
+def _is_oom(exc: Exception) -> bool:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return "out of memory" in str(exc).lower() or "oom" in type(exc).__name__.lower()
 
 _EXPERIMENTAL_WARNING = (
     "TensorRT-LLM backend is EXPERIMENTAL and not yet production-ready. "
@@ -84,6 +91,7 @@ class TensorRTLLMAdapter(BackendAdapter):
         use_paged_kv_cache: bool = True,
         enable_cuda_graph: bool = True,
     ):
+        validate_model_name(model_name)
         self.model_name = model_name
         self.engine_dir = engine_dir
         self.max_batch_size = max_batch_size
@@ -155,6 +163,8 @@ class TensorRTLLMAdapter(BackendAdapter):
             self._engine = None
             self._tokenizer = None
             logger.error(f"[TensorRT-LLM] Failed to load model {self.model_name}: {e}")
+            if _is_oom(e):
+                raise OOMError(self.model_name, detail=str(e)) from e
             raise ModelLoadError(self.model_name, str(e)) from e
 
         logger.info(f"[TensorRT-LLM] Model loaded: {self.model_name}")
@@ -180,10 +190,31 @@ class TensorRTLLMAdapter(BackendAdapter):
             )
         raise ValueError("Either input_ids or hidden_states must be provided")
 
+    # PERF-BE-2: TensorRT-LLM's public LLM.generate() is text-in/text-out;
+    # the engine object has no supported per-token logit/KV forward. The
+    # single-node input_ids path is therefore exactly one generate() call
+    # returning the sampled next-token id — no fabricated logits. The
+    # native tensor path is _forward_hidden_states (inner model when the
+    # installed version exposes one); _extract_inner_model raises when it
+    # does not, instead of round-tripping decode->generate->re-encode.
+    PERF_BE2_NATIVE_FORWARD = False
+
+    def _decode_prompt(self, input_ids: torch.Tensor) -> str:
+        """token ids -> text. decode() owns the lossy round-trip; see the
+        vLLM adapter's _decode_prompt for the full PERF-BE-2 rationale."""
+        if self._tokenizer is not None:
+            return self._tokenizer.decode(
+                input_ids[0].tolist(), skip_special_tokens=True
+            )
+        return ""
+
     def _forward_with_input_ids(
         self, input_ids: torch.Tensor
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Single-node: run full model via TensorRT-LLM generate()."""
+        """Single-node forward via the public text API (see note above).
+
+        Returns (next_token_id, []): never fabricated logits.
+        """
         if self._engine is None:
             raise ModelLoadError("tensorrt-llm", "TensorRT-LLM not loaded. Call load_model() first.")
 
@@ -193,7 +224,7 @@ class TensorRTLLMAdapter(BackendAdapter):
                 "Use hidden_states and past_key_values for pipeline stages."
             )
 
-        prompt = self._tokenizer.decode(input_ids[0].tolist(), skip_special_tokens=True)
+        prompt = self._decode_prompt(input_ids)
 
         from tensorrt_llm import SamplingParams
         sampling_params = SamplingParams(
@@ -207,6 +238,8 @@ class TensorRTLLMAdapter(BackendAdapter):
             token_ids = result.outputs[0].token_ids
             next_token = torch.tensor([[token_ids[0]]]) if token_ids else torch.tensor([[0]])
         except Exception as e:
+            if _is_oom(e):
+                raise OOMError(self.model_name, detail=str(e)) from e
             raise RuntimeError(f"TensorRT-LLM forward failed: {e}") from e
 
         return next_token, []
@@ -226,13 +259,18 @@ class TensorRTLLMAdapter(BackendAdapter):
                 raise ModelLoadError("tensorrt-llm", "TensorRT-LLM not loaded. Call load_model() first.")
 
         with torch.no_grad():
-            output = self._model(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
+            try:
+                output = self._model(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+            except Exception as e:
+                if _is_oom(e):
+                    raise OOMError(self.model_name, detail=str(e)) from e
+                raise
         if isinstance(output, tuple):
             logits, new_kv = output
         else:

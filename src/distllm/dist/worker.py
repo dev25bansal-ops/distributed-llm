@@ -509,6 +509,7 @@ class WorkerNode:
             import socket
             return socket.gethostbyname(socket.gethostname())
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return self.coordinator_host
 
     def _get_gpu_name(self) -> str:
@@ -519,6 +520,7 @@ class WorkerNode:
             if torch.cuda.is_available():
                 return torch.cuda.get_device_name(0)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return "cpu"
 

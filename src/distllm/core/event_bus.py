@@ -375,6 +375,7 @@ class EventBus:
                     return True
                 last_error = f"HTTP {resp.status_code}"
             except Exception as exc:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 last_error = str(exc)
 
             if attempt < self._max_retries:

@@ -699,6 +699,7 @@ class GossipProtocol:
                     if result is not None:
                         return result
                 except Exception:
+                    # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                     continue
         return None
 

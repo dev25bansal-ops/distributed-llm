@@ -590,6 +590,7 @@ class StragglerDetector:
                         try:
                             root_cause = self._gpu_health_fn(node_id)
                         except Exception:
+                            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                             pass
 
                     # Predictive latency
@@ -710,6 +711,7 @@ class StragglerDetector:
         try:
             return self._network_rtt_fn(node_id) < self._network_rtt_threshold
         except Exception:
+            # CQ-08: intentional fail-open: return True on failure; callers treat True as 'not applicable'.
             return True
 
     def _recommend_action(self, severity: StragglerSeverity) -> str:

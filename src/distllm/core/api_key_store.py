@@ -144,6 +144,7 @@ def verify_api_key(key: str, stored: str) -> bool:
     try:
         candidate = hash_api_key(key, salt)
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
     return _constant_time_eq(candidate, stored)
 

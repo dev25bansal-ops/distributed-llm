@@ -15,12 +15,13 @@ Usage::
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.params import File, Form, Query
 from fastapi.responses import FileResponse
 from loguru import logger
@@ -61,6 +62,16 @@ class FileDeleteResponse(BaseModel):
 
 
 _MAX_FILE_SIZE = 512 * 1024 * 1024  # 512 MB
+# Stream the upload in 1 MiB chunks so the per-request cap is enforced
+# incrementally (mirror of WAFMiddleware._read_body, waf.py:_read_body):
+# memory is bounded to _MAX_FILE_SIZE + one chunk instead of the whole body.
+_CHUNK_SIZE = 1024 * 1024
+# Per-tenant stored-bytes quota.  Owner-scoped total of all files already in
+# the store + the incoming upload must stay under this limit.  Over-quota
+# uploads are rejected with 403 (quota, not size).  Override via
+# DISTLLM_UPLOAD_QUOTA_BYTES env var; 0 disables the quota.
+_DEFAULT_UPLOAD_QUOTA_BYTES = 1024 * 1024 * 1024  # 1 GiB
+_UPLOAD_QUOTA_ENV = "DISTLLM_UPLOAD_QUOTA_BYTES"
 _ALLOWED_PURPOSES = {"fine-tune", "batch", "assistants", "vision"}
 
 
@@ -85,6 +96,64 @@ def _file_metadata_to_object(meta: dict) -> FileObject:
     )
 
 
+def _request_owner(request: Request) -> str:
+    """Return the caller's owner identity (api_key_id, falling back to SSO tenant)."""
+    return (
+        getattr(request.state, "api_key_id", None)
+        or getattr(request.state, "tenant_id", None)
+        or getattr(request.state, "tenant", None)
+        or ""
+    )
+
+
+def _is_admin(request: Request) -> bool:
+    """True when the caller holds the admin role (tenant-wide override)."""
+    return getattr(request.state, "api_key_role", None) == "admin"
+
+
+def _upload_quota_bytes() -> int:
+    """Per-tenant stored-bytes quota (0 = disabled).
+
+    Read at call time so tests and operators can override via
+    ``DISTLLM_UPLOAD_QUOTA_BYTES`` without restarting the server.
+    """
+    raw = os.environ.get(_UPLOAD_QUOTA_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_UPLOAD_QUOTA_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            f"Invalid {_UPLOAD_QUOTA_ENV}={raw!r}; using default "
+            f"{_DEFAULT_UPLOAD_QUOTA_BYTES}"
+        )
+        return _DEFAULT_UPLOAD_QUOTA_BYTES
+
+
+def _owner_stored_bytes(store, owner: str) -> int:
+    """Total bytes of files already stored for *owner* ('' = unattributed)."""
+    return sum(int(f.get("bytes", 0) or 0) for f in store.list_files(owner=owner))
+
+
+def _require_file_owner(meta: dict, request: Request) -> None:
+    """Enforce that *request*'s caller owns the file described by *meta*.
+
+    Admins bypass the check.  A 404 (not 403) is raised on mismatch so file
+    existence is not leaked across tenants/keys — matching the batch IDOR
+    guard in ``routes/batch.py:_require_owner``.  Files stored before the
+    ``owner`` field existed (``owner`` is None/empty) are treated as owned
+    by nobody specific and remain accessible (backward-compatible backfill:
+    they predate tenancy and cannot be attributed to a different key).
+    """
+    owner = meta.get("owner")
+    if owner is None or owner == "":
+        return
+    if _is_admin(request):
+        return
+    if _request_owner(request) != owner:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
@@ -97,6 +166,7 @@ def _file_metadata_to_object(meta: dict) -> FileObject:
     status_code=201,
 )
 async def upload_file(
+    request: Request,
     file: UploadFile = File(..., description="File to upload"),
     purpose: str = Form("batch", description="Purpose: fine-tune, batch, assistants, vision"),
 ):
@@ -104,6 +174,11 @@ async def upload_file(
 
     The file content is written to ``{data_dir}/uploads/{file_id}/{filename}``
     and the metadata is recorded in the persistent store.
+
+    The upload is streamed to disk in 1 MiB chunks with an incremental
+    per-file cap (``_MAX_FILE_SIZE``) and a per-tenant stored-bytes quota
+    (``DISTLLM_UPLOAD_QUOTA_BYTES``, default 1 GiB); both reject mid-stream
+    before the full body is buffered.
     """
     # Validate purpose
     if purpose not in _ALLOWED_PURPOSES:
@@ -116,44 +191,80 @@ async def upload_file(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
-    # Read content (with size limit)
-    try:
-        content = await file.read()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
-
-    if len(content) > _MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds maximum size of {_MAX_FILE_SIZE // (1024*1024)} MB",
-        )
-
     file_id = f"file-{uuid.uuid4().hex[:24]}"
     now = time.time()
     upload_dir = _ensure_upload_dir() / file_id
     upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / (file.filename or "unnamed")
+    # F-066: never join the raw client filename onto the path — strip any
+    # directory component so uploads cannot traverse outside upload_dir.
+    safe_name = os.path.basename(file.filename.replace("\\", "/")) or "unnamed"
+    if safe_name in (".", ".."):
+        safe_name = "unnamed"
+    file_path = upload_dir / safe_name
 
+    # Stream the upload to disk in fixed-size chunks, enforcing the per-file
+    # cap incrementally (mirror of WAFMiddleware._read_body in api/waf.py:
+    # the cap fires as soon as the running total exceeds it, so a client
+    # sending gigabytes never gets them buffered in memory).  The per-tenant
+    # quota is re-checked against the running total as bytes land, so an
+    # over-quota tenant is rejected mid-stream, not after the full buffer.
+    owner = _request_owner(request)
+    quota = _upload_quota_bytes()
+    owner_bytes = _owner_stored_bytes(get_store(), owner) if quota else 0
+
+    total = 0
     try:
-        file_path.write_bytes(content)
+        # Write chunks straight to disk as they arrive so RSS never grows
+        # with the upload size (only one _CHUNK_SIZE buffer is live).
+        with open(file_path, "wb") as fh:
+            while True:
+                chunk = await file.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                if total + len(chunk) > _MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum size of "
+                               f"{_MAX_FILE_SIZE // (1024*1024)} MB",
+                    )
+                if quota and owner_bytes + total + len(chunk) > quota:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Upload quota exceeded: tenant has "
+                            f"{owner_bytes + total} bytes stored "
+                            f"(limit {quota}); rejecting {len(chunk)} more bytes"
+                        ),
+                    )
+                fh.write(chunk)
+                total += len(chunk)
+    except HTTPException:
+        # Mid-stream rejection: remove the partial file so the disk does not
+        # accumulate rejected uploads.
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     except OSError as exc:
         logger.error(f"Failed to write uploaded file {file_id}: {exc}")
         raise HTTPException(status_code=500, detail="Failed to store file")
 
     metadata = {
         "id": file_id,
-        "bytes": len(content),
+        "bytes": total,
         "created_at": now,
         "filename": file.filename,
         "purpose": purpose,
         "status": "uploaded",
         "path": str(file_path),
         "object": "file",
+        "owner": owner,
     }
 
     store = get_store()
     store.save_file(file_id, metadata)
-    logger.info(f"File uploaded: {file_id} ({file.filename}, {len(content)} bytes, purpose={purpose})")
+    logger.info(f"File uploaded: {file_id} ({file.filename}, {total} bytes, purpose={purpose})")
 
     return _file_metadata_to_object(metadata)
 
@@ -165,11 +276,18 @@ async def upload_file(
     response_model=FileListResponse,
 )
 async def list_files(
+    request: Request,
     purpose: str | None = Query(None, description="Filter by purpose: fine-tune, batch, assistants, vision"),
 ):
-    """List uploaded files, optionally filtered by purpose."""
+    """List uploaded files, optionally filtered by purpose.
+
+    Non-admin callers only see their own files; admins see all (SEC-API-01).
+    """
     store = get_store()
-    files = store.list_files(purpose=purpose)
+    if _is_admin(request):
+        files = store.list_files(purpose=purpose)
+    else:
+        files = store.list_files(purpose=purpose, owner=_request_owner(request))
     return FileListResponse(
         data=[_file_metadata_to_object(f) for f in files],
     )
@@ -181,12 +299,13 @@ async def list_files(
     description="Return metadata for a specific uploaded file.",
     response_model=FileObject,
 )
-async def get_file(file_id: str):
+async def get_file(file_id: str, request: Request):
     """Retrieve metadata for a specific file."""
     store = get_store()
     meta = store.get_file(file_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
+    _require_file_owner(meta, request)
     return _file_metadata_to_object(meta)
 
 
@@ -196,12 +315,13 @@ async def get_file(file_id: str):
     description="Download the raw content of an uploaded file.",
     response_class=FileResponse,
 )
-async def get_file_content(file_id: str):
+async def get_file_content(file_id: str, request: Request):
     """Download the raw content of an uploaded file."""
     store = get_store()
     meta = store.get_file(file_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
+    _require_file_owner(meta, request)
 
     file_path = Path(meta["path"])
     if not file_path.exists():
@@ -221,12 +341,13 @@ async def get_file_content(file_id: str):
     description="Delete a file and its content from the server.",
     response_model=FileDeleteResponse,
 )
-async def delete_file(file_id: str):
+async def delete_file(file_id: str, request: Request):
     """Delete a file and its content from disk."""
     store = get_store()
     meta = store.get_file(file_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
+    _require_file_owner(meta, request)
 
     # Remove from disk
     file_path = Path(meta["path"])

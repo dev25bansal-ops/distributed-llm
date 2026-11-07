@@ -960,6 +960,7 @@ class ModelRouter:
                         regions=available_regions,
                     )
                 except Exception:
+                    # CQ-08: intentional fail-open: fallback default assigned on failure.
                     region = available_regions[0] if available_regions else ""
             else:
                 region = available_regions[0] if available_regions else ""

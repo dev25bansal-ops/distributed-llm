@@ -20,7 +20,8 @@ from .batch import router as batch_router
 from .eval import router as eval_router
 from .metrics_history import router as metrics_history_router
 from .api_keys import router as api_keys_router
-
+from .files import router as files_router
+from .fine_tuning import router as fine_tuning_router
 __all__ = [
     "chat_router",
     "chat_v2_router",
@@ -42,6 +43,8 @@ __all__ = [
     "eval_router",
     "metrics_history_router",
     "api_keys_router",
+    "files_router",
+    "fine_tuning_router",
 ]
 
 # ── Router mount policy (2026-11-05) ────────────────────────────────────────

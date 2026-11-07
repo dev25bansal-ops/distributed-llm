@@ -111,6 +111,9 @@ class TestFetchGossip:
 
     def test_fetch_success(self, coord, client):
         proto = MagicMock()
+        # HMAC authorization contract (f8a018e): returns (authorized, reason).
+        proto.authorize_fetch_request.return_value = (True, "")
+        proto.has_shared_hmac_key = False  # legacy dev mode: no response signing
         proto.state.local_entries = {
             "abc": {"node_id": "peer-1", "seq": 1},
             "def": {"node_id": "peer-1", "seq": 2},
@@ -131,6 +134,8 @@ class TestFetchGossip:
 
     def test_fetch_empty_hashes(self, coord, client):
         proto = MagicMock()
+        proto.authorize_fetch_request.return_value = (True, "")
+        proto.has_shared_hmac_key = False  # legacy dev mode: no response signing
         proto.state.local_entries = {"abc": {"node_id": "peer-1"}}
         coord._gossip_protocol = proto
 
@@ -142,6 +147,8 @@ class TestFetchGossip:
 
     def test_fetch_requester_id(self, coord, client):
         proto = MagicMock()
+        proto.authorize_fetch_request.return_value = (True, "")
+        proto.has_shared_hmac_key = False  # legacy dev mode: no response signing
         proto.state.local_entries = {}
         coord._gossip_protocol = proto
 
@@ -154,6 +161,8 @@ class TestFetchGossip:
 
     def test_fetch_no_match(self, coord, client):
         proto = MagicMock()
+        proto.authorize_fetch_request.return_value = (True, "")
+        proto.has_shared_hmac_key = False  # legacy dev mode: no response signing
         proto.state.local_entries = {"abc": {"node_id": "peer-1"}}
         coord._gossip_protocol = proto
 

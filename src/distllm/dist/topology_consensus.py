@@ -1958,4 +1958,5 @@ class TopologyManager:
         try:
             return socket.gethostname()
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return "localhost"

@@ -1340,6 +1340,7 @@ class TreeDraftSpeculativeDecoder(SpecDecoderBase):
             try:
                 return self._verify_tree_batched(sequences, prefix, **kwargs)
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 self._can_batch_verify = False
 
         # Verify each sequence (sequential fallback)

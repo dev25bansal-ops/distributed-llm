@@ -422,6 +422,7 @@ class ModalityEncoder:
                         embed /= norm
                     return embed, "audio_statistical"
             except Exception:
+                # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
                 self._stats["total_errors"] += 1
 
         return self._zero_embedding(), "none"
@@ -608,6 +609,7 @@ class ModalityEncoder:
                 if isinstance(image, PILImage.Image):
                     return transform(image).unsqueeze(0)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         return None

@@ -32,10 +32,7 @@
   - [Log Redaction](#log-redaction)
   - [Security Metrics](#security-metrics)
   - [Alerting Rules](#alerting-rules)
-<<<<<<< Updated upstream
-=======
 - [Debug Endpoints](#debug-endpoints)
->>>>>>> Stashed changes
 - [Incident Response](#incident-response)
   - [If API Key is Compromised](#if-api-key-is-compromised)
   - [If Node is Compromised](#if-node-is-compromised)
@@ -139,8 +136,14 @@ export DISTLLM_CLUSTER_KEY=your-cluster-secret
 # Set role for API key
 from distllm.core.api_key_store import ApiKeyStore
 store = ApiKeyStore()
-store.create_key(name="my-key", role="inference")
+store.add_key(key_str="...", role="inference-only", label="my-key")  # returns key_id
 ```
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — this snippet previously showed
+> `store.create_key(name=..., role=...)`; the real method is `add_key(key_str,
+> role, label, key_id)` per `src/distllm/core/api_key_store.py:320`, and valid
+> roles are admin/model-admin/user-admin/inference-only/read-only/auditor
+> (`VALID_ROLES`, line 68) — `inference` is not a role.
 
 ---
 
@@ -271,37 +274,17 @@ securityContext:
 
 ### Log Redaction
 
-<<<<<<< Updated upstream
-All application logs are automatically redacted at startup to prevent secrets and PII leakage. The `install_global_redaction()` function is called in `api/server.py::_init_observability` during server initialization, which installs:
-
-- **Loguru patcher**: A core-level patcher applied to every `loguru.logger` record across all ~794 source files
-- **Stdlib filter**: A `RedactingFilter` attached to the root logger's handlers
-
-This covers all log outputs (stderr, JSON stdout, queues, Loki) regardless of which logger instance emitted the message.
-
-**Redacted patterns:**
-=======
 All application logs are automatically redacted at startup to prevent secrets and PII leakage. `install_global_redaction()` is called in `api/server.py::_init_observability`, which runs from the FastAPI `lifespan` handler (`app = FastAPI(lifespan=lifespan, ...)`) — the live startup path. It installs two layers:
 
 - **Loguru core patcher**: applied by loguru to every `loguru.logger` record (the primary logging path across the codebase) after %-formatting and before any sink writes — covers stderr, JSON stdout, `enqueue=True` queues, and third-party sinks. No call site needs to change.
 - **Stdlib `RedactingFilter`**: attached to the root logger and each of its handlers, covering libraries that log via stdlib logging (including records propagated from child/third-party loggers).
 
 The pattern set lives in `src/distllm/security/log_redaction.py` (`DEFAULT_PATTERNS`):
->>>>>>> Stashed changes
 
 | Category | Patterns |
 |----------|----------|
 | **PII** | email addresses, SSN, phone numbers, credit card numbers, IP addresses |
 | **API keys** | `sk-...` tokens, `api_key="..."` assignments, AWS access keys (`AKIA...`) |
-<<<<<<< Updated upstream
-| **Long tokens** | Base64url tokens ≥40 chars, hex tokens ≥32 chars |
-| **Credentials** | password/passwd/pwd, secret, client_secret, token, access_token, refresh_token assignments |
-| **Authorization** | Bearer tokens, Authorization/Proxy-Authorization header values |
-
-Configuration: Disable entirely via `DISTLLM_LOG_REDACTION=off` (also accepts `0`, `false`, `no`). Extend patterns via `DISTLLM_REDACT_PATTERNS` (semicolon-separated regex list).
-
-**Test coverage:** `tests/security/test_loguru_redaction.py::TestInstallGlobalRedactionCombined::test_startup_wiring_call_sites_exist` verifies that `install_global_redaction()` appears in both startup paths' `_init_observability`.
-=======
 | **Credential assignments** | password/passwd/pwd, secret, client_secret, token, access_token, refresh_token `= value` |
 | **Authorization headers** | `Bearer <token>`, Authorization / Proxy-Authorization header values |
 | **High-entropy tokens** | base64/base64url runs ≥40 chars (covers `ApiKeyStore` `secrets.token_urlsafe(48)` keys with no prefix), hex runs ≥32 chars |
@@ -315,19 +298,18 @@ Configuration:
 Residual gap: only `record["message"]` is scrubbed on the loguru path — exception traceback text (`record["exception"]`) is not rewritten, so a secret embedded only in an exception repr can still appear in `logger.exception()` traceback output. This is acknowledged in `tests/security/test_loguru_redaction.py::test_exception_logging_redacted`.
 
 **Test coverage:** `tests/security/test_loguru_redaction.py::TestInstallGlobalRedactionCombined::test_startup_wiring_call_sites_exist` asserts that `_init_observability` in `distllm/api/server.py` (and the mirrored copy in `distllm/api/server_lifespan.py`, which currently has no importer) still contains the `install_global_redaction()` call, guarding against the "module tested, wiring untested" regression.
->>>>>>> Stashed changes
 
 ### Security Metrics
 
 ```bash
 # Auth failures
-distllm_metrics_auth_failures_total
+distllm_auth_failures_total  # ⚠️ UNVERIFIED (hygiene pass 2026-11-06): no distllm_metrics_* metric exists; real names are distllm_* per src/distllm/observability/exporter.py — and no auth/rate-limit/SSRF metric is among the 25 defined there
 
 # Rate limit hits
-distllm_metrics_rate_limit_hits_total
+distllm_rate_limit_hits_total  # ⚠️ UNVERIFIED (hygiene pass 2026-11-06): same as above — name pattern corrected, metric not in exporter.py
 
 # SSRF attempts blocked
-distllm_metrics_ssrf_blocked_total
+distllm_ssrf_blocked_total  # ⚠️ UNVERIFIED (hygiene pass 2026-11-06): same as above — name pattern corrected, metric not in exporter.py
 ```
 
 ### Alerting Rules
@@ -338,7 +320,7 @@ groups:
   - name: distllm-security
     rules:
       - alert: HighAuthFailureRate
-        expr: rate(distllm_metrics_auth_failures_total[5m]) > 10
+        expr: rate(distllm_auth_failures_total[5m]) > 10
         for: 5m
         labels:
           severity: warning
@@ -416,6 +398,12 @@ The `/v1/debug/*` routes provide debugging/replay capabilities. They are **not m
 - Enable data residency: `DISTLLM_DATA_RESIDENCY=eu`
 - Enable audit logging: `DISTLLM_AUDIT_LOGGING=true`
 - Configure data retention: `DISTLLM_DATA_RETENTION_DAYS=30`
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06): none of these environment
+> variables exists in `src/` (0 hits each for DISTLLM_DATA_RESIDENCY,
+> DISTLLM_AUDIT_LOGGING, DISTLLM_DATA_RETENTION_DAYS). These are aspirational
+> flags, not shipped config; delete the key names if a source of truth is
+> needed.
 
 ### SOC 2
 
