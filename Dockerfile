@@ -41,7 +41,10 @@ COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-RUN pip install --no-cache-dir --prefix=/install "./src" --no-deps
+# The package metadata (pyproject.toml) lives at the repo root, not in src/,
+# so install the current directory. PIP finds the distllm package under
+# src/ because pyproject sets package-dir = {"" = "src"}.
+RUN pip install --no-cache-dir --prefix=/install . --no-deps
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
