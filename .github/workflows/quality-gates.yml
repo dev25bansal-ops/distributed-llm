@@ -62,7 +62,7 @@ jobs:
           set +e
           rm -f .coverage coverage.xml
           run_group() {
-            [ -d "$1" ] || return 0
+            [ -e "$1" ] || return 0
             echo "=== coverage chunk: $1 ==="
             pytest "$1" \
               -m "not e2e and not slow and not chaos and not benchmark" \
@@ -70,20 +70,31 @@ jobs:
               --continue-on-collection-errors \
               -q
           }
-          # Non-overlapping chunks: each top-level suite in its own process so
-          # peak RSS stays well under the runner limit (whole-tree run -> 137).
-          for g in tests/core tests/dist tests/api; do run_group "$g"; done
-          run_group tests/security
-          run_group tests/cli
-          # Everything else (root-level tests/*.py, remaining subdirs).
-          # tests/cli/test_cli.py was rewritten against the real CLI surface on
-          # 2026-11-08 and is no longer excluded.
+          # Every top-level test directory in its own process. A previous
+          # version ran "everything not listed" as one catch-all chunk, and
+          # that chunk alone was still OOM-killed (exit 137) -- which silently
+          # dropped tests/dist and ~30 other dirs from the coverage report and
+          # made the ratchet see 0.0% for them.
+          for g in \
+            tests/api tests/backends tests/benchmark tests/benchmarks \
+            tests/cache tests/chaos tests/cli tests/client tests/cloud \
+            tests/communication tests/comprehensive tests/config tests/core \
+            tests/correctness tests/dashboard tests/deploy tests/dist \
+            tests/distributed tests/errors tests/evaluation tests/features \
+            tests/fuzz tests/health tests/infrastructure tests/integration \
+            tests/integrations tests/lint tests/load tests/manual \
+            tests/models tests/mutation tests/observability tests/partition \
+            tests/performance tests/plugins tests/property \
+            tests/regression_high tests/sdk tests/security \
+            tests/stability tests/utils tests/verification ; do
+            run_group "$g"
+          done
+          # Root-level tests/*.py that belong to no directory.
           pytest tests/ \
             -m "not e2e and not slow and not chaos and not benchmark" \
             --cov=distllm --cov-append --cov-report= \
             --continue-on-collection-errors \
-            --ignore=tests/core --ignore=tests/dist --ignore=tests/api \
-            --ignore=tests/security -q
+            --ignore-glob='tests/*/' -q
           python -m coverage xml -o coverage.xml || echo "coverage xml failed"
 
       - name: Assert coverage.xml was produced

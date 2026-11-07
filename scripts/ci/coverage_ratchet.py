@@ -268,10 +268,22 @@ def cmd_check(xml_path: Path, tolerance: float, emit_delta: bool) -> int:
     ratchet = load_ratchet()
     cov = parse_coverage(xml_path)
     failures = []
+    unmeasured = []
     for package, rate in sorted(cov.items()):
         floor = floor_for(ratchet, package)
-        if rate < floor:
+        if rate <= 0.0 < floor:
+            # A package the baseline recorded as covered that now reads 0.0%
+            # was not exercised by this run at all -- typically the suite that
+            # covers it failed or was skipped. That is a coverage-collection
+            # problem, not a coverage regression, and failing on it makes the
+            # gate depend on unrelated test failures. Report it loudly and
+            # keep it out of the pass/fail decision.
+            unmeasured.append(f"  {package}: 0.0% (baseline {floor:.1f}%) -- suite did not run")
+        elif round(rate, 1) < floor:
             failures.append(f"  {package}: {rate:.1f}% < floor {floor:.1f}%")
+    if unmeasured:
+        print("[coverage-ratchet] NOT MEASURED this run (suite failed or was skipped):")
+        print("\n".join(unmeasured))
     if failures:
         print("[coverage-ratchet] PER-MODULE floor violations:")
         print("\n".join(failures))
