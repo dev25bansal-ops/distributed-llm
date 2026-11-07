@@ -335,3 +335,33 @@ All §2 High items not in P0: `API-01`, `PERF-01/02/03/05`, `B-01/02/03/05/08/09
 **Next (P2):** chat-service delegation, uvicorn scaling knobs, streaming metering + pure-ASGI hot path, semantic-cache activation behind flag, auth-package unit tests, typing rollout + bare-except lint, KEK-encrypted webhook secrets, hashed audit logs.
 
 **Before next release gate:** re-run the 270-sweep with a fixed `byFolder` rollup and deliver the full 2,595-item payload; merge this report’s IDs against it; publish PoC results for every CVSS-bearing item (all currently `TBD` pending live confirmation).
+
+---
+
+## Verification pass — 2026-11-08
+
+Before working the checklist above, each of the six verified security items in
+§2 was checked against the current tree. **All six are already fixed**, so the
+"High" slice of this report is stale and should not be worked from as written.
+
+| Item | Claim | Current state |
+|---|---|---|
+| SEC-API-03 WAF body buffering | unbounded read | `waf.py` enforces `max_body_size` (default 1 MiB), documented at lines 9/65/219 |
+| SEC-API-04 OAuth state | `state` optional | no optional-state path found in `sso_auth.py` |
+| files IDOR | no ownership check | `routes/files.py:99 _request_owner()` plus admin override, per-tenant quota |
+| fine-tuning IDOR | no ownership check | `routes/fine_tuning.py:235 _require_owner()`, returns 404 not 403 so existence is not leaked |
+| unvalidated `model_name` | loads any path/remote | `backends/model_validation.py:validate_model_name()` allowlist, used by every adapter (e.g. `mlx_backend.py:48`) |
+| `BackendRegistry.autodiscover` overwrite | force-overwrites built-ins | `registry.py:571` requires the entry point to be on `DISTLLM_ALLOWED_BACKENDS` (built-ins by default) **and** to carry a valid Ed25519 signature from a trusted key |
+
+Consequence for planning: this document cannot be turned into a task list
+until the 270-sweep is re-run with a working `byFolder` rollup and the full
+2,595-item payload, as the closing section already recommends. The 2,595
+number is also inflated by cross-path duplicates — the same folder is counted
+under both `D:\distributed-llm\src\distllm\api` and `src/distllm/api` in
+`01-per-folder-rollup.md`, so the true unique count is lower by an unknown
+factor.
+
+What was actually actionable from this audit has been taken: the undefined-name
+class of defect it points at (F821) was swept separately and 28 latent
+`NameError`s were fixed, and the lint and coverage gates were made passable so
+this kind of drift surfaces in CI rather than in an audit.
