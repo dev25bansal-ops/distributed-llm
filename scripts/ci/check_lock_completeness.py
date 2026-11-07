@@ -15,10 +15,28 @@ from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from pathlib import Path
 
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # Python 3.10, which CI runs
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # neither available: parse the one table we need
+        tomllib = None  # type: ignore[assignment]
+
 BUILD_ONLY = {"setuptools"}
+
+
+def load_dependencies(text: str) -> list[str]:
+    """Return ``[project].dependencies`` from pyproject text."""
+    if tomllib is not None:
+        return tomllib.loads(text)["project"]["dependencies"]
+    # Minimal fallback: read the `dependencies = [...]` array in [project].
+    match = re.search(r"^dependencies\s*=\s*\[(.*?)^\]", text, re.S | re.M)
+    if not match:
+        raise SystemExit("could not find [project].dependencies in pyproject.toml")
+    return re.findall(r'"([^"]+)"', match.group(1))
 
 
 def normalise(name: str) -> str:
@@ -26,8 +44,8 @@ def normalise(name: str) -> str:
 
 
 def main() -> int:
-    proj = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    deps = proj["project"]["dependencies"]
+    proj_text = Path("pyproject.toml").read_text(encoding="utf-8")
+    deps = load_dependencies(proj_text)
 
     lock_text = Path("requirements.lock").read_text(encoding="utf-8").lower()
     locked = {
