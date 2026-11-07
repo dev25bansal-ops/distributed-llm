@@ -567,10 +567,15 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
             timeout = per_request
 
         try:
-            async with asyncio.timeout(timeout):
+            # asyncio.timeout() is Python 3.11+; the project supports 3.10.
+            # anyio.fail_after is the supported 3.10-compatible equivalent
+            # (and converts to asyncio.TimeoutError on the asyncio backend).
+            import anyio
+
+            with anyio.fail_after(timeout):
                 response = await call_next(request)
                 return response
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return _error_response(
                 status_code=504,
                 error="Gateway Timeout",
