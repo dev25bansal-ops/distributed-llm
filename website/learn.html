@@ -2,11 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://plausible.io https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Learning Hub — DistLLM</title>
     <meta name="description" content="Learn distributed LLM inference with interactive tutorials, video demos, and architecture deep-dives.">
-    <meta name="keywords" content="LLM tutorial, distributed inference tutorial, pipeline parallelism explained, GPU cluster tutorial, AI infrastructure learning">
     <meta property="og:title" content="Learning Hub — DistLLM">
     <meta property="og:description" content="Interactive tutorials, video demos, and architecture deep-dives for distributed LLM inference.">
     <meta property="og:type" content="website">
@@ -445,7 +444,6 @@ Successfully installed distributed-llm-0.4.0
             </div>
         </div>
     </footer>
-    <script defer data-domain="distllm.dev" src="https://plausible.io/js/script.js"></script>
     <script type="module">
         // Pipeline animation
         document.getElementById('pipelinePlay')?.addEventListener('click', async () => {
