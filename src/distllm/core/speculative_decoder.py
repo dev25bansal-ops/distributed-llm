@@ -12,7 +12,8 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn

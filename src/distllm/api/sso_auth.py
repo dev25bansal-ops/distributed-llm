@@ -31,14 +31,13 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
-
 
 # ─── Shared pooled HTTP client (PERF-01) ────────────────────────────────────
 #
@@ -487,8 +486,8 @@ class OIDCHandler:
         If *expected_nonce* is provided, validates the nonce in the ID token
         to prevent authorization code replay (OIDC nonce binding, :rfc:`8252`).
         """
-        import time
         import secrets
+        import time
 
         # SECURITY: state is mandatory for the authorization-code flow (OAuth2
         # CSRF protection).  A callback without a state cannot be bound to a
@@ -710,9 +709,9 @@ class OIDCHandler:
             logger.warning("No JWKS URL configured — cannot validate token locally")
             return None
         try:
-            import jwt  # PyJWT
-
             import asyncio
+
+            import jwt  # PyJWT
 
             # Cache hit is instant; a miss runs the blocking (single-flight)
             # fetch in a worker thread so the event loop never stalls.
@@ -961,8 +960,8 @@ class GenericOAuth2Handler:
         the token endpoint. Both are single-use: state and verifier are
         consumed (popped) on first use, so replays are rejected.
         """
-        import time
         import secrets
+        import time
 
         # SECURITY: state is mandatory for the authorization-code flow
         # (OAuth2 CSRF protection).  A callback without a state cannot be

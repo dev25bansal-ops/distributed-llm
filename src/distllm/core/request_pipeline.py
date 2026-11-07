@@ -19,12 +19,16 @@ if TYPE_CHECKING:
     from distllm.core.coordinator import Coordinator
 
 from distllm.core.batch_scheduler import ScheduledBatch, Sequence
-from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.core.constrained_decoder import SchemaConstrainedDecoder
 from distllm.core.debug import is_debug_mode
 from distllm.core.graceful_degradation import LoadSnapshot
+from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.errors.types import (
-    NodeError, NodeUnreachableError, OOMError, GRPCTimeoutError, BatchError,
+    BatchError,
+    GRPCTimeoutError,
+    NodeError,
+    NodeUnreachableError,
+    OOMError,
 )
 
 _current_request_id_ctx: ContextVar[str | None] = ContextVar(
@@ -57,7 +61,7 @@ class RequestPipeline:
     Holds a reference to the coordinator for shared state access.
     """
 
-    def __init__(self, coord: "Coordinator") -> None:
+    def __init__(self, coord: Coordinator) -> None:
         self._coord = coord
 
     # -- Token Sampling --

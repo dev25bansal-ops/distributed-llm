@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-
 # Hardened defaults applied when running in production profile.
 _PRODUCTION_SECURE_DEFAULTS: dict[str, Any] = {
     "coordinator": {"host": "0.0.0.0"},

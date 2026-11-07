@@ -32,9 +32,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from distllm.core.webhook_manager import is_safe_webhook_url
+
 from ..auth_deps import require_coordinator, require_role
 from ..persistent_store import get_store
-from distllm.core.webhook_manager import is_safe_webhook_url
 
 try:  # cryptography is an existing dependency of delivery.py (httpx stack).
     from cryptography.fernet import Fernet

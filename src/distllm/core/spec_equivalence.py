@@ -26,12 +26,12 @@ Usage::
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
+from collections.abc import Callable, Iterable, Sequence
 
 from loguru import logger
 
 from distllm.core.coordinator_metrics import MetricsManager
-
 
 # Optional real Prometheus client.  The project does not hard-depend on it,
 # so we degrade gracefully to the in-memory MetricsManager when absent.

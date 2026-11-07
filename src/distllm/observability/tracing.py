@@ -6,21 +6,23 @@ distributed nodes, and request-to-trace correlation helpers.
 
 from typing import Any
 
-from opentelemetry import trace, context
+from opentelemetry import context, trace
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
-from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.sampling import (
-    TraceIdRatioBased,
-    ALWAYS_ON,
     ALWAYS_OFF,
+    ALWAYS_ON,
     ParentBased,
+    TraceIdRatioBased,
 )
+
 try:
     from opentelemetry.instrumentation.grpc import GRPCInstrumentor
 except ImportError:
     GRPCInstrumentor: Any = None  # type: ignore[misc]
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
 try:
     from opentelemetry.propagators.textmap import DictGetter
 except ImportError:

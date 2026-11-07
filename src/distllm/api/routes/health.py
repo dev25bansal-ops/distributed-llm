@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..api_state import g
-from distllm.api.auth_deps import require_role
-from distllm.api.errors import error_response_from_request, error_openapi_entry
 from distllm.api import server as _server_state
+from distllm.api.auth_deps import require_role
+from distllm.api.errors import error_openapi_entry, error_response_from_request
 
+from ..api_state import g
 
 router = APIRouter(tags=["system"])
 

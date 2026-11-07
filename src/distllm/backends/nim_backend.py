@@ -25,7 +25,8 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, AsyncIterator, Iterator
+from typing import Any
+from collections.abc import AsyncIterator, Iterator
 
 import torch
 from loguru import logger
@@ -33,7 +34,6 @@ from loguru import logger
 from distllm.backends.model_validation import validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
-
 
 # ── Constants ────────────────────────────────────────────────────────
 

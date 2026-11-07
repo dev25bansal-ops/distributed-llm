@@ -9,9 +9,10 @@ existing call sites and tests continue to work unchanged.
 
 from __future__ import annotations
 
-import torch
 import uuid
 from typing import TYPE_CHECKING, Protocol
+
+import torch
 
 if TYPE_CHECKING:
     from distllm.core.inference_engine import InferenceEngine
@@ -67,7 +68,7 @@ class PromptLookupStrategy:
     made it dramatically slower than plain generation.
     """
 
-    def __init__(self, engine: "InferenceEngine") -> None:
+    def __init__(self, engine: InferenceEngine) -> None:
         self._engine = engine
         # How many recent tokens to use as the lookup key (n-gram size).
         self._ngram_size: int = 6

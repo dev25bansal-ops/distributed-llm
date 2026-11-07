@@ -168,10 +168,10 @@ _loaded_policy: dict[str, Any] | None = None
 _loaded_rego: str | None = None
 # Path of the cached Rego file used by the OPA binary backend (written on
 # first eval, invalidated by load_policy).
-_rego_cache_path: Optional[str] = None
+_rego_cache_path: str | None = None
 
 
-def load_policy(path: Optional[str] = None) -> dict[str, Any]:
+def load_policy(path: str | None = None) -> dict[str, Any]:
     """Load the authorization policy from a JSON file (or use the default).
 
     The file format mirrors :data:`_DEFAULT_POLICY_DICT`.  Returns the loaded
@@ -271,7 +271,7 @@ def _write_rego_file(rego: str) -> str:
     return path
 
 
-def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
+def _opa_binary_evaluate(data: dict[str, Any]) -> Decision | None:
     """Evaluate via the local ``opa`` binary.
 
     The policy is written once and cached; the input document is passed on
@@ -300,7 +300,7 @@ def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         return None
 
 
-def _opa_server_evaluate(data: dict[str, Any]) -> Optional[Decision]:
+def _opa_server_evaluate(data: dict[str, Any]) -> Decision | None:
     """Evaluate via the OPA server REST API over a pooled keep-alive connection."""
     if not OPA_SERVER_URL:
         return None
@@ -317,7 +317,7 @@ def _opa_server_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         return None
 
 
-async def _opa_server_evaluate_async(data: dict[str, Any]) -> Optional[Decision]:
+async def _opa_server_evaluate_async(data: dict[str, Any]) -> Decision | None:
     """Async variant of :func:`_opa_server_evaluate` using the pooled AsyncClient."""
     if not OPA_SERVER_URL:
         return None
@@ -403,7 +403,7 @@ class OPAClient:
     def authorize(self, data: dict[str, Any]) -> Decision:
         return authorize(data)
 
-    def load_policy(self, path: Optional[str] = None) -> dict[str, Any]:
+    def load_policy(self, path: str | None = None) -> dict[str, Any]:
         return load_policy(path)
 
 

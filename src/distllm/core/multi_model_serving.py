@@ -9,9 +9,11 @@ Extends the existing MultiModelManager with:
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
+
 
 class ModelEntry:
     def __init__(self, name='', path='', total_layers=0):

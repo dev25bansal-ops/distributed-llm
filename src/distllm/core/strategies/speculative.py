@@ -9,9 +9,10 @@ existing call sites and tests continue to work unchanged.
 
 from __future__ import annotations
 
-import torch
 import uuid
 from typing import TYPE_CHECKING, Protocol
+
+import torch
 
 if TYPE_CHECKING:
     from distllm.core.inference_engine import InferenceEngine
@@ -57,7 +58,7 @@ class EngineContext(Protocol):
 class SpeculativeStrategy:
     """Local draft + distributed target speculative decoding strategy."""
 
-    def __init__(self, engine: "InferenceEngine") -> None:
+    def __init__(self, engine: InferenceEngine) -> None:
         self._engine = engine
 
     def generate(self, prompt, max_new_tokens, temperature, top_p, top_k, **kwargs):

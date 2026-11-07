@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, AsyncIterator, Iterator
+from typing import Any
+from collections.abc import AsyncIterator, Iterator
 
 import numpy as np
 import torch
@@ -30,7 +31,6 @@ from loguru import logger
 
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

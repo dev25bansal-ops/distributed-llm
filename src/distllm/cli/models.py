@@ -69,7 +69,7 @@ class WorkerArgs(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _validate_layer_bounds(self) -> "WorkerArgs":
+    def _validate_layer_bounds(self) -> WorkerArgs:
         """Ensure the worker covers at least one layer (no zero-layer workers)."""
         if self.start_layer >= self.total_layers:
             raise ValueError(

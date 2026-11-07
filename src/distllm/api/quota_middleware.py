@@ -19,13 +19,11 @@ import os
 import time
 
 from fastapi import Request
+from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from distllm.api.errors import error_response
 from distllm.core.usage_meter import UsageMeter, create_usage_meter
-
-from loguru import logger
-
 
 QUOTA_ENABLED_ENV = "DISTLLM_QUOTA_ENABLED"
 

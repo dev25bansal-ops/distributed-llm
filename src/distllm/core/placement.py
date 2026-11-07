@@ -55,8 +55,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Iterable
-
+from collections.abc import Iterable
 
 # ── Default reference points (normalisation constants) ─────────────────────
 # Chosen so a "typical" WAN edge node (10 ms, 100 Gbps, 400 gCO₂/kWh) scores ~1.0.
@@ -107,11 +106,11 @@ class NodeTopology:
     @classmethod
     def from_network(
         cls,
-        topology: "object",
+        topology: object,
         regions: dict[int, str] | None = None,
         carbon: dict[str, float] | None = None,
         coordinator_idx: int = 0,
-    ) -> "NodeTopology":
+    ) -> NodeTopology:
         """Build a ``NodeTopology`` from the existing ``distllm.dist.network.Topology``.
 
         Args:

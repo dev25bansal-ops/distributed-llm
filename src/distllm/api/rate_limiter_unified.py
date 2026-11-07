@@ -44,16 +44,16 @@ import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
+from collections.abc import Callable
 
 from fastapi import Request, Response
-from distllm.api.errors import error_response
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from distllm.api.errors import error_response
 from distllm.api.ip_utils import get_client_ip
-
 
 # ---------------------------------------------------------------------------
 # Strategy enum

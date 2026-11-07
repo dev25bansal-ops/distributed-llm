@@ -1,10 +1,9 @@
 """OpenTelemetry metrics for distributed LLM."""
 
 from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, MetricExporter
+from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider
+from opentelemetry.sdk.metrics.export import MetricExporter, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.metrics import Histogram, Counter
 
 
 def setup_metrics(

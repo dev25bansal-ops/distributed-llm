@@ -30,7 +30,7 @@ class NodeRange:
     def size(self) -> int:
         return self.end_layer - self.start_layer + 1
 
-    def overlaps(self, other: "NodeRange") -> bool:
+    def overlaps(self, other: NodeRange) -> bool:
         return self.start_layer <= other.end_layer and self.end_layer >= other.start_layer
 
 

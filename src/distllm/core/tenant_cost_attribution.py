@@ -10,8 +10,8 @@ Extends the CostTracker with:
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -158,8 +158,8 @@ class TenantCostAttribution:
             lambda: deque(maxlen=max_history_per_tenant)
         )
         # M1: Decimal-backed accumulators — exact at billing volume.
-        self._hourly_costs: dict[str, "MoneyAccumulator"] = defaultdict(MoneyAccumulator)
-        self._daily_costs: dict[str, "MoneyAccumulator"] = defaultdict(MoneyAccumulator)
+        self._hourly_costs: dict[str, MoneyAccumulator] = defaultdict(MoneyAccumulator)
+        self._daily_costs: dict[str, MoneyAccumulator] = defaultdict(MoneyAccumulator)
         self._monthly_costs: dict[str, float] = defaultdict(float)
         self._hourly_reset: float = time.time()
         self._daily_reset: float = time.time()

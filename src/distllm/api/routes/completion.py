@@ -6,11 +6,11 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..api_state import g
-from ..streaming import _get_client_id, _stream_response
 from ..errors import error_openapi_entry
+from ..streaming import _get_client_id, _stream_response
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.

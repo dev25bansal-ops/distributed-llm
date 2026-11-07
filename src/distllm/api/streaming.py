@@ -16,13 +16,14 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any
+from collections.abc import AsyncGenerator
 
 from loguru import logger
 
+from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer
-from distllm.core.param_update_channel import ParamUpdateChannel
 
 
 def _get_client_id(request: Any) -> str:
@@ -46,8 +47,9 @@ import threading
 
 import torch
 
-from .api_state import g
 from distllm.core.token_generator import TokenGenerator
+
+from .api_state import g
 
 _token_gen: TokenGenerator | None = None
 _token_gen_lock = threading.Lock()

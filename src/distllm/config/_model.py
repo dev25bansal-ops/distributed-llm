@@ -1,7 +1,7 @@
 """Model, quantization, speculative decoding, LoRA, MoE, compression,
 embedding, prompt template, and model hub configuration classes."""
 
-from pydantic import BaseModel, Field, field_validator, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 # Canonical (settings-space) names for quantization methods. The validator
 # in QuantizationSettings also accepts the CLI-space aliases

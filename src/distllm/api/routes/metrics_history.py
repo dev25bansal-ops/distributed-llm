@@ -25,8 +25,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from ..api_state import g
 from distllm.api.auth_deps import require_role
+
+from ..api_state import g
 
 router = APIRouter(tags=["monitoring"])
 

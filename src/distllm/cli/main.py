@@ -110,7 +110,7 @@ Register-ArgumentCompleter -Native -CommandName distllm -ScriptBlock {
     console.print(f"[green]Generated {shell} completion script:[/green]")
     console.print()
     console.print(script)
-    console.print(f"[dim]Add this to your shell config file to enable autocomplete.[/dim]")
+    console.print("[dim]Add this to your shell config file to enable autocomplete.[/dim]")
 
 # ── Command groups ──────────────────────────────────────────────────────
 #
@@ -137,12 +137,12 @@ model_adapters_app = typer.Typer(help="Manage LoRA/QLoRA adapters")
 system_logs_app = typer.Typer(help="Stream and filter logs")
 
 # Module-owned groups (each module owns its Typer app; see the module files)
-from distllm.cli.verify import verify_app
-from distllm.cli.webhook import webhook_app
-from distllm.cli.quota import quota_app
 from distllm.cli.backup import backup_app
 from distllm.cli.cert import cert_app
 from distllm.cli.notify import notify_app
+from distllm.cli.quota import quota_app
+from distllm.cli.verify import verify_app
+from distllm.cli.webhook import webhook_app
 
 app.add_typer(cluster_app, name="cluster")
 app.add_typer(model_app, name="model")
@@ -1133,8 +1133,9 @@ def system_api(
     no_auth: bool = typer.Option(False, "--no-auth", help="Disable API key authentication (development only)"),
 ):
     """Start the OpenAI-compatible REST API server."""
-    import uvicorn
     import os
+
+    import uvicorn
     from loguru import logger
 
     from distllm.api.server import app, create_coordinator

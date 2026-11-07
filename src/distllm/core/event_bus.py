@@ -28,10 +28,10 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any
+from collections.abc import Callable, Coroutine
 
 from loguru import logger
-
 
 # ── Event Types ──────────────────────────────────────────────────────────────
 

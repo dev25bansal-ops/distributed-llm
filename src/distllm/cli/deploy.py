@@ -6,11 +6,10 @@ across nodes. Supports one-line HuggingFace deployment.
 
 import time
 
+import httpx
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
-
-import httpx
 
 console = Console()
 
@@ -224,7 +223,7 @@ def _deploy_local(model: str, dtype: str, quantization: str, nodes: int, console
     command instead.
     """
     console.print("[bold]Local mode instructions:[/bold]")
-    console.print(f"  Run in another terminal:")
+    console.print("  Run in another terminal:")
     console.print(
         f"    [cyan]distllm run --model {model} --local --dtype {dtype}"
         f"{' --quantization ' + quantization if quantization != 'none' else ''}[/cyan]"

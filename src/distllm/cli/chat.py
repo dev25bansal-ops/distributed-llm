@@ -15,7 +15,7 @@ def run_chat(
 ):
     """Run interactive chat mode."""
     base_url = f"http://{host}:{port}"
-    console.print(f"\n[bold blue]DistLLM Interactive Chat[/bold blue]")
+    console.print("\n[bold blue]DistLLM Interactive Chat[/bold blue]")
     console.print(f"Model: {model}")
     console.print(f"Server: {base_url}")
     console.print("Type 'quit' or 'exit' to stop, 'clear' to reset\n")
@@ -60,7 +60,7 @@ def run_chat(
                     data = response.json()
                     assistant_msg = data["choices"][0]["message"]["content"]
 
-                    console.print(f"\n[bold green]Assistant:[/bold green]")
+                    console.print("\n[bold green]Assistant:[/bold green]")
                     console.print(Markdown(assistant_msg))
 
                     if "usage" in data:

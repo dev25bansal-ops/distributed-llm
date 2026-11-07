@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 
-from fastapi import Request
-from loguru import logger
 from ..api_state import g
 from ..auth_deps import require_role
 from ..errors import error_openapi_entry

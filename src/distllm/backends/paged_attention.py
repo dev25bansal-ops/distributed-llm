@@ -188,7 +188,7 @@ class PagedAttentionManager:
                 # CUDA_VISIBLE_DEVICES maps GPU to NUMA node
                 gpu_id = int(os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
                 # Try reading from sysfs (Linux)
-                numa_path = f"/sys/bus/pci/devices/*/numa_node"
+                numa_path = "/sys/bus/pci/devices/*/numa_node"
                 import glob
                 for path in glob.glob(numa_path):
                     try:

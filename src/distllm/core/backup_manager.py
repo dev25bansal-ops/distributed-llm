@@ -11,12 +11,13 @@ import gzip
 import json
 import os
 import shutil
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 

@@ -3,14 +3,13 @@
 Profiles model inference performance: latency, throughput, memory.
 """
 
-import time
 import json
+import time
 from typing import Any
 
 import httpx
 from rich.console import Console
 from rich.table import Table
-
 
 console = Console()
 

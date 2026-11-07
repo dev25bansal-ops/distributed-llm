@@ -4,8 +4,13 @@ Avoids distllm package import (which has circular import) by loading
 individual .py files directly with exec() into fresh module namespaces,
 pre-populating sys.modules with fake parent packages.
 """
-import sys, json, hashlib, types, torch
+import hashlib
+import json
+import sys
+import types
 from pathlib import Path
+
+import torch
 
 _ALLOWED_DIR = Path(__file__).resolve().parent
 

@@ -21,7 +21,6 @@ except ImportError:  # pragma: no cover
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
-
 # Default label values required by the test-suite metrics assertions.
 _DEFAULT_MODEL = "distributed-llm"
 _DEFAULT_TENANT = "default"

@@ -8,9 +8,9 @@ import time
 import uuid
 
 import httpx
+from loguru import logger
 from rich.console import Console
 from rich.table import Table
-from loguru import logger
 
 console = Console()
 
@@ -140,7 +140,7 @@ def _cluster_rebalance(host: str, port: int, strategy: str = "balanced"):
 
 def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str, debug: bool):
     """Start a coordinator and optionally the REST API."""
-    console.print(f"[bold]Starting coordinator...[/bold]")
+    console.print("[bold]Starting coordinator...[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  gRPC port: {port}")
     console.print(f"  API port: {api_port}")
@@ -187,7 +187,7 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
         if coord_ready:
             console.print(f"[green]Coordinator ready[/green] on port {port}")
         else:
-            console.print(f"[yellow]Coordinator may not be ready[/yellow] (timeout)")
+            console.print("[yellow]Coordinator may not be ready[/yellow] (timeout)")
 
         api_proc = subprocess.Popen(api_args)
         console.print(f"[green]API server started[/green] (PID: {api_proc.pid})")
@@ -206,7 +206,7 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
         if api_ready:
             console.print(f"[green]API server ready[/green] on port {api_port}")
         else:
-            console.print(f"[yellow]API server may not be ready[/yellow] (timeout)")
+            console.print("[yellow]API server may not be ready[/yellow] (timeout)")
 
         console.print()
         console.print(f"Workers join: distllm cluster join --coordinator localhost:{port}")

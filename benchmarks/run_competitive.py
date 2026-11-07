@@ -13,7 +13,7 @@ Usage:
 import argparse
 import json
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -248,7 +248,7 @@ def main():
     if args.compare:
         regressions = benchmark.compare_with_baseline(args.compare)
         if regressions:
-            print(f"\n⚠️  Regressions detected:")
+            print("\n⚠️  Regressions detected:")
             for r in regressions:
                 print(f"  {r['engine']}: {r['metric']} {r['change_pct']}% (baseline: {r['baseline']}, current: {r['current']})")
         else:

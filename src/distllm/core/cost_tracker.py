@@ -21,12 +21,12 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 if TYPE_CHECKING:
-    from distllm.core.tenant_cost_attribution import TenantCostAttribution, RoutingAttribution
+    from distllm.core.tenant_cost_attribution import RoutingAttribution, TenantCostAttribution
 
 
 # ── Pricing Models ──────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ class CostTracker:
         self,
         default_gpu_type: str = "A100-80GB",
         default_model: str = "",
-        tenant_attribution: "TenantCostAttribution | None" = None,
+        tenant_attribution: TenantCostAttribution | None = None,
     ):
         self._default_gpu = default_gpu_type
         self._default_model = default_model
@@ -282,7 +282,7 @@ class CostTracker:
         model_name: str = "",
         gpu_type: str = "",
         ttft_ms: float = 0.0,
-        routing: "RoutingAttribution | None" = None,
+        routing: RoutingAttribution | None = None,
     ) -> CostEstimate:
         """Record a completed request and update cost tracking.
 
@@ -358,7 +358,7 @@ class CostTracker:
 
         return estimate
 
-    def get_cost_headers(self, estimate: CostEstimate, routing: "RoutingAttribution | None" = None) -> dict[str, str]:
+    def get_cost_headers(self, estimate: CostEstimate, routing: RoutingAttribution | None = None) -> dict[str, str]:
         """Generate HTTP headers for cost information.
 
         Returns headers to include in API responses:

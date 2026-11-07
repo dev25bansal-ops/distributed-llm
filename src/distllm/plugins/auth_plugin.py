@@ -32,19 +32,18 @@ Configuration (environment variables):
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import os
 import threading
 import time
-import base64
 from typing import Any
 
 from loguru import logger
 
 from distllm.core.plugin_system import PluginBase
-
 
 # ── Optional PyJWT import ──────────────────────────────────────────────────
 

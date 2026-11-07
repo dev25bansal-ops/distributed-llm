@@ -25,8 +25,8 @@ try:
     from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
     from opentelemetry.sdk.trace.export import (
         BatchSpanProcessor,
-        SpanExportResult,
         SpanExporter,
+        SpanExportResult,
     )
     from opentelemetry.sdk.trace.sampling import (
         ParentBased,
@@ -41,8 +41,8 @@ try:
         from opentelemetry.sdk.trace.sampling import (  # type: ignore[no-redef]
             SamplingDecision,
         )
-    from opentelemetry.trace import StatusCode
     from opentelemetry.sdk.resources import Resource
+    from opentelemetry.trace import StatusCode
 
     _OTEL_AVAILABLE = True
 except ImportError:  # pragma: no cover

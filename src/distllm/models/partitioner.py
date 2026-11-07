@@ -47,7 +47,7 @@ def _get_base_prefix(model: Any) -> str:
     return ""
 
 
-def build_quantization_config(quant_config: QuantizationConfig | None) -> "BitsAndBytesConfig | None":
+def build_quantization_config(quant_config: QuantizationConfig | None) -> BitsAndBytesConfig | None:
     """Build a BitsAndBytesConfig from QuantizationConfig dataclass."""
     if quant_config.method == "none":
         return None

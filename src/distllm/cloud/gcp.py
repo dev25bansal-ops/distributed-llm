@@ -100,8 +100,9 @@ class GCPPricingFetcher(PricingFetcher):
             if not cred_path:
                 logger.warning("GCP auth: GOOGLE_APPLICATION_CREDENTIALS not set")
                 return ""
-            import httpx
             import json
+
+            import httpx
             with open(cred_path) as f:
                 creds = json.load(f)
             resp = httpx.post(
@@ -209,7 +210,11 @@ class GCPAvailabilityChecker(AvailabilityChecker):
             if not cred_path:
                 logger.warning("GCP auth: GOOGLE_APPLICATION_CREDENTIALS not set")
                 return ""
-            import httpx, json, time, base64
+            import base64
+            import json
+            import time
+
+            import httpx
             with open(cred_path) as f:
                 creds = json.load(f)
             header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=")

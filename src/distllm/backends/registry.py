@@ -231,7 +231,7 @@ def _is_entry_point_allowed(ep: importlib.metadata.EntryPoint) -> bool:
 
 # ── Module-level state ─────────────────────────────────────────────────
 
-_registry: dict[str, "BackendPlugin"] = {}
+_registry: dict[str, BackendPlugin] = {}
 """Global registry: backend_name -> BackendPlugin."""
 
 _plugin_by_class: dict[type, str] = {}

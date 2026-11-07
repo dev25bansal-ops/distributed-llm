@@ -310,18 +310,21 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "YTT", "ANN", "BLE", "SIM"]
 
-# The full select above is kept for `ruff check --statistics` and editor
-# feedback, but two rule families are style policy rather than defects and
-# have never been applied to this tree: ANN (1,502 missing annotations) and
-# BLE (720 blind-except, many in supervisors where a broad catch is correct).
-# Gating CI on them would mean a permanently red job nobody acts on.
-ignore = ["ANN", "BLE"]
+# Kept for --statistics and editor feedback, but not gated:
+#   ANN (1,502) - missing annotations; a backlog, not defects.
+#   BLE (720)   - broad excepts; many are correct in supervisors/fallbacks.
+#   F401 (479)  - unused imports. This codebase re-exports heavily through
+#                 package __init__ and "backward-compatible re-export" blocks;
+#                 ruff cannot see those uses and its autofix DELETES them,
+#                 which broke 20+ imports when tried. Import hygiene here is
+#                 enforced by the import smoke test, not by this rule.
+#   E402 (48)   - imports after code; the re-export blocks sit there on purpose.
+#   E501        - line length; the formatter owns it.
+ignore = ["ANN", "BLE", "F401", "E402", "E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "N"]
 "examples/*" = ["ANN", "N"]
-# E501 (line length) is formatting, not correctness; the formatter owns it.
-"src/distllm/**" = ["E501"]
 
 [tool.mypy]
 python_version = "3.10"

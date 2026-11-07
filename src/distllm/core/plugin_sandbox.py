@@ -26,6 +26,7 @@ verify the manifest signature + capabilities before trusting the plugin.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -33,11 +34,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import ctypes
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -51,11 +52,11 @@ except Exception:  # pragma: no cover - e.g. Windows
     _resource = None
 
 try:  # cryptography is a core dependency (Ed25519 signing).
+    from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
         Ed25519PrivateKey,
         Ed25519PublicKey,
     )
-    from cryptography.hazmat.primitives import serialization
     _HAVE_CRYPTO = True
 except Exception:  # pragma: no cover
     _HAVE_CRYPTO = False
@@ -134,7 +135,7 @@ class PluginManifest:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "PluginManifest":
+    def from_dict(cls, data: dict) -> PluginManifest:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
@@ -187,7 +188,7 @@ class SandboxPolicy:
         return all(self.allows(c) for c in caps)
 
     @classmethod
-    def from_granted(cls, granted: list[str], **kw: Any) -> "SandboxPolicy":
+    def from_granted(cls, granted: list[str], **kw: Any) -> SandboxPolicy:
         return cls(
             capabilities={PluginCapability(c) for c in granted if c in _CAP_NAMES},
             **kw,
@@ -293,7 +294,7 @@ class IsolationConfig:
     max_file_size_mb: int = 0
     plugin_name: str = "<plugin>"
 
-    def with_level(self, level: IsolationLevel) -> "IsolationConfig":
+    def with_level(self, level: IsolationLevel) -> IsolationConfig:
         """Return a copy of this config with ``level`` overridden."""
         return IsolationConfig(
             level=level,
@@ -433,9 +434,9 @@ def _apply_seccomp(audit: IsolationAudit) -> None:
         from seccomp import (  # type: ignore
             ALL_ARCH,
             Action,
+            Arg,
             Filter,
             Syscall,
-            Arg,
         )
     except Exception:
         # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.

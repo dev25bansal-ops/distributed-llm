@@ -196,10 +196,10 @@ def run_observe(
 
     if metrics_only:
         console.print("\n[dim]Metrics-only mode. Use --dashboard-port to enable Grafana.[/dim]")
-        console.print(f"\n[bold]Prometheus scrape config:[/bold]")
-        console.print(f"  scrape_configs:")
-        console.print(f"    - job_name: 'distllm'")
-        console.print(f"      static_configs:")
+        console.print("\n[bold]Prometheus scrape config:[/bold]")
+        console.print("  scrape_configs:")
+        console.print("    - job_name: 'distllm'")
+        console.print("      static_configs:")
         console.print(f"        - targets: ['localhost:{metrics_port}']")
         return
 
@@ -242,9 +242,9 @@ def run_observe(
     console.print(f"  Prometheus: {prometheus_url}")
 
     console.print("\n[bold]Quick Start:[/bold]")
-    console.print(f"  1. Start Prometheus:  prometheus --config.file=prometheus.yml")
-    console.print(f"  2. Start Loki:        loki -config.file=loki.yaml")
-    console.print(f"  3. Start Grafana:     grafana-server --homepath=/usr/share/grafana \\")
+    console.print("  1. Start Prometheus:  prometheus --config.file=prometheus.yml")
+    console.print("  2. Start Loki:        loki -config.file=loki.yaml")
+    console.print("  3. Start Grafana:     grafana-server --homepath=/usr/share/grafana \\")
     console.print(f"                         cfg:paths.provisioning={provisioning_dir}")
 
     console.print("\n[dim]Press Ctrl+C to stop the metrics server.[/dim]")
@@ -259,8 +259,8 @@ def run_observe(
 
 def _start_metrics_server(coordinator_url: str, port: int) -> None:
     """Start a Prometheus-compatible metrics endpoint."""
-    from http.server import HTTPServer, BaseHTTPRequestHandler
     import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class MetricsHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -309,7 +309,7 @@ def _collect_metrics(coordinator_url: str) -> str:
     # Add default metrics
     lines.append("# TYPE distllm_up gauge")
     lines.append("distllm_up 1")
-    lines.append(f"# TYPE distllm_uptime_seconds gauge")
+    lines.append("# TYPE distllm_uptime_seconds gauge")
     lines.append(f"distllm_uptime_seconds {time.time()}")
 
     return "\n".join(lines) + "\n"

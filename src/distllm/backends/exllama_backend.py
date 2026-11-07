@@ -100,7 +100,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
                 "pip install exllamav2",
             )
         warnings.warn(_EXPERIMENTAL_WARNING, UserWarning, stacklevel=2)
-        from exllamav2 import ExLlamaV2Config, ExLlamaV2, ExLlamaV2Tokenizer
+        from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Tokenizer
 
         logger.info(f"[ExLlamaV2] Loading model: {self.model_name}")
 

@@ -12,70 +12,73 @@ import threading
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
+import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, HTMLResponse
-from pydantic import BaseModel, Field
-import uvicorn
-from starlette.middleware.base import BaseHTTPMiddleware
-
-from distllm.core.coordinator import Coordinator
-from distllm.core.plugin_system import PluginSystem
-from distllm.plugins.builtin import RateLimitPlugin, AuditLogPlugin, MetricsPlugin, AuthPlugin
-from distllm.plugins.health_plugin import HealthPlugin
-from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware, RequestRateLimitMiddleware
-from distllm.config.resolver import ConfigResolver
-from distllm.dashboard.ws_handler import (
-    manager,
-    metrics_broadcaster,
-    get_collector,
-    parse_client_message,
-    stream_metrics_sse,
-    KNOWN_METRIC_CATEGORIES,
-)
-from fastapi.responses import StreamingResponse
-from starlette.responses import Response
-from distllm.core.monitor import SystemMonitor
-from distllm.config.settings import DistLLMSettings
-from distllm.core.debug import set_debug_mode
-from distllm.observability.tracing import setup_tracing
-from distllm.observability.logging import setup_logging
-from distllm.observability.exporter import DistLLMPrometheusExporter
-from distllm.api.observability_middleware import ObservabilityMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from loguru import logger
-from distllm.constants import HSTS_MAX_AGE
+from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 # Re-export route routers
 from distllm.api.api_state import g as _g
 from distllm.api.auth_deps import require_role
-from distllm.api.errors import error_response, error_response_from_request, error_openapi_entry
+from distllm.api.errors import error_openapi_entry, error_response, error_response_from_request
+from distllm.api.middleware import AuthMiddleware, RequestIDMiddleware, RequestRateLimitMiddleware
+from distllm.api.observability_middleware import ObservabilityMiddleware
 from distllm.api.routes import (
+    admin_router,
+    api_keys_router,
+    batch_router,
     chat_router,
     chat_v2_router,
     completion_router,
-    embeddings_router,
-    health_router,
-    gossip_router,
-    admin_router,
-    marketplace_router,
-    federated_router,
-    webrtc_router,
-    leaderboard_router,
-    prompts_router,
-    model_registry_router,
-    router_admin_router,
     defrag_router,
-    batch_router,
+    embeddings_router,
     eval_router,
-    metrics_history_router,
-    api_keys_router,
+    federated_router,
     files_router,
     fine_tuning_router,
+    gossip_router,
+    health_router,
+    leaderboard_router,
+    marketplace_router,
+    metrics_history_router,
+    model_registry_router,
+    prompts_router,
+    router_admin_router,
     # Additional SHOULD_MOUNT routers
-    scheduler_router,       # OPS_RUNBOOK docs; tests/api/test_scheduler.py mounts & exercises
+    scheduler_router,  # OPS_RUNBOOK docs; tests/api/test_scheduler.py mounts & exercises
+    webrtc_router,
 )
+
+# Re-export models from route modules for backward compatibility
+from distllm.api.routes.chat import (
+    ChatChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatMessage,
+)
+from distllm.api.routes.completion import (
+    CompletionChoice,
+    CompletionRequest,
+    CompletionResponse,
+)
+from distllm.api.routes.embeddings import (
+    EmbeddingObject,
+    EmbeddingRequest,
+    EmbeddingResponse,
+)
+from distllm.api.routes.exchange import router as exchange_router
+from distllm.api.routes.fine_tuning import router as fine_tuning_router
+from distllm.api.routes.health import ModelInfo, ModelList, ParamUpdateRequest
+from distllm.api.routes.plugins import router as plugins_router
+from distllm.api.routes.tokenize import router as tokenize_router
+
 # Additional SHOULD_MOUNT routers:
 # - defrag_router is imported above (mount below).
 # - exchange_router: testing_verification_report.md documents; standalone test files mount
@@ -87,30 +90,7 @@ from distllm.api.routes import (
 #   - assistants_router, debug_router, experiments_router, files_router, moderation_router:
 #     see per-file comments below
 from distllm.api.routes.tools import router as tools_router
-from distllm.api.routes.exchange import router as exchange_router
-from distllm.api.routes.plugins import router as plugins_router
-from distllm.api.routes.fine_tuning import router as fine_tuning_router
-from distllm.api.routes.tokenize import router as tokenize_router
 from distllm.api.routes.webhooks import router as webhooks_router
-
-# Re-export models from route modules for backward compatibility
-from distllm.api.routes.chat import (
-    ChatMessage,
-    ChatCompletionRequest,
-    ChatChoice,
-    ChatCompletionResponse,
-)
-from distllm.api.routes.completion import (
-    CompletionRequest,
-    CompletionChoice,
-    CompletionResponse,
-)
-from distllm.api.routes.embeddings import (
-    EmbeddingRequest,
-    EmbeddingObject,
-    EmbeddingResponse,
-)
-from distllm.api.routes.health import ModelInfo, ModelList, ParamUpdateRequest
 
 # Re-export streaming helpers for backward compatibility
 from distllm.api.streaming import (
@@ -118,7 +98,26 @@ from distllm.api.streaming import (
     _generate_tokens,
     _stream_response,
 )
-
+from distllm.config.resolver import ConfigResolver
+from distllm.config.settings import DistLLMSettings
+from distllm.constants import HSTS_MAX_AGE
+from distllm.core.coordinator import Coordinator
+from distllm.core.debug import set_debug_mode
+from distllm.core.monitor import SystemMonitor
+from distllm.core.plugin_system import PluginSystem
+from distllm.dashboard.ws_handler import (
+    KNOWN_METRIC_CATEGORIES,
+    get_collector,
+    manager,
+    metrics_broadcaster,
+    parse_client_message,
+    stream_metrics_sse,
+)
+from distllm.observability.exporter import DistLLMPrometheusExporter
+from distllm.observability.logging import setup_logging
+from distllm.observability.tracing import setup_tracing
+from distllm.plugins.builtin import AuditLogPlugin, AuthPlugin, MetricsPlugin, RateLimitPlugin
+from distllm.plugins.health_plugin import HealthPlugin
 
 # ── Named constants ──────────────────────────────────────────────
 CORS_MAX_AGE = 600                       # CORS preflight cache TTL (seconds)
@@ -132,23 +131,26 @@ DEFAULT_COORD_PORT = 50050               # Default gRPC port for coordinator nod
 # accesses server._get_cors_origins and server._get_cors_origins_lazy).
 from distllm.api.server_config import (  # noqa: E402
     _CORS_ORIGINS,
+    _build_uvicorn_config,
     _cors_origins_lock,
     _extract_prom_counter,
     _extract_prom_gauge,
     _get_cors_origins,
     _get_cors_origins_lazy,
     _load_settings,
-    _build_uvicorn_config,
 )
-
+from distllm.api.server_coordinator import create_coordinator  # noqa: E402
 
 # Lifespan logic lives in server_lifespan (canonical extraction). server.py
 # re-exports it for back-compat. server_lifespan.create_lifespan() returns
 # the async generator that FastAPI expects; we wrap it so `lifespan(app)`
 # keeps its historic call signature (was @asynccontextmanager def lifespan(app)).
-from distllm.api.server_lifespan import _init_observability, _init_plugins, _start_ws_broadcaster  # noqa: E402
+from distllm.api.server_lifespan import (  # noqa: E402
+    _init_observability,
+    _init_plugins,
+    _start_ws_broadcaster,
+)
 from distllm.api.server_lifespan import create_lifespan as _create_lifespan_impl  # noqa: E402
-from distllm.api.server_coordinator import create_coordinator  # noqa: E402
 
 
 @asynccontextmanager
@@ -193,6 +195,7 @@ app = FastAPI(
 
 # Security: Configure CORS with explicit allowed origins
 from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins_lazy(),
@@ -334,7 +337,6 @@ from distllm.api.server_errors import (  # noqa: E402
     register_exception_handlers,
     validation_exception_handler,
 )
-
 
 # ── API Response Models ────────────────────────────────────────────
 
@@ -593,6 +595,7 @@ app.add_middleware(TimeoutMiddleware)
 # replay must never hit a cached response, and the fingerprint is namespaced by
 # the authenticated api_key_id (see dedup.py).
 from distllm.api.dedup import DedupMiddleware
+
 app.add_middleware(DedupMiddleware)
 
 # PluginHookMiddleware runs via its own ASGI dispatch; it must execute
@@ -671,6 +674,7 @@ app.add_middleware(AuthMiddleware)
 # requests to prevent Cross-Site Request Forgery. Runs after CORS and security
 # headers but before AuthMiddleware so CSRF violations are caught early.
 from distllm.api.csrf_middleware import CSRFSameOriginMiddleware
+
 app.add_middleware(CSRFSameOriginMiddleware)
 
 # RequestIDMiddleware registered after AuthMiddleware so it runs before it
@@ -687,6 +691,7 @@ app.add_middleware(RequestRateLimitMiddleware)
 # injection attacks (BLOCK / SANITIZE / FLAG). Runs after auth so blocked
 # requests don't consume resources, but before the main route handlers.
 from distllm.api.prompt_injection import PromptInjectionMiddleware
+
 app.add_middleware(PromptInjectionMiddleware)
 
 # ContentModerationMiddleware — intercepts requests/responses for toxicity,
@@ -869,6 +874,7 @@ app.add_middleware(BackpressureMiddleware)
 # Registered after BackpressureMiddleware so it runs between
 # BackpressureMiddleware and the route handlers.
 from distllm.api.circuit_breaker_middleware import CircuitBreakerMiddleware
+
 app.add_middleware(CircuitBreakerMiddleware)
 
 
@@ -951,12 +957,14 @@ except ImportError:
 # re-read and re-parse the body independently.
 # Registered after CostTrackingMiddleware so it wraps all inner middleware.
 from distllm.api.body_cache_middleware import BodyCacheMiddleware
+
 app.add_middleware(BodyCacheMiddleware)
 
 # Tracing middleware — outermost, W3C Trace-Context propagation.
 # Registered LAST so it wraps the entire pipeline and captures the full
 # request lifecycle (auth, rate-limiting, inference phases).
 from distllm.api.tracing_middleware import TracingMiddleware
+
 app.add_middleware(TracingMiddleware)
 
 # Observability middleware — records RED (rate/errors/duration) metrics for
@@ -973,13 +981,14 @@ app.add_middleware(
 # env vars configure a provider. Registered after tracing so it runs first,
 # matching AuthMiddleware's `request.state.auth_method == "sso"` skip path.
 from distllm.api.sso_middleware import setup_sso
+
 setup_sso(app)
 
 # --- Dashboard & WebSocket ---
 
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
 
+from fastapi.staticfiles import StaticFiles
 
 # Mount dashboard static files (CSS, JS)
 dashboard_static = Path(__file__).parent.parent / "dashboard" / "static"
@@ -1137,7 +1146,7 @@ async def metrics_websocket(websocket: WebSocket) -> None:
 
             # Prometheus metrics snapshot (if available)
             try:
-                from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+                from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
                 prom_data = generate_latest()
                 if prom_data and (not requested or "prometheus" in requested):
                     snapshot["prometheus"] = {

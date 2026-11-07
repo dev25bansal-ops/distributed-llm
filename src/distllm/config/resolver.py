@@ -136,7 +136,7 @@ class ConfigResolver:
         self._cli_overrides = cli_overrides or {}
 
     @classmethod
-    def from_cli(cls, entry_point: str, argv: list[str] | None = None) -> "ConfigResolver":
+    def from_cli(cls, entry_point: str, argv: list[str] | None = None) -> ConfigResolver:
         """Parse CLI args for *entry_point* and return a resolver.
 
         Args:

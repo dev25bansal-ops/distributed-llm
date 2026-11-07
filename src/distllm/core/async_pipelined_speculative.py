@@ -45,13 +45,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import torch
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
-
 
 # ── Ring Buffer ──────────────────────────────────────────────────────────────
 

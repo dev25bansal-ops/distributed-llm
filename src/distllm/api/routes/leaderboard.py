@@ -22,14 +22,14 @@ router = APIRouter(tags=["leaderboard"])
 
 
 class BenchmarkMetrics(BaseModel):
-    throughput_tok_s: Optional[float] = None
-    ttft_ms: Optional[float] = None
-    itl_ms: Optional[float] = None
-    latency_p50_ms: Optional[float] = None
-    latency_p95_ms: Optional[float] = None
-    latency_p99_ms: Optional[float] = None
-    memory_peak_mb: Optional[float] = None
-    memory_efficiency: Optional[float] = None
+    throughput_tok_s: float | None = None
+    ttft_ms: float | None = None
+    itl_ms: float | None = None
+    latency_p50_ms: float | None = None
+    latency_p95_ms: float | None = None
+    latency_p99_ms: float | None = None
+    memory_peak_mb: float | None = None
+    memory_efficiency: float | None = None
 
 
 class BenchmarkConfig(BaseModel):
@@ -154,9 +154,9 @@ def _ensure_loaded():
     },
 )
 async def list_leaderboard(
-    model: Optional[str] = Query(None),
-    hardware: Optional[str] = Query(None),
-    metric: Optional[str] = Query(None),
+    model: str | None = Query(None),
+    hardware: str | None = Query(None),
+    metric: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):

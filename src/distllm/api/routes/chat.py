@@ -16,10 +16,11 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from distllm.core.structured_output import JSONSchemaConstraint, StructuredOutputEngine
+
 from ..api_state import g
-from ..streaming import _get_client_id, _stream_response
-from distllm.core.structured_output import StructuredOutputEngine, JSONSchemaConstraint
 from ..errors import error_openapi_entry
+from ..streaming import _get_client_id, _stream_response
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.

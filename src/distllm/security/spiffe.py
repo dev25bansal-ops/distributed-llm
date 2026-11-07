@@ -80,7 +80,7 @@ class PeerIdentity:
         return f"spiffe://{td}/peer/{self.peer_id}"
 
     @classmethod
-    def from_spiffe_id(cls, spiffe_id: str) -> "PeerIdentity":
+    def from_spiffe_id(cls, spiffe_id: str) -> PeerIdentity:
         """Parse a SPIFFE ID back into a PeerIdentity (inverse of ``.spiffe_id``)."""
         if not spiffe_id.startswith("spiffe://"):
             raise ValueError(f"not a spiffe id: {spiffe_id!r}")

@@ -24,7 +24,6 @@ from typing import Any
 
 from loguru import logger
 
-
 _CONSUME_LUA = """
 local key = KEYS[1]
 local now = tonumber(ARGV[1])

@@ -57,7 +57,6 @@ from distllm.api.sso_auth import (
     get_sso_handler,
 )
 
-
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 DEFAULT_JWT_TTL_S = 3600             # 1 hour
@@ -92,8 +91,8 @@ HEALTH_ROUTES: frozenset[str] = frozenset({
 # middleware stack (on the first request), so provider registrations made
 # via setup_sso() before that point are buffered in _setup_handle and
 # flushed onto the live instance once it exists.
-_active: "SsoMiddleware | None" = None
-_setup_handle: "_SsoHandle | None" = None
+_active: SsoMiddleware | None = None
+_setup_handle: _SsoHandle | None = None
 
 
 # ── In-memory token blacklist with TTL-based auto-cleanup ──────────────────────

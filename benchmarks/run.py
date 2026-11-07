@@ -27,23 +27,22 @@ Usage:
     python benchmarks/run.py --benchmark network-util
 """
 
-import sys
-import os
-import time
-import json
 import argparse
-import statistics
+import json
 import math
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field, asdict
+import os
+import statistics
+import sys
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from loguru import logger
-
 
 # ── Benchmark Targets ──────────────────────────────────────────────────────────
 # Targets are set for 1.5B-class models on consumer GPU (RTX 5060 Laptop, 8.5 GB).
@@ -55,7 +54,7 @@ from loguru import logger
 # Optimizations applied: SDPA (FlashAttention via PyTorch), FP16 precision,
 # TF32 matmul, cuDNN autotune, CUDA warmup.
 
-BENCHMARK_TARGETS: Dict[str, Dict[str, Any]] = {
+BENCHMARK_TARGETS: dict[str, dict[str, Any]] = {
     "throughput-small": {
         "metric": "tokens_per_sec",
         "target": 100.0,
@@ -195,8 +194,8 @@ def _load_optimized_model(model_name: str):
     - torch.compile unavailable on Windows (requires VS Build Tools for Triton)
     - Static KV cache requires torch.compile, skipped here
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     _enable_gpu_optimizations()
 
@@ -232,8 +231,8 @@ def _warmup(model, tokenizer, max_tokens: int = 10, device: str = "cuda"):
 
 def _load_model_ttft(model_name: str):
     """Load model for TTFT/ITL benchmarks (no torch.compile to avoid TTFT compilation overhead)."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     _enable_gpu_optimizations()
 
@@ -323,6 +322,7 @@ def benchmark_throughput_dist(model: str, nodes: int, max_tokens: int, num_promp
     # Try real distributed client first
     try:
         import httpx
+
         from distllm.sdk.client import DistLLMClient
 
         async def _run_distributed():
@@ -471,8 +471,8 @@ def benchmark_memory_efficiency(model: str, max_tokens: int) -> BenchmarkResult:
     result = BenchmarkResult(name="memory-efficiency", model=model)
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
         hf_model = AutoModelForCausalLM.from_pretrained(
             model,
@@ -593,8 +593,9 @@ def benchmark_spec_accept_rate(num_prompts: int) -> BenchmarkResult:
             "Ensure distllm.core.speculative_decoder is available."
         )
 
-    import torch
     from types import SimpleNamespace
+
+    import torch
 
     decoder = SpeculativeDecoder(
         num_assistant_tokens=5,
@@ -690,8 +691,9 @@ def benchmark_distributed_speculative_throughput(
             "Ensure distllm.core.distributed_speculative is available."
         )
 
-    import torch
     import time
+
+    import torch
 
     vocab_size = 100
 
@@ -765,8 +767,8 @@ def benchmark_remote_draft_latency(
 
     try:
         from distllm.core.distributed_speculative import (
-            RemoteDraftModel,
             RemoteDraftConfig,
+            RemoteDraftModel,
         )
     except ImportError:
         raise RuntimeError("Benchmark requires RemoteDraftModel.")
@@ -865,7 +867,7 @@ def benchmark_network_util(model: str, max_tokens: int, nodes: int = 1) -> Bench
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _test_prompts() -> List[str]:
+def _test_prompts() -> list[str]:
     return [
         "Once upon a time, there was a",
         "The quick brown fox jumps over",
@@ -942,7 +944,7 @@ BENCHMARK_REGISTRY = {
 }
 
 
-def print_target_table(results: List[BenchmarkResult]):
+def print_target_table(results: list[BenchmarkResult]):
     """Print benchmark results with target comparison."""
     print("\n" + "=" * 90)
     print("  PERFORMANCE BENCHMARKS vs TARGETS")

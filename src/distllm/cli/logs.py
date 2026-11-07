@@ -1,8 +1,9 @@
 """Logs command: distllm logs."""
 
-import httpx
 import json
 import time
+
+import httpx
 from rich.console import Console
 from rich.live import Live
 

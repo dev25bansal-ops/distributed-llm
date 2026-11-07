@@ -43,7 +43,6 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-
 # ── GPU Diagnostics ──────────────────────────────────────────────────────
 
 def _check_cuda() -> list[dict[str, Any]]:

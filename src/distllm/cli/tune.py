@@ -18,7 +18,6 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-
 # ---------------------------------------------------------------------------
 # Model heuristics
 # ---------------------------------------------------------------------------
@@ -230,7 +229,7 @@ def run_tune_batch(
     max_tps_per_gpu = mem_bandwidth_bytes_per_sec / max(effective_bytes, 1)
     theoretical_max_tps = max_tps_per_gpu * gpu_count
 
-    console.print(f"\n[bold]Batch Size Optimizer[/bold]")
+    console.print("\n[bold]Batch Size Optimizer[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  GPUs: {gpu_count}")
     console.print(f"  Target latency: {target_latency_ms:.0f} ms")
@@ -452,7 +451,7 @@ def run_tune_cache(
     }
 
     # Display
-    console.print(f"\n[bold]Cache Sizing Calculator[/bold]")
+    console.print("\n[bold]Cache Sizing Calculator[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  GPU memory: {gpu_memory_gb:.0f} GB")
     console.print(f"  Concurrency: {concurrency}")

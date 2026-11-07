@@ -38,7 +38,6 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-
 # ── Hardware detection ─────────────────────────────────────────────────────
 
 def _detect_hardware() -> dict[str, Any]:

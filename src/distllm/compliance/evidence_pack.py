@@ -130,7 +130,7 @@ _GDPR_ARTICLE_HINTS: list[tuple[str, str]] = [
 ]
 
 
-def _map_gdpr_article(title: str) -> Optional[str]:
+def _map_gdpr_article(title: str) -> str | None:
     low = title.lower()
     for needle, article in _GDPR_ARTICLE_HINTS:
         if needle in low:
@@ -197,7 +197,7 @@ _EXPORT_REGIME_HINTS: list[tuple[str, str]] = [
 ]
 
 
-def _map_export_regime(title: str) -> Optional[str]:
+def _map_export_regime(title: str) -> str | None:
     low = title.lower()
     for needle, regime in _EXPORT_REGIME_HINTS:
         if needle in low:
@@ -278,7 +278,7 @@ _HIPAA_PROVISIONS: list[tuple[str, str, str, str]] = [
 
 
 def parse_hipaa_controls(
-    security_doc_paths: Optional[list[Path]] = None,
+    security_doc_paths: list[Path] | None = None,
 ) -> tuple[list[ControlRef], list[str]]:
     """Map HIPAA Security Rule provisions from the general security posture.
 
@@ -485,12 +485,12 @@ def _report_to_control_refs(report: dict) -> tuple[list[ControlRef], list[Contro
 # Top-level builder
 # --------------------------------------------------------------------------- #
 def build_evidence_pack(
-    report: Optional[dict] = None,
+    report: dict | None = None,
     docs_dir: Path = _DEFAULT_DOCS_DIR,
     compliance_dir: Path = _DEFAULT_COMPLIANCE_DIR,
     repo_root: Path = _DEFAULT_REPO_ROOT,
     now: Any = None,
-    security_doc_paths: Optional[list[Path]] = None,
+    security_doc_paths: list[Path] | None = None,
 ) -> EvidencePack:
     """Assemble the full EvidencePack.
 

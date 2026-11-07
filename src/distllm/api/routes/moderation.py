@@ -24,10 +24,10 @@ from __future__ import annotations
 import re
 import time
 
-from distllm.core.hashing import stable_hash
-
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+
+from distllm.core.hashing import stable_hash
 
 router = APIRouter(tags=["moderation"])
 

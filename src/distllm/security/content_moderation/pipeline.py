@@ -6,16 +6,16 @@ import asyncio
 from typing import Any
 
 from distllm.security.content_moderation.base import (
-    ModerationResult,
-    ToxicResult,
-    PIIResult,
     JailbreakResult,
+    ModerationResult,
+    PIIResult,
     TopicFilterResult,
+    ToxicResult,
 )
-from distllm.security.content_moderation.toxicity import ToxicityDetector
-from distllm.security.content_moderation.pii import PIIRedactor
 from distllm.security.content_moderation.jailbreak import JailbreakDetector
+from distllm.security.content_moderation.pii import PIIRedactor
 from distllm.security.content_moderation.topics import TopicFilter
+from distllm.security.content_moderation.toxicity import ToxicityDetector
 
 # Mapping from detector names to their result attribute keys.
 _DETECTOR_RESULT_ATTRS: dict[str, str] = {

@@ -5,12 +5,12 @@ real-time scheduling metrics.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 
-from ..auth_deps import require_role
 from ..api_state import g
+from ..auth_deps import require_role
 from ..errors import error_openapi_entry
-from loguru import logger
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.

@@ -24,9 +24,8 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
-
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from ..errors import error_openapi_entry
 
@@ -124,7 +123,7 @@ async def webrtc_offer(req: SDPOfferRequest):
     to the DistLLM cluster.
     """
     try:
-        from distllm.dist.webrtc import HAS_WEBRTC, WebRTCTransport, WebRTCConfig
+        from distllm.dist.webrtc import HAS_WEBRTC, WebRTCConfig, WebRTCTransport
     except ImportError:
         raise HTTPException(status_code=503, detail="WebRTC not available (aiortc not installed)")
 

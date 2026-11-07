@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Any
-from loguru import logger
+
 import torch
+from loguru import logger
 
 from distllm.backends.model_validation import resolve_trust_remote_code, validate_model_name
 from distllm.backends.protocol import BackendAdapter

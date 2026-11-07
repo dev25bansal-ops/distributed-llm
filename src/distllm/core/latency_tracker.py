@@ -5,6 +5,7 @@
 """
 
 import warnings
+
 warnings.warn(
     "distllm.core.latency_tracker is deprecated. "
     "Import from distllm.dist.latency instead.",

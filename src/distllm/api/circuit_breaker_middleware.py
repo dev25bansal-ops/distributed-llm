@@ -32,7 +32,7 @@ import math
 import threading
 import time
 from enum import Enum
-from typing import Callable
+from collections.abc import Callable
 
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware

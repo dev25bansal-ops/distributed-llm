@@ -5,7 +5,7 @@ and a FastAPI-compatible /metrics response via generate_latest.
 """
 
 try:
-    from prometheus_client import CollectorRegistry, Counter, Histogram, Gauge
+    from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
     _PROMETHEUS_AVAILABLE = True
 except ImportError:  # [observability] extra not installed — degrade to no-ops

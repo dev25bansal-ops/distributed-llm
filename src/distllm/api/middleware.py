@@ -1,15 +1,17 @@
 """API middleware for distributed LLM inference."""
 
 import asyncio
-import os
 import hmac
+import os
+import secrets
 import threading
 import time
 import uuid
-import secrets
 from collections import OrderedDict, defaultdict, deque
-from typing import Any, Callable, Optional
-from fastapi import Request, HTTPException
+from typing import Any, Optional
+from collections.abc import Callable
+
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -635,8 +637,9 @@ class RequestRateLimitMiddleware(BaseHTTPMiddleware):
 # ── ContentModerationMiddleware ──────────────────────────────────────────
 
 import enum as _enum
-from distllm.security.content_moderation.pipeline import ContentModerationPipeline
+
 from distllm.security.content_moderation.base import ModerationResult
+from distllm.security.content_moderation.pipeline import ContentModerationPipeline
 
 
 class ModerationAction(str, _enum.Enum):
@@ -832,6 +835,7 @@ class ContentModerationMiddleware(BaseHTTPMiddleware):
             # Replace output text with redacted version.
             new_body = self._replace_output_text(payload, result.redacted_text)
             import json as _json
+
             from starlette.responses import Response as _Response
             response = _Response(
                 content=_json.dumps(new_body),

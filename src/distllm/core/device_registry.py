@@ -17,13 +17,13 @@ from typing import Any
 from loguru import logger
 
 from distllm.constants import (
-    Device,
-    DeviceFamily,
     DEVICE_FAMILY,
     INTEL_XPU_BANDWIDTH_GBPS,
-    MPS_DEFAULT_MEMORY_BYTES,
     MPS_DEFAULT_GPU_CORES,
+    MPS_DEFAULT_MEMORY_BYTES,
     MPS_DEFAULT_TFLOPS_FP16,
+    Device,
+    DeviceFamily,
 )
 
 

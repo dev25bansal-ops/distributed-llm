@@ -78,13 +78,13 @@ def _terraform_aws(config: ProvisioningConfig) -> str:
     market_type = "spot" if config.spot else ""
     spot_block = ""
     if config.spot:
-        spot_block = f"""
-  instance_market_options {{
+        spot_block = """
+  instance_market_options {
     market_type = "spot"
-    spot_options {{
+    spot_options {
       spot_instance_type = "one-time"
-    }}
-  }}"""
+    }
+  }"""
     return f"""terraform {{
   required_providers {{
     aws = {{
@@ -167,7 +167,7 @@ resource "google_compute_instance" "distllm" {{
 
   scheduling {{
     on_host_maintenance = "TERMINATE"
-    {f'preemptible = true' if config.spot else ''}
+    {'preemptible = true' if config.spot else ''}
   }}
 
   network_interface {{

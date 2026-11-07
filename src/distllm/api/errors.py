@@ -14,24 +14,24 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from distllm.errors.types import (
+    BatchCapacityError,
+    BatchError,
+    CircuitBreakerError,
+    ConfigError,
+    ConfigValidationError,
+    ConstraintError,
+    ConstraintViolationError,
     DistLLMError,
+    GatewayError,
+    GRPCTimeoutError,
+    InputValidationError,
+    ModelError,
+    ModelLoadError,
+    ModelNotFoundError,
     NodeError,
     NodeUnreachableError,
     OOMError,
-    GRPCTimeoutError,
-    ModelError,
-    ModelNotFoundError,
-    ModelLoadError,
-    ConfigError,
-    ConfigValidationError,
-    BatchError,
-    BatchCapacityError,
-    ConstraintError,
-    ConstraintViolationError,
-    InputValidationError,
-    GatewayError,
     ProviderTimeoutError,
-    CircuitBreakerError,
 )
 
 

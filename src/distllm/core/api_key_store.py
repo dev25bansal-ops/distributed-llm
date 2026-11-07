@@ -26,11 +26,10 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
 from hmac import compare_digest
+from typing import Any
 
 from loguru import logger
-
 
 # ── Authentication result cache ─────────────────────────────────────────────
 #

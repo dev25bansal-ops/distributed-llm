@@ -24,7 +24,6 @@ import typer
 from loguru import logger
 from rich.console import Console
 
-
 SUPPORTED_PROVIDERS = ("hetzner", "lambda", "runpod", "vast", "coreweave", "aws")
 
 
@@ -50,16 +49,16 @@ def register(app: typer.Typer) -> None:
         api_key: str = typer.Option(
             ..., "--api-key", "-k", help="Provider API key (stored in local keyring)"
         ),
-        name: Optional[str] = typer.Option(
+        name: str | None = typer.Option(
             None, "--name", "-n", help="Friendly name for the pool"
         ),
-        region: Optional[str] = typer.Option(
+        region: str | None = typer.Option(
             None, "--region", "-r", help="Provider region (auto-selected if omitted)"
         ),
-        gpu_type: Optional[str] = typer.Option(
+        gpu_type: str | None = typer.Option(
             None, "--gpu", help="Preferred GPU type (e.g. H100, A100)"
         ),
-        max_spend_usd: Optional[float] = typer.Option(
+        max_spend_usd: float | None = typer.Option(
             None, "--max-spend", help="Monthly spend cap in USD"
         ),
     ) -> None:

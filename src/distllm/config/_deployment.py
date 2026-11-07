@@ -1,6 +1,6 @@
 """Canary rollout, versioning, cost, and tenant configuration classes."""
 
-from pydantic import BaseModel, Field, field_validator, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 __all__ = [
     "RolloutStageModel",

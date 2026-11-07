@@ -2,6 +2,7 @@
 batching, chunked prefill, priority, and disaggregation configuration classes."""
 
 from enum import Enum
+
 from pydantic import BaseModel, Field, field_validator
 
 __all__ = [

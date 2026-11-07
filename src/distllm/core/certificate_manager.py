@@ -11,8 +11,8 @@ import os
 import shutil
 import socket
 import ssl
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -326,11 +326,12 @@ class CertificateManager:
         self, common_name: str, alt_names: list[str],
     ) -> CertificateInfo:
         """Generate a self-signed certificate."""
+        import datetime as dt
+
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
-        import datetime as dt
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 

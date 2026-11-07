@@ -41,7 +41,8 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
@@ -405,7 +406,7 @@ class TreeSpeculativeDecoder:
         branch_idx: int,
         position: int,
         branch: list[int],
-        root: "TreeNode",
+        root: TreeNode,
     ) -> float:
         """Recover the draft probability for a token in a verified branch.
 

@@ -24,17 +24,15 @@ if TYPE_CHECKING:
     from distllm.core.autoscaler import IntelligentAutoscaler
 from transformers import AutoTokenizer
 
-from distllm.core.subsystem_registry import SubsystemRegistry
+from distllm.config.settings import NodeRole
 from distllm.core.batch_scheduler import BatchScheduler
 from distllm.core.cache_manager import CacheManager
 from distllm.core.cluster_manager import ClusterManager
-from distllm.config.settings import NodeRole
 from distllm.core.coordinator_config import CoordinatorConfig
 from distllm.core.coordinator_config_wiring import CoordinatorConfigurator
 from distllm.core.coordinator_request import RequestHandler
 from distllm.core.debug import set_debug_mode
 from distllm.core.health_manager import HealthManager
-from distllm.errors import NotLeaderError
 from distllm.core.inference_engine import InferenceEngine, TokenGenerator
 from distllm.core.memory_defragmenter import (
     DefragConfig,
@@ -47,12 +45,14 @@ from distllm.core.model_router import ModelRouter
 from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.request_tracker import RequestTracker
 from distllm.core.resource_manager import ResourceManager
+from distllm.core.subsystem_registry import SubsystemRegistry
 from distllm.dist.federation import FederationConfig
 from distllm.dist.latency import LatencyTracker
 from distllm.dist.pipeline import PipelineOrchestrator
 from distllm.dist.recovery import NodeRecoveryManager
 from distllm.dist.reputation import ReputationSystem
 from distllm.dist.straggler import DetectionMethod, StragglerDetector
+from distllm.errors import NotLeaderError
 from distllm.models.partitioner import ModelPartitioner
 from distllm.security import hf_revision
 
@@ -339,8 +339,8 @@ class Coordinator:
         self._multi_model: Any = None
         mmc = kwargs.get("multi_model_config")
         if mmc is not None and getattr(mmc, "enabled", False):
-            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
             from distllm.core.coordinator_multi_model import MultiModelManager
+            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
 
             reg = _MMRegistry(max_models=getattr(mmc, "max_models", 4))
             for name, path in (getattr(mmc, "models", {}) or {}).items():
@@ -1055,8 +1055,8 @@ class Coordinator:
             "memory_budget_gb": memory_budget_gb,
         }
         if self._multi_model is None or getattr(self._multi_model, "registry", None) is None:
-            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
             from distllm.core.coordinator_multi_model import MultiModelManager
+            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
 
             self._multi_model = MultiModelManager(
                 model_name=self.model_name,

@@ -140,7 +140,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                         scheduler.max_batch_size = new_settings.batching.max_batch_size
                                         scheduler.max_tokens_per_batch = new_settings.batching.max_tokens_per_batch
                         else:
-                            logger.info(f"Config reloaded (no coordinator to update)")
+                            logger.info("Config reloaded (no coordinator to update)")
                 except Exception:
                     logger.exception(
                         "Config reload queue processor error -- continuing (SIGHUP reloads remain available)"

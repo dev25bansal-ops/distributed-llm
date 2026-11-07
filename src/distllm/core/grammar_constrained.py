@@ -278,7 +278,7 @@ class GrammarConstrainedGenerator:
         eos_token_id: int | None = None,
         vocabulary: dict[str, list[int]] | None = None,
         force_fallback: bool = False,
-    ) -> "GrammarConstrainedGenerator | None":
+    ) -> GrammarConstrainedGenerator | None:
         """Build an outlines-backed generator, or ``None`` to signal fallback.
 
         Args:
@@ -495,7 +495,7 @@ def grammar_constrained_or_fallback(
     vocabulary: dict[str, list[int]] | None = None,
     tokenizer: Any = None,
     force_fallback: bool = False,
-) -> tuple["GrammarConstrainedGenerator | None", bool]:
+) -> tuple[GrammarConstrainedGenerator | None, bool]:
     """Return ``(generator, used_fallback)``.
 
     ``generator`` is an outlines-backed ``GrammarConstrainedGenerator`` when

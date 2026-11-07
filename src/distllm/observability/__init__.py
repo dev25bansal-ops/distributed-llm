@@ -1,27 +1,11 @@
 """Observability module for distributed LLM."""
 
-from distllm.observability.exporter_datadog import DatadogMetricsExporter
-from distllm.observability.tracing import setup_tracing, inject_request_id, extract_request_id
-from distllm.observability.metrics import setup_metrics, get_meter, DistLLMMetrics
-from distllm.observability.tracing_config import (
-    TailBasedSampler,
-    TraceLokiExporter,
-    ExemplarExporter,
-    TracingConfigurator,
-)
-from distllm.observability.slo_config import (
-    AvailabilitySLI,
-    BurnRateAlerts,
-    SLO,
-    SLOConfig,
-    SLODashboard,
-)
 from distllm.observability.capacity_planning import (
     CapacityConfigurator,
     CapacityDashboard,
-    CapacityPlanReport,
     CapacityPlanner,
     CapacityPlanningError,
+    CapacityPlanReport,
     GPUBilling,
     GPUSnapshot,
     GPUUsageSession,
@@ -35,6 +19,7 @@ from distllm.observability.capacity_planning import (
     TrendResult,
     WhatIfCalculator,
 )
+from distllm.observability.exporter_datadog import DatadogMetricsExporter
 from distllm.observability.incident_response import (
     ActionItem,
     Incident,
@@ -51,6 +36,21 @@ from distllm.observability.incident_response import (
     RunbookScenario,
     RunbookStep,
     TimelineEntry,
+)
+from distllm.observability.metrics import DistLLMMetrics, get_meter, setup_metrics
+from distllm.observability.slo_config import (
+    SLO,
+    AvailabilitySLI,
+    BurnRateAlerts,
+    SLOConfig,
+    SLODashboard,
+)
+from distllm.observability.tracing import extract_request_id, inject_request_id, setup_tracing
+from distllm.observability.tracing_config import (
+    ExemplarExporter,
+    TailBasedSampler,
+    TraceLokiExporter,
+    TracingConfigurator,
 )
 
 __all__ = [

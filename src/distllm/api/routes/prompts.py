@@ -12,9 +12,9 @@ from pydantic import BaseModel, Field
 
 from distllm.api.auth_deps import require_role
 from distllm.api.errors import error_openapi_entry
-from distllm.prompts.library import SystemPromptDef, SYSTEM_PROMPTS
-from distllm.prompts.templates import BUILTIN_TEMPLATES
 from distllm.prompts.engine import TemplateEngine
+from distllm.prompts.library import SYSTEM_PROMPTS, SystemPromptDef
+from distllm.prompts.templates import BUILTIN_TEMPLATES
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.

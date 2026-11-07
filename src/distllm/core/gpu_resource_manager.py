@@ -77,6 +77,7 @@ class GPUResourceManager:
     def register_device(self, device: int) -> None:
         """Register a GPU device for tracking (CUDA, ROCm, MPS, XPU)."""
         import torch
+
         from distllm.core.device_registry import detect_platform
         plat = detect_platform()
 
@@ -189,6 +190,7 @@ class GPUResourceManager:
     def snapshot(self, device: int = 0) -> GPUMemorySnapshot | None:
         """Return a point-in-time snapshot for *device* (any platform)."""
         import torch
+
         from distllm.core.device_registry import detect_platform
         plat = detect_platform()
 
@@ -267,6 +269,7 @@ class GPUResourceManager:
 
     def _free_mb(self, device: int) -> float:
         import torch
+
         from distllm.core.device_registry import detect_platform
         plat = detect_platform()
         try:
@@ -331,7 +334,7 @@ def get_gpu_resource_manager() -> GPUResourceManager:
         with _global_mgr_lock:
             if _global_mgr is None:
                 _global_mgr = GPUResourceManager()
-                from distllm.core.device_registry import detect_platform, detect_all_devices
+                from distllm.core.device_registry import detect_all_devices, detect_platform
                 plat = detect_platform()
                 if plat != "cpu":
                     devices = detect_all_devices()

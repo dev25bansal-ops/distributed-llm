@@ -8,11 +8,11 @@ from rich.console import Console
 from rich.table import Table
 
 from distllm.prompts.library import (
-    get_prompt,
-    list_categories,
-    list_by_category,
-    search_prompts,
     SYSTEM_PROMPTS,
+    get_prompt,
+    list_by_category,
+    list_categories,
+    search_prompts,
 )
 
 prompt_app = typer.Typer(help="Browse and use built-in system prompt templates")
@@ -21,8 +21,8 @@ _console = Console()
 
 @prompt_app.command("list")
 def prompt_list(
-    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category"),
-    search: Optional[str] = typer.Option(None, "--search", "-s", help="Search prompts by name, description, or tags"),
+    category: str | None = typer.Option(None, "--category", "-c", help="Filter by category"),
+    search: str | None = typer.Option(None, "--search", "-s", help="Search prompts by name, description, or tags"),
     json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """List available system prompt templates."""

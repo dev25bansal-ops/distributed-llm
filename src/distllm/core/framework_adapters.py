@@ -44,11 +44,11 @@ _DEFAULT_BASE_URL = "http://localhost:8000"
 _DEFAULT_API_KEY = "not-needed"
 
 
-def _resolve_base_url(base_url: Optional[str] = None) -> str:
+def _resolve_base_url(base_url: str | None = None) -> str:
     return base_url or os.getenv("DISTLLM_API_BASE", _DEFAULT_BASE_URL)
 
 
-def _resolve_api_key(api_key: Optional[str] = None) -> str:
+def _resolve_api_key(api_key: str | None = None) -> str:
     return api_key or os.getenv("DISTLLM_API_KEY", _DEFAULT_API_KEY)
 
 
@@ -204,8 +204,8 @@ def get_haystack_generator(
 
 
 def get_agno_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Return an Agno ``OpenAIChat`` subclass pointed at a DistLLM endpoint.
@@ -246,8 +246,8 @@ def get_agno_client(
 
 
 def get_autogpt_config(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Return a configuration dictionary for an AutoGPT agent.

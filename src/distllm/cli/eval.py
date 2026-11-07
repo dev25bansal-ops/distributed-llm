@@ -17,7 +17,6 @@ from rich.table import Table
 
 from distllm.cli.client import DistLLMClient
 
-
 console = Console()
 
 
@@ -87,7 +86,7 @@ def eval_run(
             console.print(f"[yellow]Valid: {', '.join(sorted(valid))}[/yellow]")
             raise typer.Exit(1)
 
-    console.print(f"\n[bold blue]DistLLM Evaluation Harness[/bold blue]\n")
+    console.print("\n[bold blue]DistLLM Evaluation Harness[/bold blue]\n")
     console.print(f"Model:         {model}")
     console.print(f"Benchmarks:    {', '.join(benchmark_list)}")
     console.print(f"Coordinator:   {coordinator_url}")

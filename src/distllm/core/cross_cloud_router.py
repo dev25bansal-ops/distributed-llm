@@ -23,12 +23,12 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 if TYPE_CHECKING:
-    from distllm.core.pricing_providers import PricingManager, InstancePricing
+    from distllm.core.pricing_providers import InstancePricing, PricingManager
 
 
 # GPU type → (instance_types, memory_gb, gpu_count) quick-lookup
@@ -308,7 +308,7 @@ class CarbonIntensityProvider:
             if zone is None:
                 return self._get_static(region)
             resp = client.get(
-                f"https://api.electricitymap.org/v3/carbon-intensity/latest",
+                "https://api.electricitymap.org/v3/carbon-intensity/latest",
                 params={"zone": zone},
                 headers={"auth-token": token},
             )
@@ -474,7 +474,7 @@ class CrossCloudRouter:
         self,
         carbon_provider: CarbonProvider = CarbonProvider.STATIC,
         carbon_api_cache_ttl: int = 300,
-        pricing_manager: "PricingManager | None" = None,
+        pricing_manager: PricingManager | None = None,
         expand_regions: bool = True,
         latency_tracker: Any = None,
     ):

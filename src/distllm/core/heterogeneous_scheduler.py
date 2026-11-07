@@ -19,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from distllm.constants import DeviceFamily, DEVICE_FAMILY
+from distllm.constants import DEVICE_FAMILY, DeviceFamily
 from distllm.core.device_registry import DeviceInfo, detect_all_devices
 
 

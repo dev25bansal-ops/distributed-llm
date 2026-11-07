@@ -36,11 +36,11 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
+from collections.abc import Callable
 
 from rich.console import Console
 from rich.table import Table
-
 
 # Minimum supported versions (kept in sync with pyproject.toml)
 MIN_PYTHON = (3, 10)
@@ -355,7 +355,7 @@ def attempt_fixes(results: list[CheckResult], console: Console) -> list[CheckRes
 # ── CLI entry point ────────────────────────────────────────────────────────
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="distllm-cli doctor",
         description="Check the local environment for DistLLM.",

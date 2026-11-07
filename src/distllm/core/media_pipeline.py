@@ -18,10 +18,10 @@ import os
 import threading
 import time
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
-
 
 # ── Lazy import guards ──────────────────────────────────────────────────
 
@@ -151,6 +151,7 @@ class TextToSpeech:
             return
         try:
             import torch
+
             # Try Piper (local, fast)
             from piper import PiperVoice
             self._pipe = PiperVoice.load(self._model_path)

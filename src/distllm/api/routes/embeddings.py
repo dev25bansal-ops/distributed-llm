@@ -7,7 +7,7 @@ import uuid
 
 import torch
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..api_state import g
 from ..errors import error_openapi_entry

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
 import asyncio
-from loguru import logger
+from typing import Any
+
 import torch
+from loguru import logger
 
 from distllm.backends.model_validation import validate_model_path
 from distllm.backends.protocol import BackendAdapter, BackendState

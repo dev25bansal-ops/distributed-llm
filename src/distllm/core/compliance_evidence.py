@@ -33,7 +33,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
+from collections.abc import Mapping
 
 # --- Control mapping (reuses compliance/soc2_control_mapping.md) -------------
 # Each evidence domain maps to SOC 2 TSC control IDs and ISO 27001:2022 Annex A
@@ -91,7 +92,7 @@ def _now_dt(now: Any) -> datetime:
     raise TypeError(f"unsupported 'now' type: {type(now)!r}")
 
 
-def _now_iso(value: Any) -> Optional[str]:
+def _now_iso(value: Any) -> str | None:
     """Serialize a datetime/str/None to an ISO-8601 string (or None)."""
     if value is None:
         return None
@@ -100,7 +101,7 @@ def _now_iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _parse_dt(value: Any) -> Optional[datetime]:
+def _parse_dt(value: Any) -> datetime | None:
     """Best-effort parse of a datetime / ISO string into a UTC datetime."""
     if value is None:
         return None
@@ -195,7 +196,7 @@ def collect_tls_evidence(
     mtls = bool(require_client_cert and ca_cert)
 
     expiry_dt = _parse_dt(cert_expiry)
-    days_remaining: Optional[int] = None
+    days_remaining: int | None = None
     if expiry_dt is not None:
         days_remaining = (expiry_dt - _now_dt(now)).days
 
@@ -306,7 +307,7 @@ def collect_key_rotation_evidence(rotation_state: Any, now: Any = None) -> dict:
     now_dt = _now_dt(now)
     last_ts = _parse_dt(_get(rotation_state, "last_rotation_ts", None))
     interval_days = _get(rotation_state, "rotation_interval_days", None)
-    age_days: Optional[int] = None
+    age_days: int | None = None
 
     if last_ts is None:
         status = "fail"
@@ -391,7 +392,7 @@ def bundle_from_settings() -> dict:
     return bundle
 
 
-def collect_all(bundle: Optional[dict] = None, now: Any = None) -> dict:
+def collect_all(bundle: dict | None = None, now: Any = None) -> dict:
     """Aggregate all collectors into a serializable ``ComplianceReport``.
 
     ``bundle`` may contain keys: ``cors``, ``tls``, ``cert_expiry``, ``quota``,

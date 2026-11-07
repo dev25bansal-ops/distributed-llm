@@ -11,6 +11,7 @@ import torch
 from loguru import logger
 
 from distllm.core.request_replay import DeterministicMode, RequestReplayBuffer, get_replay_buffer
+
 # Shared speculative-verification kernel (single source of truth for
 # acceptance math). Imported here so the AST lint test (M-02) can prove no
 # decoder reimplements rejection sampling.
@@ -84,6 +85,7 @@ from distllm.core.strategies import (  # noqa: E402
     _PromptLookupStrategy,
     _SpeculativeStrategy,
 )
+
 
 class InferenceEngine:
     """Handles text generation (local and distributed).
@@ -383,7 +385,7 @@ class InferenceEngine:
                 # speculation.  Route through the distributed path which
                 # does one token per forward.
                 logger.debug(
-                    f"spec_method=greedy: bypassing speculative decoding"
+                    "spec_method=greedy: bypassing speculative decoding"
                 )
                 return self._distributed_strategy
             if spec_method_lower == "ngram":

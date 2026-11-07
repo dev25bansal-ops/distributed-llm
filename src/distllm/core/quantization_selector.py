@@ -172,8 +172,8 @@ class QuantizationSelector:
 
 
 def apply_kv_cache_quantization(
-    key: "torch.Tensor",
-    value: "torch.Tensor",
+    key: torch.Tensor,
+    value: torch.Tensor,
     bits: int = 8,
 ) -> tuple:
     """Quantize KV cache tensors to reduce memory usage.
@@ -203,10 +203,10 @@ def apply_kv_cache_quantization(
 
 
 def dequantize_kv_cache(
-    q: "torch.Tensor",
-    scale: "torch.Tensor",
+    q: torch.Tensor,
+    scale: torch.Tensor,
     bits: int = 8,
-) -> "torch.Tensor":
+) -> torch.Tensor:
     """Dequantize a quantized KV cache segment back to float32 (``q * scale``)."""
     import torch
 

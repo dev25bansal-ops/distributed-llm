@@ -35,8 +35,8 @@ from .registry import (
     BackendPlugin,
     BackendRegistry,
     get_backend,
-    list_backends,
     list_available_backends,
+    list_backends,
     select_backend,
 )
 
@@ -192,9 +192,9 @@ def _register_builtins() -> None:
       • Any other exception (SyntaxError, AttributeError, ImportError for our
         own modules) is logged at WARNING so operators notice immediately.
     """
-    from .registry import _set_allow_builtin_registration
-
     import importlib
+
+    from .registry import _set_allow_builtin_registration
     _set_allow_builtin_registration(True)
     try:
         for mod_name, cls_name, reg_name in _BACKEND_MODULES:

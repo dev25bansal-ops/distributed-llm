@@ -9,12 +9,12 @@ import asyncio
 import json
 import time
 from collections import defaultdict, deque
-from typing import Any, AsyncGenerator
+from typing import Any
+from collections.abc import AsyncGenerator
 
 from fastapi import WebSocket
 from fastapi.responses import StreamingResponse
 from loguru import logger
-
 
 # ---------------------------------------------------------------------------
 # Connection manager with per-client subscriptions

@@ -18,7 +18,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import httpx
 from loguru import logger

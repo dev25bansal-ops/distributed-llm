@@ -53,7 +53,6 @@ from typing import Any
 
 from loguru import logger
 
-
 # ── Optional dependency guards ─────────────────────────────────────────────
 
 _HAS_TORCH = False

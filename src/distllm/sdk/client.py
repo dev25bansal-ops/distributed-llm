@@ -11,42 +11,45 @@ Fully rewritten with:
 - Usage tracking (tokens/sec, cost estimation)
 """
 
-import time
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, AsyncIterator
+from typing import Any
+from collections.abc import AsyncIterator, Iterator
 
 import httpx
 
 from distllm.constants import DEFAULT_HTTP_TIMEOUT, MAX_RETRIES, RETRY_DELAY
+from distllm.sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError
+from distllm.sdk.streaming import parse_sse_stream_async, parse_sse_stream_sync
 from distllm.sdk.types import (
-    ChatCompletionResponse,
-    ChatMessage as DataChatMessage,
-    ChatChoice,
-    CompletionResponse,
-    CompletionChoice,
-    ModelList,
-    ModelInfo,
-    EmbeddingResponse,
-    EmbeddingObject,
     BatchJob,
     BatchList,
-    TranscriptionResponse,
-    SpeechResponse,
-    ImageGenerationResponse,
-    ImageObject,
-    ModerationResponse,
-    ModerationResult,
+    CallStats,
+    ChatChoice,
+    ChatCompletionResponse,
+    ClientStats,
+    CompletionChoice,
+    CompletionResponse,
+    EmbeddingObject,
+    EmbeddingResponse,
     FileInfo,
     FineTuningJob,
+    ImageGenerationResponse,
+    ImageObject,
+    ModelInfo,
+    ModelList,
+    ModerationResponse,
+    ModerationResult,
+    SpeechResponse,
+    TranscriptionResponse,
     UsageInfo,
-    ClientStats,
-    CallStats,
 )
-from distllm.sdk.streaming import parse_sse_stream_async, parse_sse_stream_sync
-from distllm.sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError
+from distllm.sdk.types import (
+    ChatMessage as DataChatMessage,
+)
 
 
 @dataclass

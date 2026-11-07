@@ -7,7 +7,7 @@ Computes metrics that quantify the difference between a reference
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from collections.abc import Sequence
 
 import torch
 

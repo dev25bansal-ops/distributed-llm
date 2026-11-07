@@ -30,8 +30,9 @@ from __future__ import annotations
 import os
 import warnings
 from typing import Any
-from loguru import logger
+
 import torch
+from loguru import logger
 
 from distllm.backends.model_validation import validate_model_name
 from distllm.backends.protocol import BackendAdapter
@@ -326,6 +327,7 @@ class TensorRTLLMAdapter(BackendAdapter):
     ) -> str:
         """Async generation using asyncio.to_thread()."""
         import asyncio
+
         from tensorrt_llm import SamplingParams
 
         sampling_params = SamplingParams(
