@@ -118,6 +118,10 @@ ui = [
     "python-multipart>=0.0.6",
     "qrcode[pil]>=7.4",
 ]
+tokenize = [
+    # /v1/tokenize — imported lazily; API returns 503 when absent
+    "tiktoken>=0.7.0",
+]
 examples = [
     "langchain-openai>=0.1.0",
     "langchain-core>=0.1.0",

@@ -20,10 +20,14 @@ Response::
 
 from __future__ import annotations
 
-import tiktoken
+from typing import TYPE_CHECKING
+
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:  # tiktoken is optional — imported lazily at request time
+    import tiktoken
 
 router = APIRouter(tags=["tokenize"])
 
@@ -41,11 +45,26 @@ class TokenizeResponse(BaseModel):
 
 
 # Cache encoding by model name
-_ENCODING_CACHE: dict[str, tiktoken.Encoding] = {}
+_ENCODING_CACHE: dict = {}
 
 
-def _get_encoding(model: str) -> tiktoken.Encoding:
-    """Return a tiktoken encoding suitable for *model*."""
+def _get_encoding(model: str):
+    """Return a tiktoken encoding suitable for *model*.
+
+    tiktoken is an optional dependency: importing this router must not
+    require it (server.py imports every route module at startup). A clear
+    503 is raised at request time when it is missing.
+    """
+    global tiktoken  # noqa: PLW0603 — populated lazily on first use
+    try:
+        import tiktoken  # noqa: F401
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Tokenization requires the 'tiktoken' package "
+                   "(pip install tiktoken; also in the [tokenize] extra).",
+        ) from exc
+
     if model in _ENCODING_CACHE:
         return _ENCODING_CACHE[model]
 
