@@ -76,13 +76,14 @@ jobs:
           run_group tests/security
           run_group tests/cli
           # Everything else (root-level tests/*.py, remaining subdirs).
+          # tests/cli/test_cli.py was rewritten against the real CLI surface on
+          # 2026-11-08 and is no longer excluded.
           pytest tests/ \
             -m "not e2e and not slow and not chaos and not benchmark" \
             --cov=distllm --cov-append --cov-report= \
             --continue-on-collection-errors \
             --ignore=tests/core --ignore=tests/dist --ignore=tests/api \
-            --ignore=tests/security --ignore=tests/cli/test_cli.py \
-            -q
+            --ignore=tests/security -q
           python -m coverage xml -o coverage.xml || echo "coverage xml failed"
 
       - name: Assert coverage.xml was produced

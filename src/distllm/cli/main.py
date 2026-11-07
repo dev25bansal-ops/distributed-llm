@@ -128,7 +128,9 @@ benchmark_app = typer.Typer(help="Run benchmarks, compare results, profile infer
 config_app = typer.Typer(help="Configuration, setup, webhooks, quotas, backups")
 security_app = typer.Typer(help="TLS certificates and cryptographic keys")
 system_app = typer.Typer(help="Daemons, diagnostics, logs, notifications, cost analysis")
-router_app = typer.Typer(help="Model router: rules, test, stats, patterns")
+router_app = typer.Typer(
+    help="Model router (no subcommands yet — rules/test/stats/patterns are not implemented)"
+)
 
 # Nested groups
 model_adapters_app = typer.Typer(help="Manage LoRA/QLoRA adapters")
