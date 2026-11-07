@@ -1,9 +1,10 @@
 """Interactive chat command for DistLLM CLI."""
 
 import httpx
-from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.markdown import Markdown
+
+from distllm.cli.http_client import client_for
 
 
 def run_chat(

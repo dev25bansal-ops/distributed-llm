@@ -32,9 +32,9 @@ aliases:
 
 `apps/` (chat/rag/multi_agent) was removed as dead scaffolding in the hygiene pass. `examples/` still carries drop-in integration scripts (LangChain, LlamaIndex, CrewAI, Haystack, Agency Swarm, OpenAI-Agents SDK, routed multi-provider, direct `distllm.sdk`) and 4 notebooks (batch, cost, RAG, streaming).
 
-## In-repo web front-ends — `src/distllm/dashboard` + `src/distllm/ui`
+## In-repo web front-ends — `src/distllm/dashboard`
 - `dashboard/` — `ws_handler.py` (WS+SSE real-time metrics; v1 + `static_v2/` with WebRTC + leaderboard). Full detail in [[11 Platform Services]]; volume/captures duplicated as v1+v2.
-- `ui/` — FastAPI Jinja pages over coordinator (`ui/app.py` routes; templates + static).
+- `src/distllm/ui/` was **removed 2026-11-08**: it was the standalone Jinja web UI that the CLI already documents as removed in v0.4.0 ("the dashboard is now embedded in the API server at `/dashboard`"). Nothing under `src/` imported it; only its own test did.
 
 ## Notes
 - Website i18n partly translated; several widget modules wired to a single page.
@@ -42,4 +42,4 @@ aliases:
 - Dashboard v1 (`static/`) and v2 (`static_v2/`) **duplicate** — not merged; `dashboard/ui/` empty dir. (v1 serves `/dashboard`, v2 serves leaderboard/models — both live, wired at `server.py:965,1179,1193`.)
 
 ## Tests
-`tests/e2e/test_tauri_e2e.py`, `test_vscode_extension.py`; `tests/dashboard/test_ws_handler.py`; `tests/ui/test_ui.py`; website `tests/*.spec.js`/`*.test.js`.
+`tests/e2e/test_tauri_e2e.py`, `test_vscode_extension.py`; `tests/dashboard/test_ws_handler.py`; website `tests/*.spec.js`/`*.test.js`. (`tests/ui/test_ui.py` was removed with the package, 2026-11-08.)

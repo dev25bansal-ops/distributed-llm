@@ -35,9 +35,9 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Optional
-from collections.abc import Callable
 
 from rich.console import Console
 from rich.table import Table

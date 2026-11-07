@@ -28,6 +28,7 @@ the SAME rules; see ``_python_evaluate`` for the canonical mapping.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -91,13 +92,11 @@ def _close_opa_clients() -> None:
     # AsyncClient.close() must be called from a running loop; close() is sync
     # in httpx, so calling it here is safe even without an event loop.
     if _opa_async_client is not None:
-        try:
+        # CQ-08: teardown close may fail when the loop is already gone; the
+        # client is process-global and recreated lazily, so a failed close is
+        # benign and must not raise during shutdown.
+        with contextlib.suppress(RuntimeError, OSError):
             _opa_async_client.close()
-        except (RuntimeError, OSError):
-            # CQ-08: teardown close may fail when the loop is already gone;
-            # the client is process-global and recreated lazily, so a failed
-            # close is benign and must not raise during shutdown.
-            pass
         _opa_async_client = None
 
 

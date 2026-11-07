@@ -8,9 +8,10 @@ import time
 from typing import Any
 
 import httpx
-from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.table import Table
+
+from distllm.cli.http_client import client_for
 
 console = Console()
 

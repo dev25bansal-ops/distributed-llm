@@ -6,10 +6,11 @@ import time
 from pathlib import Path
 
 import httpx
-from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
+
+from distllm.cli.http_client import client_for
 
 TEST_PROMPTS = [
     "Once upon a time in a distant galaxy,",
