@@ -41,6 +41,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install pip-audit
 
+      - name: Check requirements.lock covers every core dependency
+        # The Docker image installs requirements.lock, not pyproject, so a core
+        # dependency missing from the lock produces an image that builds fine
+        # and fails at runtime. Caught transformers, grpcio/protobuf and
+        # python-multipart this way one 20-minute rebuild at a time.
+        run: python scripts/ci/check_lock_completeness.py
+
       - name: Install project (core dependency set)
         # Core deps only (fastapi, uvicorn, pydantic, httpx, pyjwt, numpy, ...).
         # Heavy extras (torch/vllm) are intentionally excluded to keep this

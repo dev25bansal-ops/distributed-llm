@@ -89,6 +89,9 @@ pygments==2.20.0
     # via rich
 python-dotenv==1.2.2
     # via pydantic-settings
+python-multipart==0.0.32
+    # via distllm (pyproject.toml) -- FastAPI raises at import time without it;
+    # 0.0.33 requires Python >=3.11 and the image is 3.10.
 pyyaml==6.0.3
     # via distllm (pyproject.toml)
 rich==15.0.0
