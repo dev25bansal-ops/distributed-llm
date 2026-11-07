@@ -14,10 +14,21 @@ jobs:
         run: pip install pre-commit
       - name: Run pre-commit
         run: pre-commit run --all-files || true
-      - name: Commit fixes
+      - name: Commit fixes (advisory - never fails the job)
+        continue-on-error: true
         run: |
           git config user.name "pre-commit-ci"
           git config user.email "noreply@github.com"
           git add -A
-          git diff --cached --quiet || git commit -m "[pre-commit] Auto-fix formatting and lint"
-          git push
+          if git diff --cached --quiet; then
+            echo "No fixes needed."
+            exit 0
+          fi
+          git commit -m "[pre-commit] Auto-fix formatting and lint"
+          # PR checkouts are detached HEAD (merge ref) - a push cannot work and
+          # must not fail the job. Only push when a real branch is checked out.
+          if [ -n "$(git symbolic-ref --short -q HEAD)" ]; then
+            git push || echo "push skipped (no write access / protected branch)"
+          else
+            echo "Detached HEAD (PR merge ref) - skipping push; autofix is advisory."
+          fi
