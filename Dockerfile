@@ -22,6 +22,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
+# Ubuntu 22.04 ships pip 22.0.2 / setuptools 59.6.0. Setuptools <61 cannot read
+# PEP 621 [project] metadata from pyproject.toml, and this repo has no setup.py
+# or setup.cfg, so the build silently produced an empty UNKNOWN-0.0.0 wheel
+# (961 bytes, no console scripts) and the runtime image had no `distllm-api`
+# binary. The floors below are the first versions that understand this file:
+# setuptools 61 (PEP 621) and pip 23 (Metadata-Version 2.4 wheels).
+RUN python3 -m pip install --no-cache-dir --upgrade \
+    "pip>=23.0" "setuptools>=68.0" wheel
+
 WORKDIR /build
 
 # Install PyTorch with CUDA support (pre-built wheel for speed)
@@ -45,6 +54,14 @@ COPY proto/ proto/
 # so install the current directory. PIP finds the distllm package under
 # src/ because pyproject sets package-dir = {"" = "src"}.
 RUN pip install --no-cache-dir --prefix=/install . --no-deps
+
+# Fail the build (not the container at runtime) if the package installed without
+# its console scripts. A metadata-parsing failure yields an empty wheel that
+# pip reports as success, and the image then starts with "distllm-api: not found".
+RUN test -x /install/bin/distllm-api \
+    && test -x /install/bin/distllm-coordinator \
+    && test -x /install/bin/distllm-node \
+    || { echo "ERROR: distllm console scripts missing from /install/bin"; ls -la /install/bin || true; exit 1; }
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
