@@ -743,7 +743,7 @@ class ContentModerationMiddleware(BaseHTTPMiddleware):
         body_bytes = None
         try:
             body_bytes = await request.body()
-        except Exception:  # nosec B110 - CQ-08 best-effort: unreadable body is admitted unmoderated
+        except Exception:  # nosec B110
             pass
         if not body_bytes:
             return None

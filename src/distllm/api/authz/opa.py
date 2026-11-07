@@ -287,7 +287,7 @@ def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
             input=json.dumps(data).encode("utf-8"),
             capture_output=True,
             timeout=10,
-        )  # nosec B603 B607 - fixed argv; OPA_BIN absolute via shutil.which/env; shell=False
+        )  # nosec B603 B607
         if proc.returncode != 0:
             return None
         payload = json.loads(proc.stdout.decode("utf-8"))
@@ -295,7 +295,7 @@ def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         exprs = payload.get("result", [{}])[0].get("expressions", [])
         allow = bool(exprs[0].get("value")) if exprs else False
         return Decision(allow, "opa policy evaluation", "opa")
-    except Exception:  # nosec B110 - CQ-08 intentional fail-open: OPA binary unavailable -> server -> pure-Python policy
+    except Exception:  # nosec B110
         return None
 
 
@@ -312,7 +312,7 @@ def _opa_server_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         payload = resp.json()
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
-    except Exception:  # nosec B110 - CQ-08 intentional fail-open: OPA server unreachable -> pure-Python policy
+    except Exception:  # nosec B110
         return None
 
 
@@ -330,7 +330,7 @@ async def _opa_server_evaluate_async(data: dict[str, Any]) -> Optional[Decision]
         payload = resp.json()
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
-    except Exception:  # nosec B110 - CQ-08 intentional fail-open: async OPA server -> pure-Python policy
+    except Exception:  # nosec B110
         return None
 
 
