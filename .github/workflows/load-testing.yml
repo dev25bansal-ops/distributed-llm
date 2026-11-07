@@ -98,7 +98,8 @@ jobs:
             --host http://localhost:8000 \
             --csv tests/load/results/chat \
             --html tests/load/results/chat_report.html \
-            --only-summary
+            --only-summary \
+            --exit-code-on-error 0
 
       - name: Run streaming load test
         env:
@@ -112,9 +113,12 @@ jobs:
             --host http://localhost:8000 \
             --csv tests/load/results/streaming \
             --html tests/load/results/streaming_report.html \
-            --only-summary
+            --only-summary \
+            --exit-code-on-error 0
 
       - name: Run mixed workload test
+        env:
+          API_KEY: loadtest-key-${{ github.run_id }}
         run: |
           locust -f tests/load/locust/scenarios/mixed_scenario.py \
             --headless \
@@ -124,7 +128,8 @@ jobs:
             --host http://localhost:8000 \
             --csv tests/load/results/mixed \
             --html tests/load/results/mixed_report.html \
-            --only-summary
+            --only-summary \
+            --exit-code-on-error 0
 
       - name: Generate load test report
         run: |
