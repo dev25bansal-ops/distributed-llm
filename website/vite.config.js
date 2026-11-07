@@ -7,6 +7,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        'index-fixed': resolve(__dirname, 'index-fixed.html'),
+        index2: resolve(__dirname, 'index2.html'),
         docs: resolve(__dirname, 'docs.html'),
         blog: resolve(__dirname, 'blog.html'),
         benchmarks: resolve(__dirname, 'benchmarks.html'),
@@ -20,6 +22,15 @@ export default defineConfig({
         status: resolve(__dirname, 'status.html'),
         playground: resolve(__dirname, 'playground.html'),
         glossary: resolve(__dirname, 'glossary.html'),
+        api: resolve(__dirname, 'api.html'),
+        comparisons: resolve(__dirname, 'comparisons.html'),
+        enterprise: resolve(__dirname, 'enterprise.html'),
+        integrations: resolve(__dirname, 'integrations.html'),
+        learn: resolve(__dirname, 'learn.html'),
+        offline: resolve(__dirname, 'offline.html'),
+        privacy: resolve(__dirname, 'privacy.html'),
+        terms: resolve(__dirname, 'terms.html'),
+        '500': resolve(__dirname, '500.html'),
         '404': resolve(__dirname, '404.html'),
       },
       output: {
