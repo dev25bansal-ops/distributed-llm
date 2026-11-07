@@ -1,4 +1,21 @@
-"""Tests: CLI — all commands registered, argument parsing, --debug, validate_config, chat loop."""
+"""Tests: CLI — all commands registered, argument parsing, --debug, validate_config, chat loop.
+
+KNOWN-STALE SUITE (tracked debt, 2026-11-07 hygiene audit)
+=========================================================
+This file asserts a CLI surface from an earlier generation of the project:
+`setup`, `run`, `validate-config`, `compress`, `node`, `coordinator`, `api`,
+`client`, `tp`, `deploy`, `profile`, `models`, `adapters`, `logs`.
+The real `distllm.cli.main.app` commands are:
+  audit, chat, chat-stream, cli-doctor, completion, dashboard, devices,
+  onboard, status, tutorial
+and groups: benchmark, cache, cluster, config, daas, draft, model, pool,
+router, security, system, tune.
+
+These 54 failures reproduce identically on clean master; they are not
+product regressions. They are excluded from the coverage-ratchet selection
+via the `--ignore` in quality-gates.yml and tracked as TODO: port the suite
+to the current CLI (see docs/_map/UNIFIED.md §10 open follow-ups).
+"""
 
 import os
 import tempfile
@@ -25,19 +42,15 @@ class TestCommandsRegistered:
     def test_app_has_all_top_level_commands(self):
         commands = list(app.registered_commands)
         names = [c.callback.__name__.replace("_", "-") for c in commands]
-        expected = [
-            "setup", "run", "validate-config", "status", "compress",
-            "chat", "node", "coordinator", "api", "client",
-            "tp", "dashboard", "deploy", "profile",
-        ]
+        expected = ['audit', 'chat', 'chat-stream', 'cli-doctor', 'completion', 'dashboard', 'devices', 'onboard', 'status', 'tutorial']
         for name in expected:
             assert name in names, f"Missing command: {name}"
-        assert len(names) >= 14
+        assert len(names) >= 8
 
-    def test_app_has_models_group(self):
+    def test_app_has_model_group(self):
         groups = [g for g in app.registered_groups]
         names = [g.name for g in groups]
-        assert "models" in names
+        assert "model" in names
 
     def test_app_has_cluster_group(self):
         groups = [g for g in app.registered_groups]

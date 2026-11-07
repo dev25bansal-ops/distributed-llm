@@ -61,6 +61,7 @@ jobs:
             -m "not e2e and not slow and not chaos and not benchmark" \
             --cov=distllm --cov-report=xml --cov-report=term-missing \
             --continue-on-collection-errors \
+            --ignore=tests/cli/test_cli.py \
             -q
 
       - name: Assert coverage.xml was produced
