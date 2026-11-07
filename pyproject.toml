@@ -103,7 +103,7 @@ dev = [
     "hypothesis>=6.90",
     "pytest-benchmark>=4.0",
     "black>=24.0",
-    "ruff>=0.1.0",
+    "ruff==0.16.7",
     "mypy>=1.8",
     "opentelemetry-test-utils>=0.42b0",
     "bandit[toml]>=1.7",
@@ -269,7 +269,7 @@ dev = [
     "hypothesis>=6.90",
     "pytest-benchmark>=4.0",
     "black>=24.0",
-    "ruff>=0.1.0",
+    "ruff==0.16.7",
     "mypy>=1.8",
     "opentelemetry-test-utils>=0.42b0",
     "bandit[toml]>=1.7",
@@ -288,7 +288,7 @@ test = [
 ]
 lint = [
     "black>=24.0",
-    "ruff>=0.1.0",
+    "ruff==0.16.7",
     "mypy>=1.8",
     "bandit[toml]>=1.7",
     "detect-secrets>=1.5",
