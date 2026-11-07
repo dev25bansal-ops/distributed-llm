@@ -56,6 +56,22 @@ COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
+# node_pb2*.py are gitignored build products (see .gitignore), so they are
+# absent from the build context and the installed package has no protobuf
+# modules -- the container then dies on `ImportError: cannot import name
+# 'node_pb2' from 'distllm.dist'`. Generate them exactly as `make proto` does.
+#
+# grpcio-tools emits a *flat* `import node_pb2 as node__pb2` in the _grpc file,
+# which only resolves when distllm/dist is on sys.path; imported as a package
+# it raises ModuleNotFoundError. Rewrite it to the package-relative form.
+RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
+    && python -m grpc_tools.protoc -I proto/ \
+        --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
+        proto/node.proto \
+    && sed -i 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+        src/distllm/dist/node_pb2_grpc.py \
+    && test -f src/distllm/dist/node_pb2.py \
+    && grep -q '^from distllm.dist import node_pb2 as node__pb2$' src/distllm/dist/node_pb2_grpc.py
 # The package metadata (pyproject.toml) lives at the repo root, not in src/,
 # so install the current directory. PIP finds the distllm package under
 # src/ because pyproject sets package-dir = {"" = "src"}.

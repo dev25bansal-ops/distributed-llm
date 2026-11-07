@@ -51,6 +51,13 @@ dependencies = [
     "pyjwt>=2.0.0",
     "numpy>=1.26.0",
     "psutil>=5.9.0",
+    # The distributed layer is gRPC: node_service, node_client, block transfer,
+    # tp_launcher, certificate_manager, retry and the generated node_pb2_grpc
+    # all import grpc at module scope, and node_pb2 imports google.protobuf.
+    # Neither was declared anywhere, so `pip install distllm` produced an
+    # installation that could not start a coordinator or worker.
+    "grpcio>=1.60.0",
+    "protobuf>=4.25.0",
     # Build-env floor (SEC-4 gate 2026-11-06): pip-audit flagged setuptools
     # 79.0.1 (PYSEC-2026-3447 fixed in 83.0.0; GHSA-xmj3-9gf7-h52w fixed in
     # 84.1.0) in the CI install env. Flooring clears both advisories.

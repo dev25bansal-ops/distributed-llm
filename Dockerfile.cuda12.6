@@ -49,6 +49,18 @@ COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
+# node_pb2*.py are gitignored build products, absent from the build context --
+# generate them as `make proto` does, before the package install below. The
+# generated _grpc file imports node_pb2 flatly, which only resolves when
+# distllm/dist is on sys.path; rewrite it to the package-relative form.
+RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
+    && python -m grpc_tools.protoc -I proto/ \
+        --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
+        proto/node.proto \
+    && sed -i 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+        src/distllm/dist/node_pb2_grpc.py \
+    && test -f src/distllm/dist/node_pb2.py \
+    && grep -q '^from distllm.dist import node_pb2 as node__pb2$' src/distllm/dist/node_pb2_grpc.py
 # self-hosted extra: core.coordinator imports transformers at module scope and
 # requirements.lock does not carry it (torch is already installed above).
 RUN pip install --no-cache-dir "transformers>=4.48.0" \
