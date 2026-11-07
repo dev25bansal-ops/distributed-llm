@@ -12,6 +12,10 @@ repos:
       - id: bandit
         args: ['-c', 'pyproject.toml', '-r', 'src/distllm/']
         additional_dependencies: ['bandit[toml]']
+        # Product code only. pre-commit otherwise also passes every changed
+        # filename (benchmarks/, tests/, scripts/) which the original
+        # `-r src/distllm/` intent never covered.
+        files: ^src/distllm/
 
   - repo: https://github.com/regebro/pyroma
     rev: "4.2"
