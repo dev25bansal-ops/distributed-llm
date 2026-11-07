@@ -31,7 +31,7 @@ import asyncio
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -92,8 +92,10 @@ def _close_opa_clients() -> None:
     if _opa_async_client is not None:
         try:
             _opa_async_client.close()
-        except Exception:
-            # CQ-08: intentional: close() must not raise during teardown; clients are process-global.
+        except (RuntimeError, OSError):
+            # CQ-08: teardown close may fail when the loop is already gone;
+            # the client is process-global and recreated lazily, so a failed
+            # close is benign and must not raise during shutdown.
             pass
         _opa_async_client = None
 
@@ -285,7 +287,7 @@ def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
             input=json.dumps(data).encode("utf-8"),
             capture_output=True,
             timeout=10,
-        )
+        )  # nosec B603 B607 - fixed argv; OPA_BIN absolute via shutil.which/env; shell=False
         if proc.returncode != 0:
             return None
         payload = json.loads(proc.stdout.decode("utf-8"))
@@ -293,8 +295,7 @@ def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         exprs = payload.get("result", [{}])[0].get("expressions", [])
         allow = bool(exprs[0].get("value")) if exprs else False
         return Decision(allow, "opa policy evaluation", "opa")
-    except Exception:
-        # CQ-08: intentional fail-open: OPA binary unavailable/errored -> fall through to the OPA server, then the pure-Python policy (see authorize()).
+    except Exception:  # nosec B110 - CQ-08 intentional fail-open: OPA binary unavailable -> server -> pure-Python policy
         return None
 
 
@@ -311,8 +312,7 @@ def _opa_server_evaluate(data: dict[str, Any]) -> Optional[Decision]:
         payload = resp.json()
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
-    except Exception:
-        # CQ-08: intentional fail-open: OPA server unreachable/errored -> fall through to the pure-Python policy (see authorize()).
+    except Exception:  # nosec B110 - CQ-08 intentional fail-open: OPA server unreachable -> pure-Python policy
         return None
 
 
@@ -330,8 +330,7 @@ async def _opa_server_evaluate_async(data: dict[str, Any]) -> Optional[Decision]
         payload = resp.json()
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
-    except Exception:
-        # CQ-08: intentional fail-open: OPA server unreachable/errored -> fall through to the pure-Python policy (see authorize_async()).
+    except Exception:  # nosec B110 - CQ-08 intentional fail-open: async OPA server -> pure-Python policy
         return None
 
 

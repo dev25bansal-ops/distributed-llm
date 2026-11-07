@@ -64,7 +64,13 @@ jobs:
 
 
       - name: Start API server
+        env:
+          # Load tests authenticate with this key (locust chat_scenario.py
+          # reads API_KEY and sets Authorization: Bearer). Previously unset,
+          # so every request got 401 Unauthorized.
+          API_KEY: loadtest-key-${{ github.run_id }}
         run: |
+          export API_KEY="${API_KEY}"
           distllm-api --model ${{ env.MODEL_NAME }} --local --port 8000 &
           echo "Server PID: $!"
           # Wait for server to be ready
@@ -81,6 +87,8 @@ jobs:
           done
 
       - name: Run chat load test
+        env:
+          API_KEY: loadtest-key-${{ github.run_id }}
         run: |
           locust -f tests/load/locust/scenarios/chat_scenario.py \
             --headless \
@@ -93,6 +101,8 @@ jobs:
             --only-summary
 
       - name: Run streaming load test
+        env:
+          API_KEY: loadtest-key-${{ github.run_id }}
         run: |
           locust -f tests/load/locust/scenarios/streaming_scenario.py \
             --headless \
