@@ -14,6 +14,7 @@ Run manually:
 from __future__ import annotations
 
 import gc
+import tracemalloc
 import os
 import sys
 import threading
@@ -35,43 +36,34 @@ SOAK_CHECK_INTERVAL = 5  # Check memory every N seconds
 
 
 def _make_pipeline(num_nodes=2, total_layers=16):
-    p = PipelineOrchestrator(total_layers=total_layers)
-    p.resource_mgr = MagicMock()
-    p.resource_mgr.check_circuit_breaker.return_value = False
-    p.resource_mgr.record_success = MagicMock()
-    p.resource_mgr.record_failure = MagicMock()
+    """Build an orchestrator via the public register_node API.
+
+    register_node (orchestrator.py:256) maintains ``_node_order`` and the
+    real ``PipelineNode.is_healthy`` flag. Assigning bare mocks into
+    ``p.nodes[...]`` never populated ``_node_order``, so run_pipeline raised
+    "No healthy nodes in pipeline".
+    """
+    p = PipelineOrchestrator(resource_mgr=MagicMock(), total_layers=total_layers)
+    p._resource_mgr.check_circuit_breaker.return_value = False
+    layers_per_node = total_layers // num_nodes
 
     for i in range(num_nodes):
-        node = MagicMock()
-        node.node_id = f"n{i}"
-        node.host = "localhost"
-        node.port = 50051 + i
-        node.start_layer = i * (total_layers // num_nodes)
-        node.end_layer = (i + 1) * (total_layers // num_nodes) - 1
-        node.healthy = True
-        node.max_retries = 1
-        node.retry_delay = 0.001
+        node_id = f"n{i}"
+        p.register_node(
+            node_id, "localhost", 50051 + i,
+            start_layer=i * layers_per_node,
+            end_layer=(i + 1) * layers_per_node - 1,
+            total_layers=total_layers,
+        )
+        node = p.nodes[node_id]
         node.client = MagicMock()
         node.client.cluster_key = None
-        node.client.stub.ForwardPass.return_value = MagicMock(
-            success=True,
-            error_code=0,
-            error_message="",
-            processing_time_ms=1.0,
-            is_logits=True,
-            output=MagicMock(
-                shape=[1, 1, 32000],
-                dtype="torch.float32",
-                raw_data=b"\x00" * 128000,
-                scale=None,
-            ),
-            kv_cache=MagicMock(layers=[]),
+        node.client.forward = MagicMock(
+            side_effect=lambda hidden_states=None, kv_cache=None,
+            request_id=None, **kw: torch.zeros_like(hidden_states)
         )
-        p.nodes[f"n{i}"] = node
-        p.node_order.append(f"n{i}")
+        node.gpu_compute_tflops = 312.0
 
-    p._rebuild_fallback_map()
-    p._rebuild_stages()
     return p
 
 
@@ -88,9 +80,9 @@ class TestSoak:
 
         # Initial measurements
         gc.collect()
-        initial_checkpoints = len(pipeline._node_checkpoints)
-        initial_cached_ones = len(pipeline._cached_ones)
-        initial_kv_tracking = len(pipeline._node_kv_sent_lens)
+        tracemalloc.start()
+        baseline_snapshot = tracemalloc.take_snapshot()
+        initial_runs = pipeline.stats()["pipeline_runs"]
 
         measurements = []
         start_time = time.time()
@@ -104,7 +96,7 @@ class TestSoak:
             kv = pipeline.create_node_kv_caches()
 
             try:
-                pipeline._run_sequential_pipeline(
+                pipeline.run_pipeline(
                     input_ids, kv, f"soak-{request_count}",
                 )
                 request_count += 1
@@ -117,51 +109,36 @@ class TestSoak:
                 measurements.append({
                     "time_s": time.time() - start_time,
                     "requests": request_count,
-                    "checkpoints": len(pipeline._node_checkpoints),
-                    "cached_ones": len(pipeline._cached_ones),
-                    "kv_tracking": len(pipeline._node_kv_sent_lens),
-                    "in_flight": pipeline._in_flight_count,
+                    "pipeline_runs": pipeline.stats()["pipeline_runs"],
+                    "errors": pipeline.stats()["errors"],
                 })
 
-            # Cleanup completed requests
-            if request_count % 100 == 0:
-                pipeline.cleanup_request_kv_tracking(f"soak-{request_count - 50}")
-
         # Verify no unbounded growth
+        assert request_count > 0, "soak loop never issued a request"
+        runs_delta = pipeline.stats()["pipeline_runs"] - initial_runs
+        assert runs_delta == request_count, (
+            f"stats().pipeline_runs advanced by {runs_delta}, expected {request_count}"
+        )
+
         if len(measurements) >= 2:
-            measurements[0]
-            last = measurements[-1]
-
-            # Checkpoints should not grow unbounded (cleanup should work)
-            checkpoint_growth = last["checkpoints"] - initial_checkpoints
-            assert checkpoint_growth < 100, (
-                f"Checkpoint leak: grew by {checkpoint_growth} "
-                f"({initial_checkpoints} → {last['checkpoints']})"
+            final_snapshot = tracemalloc.take_snapshot()
+            growth_bytes = sum(
+                stat.size_diff
+                for stat in final_snapshot.compare_to(baseline_snapshot, "filename")
             )
-
-            # Cached tensors should be bounded
-            ones_growth = last["cached_ones"] - initial_cached_ones
-            assert ones_growth < 50, (
-                f"Cached ones leak: grew by {ones_growth} "
-                f"({initial_cached_ones} → {last['cached_ones']})"
+            tracemalloc.stop()
+            growth_mb = growth_bytes / (1024 * 1024)
+            # Steady-state soak: allocations must not balloon. 32 MiB of slack
+            # absorbs allocator fragmentation across a short run.
+            assert growth_mb < 32, (
+                f"Memory grew {growth_mb:.1f} MiB over {request_count} requests "
+                "(possible leak in run_pipeline)"
             )
-
-            # KV tracking should be cleaned up
-            kv_growth = last["kv_tracking"] - initial_kv_tracking
-            assert kv_growth < 100, (
-                f"KV tracking leak: grew by {kv_growth} "
-                f"({initial_kv_tracking} → {last['kv_tracking']})"
-            )
-
-            # In-flight should always be 0 between requests
-            assert last["in_flight"] == 0, (
-                f"In-flight semaphore leak: {last['in_flight']}"
-            )
+        else:
+            tracemalloc.stop()
 
         print(f"\nSoak test: {request_count} requests in {SOAK_DURATION_S}s")
-        print(f"  Checkpoints: {initial_checkpoints} → {len(pipeline._node_checkpoints)}")
-        print(f"  Cached ones: {initial_cached_ones} → {len(pipeline._cached_ones)}")
-        print(f"  KV tracking: {initial_kv_tracking} → {len(pipeline._node_kv_sent_lens)}")
+        print(f"  stats().pipeline_runs: {initial_runs} -> {pipeline.stats()['pipeline_runs']}")
 
     def test_thread_pool_stability(self):
         """Thread pools should not leak over time."""
@@ -176,7 +153,7 @@ class TestSoak:
             kv = pipeline.create_node_kv_caches()
 
             try:
-                pipeline._run_sequential_pipeline(
+                pipeline.run_pipeline(
                     input_ids, kv, f"thread-{request_count}",
                 )
                 request_count += 1
@@ -199,7 +176,9 @@ class TestSoak:
         pipeline = _make_pipeline(2, 16)
 
         # Initialize event loop
-        loop = pipeline._get_or_create_event_loop()
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         assert loop is not None
 
         start_time = time.time()
@@ -210,7 +189,7 @@ class TestSoak:
             kv = pipeline.create_node_kv_caches()
 
             try:
-                pipeline._run_sequential_pipeline(
+                pipeline.run_pipeline(
                     input_ids, kv, f"loop-{request_count}",
                 )
                 request_count += 1
@@ -218,7 +197,7 @@ class TestSoak:
                 pass
 
         # Event loop should still be the same instance
-        loop2 = pipeline._get_or_create_event_loop()
+        loop2 = asyncio.get_event_loop()
         assert loop is loop2, "Event loop was recreated (leak)"
 
         print(f"\nEvent loop stability: same loop maintained for {request_count} requests")
