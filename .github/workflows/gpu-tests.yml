@@ -14,14 +14,14 @@ name: GPU Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "src/distllm/**"
       - "tests/**gpu**"
       - "tests/**/test_paged**"
       - "tests/**/test_kv_cache**"
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "src/distllm/**"
   workflow_dispatch:

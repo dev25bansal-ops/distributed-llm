@@ -11,7 +11,7 @@ on:
       - "benchmarks/**"
       - "pyproject.toml"
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "src/**"
       - "benchmarks/**"

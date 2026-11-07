@@ -15,13 +15,13 @@ name: Distributed Integration Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "src/distllm/**"
       - "docker-compose*.yml"
       - "Dockerfile*"
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "src/distllm/**"
       - "docker-compose*.yml"
