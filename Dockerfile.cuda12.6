@@ -49,6 +49,11 @@ COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
+# self-hosted extra: core.coordinator imports transformers at module scope and
+# requirements.lock does not carry it (torch is already installed above).
+RUN pip install --no-cache-dir "transformers>=4.48.0" \
+    "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
+    "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
 RUN pip install --no-cache-dir . --no-deps
 RUN test -x /install/bin/distllm-api \
     && test -x /install/bin/distllm-coordinator \

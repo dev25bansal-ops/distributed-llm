@@ -59,6 +59,16 @@ COPY proto/ proto/
 # The package metadata (pyproject.toml) lives at the repo root, not in src/,
 # so install the current directory. PIP finds the distllm package under
 # src/ because pyproject sets package-dir = {"" = "src"}.
+#
+# Install the self-hosted extra too: core.coordinator imports transformers at
+# module scope, and requirements.lock does not carry it, so a bare install
+# produced an image that built fine and then died on
+# `ModuleNotFoundError: No module named 'transformers'` when the coordinator
+# started. torch is already installed from the CUDA index above and satisfies
+# the extra's requirement, so pip will not pull a second copy.
+RUN pip install --no-cache-dir "transformers>=4.48.0" \
+    "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
+    "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
 RUN pip install --no-cache-dir . --no-deps
 
 # Fail the build (not the container at runtime) if the package installed without
