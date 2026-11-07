@@ -1,8 +1,4 @@
 {
-  "src/distllm/api/auth/oidc.py:B105": {
-    "confidence": "MEDIUM",
-    "severity": "LOW"
-  },
   "src/distllm/api/routes/admin.py:B108": {
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
@@ -15,15 +11,27 @@
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
   },
-  "src/distllm/api/routes/experiments.py:B105": {
+  "src/distllm/api/routes/chat.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/api/routes/metrics_history.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/api/routes/model_registry.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/api/routes/webhooks.py:B105": {
     "confidence": "MEDIUM",
     "severity": "LOW"
   },
-  "src/distllm/api/routes/experiments.py:B324": {
-    "confidence": "HIGH",
-    "severity": "HIGH"
+  "src/distllm/api/routes/webhooks.py:B106": {
+    "confidence": "MEDIUM",
+    "severity": "LOW"
   },
-  "src/distllm/api/routes/model_registry.py:B110": {
+  "src/distllm/api/routes/webhooks.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -35,24 +43,28 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/api/semantic_cache.py:B324": {
-    "confidence": "HIGH",
-    "severity": "HIGH"
-  },
-  "src/distllm/api/server.py:B104": {
-    "confidence": "MEDIUM",
-    "severity": "MEDIUM"
-  },
   "src/distllm/api/server.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/api/server_coordinator.py:B104": {
+    "confidence": "MEDIUM",
+    "severity": "MEDIUM"
   },
   "src/distllm/api/sso_auth.py:B105": {
     "confidence": "MEDIUM",
     "severity": "LOW"
   },
+  "src/distllm/api/sso_middleware.py:B105": {
+    "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
   "src/distllm/api/streaming.py:B107": {
     "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
+  "src/distllm/api/tracing_middleware.py:B110": {
+    "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/backends/llamacpp_backend.py:B110": {
@@ -63,6 +75,10 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/backends/nim_backend.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
   "src/distllm/backends/paged_attention.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
@@ -71,16 +87,28 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/backends/registry.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/backends/registry.py:B112": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/backends/triton_backend.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/backends/triton_backend.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
   },
   "src/distllm/backends/vllm_backend.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/benchmarks/evaluation_harness.py:B311": {
-    "confidence": "HIGH",
+  "src/distllm/cli/audit.py:B105": {
+    "confidence": "MEDIUM",
     "severity": "LOW"
   },
   "src/distllm/cli/autopsy.py:B110": {
@@ -99,6 +127,18 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/cli/cli_doctor.py:B310": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/cli/cli_doctor.py:B404": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/cli/cli_doctor.py:B603": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/cli/client.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
@@ -113,6 +153,22 @@
   },
   "src/distllm/cli/cluster.py:B603": {
     "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/cli/compress.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/cli/devices.py:B404": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/cli/devices.py:B603": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/cli/doctor.py:B105": {
+    "confidence": "MEDIUM",
     "severity": "LOW"
   },
   "src/distllm/cli/doctor.py:B404": {
@@ -139,6 +195,10 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/cli/main.py:B404": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/cli/observe.py:B104": {
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
@@ -147,8 +207,24 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/cli/webhook.py:B107": {
+  "src/distllm/cli/observe.py:B404": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/cli/onboard.py:B104": {
     "confidence": "MEDIUM",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/cli/onboard.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/cli/status.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/cli/status.py:B112": {
+    "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/cloud/aws.py:B110": {
@@ -179,23 +255,31 @@
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
   },
+  "src/distllm/core/adaptive_compression.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
   "src/distllm/core/advanced_scheduling/disaggregated.py:B403": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/auto_discovery.py:B110": {
+  "src/distllm/core/aegis_compliance.py:B101": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/core/aegis_compliance.py:B608": {
+    "confidence": "LOW",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/core/agentic_router.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/agentic_router.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
   },
   "src/distllm/core/autonomous_healer.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/autonomous_healer.py:B404": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/autonomous_healer.py:B603": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -211,18 +295,6 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/cache_aware_router.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/cache_bench.py:B311": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/cache_doctor.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
   "src/distllm/core/cache_manager.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
@@ -230,10 +302,6 @@
   "src/distllm/core/cache_migration.py:B310": {
     "confidence": "HIGH",
     "severity": "MEDIUM"
-  },
-  "src/distllm/core/cache_snapshot.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
   },
   "src/distllm/core/calibration.py:B110": {
     "confidence": "HIGH",
@@ -243,11 +311,43 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/core/cluster_manager.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/core/compliance_evidence.py:B105": {
+    "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
+  "src/distllm/core/compliance_evidence.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/core/compressed_speculative.py:B311": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/core/coordinator.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/coordinator.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/core/coordinator_subsystem.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/coordinator_subsystem.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/core/cortex_multimodel.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/cost_optimizer.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -271,13 +371,17 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/distributed_distillation.py:B108": {
-    "confidence": "MEDIUM",
-    "severity": "MEDIUM"
-  },
   "src/distllm/core/distributed_speculative.py:B311": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/core/evaluation/db.py:B608": {
+    "confidence": "MEDIUM",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/core/evaluation/loaders.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
   },
   "src/distllm/core/evaluation_harness.py:B608": {
     "confidence": "MEDIUM",
@@ -295,15 +399,7 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/gpu_power_manager.py:B404": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/gpu_power_manager.py:B603": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/gpu_power_manager.py:B607": {
+  "src/distllm/core/federated_incentives.py:B101": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -315,12 +411,24 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/core/grammar_constrained.py:B112": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/core/grammar_constrained_draft.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/core/health_manager.py:B110": {
     "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/inference_engine.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/core/kraken_chaos.py:B105": {
+    "confidence": "MEDIUM",
     "severity": "LOW"
   },
   "src/distllm/core/learning_router.py:B311": {
@@ -335,15 +443,15 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/model_hub_enhanced.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
   "src/distllm/core/notification_manager.py:B107": {
     "confidence": "MEDIUM",
     "severity": "LOW"
   },
   "src/distllm/core/pipeline_executor.py:B101": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/placement.py:B311": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -360,6 +468,10 @@
     "severity": "LOW"
   },
   "src/distllm/core/plugin_marketplace.py:B607": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/plugin_sandbox.py:B112": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -411,14 +523,6 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/resource_manager.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
-  "src/distllm/core/route_audit.py:B110": {
-    "confidence": "HIGH",
-    "severity": "LOW"
-  },
   "src/distllm/core/secret_manager.py:B107": {
     "confidence": "MEDIUM",
     "severity": "LOW"
@@ -427,19 +531,31 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/core/straggler_alerts.py:B107": {
+  "src/distllm/core/structured_output/engine.py:B105": {
     "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
+  "src/distllm/core/topology_aware_tiering.py:B110": {
+    "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/core/vectorstore/pgvector_store.py:B608": {
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
   },
-  "src/distllm/core/webhook_manager.py:B104": {
-    "confidence": "MEDIUM",
+  "src/distllm/core/voyager_multimodal.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/core/voyager_multimodal.py:B615": {
+    "confidence": "HIGH",
     "severity": "MEDIUM"
   },
   "src/distllm/core/webhook_manager.py:B107": {
+    "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
+  "src/distllm/dashboard/verification_history.py:B105": {
     "confidence": "MEDIUM",
     "severity": "LOW"
   },
@@ -455,7 +571,19 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/dist/backends/backend_profiles.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/backends/health_monitor.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/dist/chaos/chaos_orchestrator.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/chaos/fault_injector.py:B311": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -463,15 +591,31 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/dist/daas/load_balancer.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/dist/daas_server.py:B104": {
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
+  },
+  "src/distllm/dist/daas_server.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/disagg/transfer_engine.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
   },
   "src/distllm/dist/discovery.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/dist/draft_migration.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ebpf_transport.py:B112": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -507,9 +651,45 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/dist/ice_transport.py:B101": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ice_transport.py:B104": {
+    "confidence": "MEDIUM",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/dist/ice_transport.py:B107": {
+    "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ice_transport.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ice_transport.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ice_transport.py:B404": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ice_transport.py:B603": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/ice_transport.py:B607": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/dist/marketplace.py:B101": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/dist/multimodal.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
   },
   "src/distllm/dist/nat.py:B104": {
     "confidence": "MEDIUM",
@@ -535,6 +715,22 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/dist/p2p/kademlia_dht.py:B104": {
+    "confidence": "MEDIUM",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/dist/p2p/kademlia_dht.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/p2p/quic_transport.py:B101": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/p2p/quic_transport.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/dist/paged_attention_kernel.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
@@ -543,19 +739,27 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/dist/parallel_planner.py:B324": {
-    "confidence": "HIGH",
-    "severity": "HIGH"
-  },
   "src/distllm/dist/parallel_topology.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/dist/partition/partitioner.py:B324": {
+  "src/distllm/dist/partition/network_cost_model.py:B110": {
     "confidence": "HIGH",
-    "severity": "HIGH"
+    "severity": "LOW"
+  },
+  "src/distllm/dist/partition/network_cost_model.py:B404": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/partition/network_cost_model.py:B603": {
+    "confidence": "HIGH",
+    "severity": "LOW"
   },
   "src/distllm/dist/partition/quant_bench.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/pipeline/transport.py:B101": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -583,10 +787,6 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/dist/prefix_clustering.py:B324": {
-    "confidence": "HIGH",
-    "severity": "HIGH"
-  },
   "src/distllm/dist/quic_transport.py:B104": {
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
@@ -607,7 +807,23 @@
     "confidence": "MEDIUM",
     "severity": "MEDIUM"
   },
+  "src/distllm/dist/simulation/chaos_simulator.py:B112": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/simulation/chaos_simulator.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/dist/simulation/digital_twin.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/simulation/topology_optimizer.py:B112": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/simulation/what_if.py:B101": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
@@ -622,6 +838,18 @@
   "src/distllm/dist/straggler.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/dist/topology_consensus.py:B101": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/topology_consensus.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/dist/tp_launcher.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
   },
   "src/distllm/dist/wandb_integration.py:B110": {
     "confidence": "HIGH",
@@ -647,10 +875,6 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
-  "src/distllm/dist/zero_copy.py:B301": {
-    "confidence": "HIGH",
-    "severity": "MEDIUM"
-  },
   "src/distllm/dist/zero_copy.py:B403": {
     "confidence": "HIGH",
     "severity": "LOW"
@@ -663,12 +887,56 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/errors/retry.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/integrations/__init__.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/integrations/spark_connector.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/integrations/spark_connector.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/models/model_hub.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/models/partition_planner.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/models/partitioner.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/models/safetensors_index.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
+  },
+  "src/distllm/observability/exporter_datadog.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/observability/loki_sink.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/observability/tracing_config.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/observability/wandb_monitor.py:B110": {
     "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/plugins/auth_plugin.py:B105": {
+    "confidence": "MEDIUM",
     "severity": "LOW"
   },
   "src/distllm/plugins/cache_plugin.py:B110": {
@@ -683,17 +951,29 @@
     "confidence": "HIGH",
     "severity": "LOW"
   },
+  "src/distllm/sdk/transport.py:B311": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/security/content_moderation/toxicity.py:B101": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
   "src/distllm/security/log_redaction.py:B105": {
     "confidence": "MEDIUM",
+    "severity": "LOW"
+  },
+  "src/distllm/security/log_redaction.py:B110": {
+    "confidence": "HIGH",
+    "severity": "LOW"
+  },
+  "src/distllm/security/quantum_safe_tls.py:B110": {
+    "confidence": "HIGH",
     "severity": "LOW"
   },
   "src/distllm/security/watermark.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
-  },
-  "src/distllm/security/watermark.py:B614": {
-    "confidence": "HIGH",
-    "severity": "MEDIUM"
   },
   "src/distllm/verification/comparator.py:B105": {
     "confidence": "MEDIUM",
@@ -706,6 +986,10 @@
   "src/distllm/verification/runner.py:B110": {
     "confidence": "HIGH",
     "severity": "LOW"
+  },
+  "src/distllm/verification/runner.py:B615": {
+    "confidence": "HIGH",
+    "severity": "MEDIUM"
   },
   "src/distllm/verification/test_verify.py:B101": {
     "confidence": "HIGH",
