@@ -10,9 +10,15 @@ repos:
     rev: 1.8.3
     hooks:
       - id: bandit
-        args: ['-c', 'pyproject.toml', '-r', 'src/distllm/']
+        # Gate blocks NEW findings only. -b compares against the 419-entry
+        # baseline (2026-11-07) that captures pre-existing issues across the
+        # codebase; a finding absent from the baseline fails the hook.
+        # Regenerate the baseline ONLY with a reviewed delta (like a lockfile).
+        # pre-commit must NOT pass filenames (bandit -r walks the tree itself).
+        pass_filenames: false
+        args: ['-c', 'pyproject.toml', '-r', 'src/distllm/', '-b', '.bandit-baseline.json', '-q']
         additional_dependencies: ['bandit[toml]']
-        files: ^src/distllm/
+        exclude: ^\.bandit-baseline\.json$
 
   - repo: https://github.com/regebro/pyroma
     rev: "4.2"
