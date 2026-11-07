@@ -33,6 +33,12 @@ RUN python3 -m pip install --no-cache-dir --upgrade \
 
 WORKDIR /build
 
+# Interpreter for the whole image: a venv keeps one consistent layout (Debian
+# Python searches .../dist-packages while `pip --prefix` writes site-packages)
+# and we copy it wholesale to the runtime at this same absolute path.
+RUN python3 -m venv /install
+ENV PATH=/install/bin:${PATH}
+
 # Install PyTorch with CUDA support (pre-built wheel for speed)
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
@@ -43,7 +49,7 @@ RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://
 
 # Install locked dependencies first (cached layer, pinning all transitive deps)
 COPY requirements.lock .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy project files and install the package itself (without re-resolving deps)
 COPY pyproject.toml .
@@ -53,7 +59,7 @@ COPY proto/ proto/
 # The package metadata (pyproject.toml) lives at the repo root, not in src/,
 # so install the current directory. PIP finds the distllm package under
 # src/ because pyproject sets package-dir = {"" = "src"}.
-RUN pip install --no-cache-dir --prefix=/install . --no-deps
+RUN pip install --no-cache-dir . --no-deps
 
 # Fail the build (not the container at runtime) if the package installed without
 # its console scripts. A metadata-parsing failure yields an empty wheel that
@@ -95,8 +101,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the installed packages from builder
-COPY --from=builder /install /usr/local
+# Copy the venv at the SAME absolute path it was built at: pyvenv.cfg and the
+# console-script shebangs embed /install, so relocating it would break both.
+COPY --from=builder /install /install
+ENV PATH=/install/bin:${PATH}
 
 # Create non-root user
 RUN groupadd -r distllm && \

@@ -37,21 +37,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # UNKNOWN-0.0.0 wheel and the image has no distllm-api binary at runtime.
 RUN python3 -m pip install --no-cache-dir --upgrade \
     "pip>=23.0" "setuptools>=68.0" wheel
+# Interpreter for the whole image: a venv keeps one consistent layout (Debian
+# Python searches .../dist-packages while `pip --prefix` writes site-packages)
+# and we copy it wholesale to the runtime at this same absolute path.
+RUN python3 -m venv /install
+ENV PATH=/install/bin:${PATH}
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 COPY requirements.lock .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-RUN pip install --no-cache-dir --prefix=/install . --no-deps
+RUN pip install --no-cache-dir . --no-deps
 RUN test -x /install/bin/distllm-api \
     && test -x /install/bin/distllm-coordinator \
     && test -x /install/bin/distllm-node \
     || { echo "ERROR: distllm console scripts missing from /install/bin"; ls -la /install/bin || true; exit 1; }
 
 FROM runtime-base
-COPY --from=builder /install /usr/local
+COPY --from=builder /install /install
+ENV PATH=/install/bin:${PATH}
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
