@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 import torch
 from loguru import logger
+
+if TYPE_CHECKING:
+    from distllm.dist.node_service import NodeServer
 
 from distllm.config.settings import DistLLMSettings
 from distllm.core.inference_engine import InferenceEngine

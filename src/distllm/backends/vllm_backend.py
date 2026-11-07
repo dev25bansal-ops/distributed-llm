@@ -490,7 +490,7 @@ class VLLMNodeAdapter(BackendAdapter):
                 # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
-        return metrics
+        return info
 
 
 # Backward compatibility alias

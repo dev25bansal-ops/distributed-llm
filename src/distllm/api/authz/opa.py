@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import subprocess  # nosec B404
+import tempfile
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional

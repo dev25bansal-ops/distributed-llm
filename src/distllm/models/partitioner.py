@@ -6,7 +6,10 @@ import gc
 import inspect
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from transformers import BitsAndBytesConfig
 
 import torch
 import torch.nn as nn

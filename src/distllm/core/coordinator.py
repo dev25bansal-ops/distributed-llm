@@ -15,10 +15,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from loguru import logger
+
+if TYPE_CHECKING:
+    from distllm.core.autoscaler import IntelligentAutoscaler
 from transformers import AutoTokenizer
 
 from distllm.core.subsystem_registry import SubsystemRegistry

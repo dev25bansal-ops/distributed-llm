@@ -10,10 +10,13 @@ from __future__ import annotations
 import time
 import uuid
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from loguru import logger
+
+if TYPE_CHECKING:
+    from distllm.core.coordinator import Coordinator
 
 from distllm.core.batch_scheduler import ScheduledBatch, Sequence
 from distllm.core.structured_output import JSONSchemaConstraint

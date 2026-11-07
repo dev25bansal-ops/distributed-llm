@@ -1,6 +1,5 @@
 """Streaming SSE response helpers for chat and completion endpoints.
 
-from loguru import logger
 Deduplicates the nearly-identical _stream_chat and _stream_completion
 functions into a single _stream_response() that parameterizes the
 object_type and request_id prefix.
@@ -18,6 +17,8 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
+
+from loguru import logger
 
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer

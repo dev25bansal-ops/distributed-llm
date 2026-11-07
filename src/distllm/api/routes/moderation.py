@@ -216,24 +216,24 @@ class ModerationEngine:
         result = text
         # Credit cards (with Luhn validation)
         cc_pattern = r"\b(?:\d[ -]*?){13,16}\b"
-        for match in _re.findall(cc_pattern, result):
-            cleaned = _re.sub(r"[ -]", "", match)
+        for match in self._re.findall(cc_pattern, result):
+            cleaned = self._re.sub(r"[ -]", "", match)
             if len(cleaned) >= 13 and len(cleaned) <= 19 and cleaned.isdigit():
                 if _is_credit_card(cleaned):
                     result = result.replace(match, replacement)
 
         # SSN
-        result = _re.sub(
+        result = self._re.sub(
             r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b",
             replacement, result,
         )
         # API keys
-        result = _re.sub(
+        result = self._re.sub(
             r"\b(?:sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36,}|AKIA[0-9A-Z]{16})\b",
             replacement, result,
         )
         # Emails
-        result = _re.sub(
+        result = self._re.sub(
             r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
             replacement, result,
         )

@@ -1,5 +1,7 @@
 """Continuous batch scheduler for pipeline-parallel inference."""
 
+from __future__ import annotations
+
 import heapq
 import math
 import threading
@@ -12,6 +14,8 @@ from loguru import logger
 
 if TYPE_CHECKING:
     import torch
+
+    from distllm.core.advanced_scheduling import PreemptionPolicy, SchedulingPolicy
 
 from distllm.core.request_latency import RequestLatencyTracker
 from distllm.utils.scheduling import group_by_length

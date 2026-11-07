@@ -1,11 +1,12 @@
 """Deploy command for DistLLM CLI.
 
-from loguru import logger
 Deploys a model to the distributed cluster with layer partitioning
 across nodes. Supports one-line HuggingFace deployment.
 """
 
 import time
+
+from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 

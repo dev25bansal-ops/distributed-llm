@@ -181,7 +181,7 @@ def _process_job(job: dict) -> None:
         # TODO: Replace with actual coord.fine_tune() call once available.
         # For now this is a stub that simulates training by sleeping briefly
         # and then saving a placeholder adapter path.
-        _time.sleep(0.5)  # simulate setup time
+        time.sleep(0.5)  # simulate setup time
 
         # Resolve a safe output path for the adapter weights
         adapter_dir = f"./adapters/{adapter_name}"
