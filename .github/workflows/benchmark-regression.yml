@@ -32,6 +32,8 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev,testing]"
 
+      - uses: ./.github/actions/generate-protobuf
+
       - name: Download previous baseline
         uses: actions/download-artifact@v4
         with:
