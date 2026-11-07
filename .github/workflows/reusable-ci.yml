@@ -103,7 +103,9 @@ jobs:
             --cov-fail-under=${{ inputs.coverage-threshold }} \
             -m "not e2e and not slow" --ignore=node_modules
       - name: Upload coverage
-        if: ${{ secrets.codecov-token != '' }}
+        if: env.CODECOV_TOKEN != ''
+        env:
+          CODECOV_TOKEN: ${{ secrets.codecov-token }}
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.codecov-token }}
