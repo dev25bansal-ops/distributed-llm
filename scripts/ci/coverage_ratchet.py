@@ -194,7 +194,7 @@ def write_delta_md(xml_path: Path | None, current: float, baseline: float, toler
         f"- source: {xml_path or 'n/a'}\n"
     )
     out = Path("coverage-delta.md")
-    out.write_text(md)
+    out.write_text(md, encoding="utf-8")
     return None
 
 
@@ -209,14 +209,19 @@ def save_ratchet(data: dict) -> None:
 
 
 def floor_for(ratchet: dict, package: str) -> float:
-    """Most specific matching prefix wins; else the global floor."""
+    """Exact package match wins; else the global floor.
+
+    Matching is exact on purpose. Prefix matching (in either direction) made
+    a floor recorded for `distllm/api` apply to `distllm/api/authz`, and the
+    floor for the top-level `distllm` package apply to every subdirectory --
+    including the many with no tests, which no run could ever satisfy. A floor
+    is a per-directory ratchet; directories without a recorded value are held
+    to the global floor only.
+    """
     best = ratchet.get("_global_floor", 30.0)
-    for key, val in ratchet.items():
-        if key.startswith("_"):
-            continue
-        if package == key or package.startswith(key + "/") or package.startswith(key):
-            if isinstance(val, (int, float)) and val > best:
-                best = val
+    val = ratchet.get(package)
+    if isinstance(val, (int, float)) and val > best:
+        best = val
     return best
 
 

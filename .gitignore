@@ -60,6 +60,7 @@ benchmarks/*.json
 htmlcov/
 .coverage
 coverage.xml
+coverage-delta.md
 
 # Temporary files
 tmp/
