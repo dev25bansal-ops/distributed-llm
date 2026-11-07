@@ -197,7 +197,7 @@ curl http://localhost:8000/health
 
 ```bash
 # 1. Generate new certificates
-distllm security cert create --cn coordinator.example.com
+distllm security cert create coordinator.example.com
 
 # 2. Distribute to all nodes
 for node in node1 node2 node3; do

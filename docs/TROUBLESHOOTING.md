@@ -1460,7 +1460,7 @@ kill -HUP $(pgrep -f "distllm.*coordinator")
 # or restart the container/pod
 
 # Step 3: For self-signed certs, regenerate
-distllm security cert create --hostname my-cluster.example.com --days 365
+distllm security cert create my-cluster.example.com --dir certs/
 ```
 
 **Prevention:** Automate renewal with certbot's systemd timer or cron job.

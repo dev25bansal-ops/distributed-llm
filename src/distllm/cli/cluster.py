@@ -8,6 +8,7 @@ import time
 import uuid
 
 import httpx
+from distllm.cli.http_client import client_for
 from loguru import logger
 from rich.console import Console
 from rich.table import Table
@@ -16,7 +17,7 @@ console = Console()
 
 
 def _get_client(host: str, port: int) -> httpx.Client:
-    return httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0)
+    return client_for(host, port)
 
 
 def _admin_headers() -> dict[str, str]:

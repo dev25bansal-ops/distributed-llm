@@ -4,6 +4,7 @@ import json
 import time
 
 import httpx
+from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.live import Live
 
@@ -29,7 +30,7 @@ def _stream_logs(
         params["search"] = search
 
     try:
-        with httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0) as client:
+        with client_for(host, port) as client:
             if follow:
                 params["follow"] = True
                 with client.stream("GET", "/v1/logs", params=params) as resp:

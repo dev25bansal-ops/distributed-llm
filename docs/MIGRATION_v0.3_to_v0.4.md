@@ -411,9 +411,9 @@ readinessProbe:
 v0.4 expands certificate SANs to include wildcards, IPv6, and internal DNS names. Regenerate certificates if you use TLS:
 
 ```bash
-distllm security cert create \
-  --hosts "*.distllm.local,localhost,127.0.0.1,::1" \
-  --output-dir certs/
+distllm security cert create distllm.local \
+  --alt-name "*.distllm.local,localhost,127.0.0.1,::1" \
+  --dir certs/
 ```
 
 ---

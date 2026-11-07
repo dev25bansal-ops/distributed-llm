@@ -10,6 +10,29 @@ from rich.console import Console
 from rich.table import Table
 
 
+def _force_utf8_output() -> None:
+    """Reconfigure stdout/stderr to UTF-8 before any command writes.
+
+    The CLI prints box drawing, ≥/≤, arrows and check marks. On a console whose
+    encoding cannot represent them (Windows cp1252, a C/POSIX locale) every
+    such command died with UnicodeEncodeError *after* doing its work, so the
+    output was lost and the exit code was still 0 -- e.g. `distllm cli-doctor`.
+    Reconfiguring is a no-op where the stream is already UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Detached or already-closed stream (pytest capture, pipes).
+            pass
+
+
+_force_utf8_output()
+
+
 def _display_qr(port: int = 50050) -> None:
     """Display a QR code for joining the cluster."""
     import socket

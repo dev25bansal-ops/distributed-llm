@@ -541,10 +541,39 @@ class ApiKeyStore:
         ))
         # Store the raw key so it can be displayed to the user
         self._auto_generated_key = generated
+        key_path = self._persist_auto_key(generated)
         logger.warning(
-            "No API keys configured. Generated an in-memory admin API key. "
-            "Set API_KEYS, API_KEYS_FILE, or API_KEY in the environment."
+            "No API keys configured. Generated an admin API key"
+            + (f" and wrote it to {key_path}" if key_path else " (in-memory only)")
+            + ". Set API_KEYS, API_KEYS_FILE, or API_KEY in the environment to "
+            "pin keys instead. Clients pick the key up from that file "
+            "automatically."
         )
+
+    def _persist_auto_key(self, key: str) -> str | None:
+        """Write the auto-generated key where local clients look for it.
+
+        Without this the key existed only in this process, so every
+        ``distllm model …`` command returned 401 against a cluster the user had
+        just started with ``distllm cluster start`` -- nothing could read the
+        key the server had minted. Owner-only permissions, and a failure to
+        write is logged and ignored (the key stays valid for this process).
+        """
+        path = os.environ.get("DISTLLM_KEY_FILE") or os.path.join(".distllm", "api_key")
+        try:
+            directory = os.path.dirname(os.path.abspath(path))
+            os.makedirs(directory, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(key + "\n")
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass  # Windows: only toggles the read-only bit
+            return path
+        except OSError as exc:
+            logger.error(f"Could not persist the generated API key to {path}: {exc}")
+            return None
 
     def _load_from_dict(self, data: dict[str, Any]) -> None:
         """Parse a dict like ``{"keys": [{"key": "...", "role": "...", ...}]}``."""

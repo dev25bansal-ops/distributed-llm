@@ -1,6 +1,7 @@
 """Adapters command group: distllm adapters."""
 
 import httpx
+from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.table import Table
 
@@ -8,7 +9,7 @@ console = Console()
 
 
 def _get_client(host: str, port: int) -> httpx.Client:
-    return httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0)
+    return client_for(host, port)
 
 
 def _list_adapters(host: str, port: int):

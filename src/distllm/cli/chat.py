@@ -1,6 +1,7 @@
 """Interactive chat command for DistLLM CLI."""
 
 import httpx
+from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -23,7 +24,7 @@ def run_chat(
     conversation = []
 
     try:
-        with httpx.Client(timeout=120.0) as client:
+        with client_for(host, port, timeout=120.0) as client:
             while True:
                 try:
                     prompt = input("\n[bold You:[/bold] ").strip()
@@ -47,7 +48,7 @@ def run_chat(
 
                 try:
                     response = client.post(
-                        f"{base_url}/v1/chat/completions",
+                        "/v1/chat/completions",
                         json={
                             "model": model,
                             "messages": conversation,

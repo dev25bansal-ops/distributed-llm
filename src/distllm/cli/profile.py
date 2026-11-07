@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import httpx
+from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.table import Table
 
@@ -41,9 +42,9 @@ def run_profile(
     for i in range(num_iterations):
         start = time.time()
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with client_for(host, port, timeout=120.0) as client:
                 response = client.post(
-                    f"http://{host}:{port}/v1/completions",
+                    "/v1/completions",
                     json={
                         "model": model,
                         "prompt": f"Token sequence: {prompt_tokens[:10]}...",

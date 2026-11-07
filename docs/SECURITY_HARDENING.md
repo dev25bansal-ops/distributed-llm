@@ -64,7 +64,7 @@
 
 ```bash
 # Self-signed (development only)
-distllm security cert create --hostname my-cluster.example.com
+distllm security cert create my-cluster.example.com
 
 # Let's Encrypt (production)
 certbot certonly --standalone -d my-cluster.example.com

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import httpx
+from distllm.cli.http_client import client_for
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
@@ -47,13 +48,13 @@ def _run_benchmarks(
         task = progress.add_task("Running benchmarks...", total=num_prompts)
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with client_for(host, port, timeout=120.0) as client:
                 for i in range(num_prompts):
                     prompt = TEST_PROMPTS[i % len(TEST_PROMPTS)]
 
                     start_time = time.time()
                     response = client.post(
-                        f"{base_url}/v1/completions",
+                        "/v1/completions",
                         json={
                             "model": model,
                             "prompt": prompt,

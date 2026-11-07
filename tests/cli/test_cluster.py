@@ -24,7 +24,7 @@ class TestClusterStatus:
         }
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("distllm.cli.cluster.httpx.Client") as mock_client_cls:
+        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.get.return_value = mock_resp
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -34,7 +34,7 @@ class TestClusterStatus:
             from distllm.cli.cluster import _cluster_status
             _cluster_status("localhost", 8000)
 
-            mock_client.get.assert_called_once_with("/v1/cluster/status")
+            mock_client.get.assert_called_once_with("/v1/health")
 
     def test_status_no_nodes(self):
         mock_resp = MagicMock()
@@ -42,7 +42,7 @@ class TestClusterStatus:
         mock_resp.json.return_value = {"nodes": [], "summary": {}}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("distllm.cli.cluster.httpx.Client") as mock_client_cls:
+        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.get.return_value = mock_resp
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -53,7 +53,7 @@ class TestClusterStatus:
             _cluster_status("localhost", 8000)
 
     def test_status_connection_error(self):
-        with patch("distllm.cli.cluster.httpx.Client") as mock_client_cls:
+        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.get.side_effect = httpx.ConnectError("refused")
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -71,7 +71,7 @@ class TestClusterScale:
         mock_resp.json.return_value = {"message": "Scaling to 4 nodes", "job_id": "job-123"}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("distllm.cli.cluster.httpx.Client") as mock_client_cls:
+        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.post.return_value = mock_resp
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -94,7 +94,7 @@ class TestClusterScale:
             "bad", request=MagicMock(), response=mock_resp
         )
 
-        with patch("distllm.cli.cluster.httpx.Client") as mock_client_cls:
+        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.post.return_value = mock_resp
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -117,7 +117,7 @@ class TestClusterListNodes:
         }
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("distllm.cli.cluster.httpx.Client") as mock_client_cls:
+        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.get.return_value = mock_resp
             mock_client.__enter__ = MagicMock(return_value=mock_client)
