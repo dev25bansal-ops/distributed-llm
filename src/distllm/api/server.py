@@ -990,10 +990,23 @@ from pathlib import Path
 
 from fastapi.staticfiles import StaticFiles
 
-# Mount dashboard static files (CSS, JS)
+# Mount dashboard static files (CSS, JS). The directory ships inside the
+# package, so creating it is only meaningful in a dev checkout -- and in the
+# container the package is read-only to the non-root user, where an unguarded
+# mkdir raised PermissionError and took the whole server down at import.
 dashboard_static = Path(__file__).parent.parent / "dashboard" / "static"
-dashboard_static.mkdir(parents=True, exist_ok=True)
-app.mount("/dashboard/static", StaticFiles(directory=str(dashboard_static)), name="dashboard_static")
+try:
+    dashboard_static.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+if dashboard_static.is_dir():
+    app.mount(
+        "/dashboard/static",
+        StaticFiles(directory=str(dashboard_static)),
+        name="dashboard_static",
+    )
+else:
+    logger.warning(f"Dashboard static directory not found at {dashboard_static}; serving API only")
 
 
 @app.websocket("/ws")
