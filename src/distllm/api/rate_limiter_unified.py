@@ -63,7 +63,7 @@ from distllm.api.ip_utils import get_client_ip
 class RateLimitStrategy(str, enum.Enum):
     """Supported rate limiting algorithms."""
 
-    TOKEN_BUCKET = "token_bucket"
+    TOKEN_BUCKET = "token_bucket"  # nosec B105 - enum value, not a credential
     """Classic token-bucket algorithm per key."""
 
     SLIDING_WINDOW = "sliding_window"
@@ -511,8 +511,7 @@ class RedisRateLimiter:
         else:
             try:
                 self._redis.delete(self._key(key))  # type: ignore[union-attr]
-            except Exception:
-                # CQ-08: best-effort cleanup: a failed Redis DELETE must not break reset().
+            except Exception:  # nosec B110 - CQ-08 best-effort cleanup: failed Redis DELETE must not break reset()
                 pass
 
     def reset_all(self) -> None:
