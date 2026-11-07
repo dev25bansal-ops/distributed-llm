@@ -1,121 +1,121 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://distllm.dev/</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/docs.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/docs.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/blog.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/blog.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/benchmarks.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/benchmarks.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/tutorials.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/tutorials.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/security.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/security.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/community.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/community.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/changelog.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/changelog.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/pricing-compare.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/pricing-compare.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/use-cases.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/use-cases.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/showcase.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/showcase.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/status.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/status.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/playground.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/playground.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/glossary.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/glossary.html</loc>
     <lastmod>2026-06-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.4</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/offline.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/offline.html</loc>
     <lastmod>2026-06-03</lastmod>
     <changefreq>yearly</changefreq>
     <priority>0.1</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/comparisons.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/comparisons.html</loc>
     <lastmod>2026-06-03</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/enterprise.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/enterprise.html</loc>
     <lastmod>2026-06-03</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/learn.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/learn.html</loc>
     <lastmod>2026-06-03</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/integrations.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/integrations.html</loc>
     <lastmod>2026-06-03</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://distllm.dev/api.html</loc>
+    <loc>https://dev25bansal-ops.github.io/distributed-llm/api.html</loc>
     <lastmod>2026-06-03</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>

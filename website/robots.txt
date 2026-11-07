@@ -1,6 +1,6 @@
 User-agent: *
 Allow: /
-Sitemap: https://distllm.dev/sitemap.xml
+Sitemap: https://dev25bansal-ops.github.io/distributed-llm/sitemap.xml
 
 User-agent: GPTBot
 Allow: /

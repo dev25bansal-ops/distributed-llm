@@ -4,25 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DistLLM — Pool Your GPUs. Run Any Model.</title>
-<meta name="description" content="Open-source distributed LLM inference. Pool GPUs across every device you own to run models no single machine can handle — pipeline parallelism, speculative decoding, one-command deploy.">
+<meta name="description" content="Pool GPUs across your devices to run 70B+ LLMs — open-source distributed inference with pipeline parallelism. No cloud, no lock-in.">
 <meta name="robots" content="index, follow">
 <meta name="theme-color" content="#ffffff">
-<link rel="canonical" href="https://distllm.dev/">
+<link rel="canonical" href="https://dev25bansal-ops.github.io/distributed-llm/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="DistLLM">
 <meta property="og:title" content="DistLLM — Pool Your GPUs. Run Any Model.">
 <meta property="og:description" content="Open-source distributed LLM inference. Pool GPUs across every device you own to run 70B+ models on consumer hardware.">
-<meta property="og:url" content="https://distllm.dev/">
-<meta property="og:image" content="https://distllm.dev/og-image.png">
+<meta property="og:url" content="https://dev25bansal-ops.github.io/distributed-llm/">
+<meta property="og:image" content="https://dev25bansal-ops.github.io/distributed-llm/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="DistLLM — Pool Your GPUs. Run Any Model.">
 <meta name="twitter:description" content="Open-source distributed LLM inference across consumer GPUs. No cloud. No lock-in.">
-<meta name="twitter:image" content="https://distllm.dev/og-image.png">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DistLLM","operatingSystem":"Linux, macOS, Windows","applicationCategory":"DeveloperApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/Apache-2.0","url":"https://distllm.dev"}</script>
+<meta name="twitter:image" content="https://dev25bansal-ops.github.io/distributed-llm/og-image.png">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What GPUs are supported?","acceptedAnswer":{"@type":"Answer","text":"DistLLM supports NVIDIA (CUDA), AMD (ROCm), and Apple Silicon (Metal) GPUs. You can mix different GPU types in the same cluster. Minimum VRAM per device is 4GB for quantized models."}},{"@type":"Question","name":"How many GPUs can I pool together?","acceptedAnswer":{"@type":"Answer","text":"There is no hard limit. Performance scales linearly up to about 16 GPUs, then communication overhead provides diminishing returns. Most users run 2–8 GPUs effectively."}},{"@type":"Question","name":"What is the latency overhead?","acceptedAnswer":{"@type":"Answer","text":"Over a local network (1Gbps+), pipeline parallelism adds 5–15ms per layer transfer. For a 32-layer model across 4 GPUs, expect ~40–60ms total overhead. Over Wi-Fi, use quantised transfers to stay within budget."}},{"@type":"Question","name":"Does it work with existing OpenAI-compatible tools?","acceptedAnswer":{"@type":"Answer","text":"Yes. DistLLM exposes an OpenAI-compatible API, so tools like LangChain, LiteLLM, and Open WebUI work against it unchanged by pointing their base URL at your cluster."}},{"@type":"Question","name":"How do I add a new device to my cluster?","acceptedAnswer":{"@type":"Answer","text":"Install DistLLM on the new machine and point it at your coordinator. Auto-discovery picks it up and rebalances the pipeline — typically under 30 seconds."}},{"@type":"Question","name":"Is DistLLM production-ready?","acceptedAnswer":{"@type":"Answer","text":"DistLLM is open source under the Apache 2.0 license and actively maintained. Always check the changelog for the current release scope before relying on a specific feature."}},{"@type":"Question","name":"Can I use it for fine-tuning?","acceptedAnswer":{"@type":"Answer","text":"Distributed training is built in: multi-device gradient accumulation, automatic mixed precision, gradient checkpointing and checkpoint sync across the cluster."}},{"@type":"Question","name":"How does it compare to vLLM or llama.cpp?","acceptedAnswer":{"@type":"Answer","text":"vLLM and llama.cpp optimise a single machine. DistLLM targets the case they don't: pooling several machines' GPUs so one large model can run across them."}}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DistLLM","operatingSystem":"Linux, macOS, Windows","applicationCategory":"DeveloperApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/Apache-2.0","url":"https://dev25bansal-ops.github.io/distributed-llm/"}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="apple-touch-icon" href="/og-image.png">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="og-image.png">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -61,9 +62,10 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .hero__stat{border:1px solid var(--color-line);border-radius:12px;padding:16px 20px;min-width:168px;background:var(--color-chip)}
 .counter-wrap{display:flex;align-items:baseline;justify-content:flex-start;font-variant-numeric:tabular-nums}
 .counter{display:inline-block;font-family:var(--font-mono);font-weight:600;font-size:30px;letter-spacing:-.02em;transform-origin:left center;will-change:transform}
-.counter-suffix{font-size:14px;color:var(--color-ink-soft);opacity:0;transform:translateY(8px)}
+.counter-suffix{font-size:14px;color:var(--color-ink-soft);opacity:1;transform:none}
 .hero__stat-label{display:block;margin-top:4px;font-size:12.5px;color:var(--color-ink-soft)}
-.hero__stat-label{opacity:0}
+.js .counter-suffix{opacity:0;transform:translateY(8px)}
+.js .hero__stat-label{opacity:0}
 @media (prefers-reduced-motion:reduce){.counter-suffix,.hero__stat-label{opacity:1;transform:none}}
 .hero__ctas{margin-top:32px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;min-width:132px;padding:10px 26px;border-radius:999px;font-size:15px;font-weight:500;border:1px solid var(--color-line);transition:background .15s,color .15s,transform .15s,border-color .15s;min-height:44px;cursor:pointer;background:var(--color-chip)}
@@ -90,12 +92,14 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 /* ── Sections & feature cards ───────────────────── */
 section{padding:88px 0}
 .section__title{font-weight:600;font-size:30px;line-height:1.2;letter-spacing:-.02em;text-align:center;max-width:720px;margin:0 auto}
-.reveal{opacity:0;transform:translateY(var(--motion-distance));transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
-.reveal.revealed{opacity:1;transform:none}
+.reveal{opacity:1;transform:none;transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
+.js .reveal{opacity:0;transform:translateY(var(--motion-distance))}
+.js .reveal.revealed{opacity:1;transform:none}
 .section__lead{text-align:center;color:var(--color-ink-soft);margin:12px auto 0;max-width:640px;font-size:16px}
 .features__list{display:flex;flex-direction:column;gap:56px;margin-top:56px}
-.card{position:relative;width:100%;border:1px solid var(--color-line);border-radius:20px;overflow:hidden;opacity:0;background:var(--color-card-1);transform:translateY(var(--motion-distance));transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease);min-height:360px;display:grid;grid-template-columns:1.15fr 1fr}
-.card.revealed{opacity:1;transform:none}
+.card{position:relative;width:100%;border:1px solid var(--color-line);border-radius:20px;overflow:hidden;opacity:1;background:var(--color-card-1);transform:none;transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease);min-height:360px;display:grid;grid-template-columns:1.15fr 1fr}
+.js .card{opacity:0;transform:translateY(var(--motion-distance))}
+.js .card.revealed{opacity:1;transform:none}
 .card--1{background:var(--color-card-1)}.card--2{background:var(--color-card-2)}.card--3{background:var(--color-card-3)}.card--4{background:var(--color-card-4)}
 .card__painting{position:absolute;inset:0 auto 0 0;width:57.5%;height:100%}
 .card--1 .card__painting,.card--3 .card__painting{left:0;right:auto}
@@ -176,6 +180,9 @@ section{padding:88px 0}
   *{transition:none!important;animation:none!important}
   html{scroll-behavior:auto}
   .card{opacity:1;transform:none}
+  .js .reveal{opacity:1;transform:none}
+  .js .counter-suffix{opacity:1;transform:none}
+  .js .hero__stat-label{opacity:1}
 }
 @media (max-width:960px){
   .hero__nav{display:none}
@@ -212,38 +219,39 @@ section{padding:88px 0}
 <header class="hero">
   <div class="wrap">
     <div class="hero__top">
-      <a class="hero__logo" href="/">DistLLM</a>
+      <a class="hero__logo" href="index.html">DistLLM</a>
       <button class="menu-toggle" id="menuBtn" aria-expanded="false" aria-controls="mainNav" aria-label="Toggle navigation">Menu</button>
       <span class="hero__actions">
-        <a class="btn btn--primary hero__actions-cta" href="/docs.html">Get Started</a>
-        <a class="btn btn--ghost" href="https://github.com/distributed-llm/distributed-llm">GitHub</a>
+        <a class="btn btn--primary hero__actions-cta" href="docs.html">Get Started</a>
+        <a class="btn btn--ghost" href="https://github.com/dev25bansal-ops/distributed-llm">GitHub</a>
       </span>
       <nav class="hero__nav" id="mainNav" aria-label="Primary">
-        <a href="/docs.html">Docs</a>
-        <a href="/blog.html">Blog</a>
-        <a href="/community.html">Community</a>
-        <a href="https://github.com/distributed-llm/distributed-llm">GitHub</a>
+        <a href="docs.html">Docs</a>
+        <a href="blog.html">Blog</a>
+        <a href="community.html">Community</a>
+        <a href="https://github.com/dev25bansal-ops/distributed-llm">GitHub</a>
       </nav>
     </div>
     <div class="hero__content">
-      <p class="hero__eyebrow">Open-source · Apache 2.0 · No account required</p>      <h1 class="hero__heading">The open source engine that pools GPUs across your devices</h1>
+      <p class="hero__eyebrow">Open-source · Apache 2.0 · No account required</p>
+      <h1 class="hero__heading">The open source engine that pools GPUs across your devices</h1>
       <p class="hero__sub">Run 70B+ parameter models on consumer hardware by automatically distributing inference across every GPU you own. No cloud. No lock-in.</p>
       <div class="hero__stats" aria-label="Measured on a 3-GPU pool">
         <div class="hero__stat">
-          <span class="counter-wrap"><span class="counter" id="statTps">0</span><span class="counter-suffix" id="statTpsSfx"> tok/s</span></span>
+          <span class="counter-wrap"><span class="counter" id="statTps">55</span><span class="counter-suffix" id="statTpsSfx"> tok/s</span></span>
           <span class="hero__stat-label">Sustained throughput</span>
         </div>
         <div class="hero__stat">
-          <span class="counter-wrap"><span class="counter" id="statVram">0</span><span class="counter-suffix" id="statVramSfx"> GB</span></span>
+          <span class="counter-wrap"><span class="counter" id="statVram">42</span><span class="counter-suffix" id="statVramSfx"> GB</span></span>
           <span class="hero__stat-label">VRAM pooled, 3 consumer GPUs</span>
         </div>
         <div class="hero__stat">
-          <span class="counter-wrap"><span class="counter" id="statOverhead">0</span><span class="counter-suffix" id="statOverheadSfx"> ms</span></span>
+          <span class="counter-wrap"><span class="counter" id="statOverhead">12</span><span class="counter-suffix" id="statOverheadSfx"> ms</span></span>
           <span class="hero__stat-label">Added latency per layer transfer</span>
         </div>
       </div>
       <div class="hero__ctas">
-        <a class="btn btn--primary" href="/docs.html">Get Started</a>
+        <a class="btn btn--primary" href="docs.html">Get Started</a>
         <a class="btn btn--ghost" href="#why">Why DistLLM</a>
       </div>
       <div class="hero__install">
@@ -386,7 +394,7 @@ section{padding:88px 0}
 </section>
 
 <section class="wrap" id="why">
-  <h2 class="section__title">Pool your existing hardware. Skip the cloud.</h2>
+  <h2 class="section__title reveal">Pool your existing hardware. Skip the cloud.</h2>
   <p class="section__lead reveal">You already own powerful GPUs. DistLLM lets you use them all together without renting servers or sharing data with third parties.</p>
   <div class="vs reveal">
     <div class="a">
@@ -437,7 +445,7 @@ section{padding:88px 0}
 </section>
 
 <section class="wrap howto" id="how">
-  <h2 class="section__title">How device pooling works</h2>
+  <h2 class="section__title reveal">How device pooling works</h2>
   <p class="section__lead reveal">Automatic pipeline parallelism distributes model layers across your devices with zero configuration.</p>
   <div class="steps reveal">
     <div class="step"><b>01</b><h3>Discover</h3><p>DistLLM finds every GPU on your network and measures free VRAM and bandwidth.</p></div>
@@ -488,7 +496,7 @@ section{padding:88px 0}
 </section>
 
 <section class="wrap" id="faq">
-  <h2 class="section__title">Frequently asked questions</h2>
+  <h2 class="section__title reveal">Frequently asked questions</h2>
   <div class="faq reveal">
     <details><summary>What GPUs are supported? <span class="plus">+</span></summary><p>DistLLM supports NVIDIA (CUDA), AMD (ROCm), and Apple Silicon (Metal) GPUs. You can mix different GPU types in the same cluster. Minimum VRAM per device is 4GB for quantized models.</p></details>
     <details><summary>How many GPUs can I pool together? <span class="plus">+</span></summary><p>There is no hard limit. Performance scales linearly up to about 16 GPUs, then communication overhead provides diminishing returns. Most users run 2–8 GPUs effectively.</p></details>
@@ -506,8 +514,8 @@ section{padding:88px 0}
     <h2>Start pooling your GPUs today</h2>
     <p>Free and open source. No account required. Install in 30 seconds.</p>
     <div class="hero__ctas">
-      <a class="btn btn--primary" href="/docs.html">Get Started</a>
-      <a class="btn btn--ghost" style="border-color:var(--color-invert);color:var(--color-invert)" href="https://github.com/distributed-llm/distributed-llm">View on GitHub</a>
+      <a class="btn btn--primary" href="docs.html">Get Started</a>
+      <a class="btn btn--ghost" style="border-color:var(--color-invert);color:var(--color-invert)" href="https://github.com/dev25bansal-ops/distributed-llm">View on GitHub</a>
     </div>
   </div>
 </section>
@@ -517,14 +525,15 @@ section{padding:88px 0}
   <div class="wrap">
     <div class="footer__inner">
       <div><b>DistLLM</b><span>Pool consumer GPUs to run large models.</span></div>
-      <div><b>Project</b><ul><li><a href="https://github.com/distributed-llm/distributed-llm">Source Code</a></li><li><a href="/changelog.html">Releases</a></li><li><a href="/community.html">Contributing</a></li></ul></div>
-      <div><b>Resources</b><ul><li><a href="/docs.html">Documentation</a></li><li><a href="/api.html">API Reference</a></li><li><a href="/tutorials.html">Tutorials</a></li><li><a href="/benchmarks.html">Benchmarks</a></li></ul></div>
-      <div><b>Company</b><ul><li><a href="/blog.html">All Posts</a></li><li><a href="/changelog.html">Changelog</a></li><li><a href="/security.html">Security</a></li><li><a href="https://discord.gg/distllm">Join Server</a></li></ul></div>
+      <div><b>Project</b><ul><li><a href="https://github.com/dev25bansal-ops/distributed-llm">Source Code</a></li><li><a href="changelog.html">Releases</a></li><li><a href="community.html">Contributing</a></li></ul></div>
+      <div><b>Resources</b><ul><li><a href="docs.html">Documentation</a></li><li><a href="api.html">API Reference</a></li><li><a href="tutorials.html">Tutorials</a></li><li><a href="benchmarks.html">Benchmarks</a></li></ul></div>
+      <div><b>Company</b><ul><li><a href="blog.html">All Posts</a></li><li><a href="changelog.html">Changelog</a></li><li><a href="security.html">Security</a></li><li><a href="https://discord.gg/distllm">Join Server</a></li></ul></div>
     </div>
-    <div class="footer__legal"><span>&copy; 2026 DistLLM Contributors. Apache License 2.0.</span><span><a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> · <a href="/security.html">Security</a></span></div>
+    <div class="footer__legal"><span>&copy; 2026 DistLLM Contributors. Apache License 2.0.</span><span><a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a> · <a href="security.html">Security</a></span></div>
   </div>
 </footer>
 <script>
+document.documentElement.classList.add('js');
 (function(){
   // dark / light mode
 
@@ -576,7 +585,10 @@ section{padding:88px 0}
     if(!el) return;
     if(reduceMotion||typeof requestAnimationFrame!=='function'){
       el.textContent=String(target);
-      if(suffixEl){ suffixEl.style.opacity='1'; suffixEl.style.transform='none'; } return;
+      if(suffixEl){ suffixEl.style.opacity='1'; suffixEl.style.transform='none'; }
+      var lbl=el.closest('.hero__stat').querySelector('.hero__stat-label');
+      if(lbl){ lbl.style.opacity='1'; }
+      return;
     }
     var start=null;
     function tick(now){
