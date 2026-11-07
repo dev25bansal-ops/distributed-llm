@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import os
@@ -995,10 +996,8 @@ from fastapi.staticfiles import StaticFiles
 # container the package is read-only to the non-root user, where an unguarded
 # mkdir raised PermissionError and took the whole server down at import.
 dashboard_static = Path(__file__).parent.parent / "dashboard" / "static"
-try:
+with contextlib.suppress(OSError):
     dashboard_static.mkdir(parents=True, exist_ok=True)
-except OSError:
-    pass
 if dashboard_static.is_dir():
     app.mount(
         "/dashboard/static",
