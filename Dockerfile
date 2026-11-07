@@ -27,10 +27,10 @@ WORKDIR /build
 # Install PyTorch with CUDA support (pre-built wheel for speed)
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-# NCCL: install from system (already in cuda-devel image) and ensure NCCL headers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnccl-dev libnccl2 \
-    && rm -rf /var/lib/apt/lists/*
+# NCCL: already provided by the nvidia/cuda:*-devel base image (headers + libs).
+# Installing the distro libnccl-dev/libnccl2 changes held packages and makes
+# apt fail under -y ("Held packages were changed ... --allow-change-held-packages"),
+# so we rely on the base image's NCCL instead.
 
 # Install locked dependencies first (cached layer, pinning all transitive deps)
 COPY requirements.lock .
@@ -70,7 +70,6 @@ WORKDIR /app
 # Install ONLY runtime dependencies (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
-    libnccl2 \
     curl ca-certificates \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
