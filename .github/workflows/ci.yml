@@ -169,8 +169,15 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install pip-audit
+      - name: Install project dependencies to audit
+        run: pip install -e ".[self-hosted]"
       - name: Dependency audit
-        run: pip-audit --format json --output dep-audit.json
+        # Audit THIS project's dependency set, not the runner's. With no -r or
+        # --local, pip-audit inspects whatever happens to be installed in the
+        # fresh runner image (it reported "Found existing installation: pip
+        # 23.0.1" and 20 vulns in 2 packages that ship with the image), which
+        # says nothing about this repository.
+        run: pip-audit --local --skip-editable --format json --output dep-audit.json
       - name: Upload dep audit
         uses: actions/upload-artifact@v4
         with:
@@ -500,8 +507,11 @@ jobs:
         run: make proto
 
       - name: Install dependencies
+        # The harnesses import distllm.cli and the metrics paths, so the cli
+        # and observability extras are required; [dev] alone lacks typer and
+        # prometheus_client and collection failed on ImportError.
         run: |
-          pip install -e ".[dev]"
+          pip install -e ".[dev,cli,observability]"
           pip install atheris
       - name: Run fuzz harnesses (pytest mode, 500 iterations each)
         run: |
