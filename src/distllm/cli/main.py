@@ -497,6 +497,114 @@ def model_info(
     _model_info(host, port, model_id)
 
 
+@model_app.command("search")
+def model_search(
+    query: str = typer.Argument("", help="Search term, e.g. 'qwen' or 'code'"),
+    limit: int = typer.Option(15, "--limit", "-n", help="Max results to show"),
+    all_models: bool = typer.Option(
+        False, "--all", help="Show everything found, not just what fits this machine"
+    ),
+    dtype: str = typer.Option("float16", "--dtype", help="Assume this dtype for sizing"),
+    context: int = typer.Option(4096, "--context", help="Assume this context length"),
+    source: str = typer.Option(
+        "all", "--source", help="Catalog to search: hf, ollama, or all"
+    ),
+):
+    """Search public model catalogs and show what this machine can run.
+
+    Queries Hugging Face (and Ollama when available) for real models with real
+    parameter counts, then reports which fit the detected hardware, which do
+    not, and what quantization would make the latter fit.
+    """
+    from distllm.cli.onboard import _detect_hardware, _hardware_profile
+    from distllm.models.catalog import search_all, search_huggingface, search_ollama
+    from distllm.models.recommend import rank
+
+    hw = _hardware_profile(_detect_hardware())
+    if hw.is_cpu_only:
+        console.print(
+            "[yellow]No CUDA GPU detected — sizing against system RAM. "
+            "CPU inference is much slower.[/yellow]"
+        )
+    else:
+        console.print(
+            f"[dim]Target: {hw.gpu_name or 'GPU'} — "
+            f"{hw.total_vram_gb:.1f} GB VRAM across {hw.gpu_count} device(s)[/dim]"
+        )
+
+    if source == "hf":
+        found = search_huggingface(query, limit=max(limit * 3, 30))
+    elif source == "ollama":
+        found = search_ollama(query, limit=max(limit * 3, 30))
+    else:
+        found = search_all(query, limit=max(limit * 3, 30))
+
+    if not found:
+        console.print(
+            "[red]No models found.[/red] Check your connection, or try a "
+            "different search term."
+        )
+        raise typer.Exit(1)
+
+    pairs = [(c.model_id, c.params) for c in found if c.params]
+    by_id = {c.model_id: c for c in found}
+
+    if all_models:
+        table = Table(title=f"Search results for {query or '(all)'}")
+        table.add_column("Model", style="cyan")
+        table.add_column("Size", justify="right")
+        table.add_column("Downloads", justify="right")
+        table.add_column("Source")
+        for cand in found[:limit]:
+            table.add_row(
+                cand.model_id, cand.size_label, f"{cand.downloads:,}", cand.source
+            )
+        console.print(table)
+        return
+
+    fits, too_big = rank(
+        pairs, hw, dtype=dtype, context_tokens=context, max_results=limit
+    )
+
+    if fits:
+        table = Table(title=f"Runs on this machine — {query or 'all models'}")
+        table.add_column("Model", style="green")
+        table.add_column("Params", justify="right")
+        table.add_column("Needs", justify="right")
+        table.add_column("VRAM", justify="right")
+        table.add_column("Notes", style="dim")
+        for fit in fits:
+            note = "; ".join(by_id[fit.model_id].notes) if fit.model_id in by_id else ""
+            table.add_row(
+                fit.model_id,
+                f"{fit.params / 1e9:.1f}B",
+                f"{fit.total_gb:.1f} GB",
+                f"{fit.utilisation * 100:.0f}%",
+                note or "; ".join(fit.notes),
+            )
+        console.print(table)
+    else:
+        console.print("[yellow]Nothing found fits this machine as-is.[/yellow]")
+
+    if too_big:
+        console.print()
+        table = Table(title="Too large — but these would fit quantized")
+        table.add_column("Model", style="yellow")
+        table.add_column("Needs", justify="right")
+        table.add_column("Options", style="dim")
+        for fit in too_big[:5]:
+            hint = next(
+                (n for n in fit.notes if "quantization" in n), "requires a bigger GPU"
+            )
+            table.add_row(fit.model_id, f"{fit.total_gb:.1f} GB", hint)
+        console.print(table)
+
+    console.print(
+        f"\n[dim]{len(fits)} fit / {len(too_big)} too large, from {len(found)} "
+        f"candidates. Load one with: distllm model load <id>[/dim]"
+    )
+
+
 @model_app.command("load")
 def model_load(
     model: str = typer.Argument(..., help="Model name or path"),
