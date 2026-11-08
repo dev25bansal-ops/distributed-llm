@@ -408,6 +408,80 @@ def handle_slash(line: str, session: Session) -> bool:
     return False
 
 
+def _make_prompt_session(history_path: Path, console_: Console) -> Any:
+    """Build a prompt session, falling back when the terminal cannot support one.
+
+    prompt_toolkit refuses to start under git-bash on Windows:
+
+        Error: Found xterm-256color, while expecting a Windows console.
+        Maybe try to run this program using "winpty" or run it in cmd.exe.
+
+    because MSYS sets TERM=xterm-256color while the console is still a Windows
+    one. Raising there would make `distllm shell` unusable in the environment a
+    Windows developer is most likely to be in, so fall back to a plain input()
+    prompt: no completion or multi-line editing, but every command, session and
+    @file feature still works.
+    """
+    import os
+    import sys
+
+    from prompt_toolkit.completion import WordCompleter
+    from prompt_toolkit.history import FileHistory
+
+    is_msys = bool(os.environ.get("MSYSTEM")) or (
+        sys.platform == "win32" and os.environ.get("TERM", "").startswith("xterm")
+    )
+
+    if is_msys:
+        console_.print(
+            "[dim]Simplified prompt (git-bash/MSYS terminal): no tab completion. "
+            "Run in cmd.exe or Windows Terminal for the full experience.[/dim]"
+        )
+        return _PlainPrompt(history_path)
+
+    from prompt_toolkit import PromptSession
+
+    try:
+        return PromptSession(
+            history=FileHistory(str(history_path)),
+            completer=WordCompleter(slash_command_names(), ignore_case=True),
+            complete_while_typing=True,
+        )
+    except Exception as exc:  # terminal cannot host a full-screen prompt
+        console_.print(f"[dim]Simplified prompt ({exc.__class__.__name__}).[/dim]")
+        return _PlainPrompt(history_path)
+
+
+class _PlainPrompt:
+    """Minimal stand-in for ``PromptSession`` using ``input()``.
+
+    Keeps arrow-key history by delegating to ``readline`` where it exists, and
+    raises EOFError on Ctrl+D so the caller's exit path is unchanged.
+    """
+
+    def __init__(self, history_path: Path) -> None:
+        self._history_path = history_path
+        try:  # readline is stdlib on POSIX and pyreadline3 on Windows
+            import readline
+
+            try:
+                readline.read_history_file(str(history_path))
+            except OSError:
+                pass
+            self._readline = readline
+        except ImportError:
+            self._readline = None
+
+    def prompt(self, message: str = "> ") -> str:
+        line = input(message)
+        if self._readline is not None:
+            try:
+                self._readline.write_history_file(str(self._history_path))
+            except OSError:
+                pass
+        return line
+
+
 def run_shell(
     *,
     model: str,
@@ -427,9 +501,7 @@ def run_shell(
     )
 
     try:
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import WordCompleter
-        from prompt_toolkit.history import FileHistory
+        import prompt_toolkit  # noqa: F401  (capability check only)
     except ImportError:
         console.print(
             "[red]The shell needs prompt_toolkit:[/red] "
@@ -438,11 +510,7 @@ def run_shell(
         return 1
 
     history_path = _session_dir() / "history.txt"
-    prompt_session: PromptSession = PromptSession(
-        history=FileHistory(str(history_path)),
-        completer=WordCompleter(slash_command_names(), ignore_case=True),
-        complete_while_typing=True,
-    )
+    prompt_session = _make_prompt_session(history_path, console)
 
     render_welcome(model, base_url, session)
 

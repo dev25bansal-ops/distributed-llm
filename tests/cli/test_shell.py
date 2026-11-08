@@ -157,3 +157,34 @@ class TestMessageBuilding:
         names = shell.slash_command_names()
         assert "/help" in names and "/exit" in names
         assert all(n.startswith("/") and " " not in n for n in names)
+
+
+class TestTerminalFallback:
+    """prompt_toolkit refuses to start under git-bash on Windows.
+
+    It raises "Found xterm-256color, while expecting a Windows console", which
+    made `distllm shell` unusable in exactly the terminal a Windows developer
+    is most likely to use. The shell must degrade, not fail.
+    """
+
+    def test_msys_uses_the_plain_prompt(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("MSYSTEM", "MINGW64")
+        monkeypatch.setenv("TERM", "xterm-256color")
+        session_obj = shell._make_prompt_session(tmp_path / "h.txt", shell.console)
+        assert isinstance(session_obj, shell._PlainPrompt)
+        assert "Simplified prompt" in capsys.readouterr().out
+
+    def test_plain_prompt_returns_typed_line(self, tmp_path, monkeypatch):
+        prompt = shell._PlainPrompt(tmp_path / "h.txt")
+        monkeypatch.setattr("builtins.input", lambda _msg="": "/help")
+        assert prompt.prompt("> ") == "/help"
+
+    def test_plain_prompt_propagates_eof(self, tmp_path, monkeypatch):
+        prompt = shell._PlainPrompt(tmp_path / "h.txt")
+
+        def _eof(_msg=""):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _eof)
+        with pytest.raises(EOFError):
+            prompt.prompt("> ")
