@@ -58,6 +58,45 @@ app = typer.Typer(
 console = Console()
 
 
+def _distllm_version() -> str:
+    """Installed package version, falling back to the source constant."""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("distributed-llm")
+    except Exception:
+        try:
+            from distllm import __version__
+
+            return __version__
+        except Exception:
+            return "unknown"
+
+
+def _version_callback(value: bool) -> None:
+    """Print the package version and exit."""
+    if not value:
+        return
+    console.print(f"distllm {_distllm_version()}")
+    raise typer.Exit()
+
+
+@app.callback()
+def _app_callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the distllm version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """Distributed LLM Inference System."""
+    # No top-level behaviour: this callback exists so `--version` is available
+    # before a subcommand is chosen (and so Typer has a single root callback).
+
+
 @app.command("completion")
 def completion_command(
     shell: str = typer.Argument(
@@ -145,12 +184,15 @@ Register-ArgumentCompleter -Native -CommandName distllm -ScriptBlock {
 #   system     — daemons, diagnostics, logs, notifications
 #
 
-cluster_app = typer.Typer(help="Manage cluster: start, join, status, list-nodes, scale, drain, deploy")
-model_app = typer.Typer(help="Manage models: list, load, info, compress, adapters")
-benchmark_app = typer.Typer(help="Run benchmarks, compare results, profile inference")
-config_app = typer.Typer(help="Configuration, setup, webhooks, quotas, backups")
-security_app = typer.Typer(help="TLS certificates and cryptographic keys")
-system_app = typer.Typer(help="Daemons, diagnostics, logs, notifications, cost analysis")
+# no_args_is_help makes a bare `distllm model` print its subcommands instead of
+# "Missing command." -- what every other CLI does, and what a user typing a
+# group name is asking for.
+cluster_app = typer.Typer(help="Manage cluster: start, join, status, list-nodes, scale, drain, deploy", no_args_is_help=True)
+model_app = typer.Typer(help="Manage models: list, load, info, compress, adapters", no_args_is_help=True)
+benchmark_app = typer.Typer(help="Run benchmarks, compare results, profile inference", no_args_is_help=True)
+config_app = typer.Typer(help="Configuration, setup, webhooks, quotas, backups", no_args_is_help=True)
+security_app = typer.Typer(help="TLS certificates and cryptographic keys", no_args_is_help=True)
+system_app = typer.Typer(help="Daemons, diagnostics, logs, notifications, cost analysis", no_args_is_help=True)
 router_app = typer.Typer(
     help="Model router (no subcommands yet — rules/test/stats/patterns are not implemented)"
 )
@@ -454,7 +496,7 @@ def config_openapi(
     schema = fastapi_app.openapi()
 
     # Add DistLLM-specific metadata
-    schema["info"]["x-distllm-version"] = "0.4.0"
+    schema["info"]["x-distllm-version"] = _distllm_version()
     schema["info"]["x-sdk-version"] = "1.0.0"
 
     if format == "yaml":
@@ -567,7 +609,7 @@ def model_search(
     )
 
     if fits:
-        table = Table(title=f"Runs on this machine — {query or 'all models'}")
+        table = Table(title="Runs on this machine — " + (query if query else "all " + str(len(found)) + " models"))
         table.add_column("Model", style="green")
         table.add_column("Params", justify="right")
         table.add_column("Needs", justify="right")

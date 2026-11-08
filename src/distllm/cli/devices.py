@@ -375,11 +375,18 @@ def print_devices(result: dict[str, Any], console) -> None:
     if not net:
         nt.add_row("(none)", "-", "-", "-")
     else:
+        from rich.text import Text
+
         for iface in net:
+            mac = str(iface.get("mac", "-")) or "-"
+            # Rich interprets :shortcode: sequences as emoji even inside a
+            # table cell, so a MAC address like e6:cd:9f:23:1d:69 rendered as
+            # "e6💿9f:23:1d:69" (and then crashed any cp1252 console). A Text
+            # object is printed verbatim, with no markup pass.
             nt.add_row(
                 str(iface.get("name", "?")),
                 str(iface.get("ipv4", "-")) or "-",
-                str(iface.get("mac", "-")) or "-",
+                Text(mac),
                 "yes" if iface.get("up") else "no",
             )
     console.print(nt)
