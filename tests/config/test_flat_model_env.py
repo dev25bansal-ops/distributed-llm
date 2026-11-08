@@ -61,3 +61,26 @@ class TestFlatModelEnv:
             cli_overrides={"model": {"name": "cli/Model"}}
         )
         assert settings.model.name == "cli/Model"
+
+
+class TestContainerBindHost:
+    """A container must not bind loopback only.
+
+    settings.coordinator.host defaults to "localhost". Bound to loopback inside
+    a container, a published port (-p 8000:8000) forwards to nothing and the
+    service is unreachable from the host even though its own logs show
+    "GET /health 200 OK". The Dockerfiles set DISTLLM_COORDINATOR__HOST=0.0.0.0
+    for this reason.
+    """
+
+    def test_nested_host_env_overrides_the_localhost_default(self, clean_model_env):
+        clean_model_env.setenv("DISTLLM_MODEL", "roneneldan/TinyStories-1M")
+        clean_model_env.setenv("DISTLLM_COORDINATOR__HOST", "0.0.0.0")
+        settings = DistLLMSettings.from_yaml()
+        assert settings.coordinator.host == "0.0.0.0"
+
+    def test_default_host_is_loopback(self, clean_model_env):
+        clean_model_env.setenv("DISTLLM_MODEL", "roneneldan/TinyStories-1M")
+        clean_model_env.delenv("DISTLLM_COORDINATOR__HOST", raising=False)
+        settings = DistLLMSettings.from_yaml()
+        assert settings.coordinator.host == "localhost"

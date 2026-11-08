@@ -85,6 +85,12 @@ jobs:
 
       - name: Start coordinator
         run: |
+          # --host 0.0.0.0 is required: the server binds
+          # settings.coordinator.host, which defaults to "localhost", so inside
+          # a container it listens on loopback only and the published port
+          # (-p 8000:8000) forwards to nothing. The health check then reports
+          # "Coordinator failed to start" even though the container log shows
+          # "GET /health 200 OK" for requests made inside the container.
           docker run -d \
             --name distllm-coordinator \
             --network distllm-test-net \
@@ -93,7 +99,7 @@ jobs:
             -e DISTLLM_LOG_LEVEL=DEBUG \
             -e MODEL_NAME=${{ env.MODEL_NAME }} \
             distllm:coordinator \
-            distllm-api --model ${{ env.MODEL_NAME }} --local --port 8000
+            distllm-api --model ${{ env.MODEL_NAME }} --local --port 8000 --host 0.0.0.0
 
       - name: Wait for coordinator to be ready
         run: |

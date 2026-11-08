@@ -148,6 +148,9 @@ ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
 ENV DISTLLM_START_LAYER=0
 ENV DISTLLM_END_LAYER=3
 ENV DISTLLM_TOTAL_LAYERS=8
+# A container must listen on all interfaces; the library default is
+# localhost, which is unreachable through a published port.
+ENV DISTLLM_COORDINATOR__HOST=0.0.0.0
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
