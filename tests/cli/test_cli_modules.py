@@ -1532,7 +1532,7 @@ class TestCliTutorial:
 class TestCliVerify:
     """Tests for distllm.cli.verify — verify_app Typer commands."""
 
-    @patch("distllm.cli.verify.AccuracyVerifier")
+    @patch("distllm.verification.runner.AccuracyVerifier")
     def test_verify_run_success(self, mock_verifier_cls):
         from distllm.cli.verify import verify_app
 
@@ -1547,7 +1547,7 @@ class TestCliVerify:
         ], catch_exceptions=False)
         assert result.exit_code == 0
 
-    @patch("distllm.cli.verify.AccuracyVerifier")
+    @patch("distllm.verification.runner.AccuracyVerifier")
     def test_verify_run_with_failures(self, mock_verifier_cls):
         from distllm.cli.verify import verify_app
 
@@ -1563,7 +1563,7 @@ class TestCliVerify:
         ], catch_exceptions=False)
         assert result.exit_code == 1
 
-    @patch("distllm.cli.verify.list_available_backends")
+    @patch("distllm.backends.registry.list_available_backends")
     def test_verify_list_backends_with_data(self, mock_list):
         from distllm.cli.verify import verify_app
 
@@ -1579,7 +1579,7 @@ class TestCliVerify:
                                catch_exceptions=False)
         assert result.exit_code == 0
 
-    @patch("distllm.cli.verify.list_available_backends", return_value=[])
+    @patch("distllm.backends.registry.list_available_backends", return_value=[])
     def test_verify_list_backends_empty(self, mock_list):
         from distllm.cli.verify import verify_app
 

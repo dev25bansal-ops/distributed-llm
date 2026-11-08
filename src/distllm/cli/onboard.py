@@ -105,9 +105,9 @@ def _build_hardware_table(info: dict[str, Any]) -> Table:
 # ── Model recommendation ───────────────────────────────────────────────────
 
 # Used only when the catalogs cannot be reached (offline install, air-gapped
-# box). Every entry is a real Hugging Face repository id -- the previous table
-# included "meta-llama/Llama-3-70b" and "meta-llama/Llama-3.1-70B", which do
-# not exist, and recommended 70B models to 16 GB cards.
+# box). Every entry is a real Hugging Face repository id. The table this
+# replaced picked models by VRAM bucket alone, so a 16 GB card was offered a
+# 70B model it cannot hold; ranking by actual parameter count fixes that.
 _OFFLINE_FALLBACK: list[str] = [
     "meta-llama/Llama-3.2-1B-Instruct",
     "meta-llama/Llama-3.2-3B-Instruct",
