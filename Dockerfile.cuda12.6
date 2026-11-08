@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # metadata; with no setup.py/setup.cfg the build then yields an empty
 # UNKNOWN-0.0.0 wheel and the image has no distllm-api binary at runtime.
 RUN python3 -m pip install --no-cache-dir --upgrade \
-    "pip>=23.0" "setuptools>=68.0" wheel
+    "pip>=23.0" "setuptools>=68.0,<82" wheel
 # Interpreter for the whole image: a venv keeps one consistent layout (Debian
 # Python searches .../dist-packages while `pip --prefix` writes site-packages)
 # and we copy it wholesale to the runtime at this same absolute path.

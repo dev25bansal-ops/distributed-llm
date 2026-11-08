@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # binary. The floors below are the first versions that understand this file:
 # setuptools 61 (PEP 621) and pip 23 (Metadata-Version 2.4 wheels).
 RUN python3 -m pip install --no-cache-dir --upgrade \
-    "pip>=23.0" "setuptools>=68.0" wheel
+    "pip>=23.0" "setuptools>=68.0,<82" wheel
 
 WORKDIR /build
 

@@ -17,9 +17,18 @@ services:
       dockerfile: Dockerfile
     ports:
       - "50050:50050"
+      # The CI job polls http://localhost:8000/v1/health from the host, so the
+      # API port has to be published. Without it the curl loop could never
+      # succeed no matter how healthy the container was.
+      - "8000:8000"
     environment:
       - DISTLLM_LOG_LEVEL=DEBUG
-      - DISTLLM_API_PORT=8000
+      # Not a settings field -- the coordinator section is nested, so the
+      # working form is DISTLLM_COORDINATOR__API_PORT. The host default is
+      # "localhost", which inside a container is unreachable through a
+      # published port.
+      - DISTLLM_COORDINATOR__API_PORT=8000
+      - DISTLLM_COORDINATOR__HOST=0.0.0.0
     command: >
       distllm
         --model roneneldan/TinyStories-1M
