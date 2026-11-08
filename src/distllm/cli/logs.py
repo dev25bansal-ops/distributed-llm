@@ -7,7 +7,7 @@ import httpx
 from rich.console import Console
 from rich.live import Live
 
-from distllm.cli.http_client import client_for
+from distllm.cli.http_client import client_for, format_http_error
 
 console = Console()
 
@@ -58,7 +58,7 @@ def _stream_logs(
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _print_log_entry(entry: dict):

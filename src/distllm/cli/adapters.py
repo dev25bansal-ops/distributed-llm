@@ -4,7 +4,7 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-from distllm.cli.http_client import client_for
+from distllm.cli.http_client import client_for, format_http_error
 
 console = Console()
 
@@ -44,7 +44,7 @@ def _list_adapters(host: str, port: int):
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _load_adapter(host: str, port: int, adapter_id: str, source: str, adapter_type: str = "lora"):
@@ -64,7 +64,7 @@ def _load_adapter(host: str, port: int, adapter_id: str, source: str, adapter_ty
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _set_adapter(host: str, port: int, adapter_id: str):
@@ -78,7 +78,7 @@ def _set_adapter(host: str, port: int, adapter_id: str):
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _unload_adapter(host: str, port: int, adapter_id: str):
@@ -92,4 +92,4 @@ def _unload_adapter(host: str, port: int, adapter_id: str):
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")

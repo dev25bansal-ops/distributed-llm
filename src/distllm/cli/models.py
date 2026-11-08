@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from rich.console import Console
 from rich.table import Table
 
-from distllm.cli.http_client import client_for, resolve_api_key
+from distllm.cli.http_client import client_for, format_http_error, resolve_api_key
 
 console = Console()
 
@@ -136,7 +136,7 @@ def _list_models(host: str, port: int):
     except httpx.ConnectError:
         _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _model_info(host: str, port: int, model_id: str):
@@ -165,7 +165,7 @@ def _model_info(host: str, port: int, model_id: str):
     except httpx.ConnectError:
         _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _load_model(host: str, port: int, model: str, dtype: str = "float16"):
@@ -183,7 +183,7 @@ def _load_model(host: str, port: int, model: str, dtype: str = "float16"):
     except httpx.ConnectError:
         _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _unload_model(host: str, port: int, model_id: str):
@@ -197,4 +197,4 @@ def _unload_model(host: str, port: int, model_id: str):
     except httpx.ConnectError:
         _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")

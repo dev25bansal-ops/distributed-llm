@@ -60,3 +60,42 @@ def client_for(
         timeout=timeout,
         headers=auth_headers(),
     )
+
+
+def format_http_error(exc: httpx.HTTPStatusError, *, max_len: int = 200) -> str:
+    """Render an HTTP error as one readable line.
+
+    Commands used to print ``{status} {response.text}``, which dumped a whole
+    HTML error page into the terminal when the address was not a distllm
+    server (a plain 404 from any other service listening on that port). This
+    keeps the JSON error message the API returns, collapses whitespace, and
+    replaces HTML with an explanation.
+    """
+    response = exc.response
+    status = response.status_code
+    body = ""
+
+    try:
+        payload = response.json()
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            body = str(err.get("message") or err.get("code") or "")
+        elif err:
+            body = str(err)
+        body = body or str(payload.get("detail") or payload.get("message") or "")
+
+    if not body:
+        text = " ".join((response.text or "").split())
+        if text.startswith("<"):
+            body = (
+                "the server returned an HTML page, not a distllm response "
+                "(is something else listening on this port?)"
+            )
+        else:
+            body = text[:max_len]
+
+    return f"HTTP {status}: {body}" if body else f"HTTP {status}"

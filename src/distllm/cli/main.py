@@ -91,10 +91,141 @@ def _app_callback(
         callback=_version_callback,
         is_eager=True,
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Show full tracebacks instead of short error messages.",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress informational output; errors only.",
+    ),
 ) -> None:
     """Distributed LLM Inference System."""
-    # No top-level behaviour: this callback exists so `--version` is available
-    # before a subcommand is chosen (and so Typer has a single root callback).
+    # Store the flags where the error handler and command bodies can read them.
+    import os
+
+    os.environ["DISTLLM_CLI_VERBOSE"] = "1" if verbose else ""
+    os.environ["DISTLLM_CLI_QUIET"] = "1" if quiet else ""
+
+
+def _friendly_error(exc: BaseException) -> None:
+    """Render an uncaught command error without a raw traceback.
+
+    A user who mistypes a model id should see one sentence and a next step, not
+    a 30-frame traceback from inside transformers. The full traceback is still
+    available with --verbose, and DISTLLM_CLI_VERBOSE=1.
+    """
+    import os
+    import traceback
+
+    if os.environ.get("DISTLLM_CLI_VERBOSE"):
+        traceback.print_exc()
+        return
+
+    message = str(exc).strip() or exc.__class__.__name__
+
+    # Pull the useful sentence out of the common library errors rather than
+    # printing the whole multi-line blob.
+    if "is not a local folder and is not a valid model identifier" in message:
+        model = message.split(" is not a local folder")[0].strip()
+        console.print(
+            f"[red]Model not found:[/red] {model}\n"
+            "It is not a local path and Hugging Face does not have it.\n"
+            "Find one that fits this machine with:\n"
+            "  [cyan]distllm model search[/cyan]"
+        )
+        return
+    if "Expecting value" in message or "JSONDecodeError" in exc.__class__.__name__:
+        console.print(
+            f"[red]Could not parse a server response:[/red] {message}\n"
+            "Check that the API server is the version you expect."
+        )
+        return
+    if isinstance(exc, (ConnectionError, TimeoutError)) or "Connection" in exc.__class__.__name__:
+        console.print(
+            f"[red]Connection failed:[/red] {message}\n"
+            "Is the server running? Start one with "
+            "[cyan]distllm cluster start --model <model>[/cyan]"
+        )
+        return
+
+    console.print(f"[red]Error:[/red] {message.splitlines()[0]}")
+    if len(message.splitlines()) > 1:
+        console.print("[dim]Run again with --verbose for the full traceback.[/dim]")
+    else:
+        console.print("[dim]Run again with --verbose for the full traceback.[/dim]")
+
+
+def main() -> None:
+    """Entry point for the distllm CLI.
+
+    Wraps ``app()`` so an unexpected exception prints a short message instead of
+    a traceback. Ctrl-C exits quietly.
+    """
+    try:
+        app()
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+    except SystemExit:
+        raise
+    except typer.Exit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - last-resort handler
+        _friendly_error(exc)
+        raise SystemExit(1) from None
+
+
+@app.command("quickstart")
+def quickstart(
+    model: str = typer.Option(
+        None, "--model", "-m", help="Model to run (default: largest that fits this machine)"
+    ),
+    query: str = typer.Option(
+        "", "--search", help="Bias the automatic model choice, e.g. 'code' or 'qwen'"
+    ),
+    port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
+    api_port: int = typer.Option(8000, "--api-port", help="REST API port"),
+    no_start: bool = typer.Option(
+        False, "--no-start", help="Pick a model and show the command, do not start"
+    ),
+):
+    """Detect hardware, pick a model, start a cluster, verify it works.
+
+    The single command to run first. Equivalent to working out what fits, then
+    `cluster start --model … --local`, then polling /health by hand.
+    """
+    from distllm.cli.quickstart import run_quickstart
+
+    raise typer.Exit(
+        run_quickstart(
+            model=model,
+            query=query,
+            port=port,
+            api_port=api_port,
+            no_start=no_start,
+        )
+    )
+
+
+@app.command("selftest")
+def selftest(
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output (for CI)"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Treat warnings as failures"
+    ),
+):
+    """Verify this installation: entry points, imports, catalog, API.
+
+    Where `cli-doctor` inspects the machine (CUDA, ports, disk), this checks the
+    package itself — that every console script resolves, the modules import,
+    Hugging Face is reachable, and a real /health request succeeds.
+    """
+    from distllm.cli.selftest import run_selftest
+
+    raise typer.Exit(run_selftest(as_json=as_json, strict=strict))
 
 
 @app.command("completion")
@@ -1823,9 +1954,6 @@ def audit(
 
 
 if __name__ == "__main__":
-    app()
-
-
-def main():
-    """Entry point for the distllm CLI."""
-    app()
+    # Route through the same wrapper the console script uses, so running
+    # `python -m distllm.cli.main` behaves identically to `distllm`.
+    main()

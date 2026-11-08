@@ -12,7 +12,7 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
-from distllm.cli.http_client import client_for
+from distllm.cli.http_client import client_for, format_http_error
 
 console = Console()
 
@@ -84,7 +84,7 @@ def _cluster_status(host: str, port: int):
             console.print("[yellow]Coordinator reachable but no model is loaded.[/yellow]")
             console.print("Start one with: distllm system api --model <model>")
         else:
-            console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+            console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _cluster_scale(host: str, port: int, nodes: int, gpu_type: str | None = None):
@@ -104,7 +104,7 @@ def _cluster_scale(host: str, port: int, nodes: int, gpu_type: str | None = None
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _cluster_drain(host: str, port: int, node_id: str):
@@ -120,7 +120,7 @@ def _cluster_drain(host: str, port: int, node_id: str):
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _cluster_rebalance(host: str, port: int, strategy: str = "balanced"):
@@ -137,11 +137,68 @@ def _cluster_rebalance(host: str, port: int, strategy: str = "balanced"):
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
+
+
+def _validate_model_or_exit(model: str) -> None:
+    """Fail fast on a model id that cannot be loaded.
+
+    ``cluster start`` spawns the coordinator and API server as subprocesses, so
+    a bad model id produced a raw transformers traceback from the child process
+    before this check existed:
+
+        OSError: definitely/not-a-real-model is not a local folder and is not a
+        valid model identifier listed on 'https://huggingface.co/models'
+
+    Checking here turns that into one sentence with a next step, before either
+    subprocess is spawned.
+    """
+    import os
+    from pathlib import Path
+
+    candidate = Path(model).expanduser()
+    if candidate.exists():
+        return  # local directory or file: transformers will handle it
+
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.errors import (
+            GatedRepoError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
+    except ImportError:
+        return  # hub not installed; the server will surface any problem
+
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    try:
+        HfApi().model_info(model, token=token, timeout=10)
+    except GatedRepoError:
+        console.print(
+            f"[red]Model is gated:[/red] {model}\n"
+            "Accept its license on huggingface.co, then set [cyan]HF_TOKEN[/cyan]."
+        )
+        raise SystemExit(1) from None
+    except RepositoryNotFoundError:
+        console.print(
+            f"[red]Model not found:[/red] {model}\n"
+            "Hugging Face has no repository by that name.\n"
+            "Find one that fits this machine:\n"
+            "  [cyan]distllm model search[/cyan]"
+        )
+        raise SystemExit(1) from None
+    except (HfHubHTTPError, httpx.HTTPError, OSError):
+        # Network trouble, rate limit, offline: do not block the start. The
+        # server will report the real problem if the model genuinely fails.
+        # Deliberately narrow: an unexpected error here should surface rather
+        # than silently skip validation.
+        return
 
 
 def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str, debug: bool):
     """Start a coordinator and optionally the REST API."""
+    _validate_model_or_exit(model)
+
     console.print("[bold]Starting coordinator...[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  gRPC port: {port}")
