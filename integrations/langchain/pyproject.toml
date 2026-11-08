@@ -25,7 +25,7 @@ classifiers = [
 
 dependencies = [
     "langchain-core>=0.3.0",
-    "distllm>=0.1.0",
+    "distributed-llm>=0.4.1",
 ]
 
 [project.optional-dependencies]

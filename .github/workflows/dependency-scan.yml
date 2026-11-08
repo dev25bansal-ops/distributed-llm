@@ -48,6 +48,13 @@ jobs:
         # python-multipart this way one 20-minute rebuild at a time.
         run: python scripts/ci/check_lock_completeness.py
 
+      - name: Reject dependencies on the shadowing package name
+        # The project publishes as "distributed-llm"; an unrelated "distllm"
+        # package exists on PyPI (1.0.2) and silently replaces this install.
+        # All ten integrations declared "distllm>=0.1.0" and CI installed the
+        # foreign package over the local one.
+        run: python scripts/ci/check_package_name.py
+
       - name: Install project (core dependency set)
         # Core deps only (fastapi, uvicorn, pydantic, httpx, pyjwt, numpy, ...).
         # Heavy extras (torch/vllm) are intentionally excluded to keep this

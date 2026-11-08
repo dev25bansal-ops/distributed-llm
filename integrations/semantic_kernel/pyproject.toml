@@ -25,7 +25,7 @@ classifiers = [
 
 dependencies = [
     "semantic-kernel>=1.0.0",
-    "distllm>=0.1.0",
+    "distributed-llm>=0.4.1",
 ]
 
 [project.optional-dependencies]
