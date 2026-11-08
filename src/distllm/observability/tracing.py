@@ -6,22 +6,45 @@ distributed nodes, and request-to-trace correlation helpers.
 
 from typing import Any
 
-from opentelemetry import context, trace
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
-from opentelemetry.sdk.trace.sampling import (
-    ALWAYS_OFF,
-    ALWAYS_ON,
-    ParentBased,
-    TraceIdRatioBased,
-)
+try:  # opentelemetry-api may be present without the SDK
+    from opentelemetry import context, trace
+except ImportError:  # pragma: no cover - no OTel at all
+    context = trace = None  # type: ignore[assignment]
+
+try:
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
+    from opentelemetry.sdk.trace.sampling import (
+        ALWAYS_OFF,
+        ALWAYS_ON,
+        ParentBased,
+        TraceIdRatioBased,
+    )
+
+    _HAS_TRACING_SDK = True
+except ImportError:  # pragma: no cover - the common case without the extra
+    # The SDK lives in the [observability] extra. Importing it unconditionally
+    # made `import distllm.api.server` fail for anyone who installed
+    # `distributed-llm[cli,self-hosted]`, because server.py imports the
+    # observability package at module scope -- the console script existed but
+    # could not start. setup_tracing() raises a clear message if called.
+    _HAS_TRACING_SDK = False
+    Resource = None  # type: ignore[assignment]
+    TracerProvider = object  # type: ignore[assignment,misc]
+    BatchSpanProcessor = object  # type: ignore[assignment,misc]
+    SpanExporter = object  # type: ignore[assignment,misc]
+    ALWAYS_OFF = ALWAYS_ON = ParentBased = TraceIdRatioBased = object  # type: ignore[assignment]
 
 try:
     from opentelemetry.instrumentation.grpc import GRPCInstrumentor
 except ImportError:
     GRPCInstrumentor: Any = None  # type: ignore[misc]
-from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+try:
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+except ImportError:  # pragma: no cover - no OTel at all
+    TraceContextTextMapPropagator = None  # type: ignore[assignment,misc]
 
 try:
     from opentelemetry.propagators.textmap import DictGetter
@@ -30,7 +53,10 @@ except ImportError:
 
 
 # W3C TraceContext propagator for cross-node trace correlation
-_tracecontext_propagator = TraceContextTextMapPropagator()
+if TraceContextTextMapPropagator is not None:
+    _tracecontext_propagator = TraceContextTextMapPropagator()
+else:  # pragma: no cover - no OTel at all
+    _tracecontext_propagator = None
 
 
 def _get_sampler(
@@ -81,7 +107,15 @@ def setup_tracing(
 
     Returns:
         Configured TracerProvider.
+
+    Raises:
+        RuntimeError: when the observability extra is not installed.
     """
+    if not _HAS_TRACING_SDK:
+        raise RuntimeError(
+            "OpenTelemetry tracing requires the SDK: "
+            'pip install "distributed-llm[observability]"'
+        )
     resource = Resource.create({"service.name": service_name})
     sampler = _get_sampler(sampling_strategy, sampling_ratio)
     provider = TracerProvider(resource=resource, sampler=sampler)
