@@ -120,21 +120,29 @@ jobs:
 
       - name: Run API integration tests
         run: |
+          # /v1/* is authenticated. The server mints an admin key on first boot
+          # and writes it to .distllm/api_key inside the container (see
+          # core.api_key_store); read it out and send it as a bearer token, the
+          # same way the CLI does. Without this every /v1 call is 401.
+          API_KEY=$(docker exec distllm-coordinator cat /app/.distllm/api_key)
+          export API_KEY
           python -c "
+          import os
           import httpx
           import json
 
           base = 'http://localhost:8000'
-          client = httpx.Client(timeout=30.0)
+          headers = {'Authorization': f\"Bearer {os.environ['API_KEY']}\"}
+          client = httpx.Client(timeout=30.0, headers=headers)
 
-          # Test 1: Health check
+          # Test 1: Health check (unauthenticated by design)
           r = client.get(f'{base}/health')
           assert r.status_code == 200, f'Health failed: {r.status_code}'
           print('✓ Health check passed')
 
           # Test 2: List models
-          r = client.get(f'{base}/v1/models')
-          assert r.status_code == 200
+          r = client.get(f'{base}/v1/models', headers=headers)
+          assert r.status_code == 200, f'List models failed: {r.status_code} {r.text[:200]}'
           print('✓ List models passed')
 
           # Test 3: Chat completion
