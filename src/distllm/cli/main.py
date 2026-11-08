@@ -178,6 +178,48 @@ def main() -> None:
         raise SystemExit(1) from None
 
 
+@app.command("shell")
+def shell(
+    model: str = typer.Option(
+        "distributed-llm", "--model", "-m", help="Model to chat with"
+    ),
+    host: str = typer.Option("localhost", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+    temperature: float = typer.Option(0.7, "--temp", help="Sampling temperature"),
+    max_tokens: int = typer.Option(1024, "--max-tokens", help="Max tokens per reply"),
+    session: str = typer.Option(
+        "", "--session", "-s", help="Resume a saved session by name"
+    ),
+):
+    """Interactive shell: slash commands, @file context, saved sessions.
+
+    The full-screen counterpart to `distllm chat`: /help lists the commands,
+    @path attaches a file to the next message, and every session is saved to
+    .distllm/sessions so it can be resumed with --session.
+    """
+    from distllm.cli.shell import load_session, run_shell
+
+    if session:
+        try:
+            restored = load_session(session)
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        model = restored.model or model
+        temperature = restored.temperature
+        max_tokens = restored.max_tokens
+
+    raise typer.Exit(
+        run_shell(
+            model=model,
+            base_url=f"http://{host}:{port}",
+            temperature=temperature,
+            max_tokens=max_tokens,
+            session_name=session,
+        )
+    )
+
+
 @app.command("quickstart")
 def quickstart(
     model: str = typer.Option(
