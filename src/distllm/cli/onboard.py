@@ -62,6 +62,11 @@ def _detect_hardware() -> dict[str, Any]:
         import torch  # noqa: F811
 
         info["cuda_available"] = torch.cuda.is_available()
+        # pip installs the CPU-only torch wheel by default, so cuda_available is
+        # False on a machine that does have a GPU. Record which case this is;
+        # the wizard and quickstart use it to give the right advice instead of
+        # silently recommending CPU-sized models.
+        info["torch_cpu_build"] = "+cpu" in getattr(torch, "__version__", "")
         if info["cuda_available"]:
             info["gpu_count"] = torch.cuda.device_count()
             props = torch.cuda.get_device_properties(0)
@@ -69,6 +74,7 @@ def _detect_hardware() -> dict[str, Any]:
             info["gpu_memory_gb"] = round(props.total_memory / 1e9, 1)
     except ImportError:
         info["cuda_available"] = False
+        info["torch_cpu_build"] = False
 
     return info
 

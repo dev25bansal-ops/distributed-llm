@@ -46,11 +46,17 @@ def _init_observability() -> None:
     import os as _os
 
     _trace_sample_rate = float(_os.environ.get("DISTLLM_TRACE_SAMPLE_RATE", "0.1"))
-    setup_tracing(
-        service_name="distllm-api",
-        sampling_strategy="head",
-        sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
-    )
+    try:
+        setup_tracing(
+            service_name="distllm-api",
+            sampling_strategy="head",
+            sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
+        )
+    except RuntimeError as exc:
+        # Tracing is optional: the SDK lives in the [observability] extra. A
+        # deployment that did not install it must still serve requests -- the
+        # old unconditional call made the server fail to start at all.
+        logger.info(f"Tracing disabled: {exc}")
 
     state.metrics_exporter = DistLLMPrometheusExporter()
 

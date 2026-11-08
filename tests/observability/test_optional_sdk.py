@@ -78,3 +78,33 @@ class TestOptionalObservabilitySDK:
 
         assert "observability" in _MISSING_SDK_MESSAGE
         assert "pip install" in _MISSING_SDK_MESSAGE
+
+
+class TestServerStartsWithNoSDK:
+    """The API lifespan called setup_tracing() unguarded.
+
+    A deployment without the [observability] extra therefore failed to start at
+    all -- the server bound no port instead of serving without tracing.
+    """
+
+    def test_lifespan_survives_missing_tracing_sdk(self, monkeypatch):
+        real_import = builtins.__import__
+
+        def fake(name, *args, **kwargs):
+            if name.startswith("opentelemetry.sdk"):
+                raise ImportError("simulated: no opentelemetry.sdk")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake)
+        try:
+            from fastapi.testclient import TestClient
+
+            from distllm.api.server import app
+
+            with TestClient(app) as client:
+                response = client.get("/health")
+            # 200 with a model loaded, 503 without: either proves the app
+            # answered, which is what "the server starts" means here.
+            assert response.status_code in (200, 503)
+        finally:
+            monkeypatch.undo()

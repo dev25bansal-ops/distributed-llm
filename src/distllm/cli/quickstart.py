@@ -81,7 +81,7 @@ def run_quickstart(
     console.print(
         Panel.fit(
             "[bold]DistLLM quickstart[/bold]\n"
-            "Detect hardware → pick a model → start a cluster → verify",
+            "Detect hardware -> pick a model -> start a cluster -> verify",
             border_style="cyan",
         )
     )
@@ -94,6 +94,21 @@ def run_quickstart(
     if hw.get("cuda_available"):
         table.add_row("GPU", f"{hw.get('gpu_name', '?')} ({hw.get('gpu_count', 0)}x)")
         table.add_row("VRAM", f"{hw.get('gpu_memory_gb', 0):.1f} GB per device")
+    elif hw.get("torch_cpu_build"):
+        # Distinguish "no GPU" from "torch is the CPU-only wheel": pip installs
+        # the CPU build by default, so a machine with a real GPU reports no
+        # CUDA and the wizard would pick a CPU-sized model for no reason.
+        table.add_row("GPU", "[yellow]not usable — CPU-only PyTorch[/yellow]")
+        table.add_row(
+            "Fix",
+            "[cyan]pip install torch --index-url "
+            "https://download.pytorch.org/whl/cu128[/cyan]",
+        )
+        console.print(
+            "\n[yellow]PyTorch is the CPU-only build, so no GPU is visible to "
+            "it.[/yellow]\nThis machine may have a perfectly good GPU. Install "
+            "a CUDA build, then re-run quickstart."
+        )
     else:
         table.add_row("GPU", "[yellow]none detected — CPU inference is slow[/yellow]")
     table.add_row("RAM", f"{hw.get('ram_gb', 0):.1f} GB")
