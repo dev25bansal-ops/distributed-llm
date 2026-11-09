@@ -89,7 +89,7 @@ class Session:
         }
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "Session":
+    def from_json(cls, data: dict[str, Any]) -> Session:
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 
