@@ -124,7 +124,42 @@ The nine director sessions own their areas; this session owns the gates and the 
 
 ---
 
+## 8. Merge order (decided 2026-11-10)
+
+Directors commit to their own branches; **only this session merges**, and in this order, because three of them write `tests/` and would conflict:
+
+| # | Branch | Why in this position |
+|---|--------|---------------------|
+| 1 | `claude/distracted-carson-b4f14d` (runtime) | Source changes first — every later test suite asserts against source. |
+| 2 | `claude/wonderful-visvesvaraya-b305d9` (deploy) | Touches 2 test files; must land before the test baseline is taken. |
+| 3 | `claude/dreamy-jones-a4a9f5` (desktop) | Independent (`tauri/` only); can land any time. |
+| 4 | integrations, benchmarks | Independent areas. |
+| 5 | `claude/adoring-satoshi-7465d7` (quality) | **Last.** It takes the test baseline; if source moved under it, the baseline is stale. It has 0 commits at time of writing — it must rebase onto the release branch after #1 and #2 land, not before. |
+| — | website, docs, sdk | Already merged (`5254be9`, `1d68d3b` pending, `5c0af00`). |
+
+**Quality-dir is told to rebase, not merge early.** If it merges its baseline first, runtime and deploy changes will invalidate it.
+
+## 9. Status board (updated 2026-11-10 00:15)
+
+| Director | Branch | Commits | State |
+|---|---|---|---|
+| runtime | `distracted-carson-b4f14d` | +2 | working |
+| desktop | `dreamy-jones-a4a9f5` | +1 | idle, instructed |
+| quality | `adoring-satoshi-7465d7` | **+0** | working — no commits yet, watching |
+| website | merged | `5254be9` | done, follow-up sweep running |
+| sdk | merged | `5c0af00` | done, awaiting MATRIX audit |
+| docs | `ff143023…` branch | 0 (working tree only) | instructed to produce a patch |
+| deploy | `wonderful-visvesvaraya-b305d9` | +1 | idle, instructed |
+| integrations | `54bf46e2…` branch | ? | working |
+| benchmarks | `f188c914…` branch | ? | working |
+
+---
+
 ## 7. What I need from the user, and by when
+
+1. **A10 access, booked for Nov 16–20.** Without it there is no recorded demo and gate 4 cannot pass. This is the single hardest dependency.
+2. ~~A decision on the Rust SDK~~ — **decided: make it real.** It compiles (`cargo check` clean from `%USERPROFILE%\.cargo\bin`), clippy is clean, and it now has 13 tests after two defects were found and fixed.
+3. **Nothing else.** The rest is ours to execute.
 
 1. **A10 access, booked for Nov 16–20.** Without it there is no recorded demo and gate 4 cannot pass. This is the single hardest dependency.
 2. ~~A decision on the Rust SDK~~ — **decided: make it real.** Done to the point of compiling, tested and clippy-clean; CI job already exists. The vscode-extension job is still red and is a separate question.
