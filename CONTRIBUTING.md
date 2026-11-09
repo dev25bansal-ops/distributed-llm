@@ -822,7 +822,7 @@ python benchmarks/run.py --model roneneldan/TinyStories-1M --output before.json
 python benchmarks/run.py --model roneneldan/TinyStories-1M --output after.json
 
 # Compare
-python benchmarks/compare.py before.json after.json
+python benchmarks/regression_check.py --baseline before.json --current after.json
 ```
 
 ---
