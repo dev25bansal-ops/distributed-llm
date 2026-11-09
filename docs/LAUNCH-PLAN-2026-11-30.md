@@ -168,6 +168,18 @@ The 48 cluster into three areas, all inside the runtime director's scope:
 
 Separately, `tests/deploy` = 45 failed / 126 passed — the chart-completeness and stale-workflow tests, not regressions from the merge (`test_kustomize.py` is 28/28 green after the fix).
 
+### Fixed from the quality director's report, 2026-11-10
+
+Three defects, each verified before and after:
+
+1. **HCL injection via quote/backslash** (`core/provisioning.py`). The guard caught `${`, `$$`, newlines, U+2028 — but not `"` or `\`, the characters that actually escape an HCL string literal. `region='us-east-1"'` rendered as `region = "us-east-1""`. Now rejects quote, backslash and `}`, and the message names what was caught. Verified all four classes reject; a legitimate config still renders.
+2. **Plugin signature verification existed but was never wired** (`core/plugin_marketplace.py`). `verify_manifest()` and the signed `PluginManifest` type have been in `plugin_sandbox.py` with no caller. Added `public_key_pem` and a fail-closed `_verify_plugin_manifest` (no key / no manifest / bad signature all refuse).
+3. **The `torch.load` gate only read one line** (`tests/test_features_release_gates.py`). Both reported offenders *do* pass `weights_only=True`, on a later line of a multi-line call. The gate now scans the whole call; verified it still rejects a genuinely unsafe one.
+
+`tests/test_features_release_gates.py` + `tests/test_high_severity_fixes.py`: 18 passed, 0 failed.
+
+**Correction to my own earlier assumption:** I told every director that `779f7ed` was the likely cause of their failures. The quality director checked properly and found its own defects were **not** reverts — `public_key_pem` never existed in any history, and the provisioning reject-list was always missing those characters. The revert is real and did hit `src/distllm/dist/`, but it is not the universal explanation I implied.
+
 ---
 
 ## 7. What I need from the user, and by when
