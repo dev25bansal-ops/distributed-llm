@@ -183,6 +183,11 @@ class TestConftestFixtures:
         assert config_fixture.model.name == "test-model"
 
     def test_mock_env_vars(self, mock_env_vars):
-        import os
-        assert os.environ.get("DISTLLM__MODEL__NAME") == "env-test-model"
-        assert os.environ.get("DISTLLM__MODEL__DTYPE") == "bfloat16"
+        # Prove the config actually READS the env var, not merely that the var
+        # was set (the old assertion only checked os.environ — a tautology that
+        # passed even with the ignored DISTLLM__ double-underscore form).
+        from distllm.config.settings import DistLLMSettings
+
+        settings = DistLLMSettings()
+        assert settings.model.name == "env-test-model"
+        assert str(settings.model.dtype).lower().endswith("bfloat16")
