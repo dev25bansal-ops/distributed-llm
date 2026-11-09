@@ -65,7 +65,7 @@ def format_results_markdown(stats: BenchStats, meta: BenchMeta) -> str:
 
     No GPU required; this is the unit-tested part of M13.
     """
-    return f"""### Preview — measured {meta.date} (RTX 5060 Laptop, 8 GB)
+    return f"""### Preview — measured {meta.date} ({meta.gpu_name})
 
 > **Preview / single-node reference.** These are REAL measurements on the
 > developer laptop GPU, not a production SLA. Treat as a floor for owned
@@ -143,6 +143,23 @@ def run_benchmark(
     total_tokens = 0
     window_start = time.perf_counter()
     for _ in range(runs):
+        # TTFT: time a single-token generation.  That is prefill of the whole
+        # prompt plus exactly one decode step -- the same quantity a streaming
+        # server would report as time-to-first-token.  Previously this file
+        # recorded the per-token ITL as "TTFT", which made the two columns
+        # identical by construction.
+        t0 = time.perf_counter()
+        with torch.inference_mode():
+            model_obj.generate(
+                input_ids,
+                max_new_tokens=1,
+                do_sample=False,
+                pad_token_id=tok.eos_token_id,
+            )
+        t_ttft = time.perf_counter()
+        ttfts.append((t_ttft - t0) * 1000.0)
+
+        # Full-window run for inter-token latency and throughput.
         t0 = time.perf_counter()
         with torch.inference_mode():
             out = model_obj.generate(
@@ -155,12 +172,10 @@ def run_benchmark(
         t1 = time.perf_counter()
         n_gen = int((out[0][prompt_len:] != tok.eos_token_id).sum().item()) or max_tokens
         total_tokens += n_gen
-        # TTFT approximated as a small fraction of total; for precise TTFT we
-        # would stream, but median inter-token latency is the stable signal.
-        itl = ((t1 - t0) * 1000.0) / max(1, n_gen)
+        # ITL over the tokens generated *after* the first one; prefill cost is
+        # already excluded because it was measured as TTFT above.
+        itl = ((t1 - t_ttft) * 1000.0) / max(1, n_gen - 1)
         itls.append(itl)
-        # TTFT as first-token proxy: assume first token ~ one ITL step.
-        ttfts.append(itl)
 
     window_s = time.perf_counter() - window_start
     stats = BenchStats(

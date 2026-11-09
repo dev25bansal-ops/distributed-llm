@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DistLLM — One-line install script
 # Usage: curl -sfL https://distllm.ai/install.sh | sh
-# Or: curl -sfL https://raw.githubusercontent.com/distributed-llm/distributed-llm/main/scripts/install.sh | sh
+# Or: curl -sfL https://raw.githubusercontent.com/dev25bansal-ops/distributed-llm/master/scripts/install.sh | sh
 
 set -e
 
@@ -40,7 +40,9 @@ if [ -z "$PYTHON" ]; then
     exit 1
 fi
 
-PY_VER="$($PYTHON --version 2>&1 | grep -oP '\d+\.\d+')"
+# Portable version extraction (BSD grep on macOS has no -P).
+PY_VER="$($PYTHON --version 2>&1 | sed -n 's/.* \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1.\2/p')"
+PY_VER="${PY_VER:-0.0}"
 PY_MAJOR="${PY_VER%%.*}"
 PY_MINOR="${PY_VER#*.}"
 
@@ -71,7 +73,7 @@ if [ -d "$INSTALL_DIR/distributed-llm" ]; then
     git pull --ff-only 2>/dev/null || true
 else
     echo -e "  Cloning repository..."
-    git clone --depth 1 https://github.com/distributed-llm/distributed-llm.git "$INSTALL_DIR/distributed-llm"
+    git clone --depth 1 https://github.com/dev25bansal-ops/distributed-llm.git "$INSTALL_DIR/distributed-llm"
     cd "$INSTALL_DIR/distributed-llm"
 fi
 
@@ -82,7 +84,7 @@ $PYTHON -m pip install --quiet -e . 2>/dev/null
 if [ "$CUDA_AVAILABLE" = "1" ]; then
     echo -e "  Installing with CUDA support..."
     $PYTHON -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128 2>/dev/null || true
-    $PYTHON -m pip install --quiet -e ".[vllm]" 2>/dev/null || true
+    $PYTHON -m pip install --quiet -e ".[backends]" 2>/dev/null || true
 fi
 
 # ── Path setup ──────────────────────────────────────────────────────────
@@ -151,5 +153,5 @@ echo ""
 echo -e "  ${BOLD}API server:${NC}"
 echo -e "  $ distllm-api --model HuggingFaceTB/SmolLM-135M --local --port 8000"
 echo ""
-echo -e "  ${BOLD}Documentation:${NC} https://github.com/distributed-llm/distributed-llm"
-echo -e "  ${BOLD}Need help?${NC} https://github.com/distributed-llm/distributed-llm/issues"
+echo -e "  ${BOLD}Documentation:${NC} https://github.com/dev25bansal-ops/distributed-llm"
+echo -e "  ${BOLD}Need help?${NC} https://github.com/dev25bansal-ops/distributed-llm/issues"

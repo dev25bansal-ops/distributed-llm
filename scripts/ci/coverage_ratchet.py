@@ -180,7 +180,18 @@ def load_baseline() -> float:
             if isinstance(data, dict):
                 return float(data.get("total_coverage", data.get("baseline", DEFAULT_BASELINE)))
             return float(data)
-    return DEFAULT_BASELINE
+    # A missing baseline must FAIL the gate, not silently pass: the whole point
+    # of the ratchet is "no regression vs the committed number", and with no
+    # number recorded the check would compare against DEFAULT_BASELINE (0.0)
+    # and pass everything.  quality-gates.yml documents the baseline as
+    # committed, so its absence is a real defect.
+    raise SystemExit(
+        "ERROR: coverage baseline not found at "
+        + " or ".join(str(p) for p in BASELINE_PATHS)
+        + " -- create it (e.g. from a full-suite coverage run) before enabling "
+        "the global ratchet; the per-module floors in coverage-ratchet.json "
+        "are still enforced independently."
+    )
 
 
 def write_delta_md(xml_path: Path | None, current: float, baseline: float, tolerance: float) -> None:

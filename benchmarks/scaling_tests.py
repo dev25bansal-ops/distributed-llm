@@ -17,26 +17,27 @@ Usage:
     python benchmarks/scaling_tests.py --test long-running --duration 86400
 """
 
-import argparse
+import sys
+import os
+import time
 import json
 import math
-import os
-import statistics
-import sys
+import argparse
 import threading
-import time
-from dataclasses import asdict, dataclass, field
+import statistics
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import torch
 from loguru import logger
 
+
 # ── Targets ────────────────────────────────────────────────────────────────────
 
-SCALING_TARGETS: dict[str, dict] = {
+SCALING_TARGETS: Dict[str, dict] = {
     "100b-model": {
         "metric": "generation_tokens",
         "target": 50,
@@ -141,9 +142,11 @@ def test_100b_model(model_name: str = "meta-llama/Llama-3.1-70B") -> ScalingTest
 
     try:
         from distllm.core.coordinator import Coordinator
+        # `dtype` accepts only float16/float32/bfloat16 (CoordinatorConfig
+        # validator); INT4 is a quantization method, not a dtype.
         coord = Coordinator(
             model_name=model_name,
-            dtype="int4",  # 4-bit quantization for 100B-class fit
+            dtype="float16",
             num_gpus=8,
         )
         coord.load_local_model()
@@ -191,7 +194,7 @@ def test_context_length(model_name: str = "meta-llama/Llama-3.1-70B") -> Scaling
 
     try:
         from distllm.core.coordinator import Coordinator
-        coord = Coordinator(model_name=model_name, dtype="int4", max_batch_size=1)
+        coord = Coordinator(model_name=model_name, dtype="float16", max_batch_size=1)
         coord.load_local_model()
     except (ImportError, Exception) as e:
         logger.warning(f"Real model load failed ({e}); estimating context limit")
@@ -236,7 +239,7 @@ def test_context_length(model_name: str = "meta-llama/Llama-3.1-70B") -> Scaling
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_node_scaling(model_name: str = "meta-llama/Llama-3.1-70B",
-                      node_counts: list[int] | None = None) -> ScalingTestResult:
+                      node_counts: Optional[List[int]] = None) -> ScalingTestResult:
     """Run same model on 2/4/8/16 nodes, measure throughput vs node count.
 
     Verifies throughput scales gracefully (not flatlining or regressing
@@ -247,7 +250,7 @@ def test_node_scaling(model_name: str = "meta-llama/Llama-3.1-70B",
     result.target_value = SCALING_TARGETS["node-scaling"]["target"]
 
     node_counts = node_counts or [2, 4, 8, 16]
-    results_map: dict[int, float] = {}
+    results_map: Dict[int, float] = {}
 
     for n in node_counts:
         # Estimate: throughput = base * n^0.85 (sub-linear scaling)
@@ -292,10 +295,10 @@ def test_heterogeneous_gpu(model_name: str = "meta-llama/Llama-3.1-70B") -> Scal
     ]
 
     try:
-        from distllm.core.auto_partitioner import AutoPartitioner
         from distllm.core.coordinator import Coordinator
+        from distllm.core.auto_partitioner import AutoPartitioner
 
-        coord = Coordinator(model_name=model_name, dtype="int4")
+        coord = Coordinator(model_name=model_name, dtype="float16")
         partitioner = AutoPartitioner()
 
         for name, spec in gpu_types:
@@ -359,10 +362,8 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
     result = ScalingTestResult(name="failure-recovery")
 
     try:
-        from distllm.chaos.injector import ChaosInjector
-
+        from distllm.core.resource_manager import ResourceManager, CircuitBreakerConfig
         from distllm.core.coordinator import Coordinator
-        from distllm.core.resource_manager import CircuitBreakerConfig, ResourceManager
         _HAS_REAL = True
     except ImportError:
         _HAS_REAL = False
@@ -393,7 +394,6 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
                 self._node_recovery_time[n] = time.time() + 5
 
         rm = SimRM()
-        injector = type('Injector', (), {'kill_node': lambda self, n: rm.simulate_node_failure(n)})()
 
         # Phase 1: All nodes healthy
         for nid in ["node-1", "node-2", "node-3", "node-4"]:
@@ -432,7 +432,7 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
     # Real implementation
     rm = ResourceManager(cb_config=CircuitBreakerConfig(threshold=2, base_delay=1.0))
     try:
-        coord = Coordinator(model_name=model_name, dtype="int4")
+        coord = Coordinator(model_name=model_name, dtype="float16")
     except Exception as e:
         logger.warning(f"Cannot create coordinator ({e}); simulating")
         # Fall back to simulated test using just the ResourceManager
@@ -493,9 +493,11 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
         return result
 
     # Phase 2: Kill node-2 mid-generation
+    # `distllm.chaos.injector.ChaosInjector` was removed with the old chaos
+    # module; `ResourceManager.simulate_node_failure` is the current API for
+    # fault injection in these tests.
     kill_target = "node-2"
-    injector = ChaosInjector(rm)
-    injector.kill_node(kill_target)
+    rm.simulate_node_failure(kill_target)
     rm.record_failure(kill_target)
     rm.record_failure(kill_target)
     rm.record_failure(kill_target)  # trigger circuit breaker
@@ -566,7 +568,7 @@ def test_long_running(model_name: str = "roneneldan/TinyStories-1M",
     except (ImportError, Exception) as e:
         logger.warning(f"Real model unavailable ({e}); simulating memory tracking")
         prompt_text = "Once upon a time, "
-        memory_samples: list[float] = []
+        memory_samples: List[float] = []
         iteration = 0
         mock_coord = _simulate_coordinator(model_name)
         deadline = time.time() + min(duration_sec, 10)
@@ -716,7 +718,7 @@ SCALING_TEST_REGISTRY = {
 }
 
 
-def print_results_table(results: list[ScalingTestResult]):
+def print_results_table(results: List[ScalingTestResult]):
     """Print scaling test results with pass/fail status."""
     print("\n" + "=" * 90)
     print("  SCALING TESTS — Summary")

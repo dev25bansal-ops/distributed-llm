@@ -8,7 +8,7 @@ module under ``src/distllm`` and separates two failure classes:
 
 - **Optional-dep skips** — a module fails with ``ModuleNotFoundError`` for a
   package that belongs to a named ``[project.optional-dependencies]`` extra
-  (``grpc``→backends+monitoring, ``aioquic``→wan, ``redis``→self-hosted, ...).
+  (``grpc``->backends+monitoring, ``aioquic``->wan, ``redis``->self-hosted, ...).
   These are reported as **SKIPPED** with reason ``requires [<extra>]`` and do
   NOT fail the run.
 - **Genuine failures** — anything else (``NameError``, ``ImportError`` for
