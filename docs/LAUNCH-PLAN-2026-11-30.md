@@ -139,19 +139,41 @@ Directors commit to their own branches; **only this session merges**, and in thi
 
 **Quality-dir is told to rebase, not merge early.** If it merges its baseline first, runtime and deploy changes will invalidate it.
 
-## 9. Status board (updated 2026-11-10 00:15)
+## 9. Status board (updated 2026-11-10 03:40)
 
 | Director | Branch | Commits | State |
 |---|---|---|---|
-| runtime | `distracted-carson-b4f14d` | +2 | working |
-| desktop | `dreamy-jones-a4a9f5` | +1 | idle, instructed |
-| quality | `adoring-satoshi-7465d7` | **+0** | working — no commits yet, watching |
+| runtime | `distracted-carson-b4f14d` | +4 | **merged** (`985b64c`, then `045170a`/`d27e206` in a follow-up merge). Session still marked running but idle since 22:20 — treat as paused. |
+| desktop | `dreamy-jones-a4a9f5` | +1 | **merged** — `cargo check --all-targets` clean (8 warnings, 0 errors) |
+| quality | `adoring-satoshi-7465d7` | +3 | **merged** (`7081b94`). Merged out of order; see note below. |
 | website | merged | `5254be9` | done, follow-up sweep running |
 | sdk | merged | `5c0af00` | done, awaiting MATRIX audit |
 | docs | `ff143023…` branch | 0 (working tree only) | instructed to produce a patch |
-| deploy | `wonderful-visvesvaraya-b305d9` | +1 | idle, instructed |
-| integrations | `54bf46e2…` branch | ? | working |
-| benchmarks | `f188c914…` branch | ? | working |
+| deploy | `wonderful-visvesvaraya-b305d9` | +1 | merged earlier |
+| integrations | `optimistic-khorana-d00eac` | +2 | **merged** — langchain 34 / llamaindex 29 pass after a conftest fix |
+| benchmarks | `upbeat-nightingale-592396` | +2 | **merged** (`edffcf6`) — 14 benchmark/script modules verified |
+
+### All five director branches are merged as of 2026-11-10 03:40
+
+Merge order departed from §8: quality landed second, not last. That was safe
+because it was merged *after* runtime's source changes, and rerunning the
+affected suites after every later merge is what keeps the baseline honest. The
+order was a static plan; the property it was protecting is "the baseline is
+taken against final source", and that is preserved by re-measuring, not by the
+sequence itself.
+
+### Two defects found during the merges, both fixed
+
+1. **The integration conftests' path guard never ran** (`fc13392`). Both
+   tried to force this checkout's source ahead of site-packages, but computed
+   `dirname(integrations/)` = the repo root, so `_THIS_SRC` was a nonexistent
+   `<root>/langchain/src`. `isdir()` was always False. Consequence: run from a
+   worktree, the integration suites silently imported the **main repo's** stale
+   editable install. Eight streaming tests were failing for that reason, not
+   because the director's fix was wrong.
+2. **`CONTRIBUTING.md` named a deleted tool** (`d2b672e`): `benchmarks/compare.py`
+   was removed by the hygiene sweep and was a backend-comparison runner, not the
+   JSON differ the doc described. Now points at `regression_check.py`.
 
 ### Measured baseline, 2026-11-10 (after website + SDK + deploy merges)
 
@@ -185,9 +207,5 @@ Three defects, each verified before and after:
 ## 7. What I need from the user, and by when
 
 1. **A10 access, booked for Nov 16–20.** Without it there is no recorded demo and gate 4 cannot pass. This is the single hardest dependency.
-2. ~~A decision on the Rust SDK~~ — **decided: make it real.** It compiles (`cargo check` clean from `%USERPROFILE%\.cargo\bin`), clippy is clean, and it now has 13 tests after two defects were found and fixed.
-3. **Nothing else.** The rest is ours to execute.
-
-1. **A10 access, booked for Nov 16–20.** Without it there is no recorded demo and gate 4 cannot pass. This is the single hardest dependency.
-2. ~~A decision on the Rust SDK~~ — **decided: make it real.** Done to the point of compiling, tested and clippy-clean; CI job already exists. The vscode-extension job is still red and is a separate question.
+2. ~~A decision on the Rust SDK~~ — **decided: make it real.** It compiles (`cargo check` clean from `%USERPROFILE%\.cargo\bin`), clippy is clean, and it now has 13 tests after two defects were found and fixed. The vscode-extension CI job is still red and is a separate question.
 3. **Nothing else.** The rest is ours to execute.
