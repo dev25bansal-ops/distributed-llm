@@ -39,7 +39,7 @@ class Defragmentable(Protocol):
     def set_free_blocks(self, free_ids: list[int]) -> None:
         ...
 
-    def acquire_lock(self) -> Any:
+    def acquire_lock(self, timeout: float | None = None) -> Any:
         ...
 
     def release_lock(self) -> None:
@@ -212,8 +212,19 @@ class PagedAttentionManager:
     def set_free_blocks(self, free_ids: list[int]) -> None:
         self._free_blocks = free_ids
 
-    def acquire_lock(self) -> threading.RLock:
-        self._lock.acquire()
+    def acquire_lock(self, timeout: float | None = None) -> threading.RLock:
+        """Take the allocator lock and return it.
+
+        ``timeout`` bounds the wait, in seconds. It is optional so existing
+        ``acquire_lock()`` callers keep their blocking behaviour, but a caller
+        that must not hang — the concurrent defrag stress test drives alloc and
+        free from several threads — can pass one instead of deadlocking.
+        Raises ``TimeoutError`` when the lock is not acquired in time.
+        """
+        if not self._lock.acquire(timeout=-1 if timeout is None else timeout):
+            raise TimeoutError(
+                f"could not acquire the paged-attention lock within {timeout}s"
+            )
         return self._lock
 
     def release_lock(self) -> None:
