@@ -8,7 +8,7 @@ spec:
     spec:
       containers:
         - name: coordinator
-          image: ghcr.io/distributed-llm/coordinator:0.4.0
+          image: ghcr.io/distributed-llm/coordinator:0.4.1
           resources:
             requests:
               cpu: 2
@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/distributed-llm/coordinator:0.4.0
+          image: ghcr.io/distributed-llm/coordinator:0.4.1
           resources:
             requests:
               cpu: 1

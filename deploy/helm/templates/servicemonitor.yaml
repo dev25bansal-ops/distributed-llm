@@ -9,13 +9,10 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+      app.kubernetes.io/component: coordinator
   endpoints:
-    - port: coordinator-metrics
+    - port: api
       path: /metrics
       interval: 30s
       scrapeTimeout: 10s
-    - port: worker-metrics
-      path: /metrics
-      interval: 15s
-      scrapeTimeout: 5s
 {{- end }}

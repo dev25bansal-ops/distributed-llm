@@ -143,11 +143,8 @@ RUN chmod +x /app/docker-entrypoint.sh
 USER distllm
 
 # Default env for deployment
-ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
-ENV DISTLLM_START_LAYER=0
-ENV DISTLLM_END_LAYER=3
-ENV DISTLLM_TOTAL_LAYERS=8
+ENV DISTLLM_MODEL__NAME=meta-llama/Llama-3.2-1B
+ENV DISTLLM_MODEL__DTYPE=float16
 # A container must listen on all interfaces; the library default is
 # localhost, which is unreachable through a published port.
 ENV DISTLLM_COORDINATOR__HOST=0.0.0.0

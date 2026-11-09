@@ -84,9 +84,20 @@ tls:
 # ── Model configuration (required by coordinator template) ─────────────
 
 model:
-  # Must be set by the user; an empty name renders DISTLLM_MODEL empty.
+  # Must be set by the user; an empty name renders DISTLLM_MODEL__NAME empty
+  # and `--model` empty on workers. Set with --set model.name=<hf-id>.
   name: ""
   dtype: "float16"
+
+# ── Worker pipeline partition ──────────────────────────────────────────
+# distllm-node requires --start-layer/--end-layer/--total-layers. Every
+# worker replica receives the SAME range below; the coordinator assigns
+# pipeline stages dynamically. Set these to match your model's layer count
+# (the 32-layer default matches the Llama-2-7b defaults in the compose files).
+worker:
+  startLayer: 0
+  endLayer: 31
+  totalLayers: 32
 
 # ── HPA configuration (required by hpa.yaml template) ─────────────────
 

@@ -23,20 +23,19 @@ x-common: &common
     - distllm-net
 
 services:
-  # ── Coordinator ──────────────────────────────────────────────────
+  # ── Coordinator (REST API + coordinator gRPC) ────────────────────
   coordinator:
     <<: *common
     container_name: distllm-coordinator
     command: >
-      distllm system coordinator
+      distllm-api
         --host 0.0.0.0
-        --port 50050
+        --port 8000
         --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
         --total-layers ${TOTAL_LAYERS:-32}
     ports:
       - "50050:50050"  # gRPC
-      - "8000:8000"    # REST API
-      - "9090:9090"    # Metrics
+      - "8000:8000"    # REST API + /metrics
     volumes:
       - model-cache:/root/.cache/huggingface
       - ./config.yaml:/app/config.yaml:ro
@@ -51,22 +50,32 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
 
   # ── GPU Workers (scalable) ───────────────────────────────────────
+  # `--scale worker=N` gives each replica a distinct container hostname;
+  # Compose interpolates ${HOSTNAME} per container so node IDs stay unique.
+  # START_LAYER/END_LAYER/TOTAL_LAYERS must describe the same contiguous
+  # pipeline split across all replicas (set them in .env for your topo).
   worker:
     <<: *common
     command: >
-      distllm system worker
-        --coordinator coordinator:50050
+      distllm-node
+        --node-id ${HOSTNAME:-worker}
+        --coordinator-host coordinator
+        --coordinator-port 50050
         --port 50051
         --model ${MODEL_NAME:-meta-llama/Llama-2-7b-hf}
+        --start-layer ${START_LAYER:-0}
+        --end-layer ${END_LAYER:-15}
+        --total-layers ${TOTAL_LAYERS:-32}
         --device cuda
         --dtype ${DTYPE:-float16}
+        --insecure
     volumes:
       - model-cache:/root/.cache/huggingface
     environment:
@@ -97,7 +106,7 @@ services:
     ports:
       - "9091:9090"
     volumes:
-      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/prometheus/config.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     networks:
       - distllm-net

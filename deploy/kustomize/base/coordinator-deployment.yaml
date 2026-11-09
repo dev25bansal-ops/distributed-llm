@@ -31,7 +31,7 @@ spec:
           emptyDir: {}
       containers:
         - name: coordinator
-          image: ghcr.io/distributed-llm/coordinator:0.4.0
+          image: ghcr.io/distributed-llm/coordinator:0.4.1
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -43,8 +43,6 @@ spec:
               name: grpc
             - containerPort: 8000
               name: api
-            - containerPort: 9091
-              name: metrics
           volumeMounts:
             - name: config
               mountPath: /etc/distllm/config
@@ -52,16 +50,33 @@ spec:
             - name: cache-storage
               mountPath: /var/cache/distllm
           env:
-            - name: DISTLLM_MODEL
+            # The image entrypoint routes on DISTLLM_ROLE; "api" runs
+            # distllm-api, which serves /live /ready /metrics (the ports
+            # probed below) and also starts the coordinator gRPC server on
+            # 50050 for worker registration.
+            - name: DISTLLM_ROLE
+              value: api
+            - name: DISTLLM_MODEL__NAME
               valueFrom:
                 configMapKeyRef:
                   name: distllm-config
-                  key: DISTLLM_MODEL
-            - name: DISTLLM_DTYPE
+                  key: DISTLLM_MODEL__NAME
+            - name: DISTLLM_MODEL__DTYPE
               valueFrom:
                 configMapKeyRef:
                   name: distllm-config
-                  key: DISTLLM_DTYPE
+                  key: DISTLLM_MODEL__DTYPE
+            - name: DISTLLM_COORDINATOR__HOST
+              value: "0.0.0.0"
+            - name: DISTLLM_COORDINATOR__API_PORT
+              value: "8000"
+            # Workers fail closed without a cluster key (node_service.py:199).
+            - name: DISTLLM_CLUSTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: distllm-cluster-key
+                  key: cluster-key
+                  optional: true
           resources:
             requests:
               cpu: 2
@@ -111,6 +126,5 @@ spec:
     - name: api
       port: 8000
       targetPort: 8000
-    - name: metrics
-      port: 9091
-      targetPort: 9091
+    # /metrics is served by the same uvicorn app on the api port; there is
+    # no separate 9091 listener, so ServiceMonitor scrapes the "api" port.

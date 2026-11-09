@@ -21,7 +21,7 @@ webhooks:
         apiVersions: ["v1"]
         operations: ["UPDATE"]
         resources: ["customresourcedefinitions"]
-  - name: validate-cluster.distllm.io
+  - name: validate-cluster.distllm.zeroroute.ai
     admissionReviewVersions: ["v1"]
     sideEffects: None
     failurePolicy: Ignore
@@ -33,7 +33,10 @@ webhooks:
         path: /validate-cluster
         port: 443
     rules:
-      - apiGroups: ["distllm.io"]
+      # Must match the CRD group/plural exactly, or the rule never fires:
+      # deploy/crds defines group distllm.zeroroute.ai, kind
+      # DistributedLLMCluster (plural distributedllmclusters).
+      - apiGroups: ["distllm.zeroroute.ai"]
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["distllmclusters"]
+        resources: ["distributedllmclusters"]
