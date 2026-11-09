@@ -15,10 +15,17 @@ extra exists and pulls in the ML dependencies that were missing in CI.
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
+
+# tomllib is stdlib only from 3.11; this project supports 3.10, where CI has
+# tomli available via pytest's own dependencies but nothing guarantees it.
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on the 3.10 matrix jobs
+    pytest.importorskip("tomli", reason="tomllib and tomli both unavailable")
+    import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]  # this file is in tests/ -> repo root
 
