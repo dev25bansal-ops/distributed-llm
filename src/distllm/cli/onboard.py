@@ -449,6 +449,36 @@ WELCOME_ART = r"""
 """
 
 
+def _print_join_guidance(console: Console, coordinator_port: int) -> None:
+    """Print the "join additional nodes" panel and rule."""
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+    except OSError:
+        ip = "127.0.0.1"
+
+    join_cmd = f"distllm cluster join --coordinator {ip}:{coordinator_port}"
+
+    console.print(
+        Panel(
+            f"[bold]Join Additional Nodes[/bold]\n\n"
+            f"To add more GPU-equipped machines to your cluster, run this command "
+            f"on each machine:\n\n"
+            f"  [bold cyan]{join_cmd}[/bold cyan]\n\n"
+            f"The coordinator will automatically assign model layers to each "
+            f"worker based on available memory.\n\n"
+            f"[dim]Tip:[/dim] If you are on the same LAN, try auto-discovery:\n"
+            f"  [bold cyan]distllm cluster join --discover[/bold cyan]",
+            title="Scaling Your Cluster",
+            border_style="blue",
+        )
+    )
+    console.print()
+
+
 def run_onboard(
     config_path: str | None = None,
     console: Console | None = None,
@@ -653,10 +683,13 @@ def run_onboard(
         default=True,
     )
 
+    coordinator_started = False
+
     if start_now:
         console.print()
         console.print("[yellow]Starting coordinator...[/yellow]")
         try:
+            from distllm.cli.coordinator_serve import start_coordinator
             from distllm.core.coordinator import Coordinator
 
             c = Coordinator(
@@ -676,11 +709,20 @@ def run_onboard(
                         "Will start coordinator and wait for remote workers.[/yellow]"
                     )
 
-            c.start()
-            console.print(
-                f"[green]Coordinator started on port {coordinator_port}.\n"
-                f"API available at http://localhost:{api_port}.[/green]"
-            )
+            # Start non-blocking; the wizard still has guidance to print
+            # below, so the blocking wait happens after the farewell —
+            # Ctrl+C stops the coordinator and exits.
+            start_rc = start_coordinator(c)
+            if start_rc is None:
+                coordinator_started = True
+                console.print(
+                    f"[green]Coordinator started on port {coordinator_port}.\n"
+                    f"API available at http://localhost:{api_port}.[/green]"
+                )
+            else:
+                console.print(
+                    f"[red]Coordinator failed to start (exit code {start_rc}).[/red]"
+                )
         except ImportError as exc:
             console.print(
                 f"[red]Could not start coordinator: {exc}\n"
@@ -695,41 +737,41 @@ def run_onboard(
                 f'"{selected_model["id"]}" --port {coordinator_port}[/bold][/red]'
             )
 
-    # ── Guide for joining additional nodes ──────────────────────────────────
-    console.print()
-    console.print(Rule(style="dim"))
-    console.print()
-
+    # ── Guide for joining additional nodes + farewell, then serve ───────────
+    # Everything after the coordinator starts is under one KeyboardInterrupt
+    # guard: a Ctrl+C during the guidance or the blocking wait stops the
+    # coordinator cleanly instead of dying with a traceback.
     try:
-        ip = socket.gethostbyname(socket.gethostname())
-    except OSError:
-        ip = "127.0.0.1"
+        _print_join_guidance(console=console, coordinator_port=coordinator_port)
 
-    join_cmd = f"distllm cluster join --coordinator {ip}:{coordinator_port}"
-
-    console.print(
-        Panel(
-            f"[bold]Join Additional Nodes[/bold]\n\n"
-            f"To add more GPU-equipped machines to your cluster, run this command "
-            f"on each machine:\n\n"
-            f"  [bold cyan]{join_cmd}[/bold cyan]\n\n"
-            f"The coordinator will automatically assign model layers to each "
-            f"worker based on available memory.\n\n"
-            f"[dim]Tip:[/dim] If you are on the same LAN, try auto-discovery:\n"
-            f"  [bold cyan]distllm cluster join --discover[/bold cyan]",
-            title="Scaling Your Cluster",
-            border_style="blue",
+        # ── Farewell ────────────────────────────────────────────────────────
+        console.print()
+        console.print(
+            "[bold green]Setup complete.[/bold green] "
+            "Your DistLLM cluster is ready. "
+            "Run [bold]distllm --help[/bold] to explore all commands.\n"
         )
-    )
-    console.print()
 
-    # ── Farewell ────────────────────────────────────────────────────────────
-    console.print()
-    console.print(
-        "[bold green]Setup complete.[/bold green] "
-        "Your DistLLM cluster is ready. "
-        "Run [bold]distllm --help[/bold] to explore all commands.\n"
-    )
+        # ── Keep serving (blocking) ─────────────────────────────────────────
+        # The coordinator was started non-blocking above; now that all
+        # guidance is printed, stay in the foreground until Ctrl+C so the
+        # process does not exit out from under a coordinator it brought up.
+        if coordinator_started:
+            from distllm.cli.coordinator_serve import wait_and_shutdown
+
+            console.print(
+                f"[dim]Coordinator is serving on port {coordinator_port}. "
+                "Press Ctrl+C to stop it.[/dim]"
+            )
+            wait_and_shutdown(c)
+    except KeyboardInterrupt:
+        if coordinator_started:
+            from distllm.cli.coordinator_serve import shutdown_coordinator
+
+            console.print("\n[yellow]Interrupted — stopping coordinator.[/yellow]")
+            shutdown_coordinator(c)
+        else:
+            console.print()
 
 
 def main() -> None:

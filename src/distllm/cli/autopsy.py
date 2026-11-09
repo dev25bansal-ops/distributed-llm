@@ -92,10 +92,27 @@ def collect_autopsy(
         # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["metrics"] = {"error": str(e)}
 
-    # 3. Node list
+    # 3. Node list (filtered to --nodes when the caller asked for specific
+    #    nodes; the flag used to be parsed at the argparse entry point and
+    #    then silently dropped)
+    if nodes:
+        data["requested_nodes"] = list(nodes)
     try:
         resp = httpx.get(f"{base_url}/api/cluster/nodes", timeout=5)
-        data["nodes"] = resp.json()
+        node_data = resp.json()
+        if nodes:
+            node_list = node_data.get("nodes") if isinstance(node_data, dict) else node_data
+            if isinstance(node_list, list):
+                wanted = set(nodes)
+                filtered = [
+                    n for n in node_list
+                    if isinstance(n, dict) and str(n.get("node_id")) in wanted
+                ]
+                if isinstance(node_data, dict):
+                    node_data = {**node_data, "nodes": filtered}
+                else:
+                    node_data = filtered
+        data["nodes"] = node_data
     except Exception as e:
         # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["nodes"] = {"error": str(e)}

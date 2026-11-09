@@ -1035,16 +1035,21 @@ def logs_stream(
 @model_app.command("compress")
 def model_compress(
     model: str = typer.Option(..., "--model", "-m", help="Model name or HuggingFace path"),
-    target: str = typer.Option("int4", "--target", "-t", help="Target precision (int4, int8, int4-awq, int4-gptq)"),
-    output: str = typer.Option("./compressed", "--output", "-o", help="Output directory for compressed model"),
+    target: str = typer.Option("int4", "--target", "-t", help="Target precision: fp16, fp32 (dtype cast). int8/int4/int4-awq/int4-gptq are rejected — no quantization pipeline in this build"),
+    output: str = typer.Option("./compressed", "--output", "-o", help="Output directory for the converted model"),
     tokenizer: str | None = typer.Option(None, "--tokenizer", help="Tokenizer name/path (defaults to model)"),
-    prune_ratio: float = typer.Option(0.0, "--prune", "-p", help="Structured pruning ratio (0.0-1.0)"),
-    calibration_samples: int = typer.Option(128, "--calibration-samples", help="Calibration samples for PTQ"),
-    method: str = typer.Option("awq", "--method", help="Quantization method (awq, gptq)"),
+    prune_ratio: float = typer.Option(0.0, "--prune", "-p", help="Ignored — pruning is not available in this build"),
+    calibration_samples: int = typer.Option(128, "--calibration-samples", help="Ignored — casting needs no calibration"),
+    method: str = typer.Option("none", "--method", help="Quantization method (awq, gptq). Both are rejected — no quantization pipeline in this build"),
     local: bool = typer.Option(True, "--local", "-l", help="Run in local mode (no cluster)"),
     trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="Allow loading remote code from HuggingFace models (security risk)"),
 ):
-    """Compress a model (AWQ/GPTQ INT4, INT8, pruning) and save to disk."""
+    """Cast a model to fp16/fp32 and save it to disk.
+
+    Quantized targets (int8, int4, int4-awq, int4-gptq) and AWQ/GPTQ methods
+    exit non-zero before downloading anything: the compression pipeline does
+    not exist in this build.
+    """
     from distllm.cli.compress import run_compress
     run_compress(
         model_name=model,
@@ -1450,6 +1455,7 @@ def system_coordinator(
     """Start the coordinator facade for distributed inference."""
     from loguru import logger
 
+    from distllm.cli.coordinator_serve import serve_coordinator
     from distllm.core.coordinator import Coordinator
     from distllm.core.debug import set_debug_mode
 
@@ -1475,9 +1481,9 @@ def system_coordinator(
                 result = c.generate(prompt, max_new_tokens=128)
                 print(f"\nResult: {result}")
         else:
-            c.start()
+            raise typer.Exit(serve_coordinator(c))
     else:
-        c.start()
+        raise typer.Exit(serve_coordinator(c))
 
 
 @system_app.command("api")
@@ -1894,7 +1900,7 @@ def system_observe(
         distllm system observe --dashboard-port 3000    # Custom port
     """
     from distllm.cli.observe import run_observe
-    run_observe(
+    raise typer.Exit(run_observe(
         coordinator_url=coordinator_url,
         metrics_port=metrics_port,
         dashboard_port=dashboard_port,
@@ -1902,7 +1908,7 @@ def system_observe(
         prometheus_url=prometheus_url,
         metrics_only=metrics_only,
         console=console,
-    )
+    ))
 
 
 # ── Tune command group ──────────────────────────────────────────────────

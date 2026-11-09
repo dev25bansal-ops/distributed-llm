@@ -30,7 +30,10 @@ def run_inference(
     console.print("\n[bold blue]Starting DistLLM Inference[/bold blue]")
     console.print(f"Model: {model}")
     console.print(f"Mode: {'Local' if local else 'Distributed'}")
-    console.print(f"Port: {port}\n")
+    if prompt is None:
+        console.print(f"Port: {port}\n")
+    else:
+        console.print()
 
     try:
         # Load config if provided
@@ -39,6 +42,33 @@ def run_inference(
                 cfg = yaml.safe_load(f) or {}
             model = cfg.get("model", {}).get("name", model)
             dtype = cfg.get("model", {}).get("dtype", dtype)
+
+        if prompt is not None:
+            # Single-shot non-interactive mode (--prompt): load, generate once,
+            # print the completion, and return without starting uvicorn.
+            # Unlike server mode below, load/generation failures here are fatal:
+            # there is no server left to serve, so a swallowed error would exit 0
+            # with no output and look like success.
+            try:
+                coordinator = create_coordinator(
+                    model_name=model, dtype=dtype, local=local
+                )
+            except Exception as e:
+                console.print(f"[red]Error:[/red] failed to load model/coordinator: {e}")
+                raise SystemExit(1) from e
+
+            try:
+                completion = coordinator.generate(
+                    prompt, max_new_tokens=max_tokens, temperature=temperature
+                )
+            except Exception as e:
+                console.print(f"[red]Error:[/red] generation failed: {e}")
+                raise SystemExit(1) from e
+
+            console.print("[bold]Completion:[/bold]")
+            # markup/highlight off: completion text is model output, not Rich markup
+            console.print(str(completion), markup=False, highlight=False)
+            return
 
         # Create coordinator (best effort: a failed model load must not take
         # down the API server, which can still serve health/docs/routes)

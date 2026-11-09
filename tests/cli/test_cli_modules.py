@@ -332,33 +332,74 @@ class TestCliCert:
 
 
 class TestCliCompress:
-    """Tests for distllm.cli.compress — run_compress."""
+    """Tests for distllm.cli.compress — run_compress.
+
+    This build has no quantization pipeline (legacy AWQ/GPTQ/INT8/INT4
+    modules were removed). Quantized targets must fail fast, before any
+    download, and must never save an unquantized copy under a path that
+    implies compression. Only fp16/fp32 dtype casting is implemented.
+    """
 
     @patch("distllm.cli.compress.AutoModelForCausalLM")
     @patch("distllm.cli.compress.AutoTokenizer")
-    def test_run_compress_happy_path(self, mock_tok_cls, mock_model_cls):
+    def test_run_compress_int8_rejected_without_saving(self, mock_tok_cls, mock_model_cls):
+        """int8 used to silently save the model as-is; now it must exit 1.
+
+        Catches the old behaviour via pytest.raises(SystemExit): the old
+        code returned normally after save_pretrained().
+        """
         from distllm.cli.compress import run_compress
 
-        mock_model = MagicMock()
-        mock_model_cls.from_pretrained.return_value = mock_model
-        mock_tok = MagicMock()
-        mock_tok.pad_token = None
-        mock_tok.eos_token = "<eos>"
-        mock_tok_cls.from_pretrained.return_value = mock_tok
-
         console = MagicMock()
-        with patch("pathlib.Path.mkdir"):
+        with pytest.raises(SystemExit) as exc:
             run_compress("test-model", "int8", "/tmp/out", None,
                          0.0, 10, "awq", False, console)
 
-        mock_model_cls.from_pretrained.assert_called_once()
-        mock_tok_cls.from_pretrained.assert_called_once()
-        mock_model.save_pretrained.assert_called_once()
-        mock_tok.save_pretrained.assert_called_once()
+        assert exc.value.code == 1
+        mock_model_cls.from_pretrained.assert_not_called()
+        mock_tok_cls.from_pretrained.assert_not_called()
+
+    def test_run_compress_int8_fails_before_model_download(self, tmp_path):
+        """The rejection must fire before from_pretrained (no download, no dir).
+
+        Old code called AutoModelForCausalLM.from_pretrained and created the
+        output directory, so both assertions below fail on it.
+        """
+        from distllm.cli.compress import run_compress
+
+        out_dir = tmp_path / "compressed-int8"
+        console = MagicMock()
+        with patch("distllm.cli.compress.AutoModelForCausalLM") as mock_model_cls:
+            with pytest.raises(SystemExit) as exc:
+                run_compress("test-model", "int8", str(out_dir), None,
+                             0.0, 10, "awq", False, console)
+        assert exc.value.code == 1
+        mock_model_cls.from_pretrained.assert_not_called()
+        assert not out_dir.exists()
+
+    @pytest.mark.parametrize("target,method", [
+        ("int4", "none"),
+        ("int4-awq", "none"),
+        ("int4-gptq", "none"),
+        ("fp16", "awq"),
+        ("fp16", "gptq"),
+    ])
+    def test_run_compress_quantization_paths_rejected(self, target, method, tmp_path):
+        from distllm.cli.compress import run_compress
+
+        console = MagicMock()
+        with patch("distllm.cli.compress.AutoModelForCausalLM") as mock_model_cls:
+            with pytest.raises(SystemExit) as exc:
+                run_compress("test-model", target, str(tmp_path / "out"), None,
+                             0.0, 10, method, False, console)
+        assert exc.value.code == 1
+        mock_model_cls.from_pretrained.assert_not_called()
 
     @patch("distllm.cli.compress.AutoModelForCausalLM")
     @patch("distllm.cli.compress.AutoTokenizer")
-    def test_run_compress_fp32(self, mock_tok_cls, mock_model_cls):
+    def test_run_compress_fp32(self, mock_tok_cls, mock_model_cls, tmp_path):
+        import torch
+
         from distllm.cli.compress import run_compress
 
         mock_model = MagicMock()
@@ -368,10 +409,43 @@ class TestCliCompress:
         mock_tok.eos_token = "<eos>"
         mock_tok_cls.from_pretrained.return_value = mock_tok
 
+        out_dir = str(tmp_path / "cast-fp32")
         console = MagicMock()
-        with patch("pathlib.Path.mkdir"):
-            run_compress("test-model", "fp32", "/tmp/out", "tok-name",
-                         0.0, 5, "none", True, console)
+        run_compress("test-model", "fp32", out_dir, "tok-name",
+                     0.0, 5, "none", True, console)
+
+        kwargs = mock_model_cls.from_pretrained.call_args.kwargs
+        assert kwargs["torch_dtype"] is torch.float32
+        mock_model.save_pretrained.assert_called_once_with(out_dir)
+        mock_tok.save_pretrained.assert_called_once_with(out_dir)
+
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
+        # Honest messaging: a cast, not compression.
+        assert "ompression pipeline" not in printed
+        assert "Casting" in printed
+
+    @patch("distllm.cli.compress.AutoModelForCausalLM")
+    @patch("distllm.cli.compress.AutoTokenizer")
+    def test_run_compress_fp16_casts_and_saves(self, mock_tok_cls, mock_model_cls, tmp_path):
+        import torch
+
+        from distllm.cli.compress import run_compress
+
+        mock_model = MagicMock()
+        mock_model_cls.from_pretrained.return_value = mock_model
+        mock_tok = MagicMock()
+        mock_tok.pad_token = None
+        mock_tok.eos_token = "<eos>"
+        mock_tok_cls.from_pretrained.return_value = mock_tok
+
+        out_dir = str(tmp_path / "cast-fp16")
+        console = MagicMock()
+        run_compress("test-model", "fp16", out_dir, None,
+                     0.0, 5, "none", False, console)
+
+        kwargs = mock_model_cls.from_pretrained.call_args.kwargs
+        assert kwargs["torch_dtype"] is torch.float16
+        mock_model.save_pretrained.assert_called_once_with(out_dir)
 
     def test_run_compress_invalid_target(self):
         from distllm.cli.compress import run_compress
