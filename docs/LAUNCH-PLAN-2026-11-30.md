@@ -76,6 +76,18 @@ We launch when all five are true. Not four.
 
 If a gate cannot be met, we ship a smaller product that meets all five, not a larger one that meets four.
 
+### Gate status, 2026-11-10 04:55
+
+| Gate | State | Evidence |
+|---|---|---|
+| 1. Master green / reds quarantined | **in progress, much closer** | api 1351/0, core 5817/10, dist 6287/8, real-import 240/240. All 18 local reds are environmental (no CUDA). CI still has toolchain reds: terraform, k8s, container, crewai, fuzz, chaos. |
+| 2. Release published | **near** | index already serves 0.6.2.2 matching the repo; clean-venv gate script exists and runs |
+| 3. Site tells the truth | **largely done** | fabricated customers/outcomes removed; claims audited |
+| 4. Real end-to-end demo on hardware | **blocked** | no GPU on this machine; needs the user's A10, Nov 16–20 |
+| 5. A stranger can install and use it | **partly** | `[cli]` path verified working; the bare-install traceback is fixed; the `[self-hosted]` server path needs one clean-venv run |
+
+Gate 5 is the one to keep hammering, because it is cheap to test and it is what a launch actually means. Gate 4 is the only one that cannot be moved from here.
+
 ---
 
 ## 3. The cut list — what we are NOT doing before launch
