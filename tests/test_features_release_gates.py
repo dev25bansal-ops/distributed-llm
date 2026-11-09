@@ -269,8 +269,22 @@ def test_torch_load_weights_only_gate():
                 continue
             for m in re.finditer(r"torch\.load\(", text):
                 line = text[: m.start()].count("\n")
-                snippet = text.splitlines()[line]
-                if "weights_only" not in snippet:
+                # Scan the whole call, not just the line it starts on: a call
+                # written across several lines (the common style) has its
+                # weights_only argument on a later line, and a single-line
+                # check reports it as unsafe when it is not.
+                depth, i = 0, m.end() - 1
+                while i < len(text):
+                    if text[i] == "(":
+                        depth += 1
+                    elif text[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    i += 1
+                call = text[m.start(): i + 1]
+                if "weights_only" not in call:
+                    snippet = text.splitlines()[line]
                     offenders.append(f"{p}:{line + 1}: {snippet.strip()}")
     assert not offenders, "torch.load without weights_only=True:\n" + "\n".join(offenders)
 

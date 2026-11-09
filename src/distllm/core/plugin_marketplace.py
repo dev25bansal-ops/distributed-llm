@@ -94,9 +94,15 @@ class PluginMarketplace:
         self,
         plugin_dirs: list[str] | None = None,
         enable_pypi: bool = True,
+        public_key_pem: bytes | None = None,
     ):
         self._plugin_dirs = plugin_dirs or []
         self._enable_pypi = enable_pypi
+        # Optional trusted signing key. When set, a plugin must present a
+        # manifest whose signature verifies against it. When unset, signature
+        # verification is unavailable and _verify_plugin_manifest fails closed
+        # rather than pretending the plugin is trusted.
+        self._public_key_pem = public_key_pem
         self._registry: dict[str, PluginEntry] = {}
         self._sampling_strategies: dict[str, SamplingStrategy] = {}
         self._routing_strategies: dict[str, RoutingStrategy] = {}
@@ -194,6 +200,44 @@ class PluginMarketplace:
         return discovered
 
     # ── Installation ──────────────────────────────────────────────────────
+
+    def _verify_plugin_manifest(self, plugin_name: str) -> tuple[bool, str]:
+        """Verify a plugin's signed manifest against the trusted key.
+
+        Fail-closed by design: returns (False, reason) when there is no trusted
+        key, no manifest on disk, or the signature does not verify. Callers must
+        treat anything other than (True, ...) as "do not load this plugin".
+        """
+        import json
+        from pathlib import Path
+
+        from distllm.core.plugin_sandbox import PluginManifest, verify_manifest
+
+        if not self._public_key_pem:
+            return False, "no trusted signing key configured"
+
+        manifest_path = None
+        for d in self._plugin_dirs:
+            candidate = Path(d) / f"{plugin_name}.manifest.json"
+            if candidate.is_file():
+                manifest_path = candidate
+                break
+        if manifest_path is None:
+            return False, f"no manifest found for '{plugin_name}'"
+
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = PluginManifest(**data)
+        except Exception as e:  # malformed manifest is untrusted, not an error to swallow
+            return False, f"unreadable manifest: {e}"
+
+        try:
+            if not verify_manifest(manifest, self._public_key_pem):
+                return False, "signature does not verify"
+        except Exception as e:
+            return False, f"verification failed: {e}"
+
+        return True, "signature verified"
 
     def install(self, plugin_name: str, upgrade: bool = False) -> bool:
         """Install a plugin from PyPI.
