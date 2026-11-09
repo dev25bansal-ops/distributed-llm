@@ -27,9 +27,18 @@ if _INTEGRATIONS_DIR not in sys.path:
 # An editable install of this integration may point at a *different* checkout
 # (e.g. the main repo while the suite runs from a git worktree). site-packages
 # precedes PYTHONPATH, so force this checkout's source to win.
-_THIS_SRC = os.path.join(os.path.dirname(_INTEGRATIONS_DIR), "langchain", "src")
-if os.path.isdir(_THIS_SRC) and sys.path[0] != _THIS_SRC:
-    sys.path.insert(0, _THIS_SRC)
+# _INTEGRATIONS_DIR is already the integrations/ folder, so the source lives
+# directly beneath it -- joining another dirname() here yields a path that
+# does not exist and the guard below silently does nothing.
+# The sibling llamaindex source is added too: test_string_chunks.py contains
+# cross-framework cases that import distllm_llamaindex, and that package has
+# the same stale-editable-install shadowing problem.
+for _pkg in ("langchain", "llamaindex"):
+    _src = os.path.join(_INTEGRATIONS_DIR, _pkg, "src")
+    if os.path.isdir(_src):
+        while _src in sys.path:
+            sys.path.remove(_src)
+        sys.path.insert(0, _src)
 
 from langchain_core.callbacks import CallbackManagerForLLMRun  # noqa: E402
 

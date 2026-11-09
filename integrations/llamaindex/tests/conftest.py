@@ -12,9 +12,14 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))            # integrations/llamaindex/tests
 _INTEGRATIONS_DIR = os.path.dirname(os.path.dirname(_HERE))  # integrations/
-_THIS_SRC = os.path.join(os.path.dirname(_INTEGRATIONS_DIR), "llamaindex", "src")
+# _INTEGRATIONS_DIR is already the integrations/ folder, so the source lives
+# directly beneath it. An extra dirname() here yields a nonexistent path and
+# the isdir() guard below then silently imports the shadowing install instead.
+_THIS_SRC = os.path.join(_INTEGRATIONS_DIR, "llamaindex", "src")
 
-if os.path.isdir(_THIS_SRC) and sys.path[0] != _THIS_SRC:
+if os.path.isdir(_THIS_SRC):
+    while _THIS_SRC in sys.path:
+        sys.path.remove(_THIS_SRC)
     sys.path.insert(0, _THIS_SRC)
 if _INTEGRATIONS_DIR not in sys.path:
     sys.path.insert(1, _INTEGRATIONS_DIR)
