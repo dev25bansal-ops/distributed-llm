@@ -114,66 +114,39 @@
             <h1>System Status</h1>
             <p class="subtitle">Real-time status of DistLLM managed services.</p>
 
-            <div class="overall">
-                <span class="overall-dot"></span>
-                <span class="overall-text">All Systems Operational</span>
-                <div class="overall-sub">Last updated: 2 minutes ago</div>
+            <div class="overall" style="border-color:var(--border)">
+                <span class="overall-dot" style="background:var(--dim)"></span>
+                <span class="overall-text">No managed service is running</span>
+                <div class="overall-sub">This page is a template, not a live monitor.</div>
             </div>
 
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">API Server</div><div class="service-desc">chat/completions, embeddings, models</div></div>
-                </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">99.99%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px" title="Day 1: 100%"></div><div class="day" style="height:20px" title="Day 2: 100%"></div><div class="day" style="height:20px" title="Day 3: 100%"></div><div class="day" style="height:20px" title="Day 4: 100%"></div><div class="day" style="height:20px" title="Day 5: 100%"></div><div class="day" style="height:20px" title="Day 6: 100%"></div><div class="day" style="height:20px" title="Day 7: 100%"></div><div class="day" style="height:20px" title="Day 8: 100%"></div><div class="day" style="height:20px" title="Day 9: 100%"></div><div class="day" style="height:20px" title="Day 10: 100%"></div><div class="day" style="height:20px" title="Day 11: 100%"></div><div class="day" style="height:20px" title="Day 12: 100%"></div><div class="day" style="height:20px" title="Day 13: 100%"></div><div class="day" style="height:20px" title="Day 14: 100%"></div><div class="day" style="height:20px" title="Day 15: 100%"></div><div class="day" style="height:20px" title="Day 16: 100%"></div><div class="day" style="height:20px" title="Day 17: 100%"></div><div class="day" style="height:20px" title="Day 18: 100%"></div><div class="day" style="height:20px" title="Day 19: 100%"></div><div class="day" style="height:20px" title="Day 20: 100%"></div><div class="day" style="height:20px" title="Day 21: 100%"></div><div class="day" style="height:20px" title="Day 22: 100%"></div><div class="day" style="height:20px" title="Day 23: 100%"></div><div class="day" style="height:20px" title="Day 24: 100%"></div><div class="day" style="height:20px" title="Day 25: 100%"></div><div class="day" style="height:20px" title="Day 26: 100%"></div><div class="day" style="height:20px" title="Day 27: 100%"></div><div class="day" style="height:20px" title="Day 28: 100%"></div><div class="day" style="height:20px" title="Day 29: 100%"></div><div class="day" style="height:20px" title="Day 30: 100%"></div></div>
-                </div>
+            <div class="note" style="border-left:3px solid var(--amber);margin:24px 0 32px">
+                <strong>Why this page looks like this.</strong> DistLLM is free, open source software you run yourself. We do not operate a hosted service, so there is no uptime to report and no status to monitor from our side. This page previously displayed uptime figures and service states that were not measured against anything; we removed them rather than show numbers we cannot stand behind.
             </div>
 
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">Coordinator</div><div class="service-desc">Cluster management, scheduling, routing</div></div>
+            <h2>Checking your own deployment</h2>
+            <p class="sec-p">If you run DistLLM, you can observe your own cluster rather than relying on this page:</p>
+            <div class="method-grid">
+                <div class="method-card">
+                    <h3>Health endpoints</h3>
+                    <p><code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/health</code>, <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/ready</code> and <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/live</code> report real state from your own coordinator.</p>
                 </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">99.98%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div></div>
+                <div class="method-card">
+                    <h3>Metrics</h3>
+                    <p><code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/metrics</code> exposes Prometheus counters you can scrape and alert on yourself.</p>
                 </div>
-            </div>
-
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">Workers</div><div class="service-desc">GPU inference, model execution</div></div>
-                </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">99.97%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div></div>
-                </div>
-            </div>
-
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">Monitoring</div><div class="service-desc">Prometheus, Grafana, alerting</div></div>
-                </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">100%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div></div>
+                <div class="method-card">
+                    <h3>CLI</h3>
+                    <p><code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">distllm cluster status</code> prints the live node list and model state for your pool.</p>
                 </div>
             </div>
 
             <div class="incident">
-                <h2>Recent Incidents</h2>
+                <h2>Incidents that affect you</h2>
                 <div class="incident-item">
-                    <h3>No recent incidents</h3>
-                    <p>All services have been operating normally for the past 30 days.</p>
-                    <span class="time">Updated 2026-06-03 00:00 UTC</span>
+                    <h3>Reported on GitHub</h3>
+                    <p>Since distribution and operation are yours, regressions are tracked in the repository's issue tracker rather than here. That is the honest source of truth for what is broken and what was fixed.</p>
+                    <span class="time">Open issues: <a href="https://github.com/dev25bansal-ops/distributed-llm/issues" target="_blank" rel="noopener noreferrer" style="color:var(--green)">github.com/dev25bansal-ops/distributed-llm/issues</a></span>
                 </div>
             </div>
         </div>

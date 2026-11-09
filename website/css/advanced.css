@@ -1216,7 +1216,7 @@
 .terminal-body { padding: 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; overflow-x: auto; }
 .terminal-line { margin-bottom: 4px; }
 .terminal-prompt { color: var(--green); margin-right: 8px; }
-.terminal-cmd { color: #ededed; }
+.terminal-cmd { color: var(--text); }
 .terminal-output { color: #888; margin-top: 8px; white-space: pre-wrap; }
 .tutorial-complete { background: rgba(0,230,118,0.05); border-top: 1px solid var(--border); padding: 16px 20px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--green); }
 .complete-icon { font-size: 20px; }
