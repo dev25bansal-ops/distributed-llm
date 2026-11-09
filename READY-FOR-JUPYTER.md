@@ -65,18 +65,23 @@ python -m distllm.cli.main --version
 
 ---
 
-## Publishing 0.6.2.2 to PyPI
+## Publishing 0.6.2.2 to PyPI — DONE
 
-The wheel is built and `twine check` passes, but publishing needs your token —
-none is stored on this machine. Once you have it:
+**Published 2026-11-09.** Both artifacts are live:
+
+- https://pypi.org/project/distributed-llm/0.6.2.2/
+- `pip install distributed-llm==0.6.2.2`
+
+Verified by downloading it fresh with `--no-cache-dir` (pip's cached index can
+lag for a few minutes after an upload; the simple index updates immediately).
+
+For the Jupyter machine you can either pip-install from PyPI:
 
 ```bash
-cd "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper"
-python -m twine upload dist/distributed_llm-0.6.2.2-py3-none-any.whl
+pip install --no-cache-dir distributed-llm==0.6.2.2
 ```
 
-You do **not** need this for the Jupyter test — 0.6.2.2 is already installed
-locally, and the wheel can be copied to the Jupyter machine directly:
+or copy the local wheel and install that:
 
 ```bash
 pip install dist/distributed_llm-0.6.2.2-py3-none-any.whl
@@ -112,7 +117,6 @@ client works against `http://<jupyter-ip>:8000/v1` with only a `base_url` change
 ## Not done
 
 - **Impostor package removal** — needs Administrator (script is ready).
-- **PyPI publish** — needs your token.
 - `benchmark live` is still synthetic; it is now labelled instead of silently faked.
 - The PR's 14 pre-existing CI failures (terraform, k8s, vscode, some integrations)
   are unrelated to these changes.
