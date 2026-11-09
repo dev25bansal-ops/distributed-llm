@@ -33,7 +33,15 @@ class _CliCoordinatorNode:
     NodeService gRPC protocol can reach the coordinator.
     """
 
-    def __init__(self, coordinator: Any, port: int, host: str = "0.0.0.0") -> None:
+    def __init__(
+        self,
+        coordinator: Any,
+        port: int,
+        # Same rationale as start_cli_node_listener: workers join over the
+        # network, so bind-all is the intended default with an explicit
+        # override available.
+        host: str = "0.0.0.0",  # nosec B104
+    ) -> None:
         self._coord = coordinator
         self.node_id = "coordinator"
         self.host = host
@@ -71,7 +79,12 @@ def _safe_server_stop(server: Any) -> None:
 def start_cli_node_listener(
     coordinator: Any,
     port: int | None = None,
-    host: str = "0.0.0.0",
+    # Binding all interfaces is the point: worker nodes join over the network,
+    # so a loopback-only default would make `distllm cluster join` unreachable
+    # from any other machine. Operators who want loopback pass host="127.0.0.1".
+    # bandit: B104 is about *unintended* bind-all; this one is the documented
+    # default with an explicit override, so it is suppressed deliberately.
+    host: str = "0.0.0.0",  # nosec B104
 ) -> Any | None:
     """Start the NodeService gRPC listener for the coordinator (best effort).
 

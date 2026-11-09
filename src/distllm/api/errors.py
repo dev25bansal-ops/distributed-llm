@@ -34,7 +34,6 @@ from distllm.errors.types import (
     ProviderTimeoutError,
 )
 
-
 # ── Feature-disabled signalling ─────────────────────────────────────────────
 #
 # A 503 that means "this feature is off by configuration" is NOT a downstream

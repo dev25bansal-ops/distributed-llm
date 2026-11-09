@@ -31,8 +31,8 @@ from __future__ import annotations
 import math
 import threading
 import time
-from enum import Enum
 from collections.abc import Callable
+from enum import Enum
 
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware

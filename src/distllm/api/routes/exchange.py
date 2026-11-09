@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -147,10 +148,10 @@ async def browse_prompts(
     from distllm.prompts.exchange import PromptLicense
     lic = None
     if license:
-        try:
+        # An unrecognised license filter is ignored rather than rejecting the
+        # whole browse request -- the listings still come back unfiltered.
+        with contextlib.suppress(ValueError):
             lic = PromptLicense(license)
-        except ValueError:
-            pass
 
     tags = [tag] if tag else None
     prompts = exchange.browse(
