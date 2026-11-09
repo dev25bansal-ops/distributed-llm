@@ -11,7 +11,7 @@
 | Fact | Value | Source |
 |---|---|---|
 | Package version | 0.6.2.2 | `pyproject.toml` |
-| On PyPI | 0.4.1 only (Aug 2026) | memory, unverified — **confirm before release** |
+| On PyPI | **0.6.2.2 — matches the repo**, uploaded 2026-11-09 | `https://pypi.org/pypi/distributed-llm/json`, checked 2026-11-10 04:00 |
 | `master` vs work | master is 115 commits **behind** the working branch, and fully contained in it | `git rev-list` |
 | PR #10 (→ master, 115 commits) | **OPEN, MERGEABLE** | `gh pr view 10` |
 | PR #10 checks passing | lint, regression, pip-audit, load-test, memory-profile, autofix, bandit, coverage, security-sast, security-secrets, mutation-testing, performance-report, 8/12 integrations, validate-k8s | `gh pr view 10` |
@@ -31,11 +31,36 @@
 3. The crate's **own doc example did not compile** (`message.content` where `message` is `Option<Message>`). That example is the crate's front page.
 4. The SDK had **zero tests** across 299 lines. Now 13, covering request serialization, response parsing against real payloads, and the error type.
 
-### The one number that matters
+### The one number that matters — CORRECTED 2026-11-10 04:00
 
-**0.6.2.2 is not on PyPI. 0.4.1 is.** Every install instruction on the website, in the docs, in the SDKs and in the integrations says `pip install distributed-llm`. A user following our own homepage today gets a build from August with none of the ~50 security fixes, none of the SDK parity work, and none of the current API surface.
+**The original claim in this section was wrong.** It said PyPI carried only
+0.4.1 and that this gap *was* the launch. Checked against the live index:
 
-That gap is the launch. Everything else is secondary to closing it.
+```
+distributed-llm: latest=0.6.2.2
+releases=[0.4.1, 0.5.0, 0.6.0, 0.6.1, 0.6.2.1, 0.6.2.2]
+0.6.2.2 uploaded 2026-11-09 (wheel + sdist), requires_python >=3.10
+```
+
+So the index already matches the version in `pyproject.toml`, uploaded
+yesterday. The "install instructions point at an August build" premise was
+memory, was labelled unverified, and is now falsified.
+
+What this changes:
+
+- **Gate 2 is much closer than assumed.** A user following the README today
+  gets the version we are working on, not an old one. The remaining work is
+  proving that install works from a clean venv, not rescuing it.
+- **Releasing 0.7.0 is an improvement, not an emergency.** Still worth doing
+  (the hardening in this branch is not in 0.6.2.2), but it is no longer the
+  single thing the launch depends on.
+- **The real risk moved.** It is no longer "users get stale code". It is
+  "the code on the index has not been smoke-tested from the index", which is
+  a smaller and cheaper thing to close.
+
+Lesson recorded deliberately: the plan opened with a number sourced from
+memory and marked "unverified", and then treated it as the governing fact.
+One HTTP request would have caught it on day one.
 
 ---
 
@@ -86,6 +111,8 @@ The single objective: **PR #10 mergeable-green or every red explained.**
 ### Days 8–14 (Nov 16–22): make pip honest, prove the demo
 
 - **Release 0.7.0.** Version bump, changelog, wheel built from master, installed into a clean venv, `distllm --help` and a real chat request verified from the index. Not from a local path.
+  - *Corrected 2026-11-10:* 0.6.2.2 is already on the index, so this is a versioned improvement over a working baseline, not a first publish. The clean-venv test can be written and run **now** against 0.6.2.2 to de-risk it before the bump; the same script then re-runs on 0.7.0.
+  - The step that has never been done is the one that matters: proving the index install works. Prioritise that over the version number.
 - **Record the demo** on the A10 the user has. Real model, real tokens, real streaming, a node leaving the pool and the pipeline surviving. This is the asset the launch needs and the one thing that cannot be faked.
 - **Close the docs gap.** The docs director's truth pass plus the website's remaining 11 pages.
 
