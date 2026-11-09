@@ -42,6 +42,22 @@ pub fn api_post(
     serde_json::from_str(&text).map_err(|_| AppError::ApiInvalidResponse)
 }
 
+/// Make a POST request to a specific host:port with no body (for actions
+/// like `/v1/plugins/{name}/enable`).
+pub fn api_post_empty(port: u16, path: &str, token: Option<&str>) -> Result<serde_json::Value, AppError> {
+    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let mut req = get_agent().post(&url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {}", t));
+    }
+    let resp = req.call().map_err(|e| {
+        eprintln!("[api_post] Request failed for {}: {}", url, e);
+        AppError::ApiUnreachable
+    })?;
+    let text = resp.into_string().map_err(|_| AppError::ApiInvalidResponse)?;
+    serde_json::from_str(&text).map_err(|_| AppError::ApiInvalidResponse)
+}
+
 /// Make a GET request to a specific host using pooled connections.
 pub fn api_get_to(
     host: &str,

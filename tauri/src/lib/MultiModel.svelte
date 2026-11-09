@@ -83,6 +83,12 @@
 <div class="multimodel-page">
   <h1 class="page-title">Multi-Model Serving</h1>
 
+  <div class="notice-warn">
+    Not available yet — multi-model slots and routing rules are not implemented
+    by the coordinator API, so this page has no working backend. Controls below
+    are shown for reference only.
+  </div>
+
   <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
   {#if loading}

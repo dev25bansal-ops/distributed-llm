@@ -55,6 +55,12 @@
 <div class="webdashboard-page">
   <h1 class="page-title">Web Dashboard</h1>
 
+  <div class="notice-warn">
+    Not available yet — the coordinator API has no <code>/admin/v1/web-dashboard</code>
+    endpoints, so starting or configuring the embedded dashboard does nothing.
+    Controls below are shown for reference only.
+  </div>
+
   <ErrorBanner message={error ?? ""} ondismiss={() => (error = null)} />
 
   <div class="card">
