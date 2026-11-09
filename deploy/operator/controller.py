@@ -41,8 +41,8 @@ class DistLLMOperator:
         sync_period: int = 300,
         max_concurrent: int = 3,
         dry_run: bool = False,
-        default_coordinator_image: str = "ghcr.io/distributed-llm/coordinator:0.4.0",
-        default_worker_image: str = "ghcr.io/distributed-llm/worker:0.4.0",
+        default_coordinator_image: str = "ghcr.io/distributed-llm/coordinator:0.4.1",
+        default_worker_image: str = "ghcr.io/distributed-llm/worker:0.4.1",
     ):
         self.sync_period = sync_period
         self.max_concurrent = max_concurrent
@@ -189,8 +189,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="DistLLM Kubernetes Operator")
     parser.add_argument("--sync-period", type=int, default=300, help="Reconciliation interval")
     parser.add_argument("--dry-run", action="store_true", help="Log actions without applying")
-    parser.add_argument("--default-coordinator-image", default="ghcr.io/distributed-llm/coordinator:0.4.0")
-    parser.add_argument("--default-worker-image", default="ghcr.io/distributed-llm/worker:0.4.0")
+    parser.add_argument("--default-coordinator-image", default="ghcr.io/distributed-llm/coordinator:0.4.1")
+    parser.add_argument("--default-worker-image", default="ghcr.io/distributed-llm/worker:0.4.1")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")

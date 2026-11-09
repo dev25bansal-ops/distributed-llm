@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install --no-cache-dir --prefix=/install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 COPY requirements.lock .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
 COPY pyproject.toml .
@@ -49,11 +49,8 @@ RUN groupadd -r distllm && useradd -r -g distllm -d /app -s /bin/bash distllm \
     && chown -R distllm:distllm /app
 USER distllm
 
-ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=roneneldan/TinyStories-1M
-ENV DISTLLM_START_LAYER=0
-ENV DISTLLM_END_LAYER=3
-ENV DISTLLM_TOTAL_LAYERS=8
+ENV DISTLLM_MODEL__NAME=roneneldan/TinyStories-1M
+ENV DISTLLM_MODEL__DTYPE=float16
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

@@ -28,23 +28,47 @@ spec:
       containers:
         - name: worker
           image: "{{ .Values.controller.defaultWorkerImage }}"
-          ports:
-            - containerPort: {{ .Values.network.workerGrpcPort }}
-              name: grpc
-            - containerPort: {{ .Values.network.metricsPort }}
-              name: metrics
-          volumeMounts:
-            - name: cache-storage
-              mountPath: /var/cache/distllm
+          # distllm-node takes its config as CLI flags (--node-id/--model/
+          # --start-layer are required). The entrypoint routes on
+          # DISTLLM_ROLE=worker|node. Node identity comes from the pod name
+          # via the downward API, so each replica registers uniquely.
           env:
-            - name: DISTLLM_COORDINATOR_HOST
-              value: {{ include "distllm-operator.fullname" . }}-coordinator
-            - name: DISTLLM_COORDINATOR_PORT
-              value: "{{ .Values.network.coordinatorGrpcPort }}"
-            - name: DISTLLM_NODE_ID
+            - name: DISTLLM_ROLE
+              value: worker
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+          args:
+            - --node-id
+            - $(POD_NAME)
+            - --model
+            - {{ required "model.name must be set (--set model.name=<hf-id>)" .Values.model.name | quote }}
+            - --coordinator-host
+            - {{ include "distllm-operator.fullname" . }}-coordinator
+            - --coordinator-port
+            - "{{ .Values.network.coordinatorGrpcPort }}"
+            - --port
+            - "{{ .Values.network.workerGrpcPort }}"
+            - --start-layer
+            - "{{ .Values.worker.startLayer }}"
+            - --end-layer
+            - "{{ .Values.worker.endLayer }}"
+            - --total-layers
+            - "{{ .Values.worker.totalLayers }}"
+            - --dtype
+            - {{ .Values.model.dtype | default "float16" | quote }}
+            - --model-cache-dir
+            - /var/cache/distllm
+            {{- if not .Values.tls.enabled }}
+            - --insecure
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.network.workerGrpcPort }}
+              name: grpc
+          volumeMounts:
+            - name: cache-storage
+              mountPath: /var/cache/distllm
           resources: {{- toYaml .Values.defaultResources.worker | nindent 12 }}
           livenessProbe:
             tcpSocket:

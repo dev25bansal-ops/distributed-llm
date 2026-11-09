@@ -18,7 +18,7 @@ patches:
 
 images:
   - name: ghcr.io/distributed-llm/coordinator
-    newTag: "0.4.0"
+    newTag: "0.4.1"
 
 commonLabels:
   app.kubernetes.io/environment: production

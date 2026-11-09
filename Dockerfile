@@ -24,9 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Install PyTorch with CUDA support (pre-built wheel for speed)
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-
 # NCCL: install from system (already in cuda-devel image) and ensure NCCL headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnccl-dev libnccl2 \
@@ -41,7 +38,13 @@ COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-RUN pip install --no-cache-dir --prefix=/install "./src" --no-deps
+RUN pip install --no-cache-dir --prefix=/install . --no-deps
+
+# Torch with CUDA support. requirements.lock does not include torch, and
+# without --prefix the wheel would live only in this builder stage and never
+# reach the runtime image, so install it into /install as well.
+RUN pip install --no-cache-dir --prefix=/install \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
@@ -89,12 +92,15 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 USER distllm
 
-# Default env for deployment
-ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
-ENV DISTLLM_START_LAYER=0
-ENV DISTLLM_END_LAYER=3
-ENV DISTLLM_TOTAL_LAYERS=8
+# Default env for deployment.
+# Model name/dtype are read via pydantic-settings: env_prefix "DISTLLM_" plus
+# env_nested_delimiter "__", so model.name maps to DISTLLM_MODEL__NAME and
+# model.dtype to DISTLLM_MODEL__DTYPE (verified with the installed
+# pydantic-settings: DISTLLM__MODEL__NAME is silently IGNORED). Plain
+# DISTLLM_MODEL / DISTLLM_DTYPE are not read by the server. Pipeline layer
+# ranges and node identity are CLI flags (--node-id/--start-layer/...).
+ENV DISTLLM_MODEL__NAME=meta-llama/Llama-3.2-1B
+ENV DISTLLM_MODEL__DTYPE=float16
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

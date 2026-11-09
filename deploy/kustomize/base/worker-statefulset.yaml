@@ -30,7 +30,7 @@ spec:
           emptyDir: {}
       containers:
         - name: worker
-          image: ghcr.io/distributed-llm/worker:0.4.0
+          image: ghcr.io/distributed-llm/worker:0.4.1
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -40,20 +40,47 @@ spec:
           ports:
             - containerPort: 50051
               name: grpc
-            - containerPort: 9091
-              name: metrics
           volumeMounts:
             - name: cache-storage
               mountPath: /var/cache/distllm
           env:
-            - name: DISTLLM_COORDINATOR_HOST
-              value: distllm-coordinator
-            - name: DISTLLM_COORDINATOR_PORT
-              value: "50050"
-            - name: DISTLLM_NODE_ID
+            # Entrypoint routes on DISTLLM_ROLE; distllm-node takes its
+            # config as CLI flags (--node-id/--model/--start-* required).
+            - name: DISTLLM_ROLE
+              value: worker
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # Workers fail closed without a cluster key (node_service.py:199).
+            - name: DISTLLM_CLUSTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: distllm-cluster-key
+                  key: cluster-key
+                  optional: true
+          args:
+            - --node-id
+            - $(POD_NAME)
+            - --coordinator-host
+            - distllm-coordinator
+            - --coordinator-port
+            - "50050"
+            - --port
+            - "50051"
+            - --model
+            # Must match the coordinator's model. Change this literal (and
+            # the layer split below) to your model before applying.
+            - HuggingFaceTB/SmolLM-135M
+            - --start-layer
+            - "0"
+            - --end-layer
+            - "31"
+            - --total-layers
+            - "32"
+            - --model-cache-dir
+            - /var/cache/distllm
+            - --insecure
           resources:
             requests:
               cpu: 1
@@ -99,7 +126,4 @@ spec:
     - name: grpc
       port: 50051
       targetPort: 50051
-    - name: metrics
-      port: 9091
-      targetPort: 9091
   clusterIP: None

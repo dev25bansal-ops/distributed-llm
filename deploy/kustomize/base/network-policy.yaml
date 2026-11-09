@@ -23,15 +23,11 @@ spec:
       ports:
         - port: 50050
           protocol: TCP
-    # Allow API access from ingress / monitoring
+    # Allow API access from ingress / monitoring.
+    # /metrics rides on the same uvicorn app (port 8000); there is no 9091.
     - from: []
       ports:
         - port: 8000
-          protocol: TCP
-    # Allow Prometheus scraping
-    - from: []
-      ports:
-        - port: 9091
           protocol: TCP
   egress:
     # Allow DNS resolution
@@ -76,11 +72,8 @@ spec:
       ports:
         - port: 50051
           protocol: TCP
-    # Allow Prometheus scraping
-    - from: []
-      ports:
-        - port: 9091
-          protocol: TCP
+    # No metrics ingress: distllm-node exposes only gRPC (50051) and has no
+    # /metrics endpoint.
   egress:
     # Allow DNS resolution
     - to: []
