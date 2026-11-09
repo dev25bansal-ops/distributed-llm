@@ -42,11 +42,11 @@ def _validate_terraform_value(field_name: str, value: object) -> None:
     if value is None:
         return
     text = str(value)
-    bad = ("${", "$$", "\n", "\r", " ")
+    bad = ("${", "$$", "}", "\n", "\r", "\u2028", '"', "\\")
     if any(sub in text for sub in bad):
         raise ValueError(
             f"HCL injection detected in field '{field_name}': value contains "
-            "an interpolation/newline sequence"
+            "Unsafe value: an interpolation, quote, backslash, brace or newline sequence"
         )
 
 
