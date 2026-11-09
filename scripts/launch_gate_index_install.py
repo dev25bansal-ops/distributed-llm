@@ -28,16 +28,33 @@ STEPS = [
 
 def _run(label: str, cmd: list[str], env: dict, cwd: str) -> tuple[bool, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env, cwd=cwd)
+        # Capture bytes and decode leniently: a Windows console defaults to
+        # cp1252, and rich/typer emit box-drawing characters that cannot be
+        # decoded there, which turns a working CLI into an AttributeError here.
+        p = subprocess.run(cmd, capture_output=True, timeout=300, env=env, cwd=cwd)
     except subprocess.TimeoutExpired:
         return False, "TIMEOUT after 300s"
+
+    def _txt(b: bytes | None) -> str:
+        return (b or b"").decode("utf-8", errors="replace")
+
     if p.returncode == 0:
-        return True, (p.stdout.strip().splitlines() or [""])[-1][:100]
-    err = (p.stderr.strip().splitlines() or ["?"])[-1]
-    return False, err[:200]
+        out = _txt(p.stdout).strip() or _txt(p.stderr).strip()
+        return True, (out.splitlines() or [""])[-1][:100]
+    err = _txt(p.stderr).strip() or _txt(p.stdout).strip()
+    return False, ((err.splitlines() or ["?"])[-1])[:200]
 
 
 def main() -> int:
+    # The CLI under test prints box-drawing and emoji; a cp1252 console cannot
+    # encode those, and print() would raise inside the harness rather than
+    # report the step's result. Make stdout tolerant before any output.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--spec", default="distributed-llm", help="pip requirement to install")
     ap.add_argument("--keep", action="store_true", help="keep the venv for inspection")

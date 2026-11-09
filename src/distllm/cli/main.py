@@ -4,10 +4,29 @@ import os
 import sys
 import time
 
-import typer
+# typer/rich are in the [cli] extra, not core deps (pyproject: "Core should be
+# CLI-free so headless/library users don't pull unnecessary dependencies").
+# The console script is installed for every user regardless, so a bare
+# `pip install distributed-llm` followed by `distllm` used to die with a raw
+# ModuleNotFoundError traceback -- a stranger's first command. Fail with the
+# install line instead.
+try:
+    import typer
+    from rich.console import Console
+    from rich.table import Table
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised by the install gate
+    if exc.name in {"typer", "rich"}:
+        sys.stderr.write(
+            "distllm: the CLI needs extra dependencies that this install lacks "
+            f"({exc.name}).\n"
+            "Install them with:\n\n"
+            '    pip install "distributed-llm[cli]"\n\n'
+            "Library users can ignore this: importing `distllm` does not need them.\n"
+        )
+        raise SystemExit(1) from None
+    raise
+
 from loguru import logger
-from rich.console import Console
-from rich.table import Table
 
 
 def _force_utf8_output() -> None:
