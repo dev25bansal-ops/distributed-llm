@@ -23,12 +23,12 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--red:#ef4444;--amber:#f59e0b;--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        :root{--bg:#1c1c1c;--surface:#262626;--card:#2a2a2a;--card-hover:#303030;--border:#383838;--border-hover:#4a4a4a;--text:#f1f1ef;--text-secondary:#c4c4be;--dim:#9a9b96;--muted:#9a9b96;--green:#8fa68e;--green-dim:#7a9179;--green-glow:rgba(143,166,142,0.14);--green-bg:rgba(143,166,142,0.08);--green-bd:rgba(143,166,142,0.28);--red:#c97b6e;--amber:#c9a26e;--blue:#7e93ad;--field-1:#c8c5ba;--field-1-ink:#1c1c1c;--radius:6px;--radius-sm:4px;--font-sans:'Archivo',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
         a{color:inherit;text-decoration:none}
         .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
-        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(28,28,28,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
         .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
         .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
         .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
@@ -75,6 +75,10 @@
         .ft-bottom{max-width:1100px;margin:0 auto;padding:24px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
         .ft-social{display:flex;gap:12px}.ft-social a{color:var(--dim);transition:color 0.15s}.ft-social a:hover{color:var(--green)}
         @media(max-width:768px){.nav-links{display:none}.service{flex-direction:column;align-items:flex-start}}
+    .section{padding:100px 0;position:relative;z-index:1}
+.sec-h{text-align:center;margin-bottom:56px}
+.sec-h h2{font-size:clamp(26px,4vw,38px);font-weight:800;letter-spacing:-1px;line-height:1.15}
+.fade-up{opacity:1;transform:none}
     </style>
 
     <!-- Structured data -->
