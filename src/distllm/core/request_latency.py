@@ -5,8 +5,8 @@ during continuous batching. Separate from the node-level LatencyTracker
 used by the rebalancer for straggler detection.
 """
 
-import time
 import threading
+import time
 from dataclasses import dataclass
 
 

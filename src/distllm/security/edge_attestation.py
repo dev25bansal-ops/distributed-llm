@@ -214,6 +214,7 @@ class EdgeAttestationPolicy:
         try:
             return bool(_verify_svid(svid_pem, td))
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     # ── mTLS requirement ───────────────────────────────────────────────

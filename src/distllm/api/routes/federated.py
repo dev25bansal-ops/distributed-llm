@@ -9,6 +9,11 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
+from ..errors import FeatureDisabledError, error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(tags=["federated"], prefix="/v1/federated")
@@ -43,12 +48,22 @@ class FederatedStatsResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/nodes", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/nodes",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Register a node for federated training",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid registration payload (e.g. non-positive learning rate)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def register_node(req: RegisterNodeRequest):
     """Register a node for federated training."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     state = coordinator.register_node(
         node_id=req.node_id,
@@ -63,23 +78,42 @@ async def register_node(req: RegisterNodeRequest):
     }
 
 
-@router.delete("/nodes/{node_id}", dependencies=[Depends(require_role("admin"))])
+@router.delete(
+    "/nodes/{node_id}",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Remove a node from federated training",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def unregister_node(node_id: str):
     """Remove a node from federated training."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     coordinator.unregister_node(node_id)
     return {"status": "removed", "node_id": node_id}
 
 
-@router.post("/rounds", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/rounds",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Start a new federated training round",
+    responses={
+        400: ERR_ENTRY("Not enough registered nodes to start a round", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def start_round():
     """Start a new federated training round."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     round_info = coordinator.start_round()
     if not round_info:
@@ -93,12 +127,23 @@ async def start_round():
     }
 
 
-@router.post("/rounds/submit", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/rounds/submit",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Submit a locally trained adapter for merging",
+    responses={
+        400: ERR_ENTRY("Adapter not accepted for the current round", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid submission payload (e.g. missing adapter_path)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def submit_adapter(req: SubmitAdapterRequest):
     """Submit a locally trained adapter for merging."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     accepted = coordinator.submit_node_adapter(
         node_id=req.node_id,
@@ -111,12 +156,22 @@ async def submit_adapter(req: SubmitAdapterRequest):
     return {"status": "submitted", "node_id": req.node_id}
 
 
-@router.post("/rounds/merge", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/rounds/merge",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Merge all submitted adapters",
+    responses={
+        400: ERR_ENTRY("Merge failed (no adapters to merge or incompatible adapters)", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def merge_adapters():
     """Merge all submitted adapters."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     merged_path = coordinator.merge_adapters()
     if not merged_path:
@@ -124,23 +179,38 @@ async def merge_adapters():
     return {"status": "merged", "path": merged_path}
 
 
-@router.get("/stats", response_model=FederatedStatsResponse)
+@router.get(
+    "/stats",
+    response_model=FederatedStatsResponse,
+    summary="Get federated training statistics",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_federated_stats():
     """Get federated training statistics."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     stats = coordinator.get_stats()
     return FederatedStatsResponse(**stats)
 
 
-@router.get("/versions")
+@router.get(
+    "/versions",
+    summary="List adapter versions from federated training",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Federated training not available", type_="service_unavailable", code="503"),
+    },
+)
 async def list_versions():
     """List adapter versions from federated training."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     versions = coordinator.get_versions()
     return [

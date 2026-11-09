@@ -5,8 +5,9 @@ OpenTelemetry trace/span injection, and optional Loki push
 for centralized log aggregation.
 """
 
-import sys
 import json
+import sys
+
 from loguru import logger
 
 

@@ -17,7 +17,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 # Type alias for a formatter: (event, payload) -> (body_dict, extra_headers_dict)
@@ -422,6 +423,7 @@ class WebhookManager:
                     return delivery
                 last_error = f"HTTP {resp.status_code}"
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 duration = (time.monotonic() - t0) * 1000
                 last_error = str(e)
 
@@ -461,4 +463,5 @@ def _webhook_worker(mgr: WebhookManager) -> None:
             target, event, payload = mgr._queue.pop(0)
             mgr._deliver(target, event, payload)
         except Exception:
+            # CQ-08: best-effort backoff: retry delay must not raise.
             time.sleep(0.1)

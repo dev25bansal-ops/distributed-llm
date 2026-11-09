@@ -14,7 +14,6 @@ from loguru import logger
 from distllm.core.evaluation.constants import _MTBENCH_CATEGORIES
 from distllm.core.evaluation.models import EvalSample
 
-
 # ---------------------------------------------------------------------------
 # Base class
 # ---------------------------------------------------------------------------

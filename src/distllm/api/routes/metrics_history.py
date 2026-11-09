@@ -25,8 +25,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from ..api_state import g
 from distllm.api.auth_deps import require_role
+
+from ..api_state import g
 
 router = APIRouter(tags=["monitoring"])
 
@@ -186,6 +187,7 @@ def _collect_and_store() -> None:
                     gpu_util = float(gpu_info.get("utilization_gpu", 0))
                     memory_used = float(gpu_info.get("memory_used_mb", 0))
                 except Exception:
+                    # CQ-08: best-effort telemetry: one bad metric must not crash the collector loop.
                     pass
 
             # ── scheduler request metrics ──
@@ -197,6 +199,7 @@ def _collect_and_store() -> None:
                         stats.get("pending_requests", 0)
                     )
                 except Exception:
+                    # CQ-08: best-effort telemetry: one bad metric must not crash the collector loop.
                     pass
 
             # ── average latency from pipeline tracker ──
@@ -208,6 +211,7 @@ def _collect_and_store() -> None:
                     try:
                         avg_latency = float(lt.get_avg("all") or 0)
                     except Exception:
+                        # CQ-08: best-effort telemetry: one bad metric must not crash the collector loop.
                         pass
 
             # ── per-node health data ──

@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 
-
 # Allowed base directories for adapter storage (can be extended via config)
 ALLOWED_ADAPTER_BASES = [
     Path("/app/adapters"),

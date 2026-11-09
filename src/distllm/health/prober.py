@@ -27,5 +27,6 @@ async def probe_node(
             "gpu_utilization": getattr(health, "gpu_utilization", 0.0),
         }
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         elapsed_ms = (time.perf_counter() - start) * 1000
         return False, elapsed_ms, {"error": str(e)}

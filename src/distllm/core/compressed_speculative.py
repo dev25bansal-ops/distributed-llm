@@ -27,7 +27,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -35,7 +36,6 @@ import torch.nn.functional as F
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
-
 
 # ── Lightweight Verifier ─────────────────────────────────────────────────
 
@@ -236,7 +236,7 @@ class CompressedSpeculativeDecoder:
     Usage::
 
         kv_cache = KVCache(...)
-        kv_cache.compress("int4")  # 4x compression
+        kv_cache.compress("int4")  # 2x compression (int8-equivalent storage)
 
         decoder = CompressedSpeculativeDecoder(
             target_forward=model_forward_fn,

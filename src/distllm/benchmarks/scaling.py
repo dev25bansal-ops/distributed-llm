@@ -17,9 +17,10 @@ import json
 import math
 import os
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 import torch
 from loguru import logger
@@ -43,22 +44,22 @@ class BenchmarkResult:
     ttft_ms: float = 0.0           # Time to first token
     itl_ms: float = 0.0            # Inter-token latency
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def csv_header(self) -> List[str]:
+    def csv_header(self) -> list[str]:
         return list(asdict(self).keys())
 
-    def csv_row(self) -> List[str]:
+    def csv_row(self) -> list[str]:
         return [str(v) for v in asdict(self).values()]
 
 
 @dataclass
 class ScalingConfig:
-    model_sizes_b: List[float] = field(default_factory=lambda: [1.0, 3.0, 7.0, 13.0, 34.0, 70.0])
-    node_counts: List[int] = field(default_factory=lambda: [1, 2, 4, 8])
-    batch_sizes: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16, 32])
-    seq_lengths: List[int] = field(default_factory=lambda: [512, 1024, 2048, 4096])
+    model_sizes_b: list[float] = field(default_factory=lambda: [1.0, 3.0, 7.0, 13.0, 34.0, 70.0])
+    node_counts: list[int] = field(default_factory=lambda: [1, 2, 4, 8])
+    batch_sizes: list[int] = field(default_factory=lambda: [1, 2, 4, 8, 16, 32])
+    seq_lengths: list[int] = field(default_factory=lambda: [512, 1024, 2048, 4096])
     warmup_iters: int = 3
     benchmark_iters: int = 10
     output_dir: str = "./benchmark_results"
@@ -78,8 +79,8 @@ class ScalingBenchmark:
 
     def __init__(
         self,
-        forward_fn: Optional[Callable] = None,
-        config: Optional[ScalingConfig] = None,
+        forward_fn: Callable | None = None,
+        config: ScalingConfig | None = None,
         device: str = "cuda",
     ):
         self._forward_fn = forward_fn
@@ -88,9 +89,9 @@ class ScalingBenchmark:
         self._output_dir = Path(self._config.output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
-    def run_all(self) -> List[BenchmarkResult]:
+    def run_all(self) -> list[BenchmarkResult]:
         """Run benchmarks across all configured model sizes, nodes, and batch sizes."""
-        results: List[BenchmarkResult] = []
+        results: list[BenchmarkResult] = []
 
         for model_size in self._config.model_sizes_b:
             for batch_size in self._config.batch_sizes:
@@ -263,7 +264,7 @@ class ScalingBenchmark:
         with open(path, "w") as f:
             json.dump(result.to_dict(), f, indent=2)
 
-    def _save_all(self, results: List[BenchmarkResult]) -> None:
+    def _save_all(self, results: list[BenchmarkResult]) -> None:
         path = self._output_dir / "all_results.csv"
         if not results:
             return
@@ -274,7 +275,7 @@ class ScalingBenchmark:
                 writer.writerow(r.csv_row())
         logger.info(f"Saved {len(results)} benchmark results to {path}")
 
-    def report(self, results: List[BenchmarkResult]) -> str:
+    def report(self, results: list[BenchmarkResult]) -> str:
         """Generate a human-readable report from benchmark results."""
         lines = ["=" * 80, "DistLLM Scaling Benchmark Report", "=" * 80]
 

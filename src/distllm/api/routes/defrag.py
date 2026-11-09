@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from ..api_state import g
 from ..auth_deps import require_role
 
-
 router = APIRouter(prefix="/v1/defrag", tags=["defrag"])
 
 

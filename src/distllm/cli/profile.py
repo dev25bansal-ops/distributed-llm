@@ -3,14 +3,15 @@
 Profiles model inference performance: latency, throughput, memory.
 """
 
-import time
 import json
+import time
 from typing import Any
 
 import httpx
 from rich.console import Console
 from rich.table import Table
 
+from distllm.cli.http_client import client_for
 
 console = Console()
 
@@ -42,9 +43,9 @@ def run_profile(
     for i in range(num_iterations):
         start = time.time()
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with client_for(host, port, timeout=120.0) as client:
                 response = client.post(
-                    f"http://{host}:{port}/v1/completions",
+                    "/v1/completions",
                     json={
                         "model": model,
                         "prompt": f"Token sequence: {prompt_tokens[:10]}...",
@@ -77,6 +78,7 @@ def run_profile(
             console.print(f"  [{i+1}/{num_iterations}] [red]Connection failed[/red]")
             results.append({"iteration": i + 1, "error": "connection_failed"})
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             console.print(f"  [{i+1}/{num_iterations}] [red]Error: {e}[/red]")
             results.append({"iteration": i + 1, "error": str(e)})
 

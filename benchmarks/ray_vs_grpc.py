@@ -128,7 +128,7 @@ if RAY_AVAILABLE:
             self.stage_id = stage_id
             self.delay_s = delay_s
 
-        def forward(self, x: Optional[torch.Tensor]) -> torch.Tensor:
+        def forward(self, x: torch.Tensor | None) -> torch.Tensor:
             if self.delay_s > 0:
                 time.sleep(self.delay_s)
             if x is None:
@@ -140,7 +140,7 @@ else:
             self.stage_id = stage_id
             self.delay_s = delay_s
 
-        def forward(self, x: Optional[torch.Tensor]) -> torch.Tensor:
+        def forward(self, x: torch.Tensor | None) -> torch.Tensor:
             if self.delay_s > 0:
                 time.sleep(self.delay_s)
             if x is None:

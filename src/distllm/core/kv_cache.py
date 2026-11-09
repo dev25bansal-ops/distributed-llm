@@ -471,7 +471,11 @@ class KVCache:
         """Enable KV cache quantization.
 
         Args:
-            bits: Target bit width (4 or 8). Ignored if use_fp8=True.
+            bits: Target bit width (4 or 8). Selects the quantization range
+                ([-7, 7] for 4-bit, [-127, 127] for 8-bit). Ignored if
+                use_fp8=True. Storage is always int8 (1 byte/elem); bits=4
+                does NOT pack two values per byte, so memory usage is
+                int8-equivalent (2x vs fp16), not 4x.
             use_fp8: Use FP8 E4M3 quantization for 2x capacity vs fp16.
         """
         with self._lock:
@@ -503,6 +507,10 @@ class KVCache:
         Note:
             Creates a temporary copy during compression so that an OOM or
             CUDA error mid-compression leaves the original cache intact.
+
+            "int4" denotes the quantization *range* ([-7, 7]), not packed
+            4-bit storage: values are stored one-per-byte in int8 slots, so
+            compressed_bytes is int8-equivalent (2x vs fp16), not 4x.
         """
         import torch as _torch
 
@@ -584,6 +592,12 @@ class KVCache:
             }
 
         if method == "int4":
+            # NOTE: INT4 here means the quantization *range* ([-7, 7], 4-bit
+            # signed), NOT packed 4-bit storage. Each element is stored in a
+            # full int8 slot (1 byte/elem), so memory usage is int8-equivalent
+            # (2x vs fp16), NOT the 4x a packed-nibble layout would give.
+            # The reported ratio/savings_pct below reflect the real int8
+            # storage, not a packed-4-bit figure.
             with self._lock:
                 try:
                     compressed_cache = []

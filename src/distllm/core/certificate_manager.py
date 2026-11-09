@@ -11,14 +11,17 @@ import os
 import shutil
 import socket
 import ssl
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives import serialization
 
 
 @dataclass
@@ -130,6 +133,7 @@ class CertificateManager:
                 ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
                 sans = list(ext.value.get_values_for_type(x509.DNSName))
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             fp = cert.fingerprint(hashes.SHA256()).hex(":")
             return CertificateInfo(
@@ -194,6 +198,7 @@ class CertificateManager:
                 root_certificates=ca_bytes,
             )
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def create_mtls_client_credentials(
@@ -321,11 +326,12 @@ class CertificateManager:
         self, common_name: str, alt_names: list[str],
     ) -> CertificateInfo:
         """Generate a self-signed certificate."""
+        import datetime as dt
+
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
-        import datetime as dt
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -400,6 +406,7 @@ class CertificateManager:
                 mgr = SecretManager()
                 passphrase = mgr.get_secret("KEY_ENCRYPTION_PASSPHRASE")
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             if not passphrase:
                 import os as _os

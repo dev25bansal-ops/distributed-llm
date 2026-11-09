@@ -9,12 +9,12 @@ import asyncio
 import json
 import time
 from collections import defaultdict, deque
-from typing import Any, AsyncGenerator
+from typing import Any
+from collections.abc import AsyncGenerator
 
 from fastapi import WebSocket
 from fastapi.responses import StreamingResponse
 from loguru import logger
-
 
 # ---------------------------------------------------------------------------
 # Connection manager with per-client subscriptions
@@ -73,6 +73,7 @@ class ConnectionManager:
             try:
                 await conn.send_text(data)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 disconnected.add(conn)
         self.active_connections -= disconnected
 
@@ -85,6 +86,7 @@ class ConnectionManager:
         try:
             await websocket.send_text(json.dumps(message))
         except Exception:
+            # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
             self.disconnect(websocket)
 
     def clients_due(self, now: float) -> list[WebSocket]:
@@ -300,6 +302,7 @@ async def collect_metrics_snapshot(coordinator) -> dict:
                 try:
                     gpu_util = gpu_util()
                 except Exception:
+                    # CQ-08: intentional fail-open: fallback default assigned on failure.
                     gpu_util = 0
             collector.record_gpu_util(node_id, float(gpu_util))
             node_info = {
@@ -476,6 +479,7 @@ async def metrics_broadcaster(coordinator, interval: float = 0.2):
                     try:
                         await conn.send_text(json.dumps(message))
                     except Exception:
+                        # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                         manager.disconnect(conn)
                     else:
                         manager.mark_sent(conn, now)

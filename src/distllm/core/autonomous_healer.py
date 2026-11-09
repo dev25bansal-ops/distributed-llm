@@ -21,7 +21,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -197,6 +198,7 @@ class FailurePredictor:
                 proba = self._model.predict_proba(feats)[0]
                 return float(proba[1]) if len(proba) > 1 else 0.0
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         # Heuristic fallback

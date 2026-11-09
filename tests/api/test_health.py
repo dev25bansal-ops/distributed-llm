@@ -95,9 +95,18 @@ class TestReadiness:
 
     def test_not_ready_when_no_healthy_nodes(self, coordinator):
         coordinator.nodes = {"node1": {}, "node2": {}}
+        # health_check() returns a status envelope whose per-node map lives
+        # under "nodes". The previous mock returned a bare node map, which the
+        # handler's old (buggy) .values()/.get("healthy") code happened to
+        # accept -- but the real server returns this envelope, and the flat
+        # form made /ready a 500 once a node was registered.
         coordinator.health_check = MagicMock(return_value={
-            "node1": {"healthy": False},
-            "node2": {"healthy": False},
+            "status": "degraded",
+            "num_nodes": 2,
+            "nodes": {
+                "node1": {"healthy": False},
+                "node2": {"healthy": False},
+            },
         })
         resp = TestClient(app).get("/ready")
         assert resp.status_code == 503

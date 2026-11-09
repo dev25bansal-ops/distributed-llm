@@ -1,0 +1,6 @@
+# actionlint config — declares this repo's custom self-hosted runner labels so
+# `actionlint` only reports real errors. Run locally with:
+#   actionlint .github/workflows/*.yml
+self-hosted-runner:
+  labels:
+    - gpu

@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Enterprise — DistLLM</title>
     <meta name="description" content="Enterprise-grade distributed LLM inference. Security whitepaper, compliance roadmap, and reference architectures for production deployments.">
@@ -21,7 +21,7 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/base.css">
     <link rel="stylesheet" href="css/layout.css">
     <link rel="stylesheet" href="css/components.css">
@@ -49,7 +49,7 @@
     <nav class="nav" role="navigation" aria-label="Main navigation">
         <div class="nav-in">
             <a href="index.html" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
-            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="enterprise.html" class="active">Enterprise</a><a href="learn.html">Learn</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="blog.html">Blog</a><a href="enterprise.html" class="active">Enterprise</a><a href="learn.html">Learn</a><a href="index.html#pricing">Pricing</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
             <div class="nav-right">
                 <a href="https://github.com/dev25bansal-ops/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
                 <a href="enterprise.html#contact" class="nav-cta">Contact Sales</a>
@@ -66,22 +66,22 @@
             <div class="enterprise-features">
                 <div class="ent-feature">
                     <div class="ent-feature-icon">🔒</div>
-                    <h3>Security First</h3>
+                    <h2>Security First</h2>
                     <p>mTLS, E2E encryption, RBAC, audit logging, and air-gapped deployment support.</p>
                 </div>
                 <div class="ent-feature">
                     <div class="ent-feature-icon">📋</div>
-                    <h3>Compliance Ready</h3>
+                    <h2>Compliance Ready</h2>
                     <p>SOC 2 Type II, ISO 27001, HIPAA BAA, and GDPR compliance roadmap.</p>
                 </div>
                 <div class="ent-feature">
                     <div class="ent-feature-icon">🏗️</div>
-                    <h3>Production Architecture</h3>
+                    <h2>Production Architecture</h2>
                     <p>Reference architectures for multi-region, high-availability deployments.</p>
                 </div>
                 <div class="ent-feature">
                     <div class="ent-feature-icon">🛟</div>
-                    <h3>24/7 Support</h3>
+                    <h2>24/7 Support</h2>
                     <p>Dedicated support engineer, SLA guarantees, and priority bug fixes.</p>
                 </div>
             </div>
@@ -101,7 +101,7 @@
                             <p>Version 2.0 — June 2026</p>
                         </div>
                         <div class="whitepaper-toc">
-                            <h4>Table of Contents</h4>
+                            <h3>Table of Contents</h3>
                             <ol>
                                 <li>Executive Summary</li>
                                 <li>Threat Model & Attack Surface</li>
@@ -126,22 +126,22 @@
                 <!-- Security Features Grid -->
                 <div class="ent-security-grid">
                     <div class="security-card">
-                        <h4>🔐 Mutual TLS (mTLS)</h4>
+                        <h3>🔐 Mutual TLS (mTLS)</h3>
                         <p>All node-to-node communication encrypted with client certificate authentication. No shared secrets.</p>
                         <code>distllm cluster start --mtls --cert /path/to/certs</code>
                     </div>
                     <div class="security-card">
-                        <h4>🔑 RBAC & API Keys</h4>
+                        <h3>🔑 RBAC & API Keys</h3>
                         <p>Fine-grained role-based access control. Separate keys for admin, operator, and viewer roles.</p>
                         <code>distllm auth create-key --role operator --scope "models,cluster"</code>
                     </div>
                     <div class="security-card">
-                        <h4>📝 Audit Logging</h4>
+                        <h3>📝 Audit Logging</h3>
                         <p>Every API call, authentication event, and configuration change logged with immutable audit trail.</p>
                         <code>distllm config set audit.enabled true --format json</code>
                     </div>
                     <div class="security-card">
-                        <h4>🏰 Air-Gapped Deployment</h4>
+                        <h3>🏰 Air-Gapped Deployment</h3>
                         <p>Full offline installation support. No telemetry, no external dependencies, no internet required.</p>
                         <code>distllm install --offline --bundle-path /mnt/distllm-bundle.tar.gz</code>
                     </div>
@@ -160,7 +160,7 @@
                         <div class="compliance-status">✅</div>
                         <div class="compliance-content">
                             <div class="compliance-date">Q1 2026</div>
-                            <h4>SOC 2 Type I</h4>
+                            <h3>SOC 2 Type I</h3>
                             <p>Security controls design assessment completed. Policies, procedures, and technical controls documented.</p>
                         </div>
                     </div>
@@ -168,7 +168,7 @@
                         <div class="compliance-status">🔄</div>
                         <div class="compliance-content">
                             <div class="compliance-date">Q2 2026 (In Progress)</div>
-                            <h4>SOC 2 Type II</h4>
+                            <h3>SOC 2 Type II</h3>
                             <p>6-month observation period for security controls. Audit scheduled for August 2026.</p>
                         </div>
                     </div>
@@ -176,7 +176,7 @@
                         <div class="compliance-status">📅</div>
                         <div class="compliance-content">
                             <div class="compliance-date">Q3 2026</div>
-                            <h4>ISO 27001</h4>
+                            <h3>ISO 27001</h3>
                             <p>Information Security Management System (ISMS) implementation. Stage 1 audit scheduled.</p>
                         </div>
                     </div>
@@ -184,7 +184,7 @@
                         <div class="compliance-status">📅</div>
                         <div class="compliance-content">
                             <div class="compliance-date">Q4 2026</div>
-                            <h4>HIPAA BAA</h4>
+                            <h3>HIPAA BAA</h3>
                             <p>Business Associate Agreement readiness. PHI handling procedures and technical safeguards.</p>
                         </div>
                     </div>
@@ -192,7 +192,7 @@
                         <div class="compliance-status">📅</div>
                         <div class="compliance-content">
                             <div class="compliance-date">Q1 2027</div>
-                            <h4>GDPR Compliance</h4>
+                            <h3>GDPR Compliance</h3>
                             <p>Data processing agreements, DPO appointment, and EU data residency support.</p>
                         </div>
                     </div>
@@ -209,7 +209,7 @@
                 <div class="arch-grid">
                     <div class="arch-card">
                         <div class="arch-card-header">
-                            <h4>🏢 Single Region, High Availability</h4>
+                            <h3>🏢 Single Region, High Availability</h3>
                             <span class="arch-badge">Most Common</span>
                         </div>
                         <div class="arch-diagram">
@@ -236,7 +236,7 @@
 
                     <div class="arch-card">
                         <div class="arch-card-header">
-                            <h4>🌍 Multi-Region, Geo-Distributed</h4>
+                            <h3>🌍 Multi-Region, Geo-Distributed</h3>
                             <span class="arch-badge">Enterprise</span>
                         </div>
                         <div class="arch-diagram">
@@ -264,7 +264,7 @@
 
                     <div class="arch-card">
                         <div class="arch-card-header">
-                            <h4>🏥 Healthcare / HIPAA</h4>
+                            <h3>🏥 Healthcare / HIPAA</h3>
                             <span class="arch-badge">Compliance</span>
                         </div>
                         <div class="arch-diagram">
@@ -304,7 +304,7 @@
                             <div class="case-company">
                                 <div class="case-logo">AC</div>
                                 <div>
-                                    <h4>Acme Corp</h4>
+                                    <h3>Acme Corp</h3>
                                     <p class="case-industry">Financial Services</p>
                                 </div>
                             </div>
@@ -335,7 +335,7 @@
                             <div class="case-company">
                                 <div class="case-logo">MH</div>
                                 <div>
-                                    <h4>MedHealth Systems</h4>
+                                    <h3>MedHealth Systems</h3>
                                     <p class="case-industry">Healthcare</p>
                                 </div>
                             </div>
@@ -366,7 +366,7 @@
                             <div class="case-company">
                                 <div class="case-logo">TX</div>
                                 <div>
-                                    <h4>TechX Labs</h4>
+                                    <h3>TechX Labs</h3>
                                     <p class="case-industry">AI Startup</p>
                                 </div>
                             </div>

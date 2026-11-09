@@ -401,7 +401,7 @@
             y={r + 4}
             width="1"
             height="1"
-            fill="#1a1a2e"
+            fill="#232323"
           />
         {/if}
       {/each}

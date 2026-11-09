@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 

@@ -40,7 +40,8 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -48,7 +49,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 from loguru import logger
 
 # Repo-local default location for the DEV attestation key.  DEV ONLY — never
@@ -110,7 +110,7 @@ class AttestationReport:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "AttestationReport":
+    def from_dict(cls, data: dict) -> AttestationReport:
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         return cls(**known)
 
@@ -306,7 +306,7 @@ class EnclaveContext:
         self.measurement = _compute_measurement(enclave_id)
         self.attestation: AttestationReport | None = None
 
-    def __enter__(self) -> "EnclaveContext":
+    def __enter__(self) -> EnclaveContext:
         self.active = True
         # SCAFFOLD attest: bind measurement + fresh nonce under the DEV key.
         self.attestation = generate_attestation_report(

@@ -107,4 +107,11 @@ def test_every_core_module_imports():
             f"  {dotted}: {err}" for dotted, err in broken.items()
         )
     )
-    assert len(ok) >= 280
+    # Floor, not a target: it exists so a module cannot vanish from the sweep
+    # unnoticed. The tree has 240 core modules after the 2026-11-06 hygiene
+    # pass removed dead ones; the previous 280 was recorded before that pass
+    # and could never be met again. Raise it when modules are added.
+    assert len(ok) >= 240, (
+        f"only {len(ok)} core modules imported, expected at least 240 — "
+        "modules were removed or the sweep stopped finding them"
+    )

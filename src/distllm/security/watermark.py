@@ -48,7 +48,10 @@ try:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
+    from cryptography.hazmat.primitives.asymmetric.utils import (
+        decode_dss_signature,
+        encode_dss_signature,
+    )
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
     HAS_CRYPTOGRAPHY = True
@@ -333,6 +336,7 @@ class WeightWatermark:
                 if hasattr(module, "_distllm_watermark"):
                     raw = module._distllm_watermark  # type: ignore[union-attr]
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         if raw is None:

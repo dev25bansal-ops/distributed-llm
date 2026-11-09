@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
-from loguru import logger
-import torch
 
+import torch
+from loguru import logger
+
+from distllm.backends.model_validation import resolve_trust_remote_code, validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
 from distllm.models.partitioner import ModelPartitioner
@@ -32,7 +34,7 @@ class PyTorchNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default",
         device: str = "auto",
         dtype: str = "float16",
         quantization_config: Any | None = None,
@@ -41,7 +43,10 @@ class PyTorchNodeAdapter(BackendAdapter):
         layer_end: int = 0,
         total_layers: int = 0,
         trust_remote_code: bool | None = None,
+        allow_local_paths: bool | None = None,
     ):
+        if model_name:
+            validate_model_name(model_name, allow_local_paths=allow_local_paths)
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -50,7 +55,7 @@ class PyTorchNodeAdapter(BackendAdapter):
         self.layer_start = layer_start
         self.layer_end = layer_end
         self.total_layers = total_layers
-        self._trust_remote_code = trust_remote_code
+        self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
 
         self.partitioner: ModelPartitioner | None = None
         self._is_first = layer_start == 0
@@ -137,6 +142,7 @@ class PyTorchNodeAdapter(BackendAdapter):
                 elif plat == "xpu" and hasattr(torch.xpu, "empty_cache"):
                     torch.xpu.empty_cache()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             logger.info("[PyTorch] Engine shut down")
 
@@ -155,3 +161,21 @@ class PyTorchNodeAdapter(BackendAdapter):
     @classmethod
     def priority_for(cls, device_type: str) -> int:
         return { "cuda": 5, "cpu": 5, "mps": 7, "rocm": 5, "xpu": 1 }.get(device_type, 3)
+
+    def load(self, model_name: str | None = None, **kwargs: Any) -> None:
+        """Compatibility alias for load_model()."""
+        if model_name:
+            self.model_name = model_name
+        try:
+            self.load_model()
+        except Exception as e:
+            logger.debug(f"[PyTorch] load() fallback: {e}")
+
+    def unload(self) -> None:
+        """Compatibility alias for shutdown()."""
+        self.shutdown()
+
+
+# Backward compatibility alias
+PyTorchBackend = PyTorchNodeAdapter
+

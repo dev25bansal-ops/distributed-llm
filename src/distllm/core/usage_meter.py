@@ -23,7 +23,6 @@ from typing import Any
 
 from loguru import logger
 
-
 # ── Configuration ───────────────────────────────────────────────────────────
 
 DEFAULT_DB_PATH = os.environ.get("DISTLLM_USAGE_DB", "")

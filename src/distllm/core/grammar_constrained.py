@@ -278,7 +278,7 @@ class GrammarConstrainedGenerator:
         eos_token_id: int | None = None,
         vocabulary: dict[str, list[int]] | None = None,
         force_fallback: bool = False,
-    ) -> "GrammarConstrainedGenerator | None":
+    ) -> GrammarConstrainedGenerator | None:
         """Build an outlines-backed generator, or ``None`` to signal fallback.
 
         Args:
@@ -322,6 +322,7 @@ class GrammarConstrainedGenerator:
                 try:
                     token_str = tokenizer.decode([tid])
                 except Exception:
+                    # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                     continue
                 if token_str:
                     formatted.setdefault(token_str, []).append(int(tid))
@@ -494,7 +495,7 @@ def grammar_constrained_or_fallback(
     vocabulary: dict[str, list[int]] | None = None,
     tokenizer: Any = None,
     force_fallback: bool = False,
-) -> tuple["GrammarConstrainedGenerator | None", bool]:
+) -> tuple[GrammarConstrainedGenerator | None, bool]:
     """Return ``(generator, used_fallback)``.
 
     ``generator`` is an outlines-backed ``GrammarConstrainedGenerator`` when
@@ -529,6 +530,7 @@ def _patch_schema_constrained_decoder() -> None:
     try:
         from distllm.core.constrained_decoder import SchemaConstrainedDecoder
     except Exception:
+        # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
         return
 
     if hasattr(SchemaConstrainedDecoder, "grammar_constrained"):

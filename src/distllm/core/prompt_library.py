@@ -48,7 +48,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -629,6 +630,7 @@ def prompt_library_create(
             with open(template_file, encoding="utf-8") as f:
                 resolved_template = f.read()
         except Exception as e:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(f"[red]Failed to read template file: {e}[/red]")
             return
 

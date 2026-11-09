@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from distllm.backends.protocol import BackendAdapter
+from distllm.backends.protocol import GenerateOnly
 
 
 @dataclass
@@ -27,8 +27,13 @@ class TGIBackendConfig:
     max_concurrent_requests: int = 64
 
 
-class TGIBackendAdapter(BackendAdapter):
-    """Wraps a HuggingFace Text Generation Inference (TGI) server."""
+class TGIBackendAdapter(GenerateOnly):
+    """Wraps a HuggingFace Text Generation Inference (TGI) server.
+
+    Generate-only: ``forward()`` raises ``NotImplementedError`` (inherited
+    from :class:`GenerateOnly`); ``supports_forward()`` is ``False`` so the
+    registry never selects this adapter for pipeline ``forward()`` calls.
+    """
 
     def __init__(self, config: TGIBackendConfig | None = None):
         self.config = config or TGIBackendConfig()
@@ -61,6 +66,7 @@ class TGIBackendAdapter(BackendAdapter):
 
             return _util.find_spec("text_generation") is not None
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     @classmethod
@@ -82,14 +88,17 @@ class TGIBackendAdapter(BackendAdapter):
             resp = httpx.get(f"{self.config.base_url}/info", timeout=5.0)
             return resp.status_code == 200
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
-
-    def forward(self, hidden_states: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("TGI adapter does not support layer-level forward")
 
     def shutdown(self) -> None:
         """Nothing to release for a remote HTTP client."""
         self._headers = {}
+
+    # ``forward()`` is inherited from GenerateOnly: it raises
+    # NotImplementedError and supports_forward() returns False.
+    # (The previous local stub raised the same error; the mixin now
+    # centralises it so every generate-only adapter fails identically.)
 
     # ── Generation ───────────────────────────────────────────────────
 

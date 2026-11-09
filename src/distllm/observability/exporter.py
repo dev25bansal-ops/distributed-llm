@@ -4,11 +4,53 @@ Provides a CollectorRegistry with all standard distllm metrics
 and a FastAPI-compatible /metrics response via generate_latest.
 """
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, Gauge
+try:
+    from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:  # [observability] extra not installed — degrade to no-ops
+    _PROMETHEUS_AVAILABLE = False
+
+    class _CollectorRegistry:
+        def __init__(self):
+            pass
+
+    class _NoopMetric:
+        """Drop-in stub: every method is a no-op, every label returns self."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def labels(self, *args, **kwargs):
+            return self
+
+        def inc(self, *args, **kwargs):
+            pass
+
+        def dec(self, *args, **kwargs):
+            pass
+
+        def set(self, *args, **kwargs):
+            pass
+
+        def observe(self, *args, **kwargs):
+            pass
+
+    CollectorRegistry = _CollectorRegistry
+    Counter = _NoopMetric
+    Histogram = _NoopMetric
+    Gauge = _NoopMetric
 
 
 class DistLLMPrometheusExporter:
-    """Prometheus metrics collector for all distributed-llm components."""
+    """Prometheus metrics collector for all distributed-llm components.
+
+    When ``prometheus_client`` is missing (the ``[observability]`` extra is
+    not installed), every metric becomes a no-op stub so the rest of the
+    server still imports and runs; ``generate_metrics()`` then returns an
+    empty exposition and the ``/metrics`` endpoint serves nothing rather
+    than crashing the process.
+    """
 
     def __init__(self):
         self.registry = CollectorRegistry()
@@ -223,6 +265,9 @@ class DistLLMPrometheusExporter:
 
     def generate_metrics(self) -> bytes:
         """Generate Prometheus text exposition format."""
+        if not _PROMETHEUS_AVAILABLE:
+            return b""
+
         from prometheus_client import generate_latest
 
         return generate_latest(self.registry)

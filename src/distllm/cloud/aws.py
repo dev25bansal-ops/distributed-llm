@@ -51,6 +51,7 @@ class AWSPricingFetcher(PricingFetcher):
         try:
             return self._fetch_via_boto3(regions)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         try:
             return self._fetch_via_http(regions)
@@ -135,6 +136,7 @@ class AWSPricingFetcher(PricingFetcher):
                             spot_hourly=od * 0.3,
                         ))
             except Exception:
+                # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                 continue
         return result if result else self._fallback()
 

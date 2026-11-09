@@ -1,8 +1,8 @@
 """System monitoring: GPU, CPU, memory, and request metrics."""
 
+import atexit
 import os
 import time
-import atexit
 from typing import Any
 
 from loguru import logger

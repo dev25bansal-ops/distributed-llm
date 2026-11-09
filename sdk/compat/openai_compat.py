@@ -36,14 +36,26 @@ class OpenAI:
         base_url: str = "http://localhost:8000/v1",
         api_key: str = "",
         timeout: float = 120.0,
+        max_retries: int = 3,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.max_retries = max_retries
+        self._client = httpx.Client(timeout=httpx.Timeout(timeout), headers=self._base_headers())
         self.chat = ChatCompletions(self)
         self.completions = Completions(self)
         self.embeddings = Embeddings(self)
         self.models = Models(self)
+
+    def _base_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def close(self):
+        self._client.close()
 
 
 class ChatCompletions:
@@ -88,41 +100,53 @@ class ChatCompletions:
         if stream:
             return self._stream_create(payload)
 
-        response = self._post("/chat/completions", payload)
+        response = self._request_with_retry("POST", "/chat/completions", payload)
         return ChatCompletion.from_dict(response)
 
     def _stream_create(self, payload: dict) -> Iterator[ChatCompletionChunk]:
         """Stream chat completion chunks."""
         payload["stream"] = True
         url = f"{self._client.base_url}/chat/completions"
-        headers = self._headers()
+        headers = self._client._base_headers()
 
-        with httpx.Client(timeout=self._client.timeout) as client:
-            with client.stream("POST", url, json=payload, headers=headers) as response:
-                for line in response.iter_lines():
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk_dict = json.loads(data)
-                            yield ChatCompletionChunk.from_dict(chunk_dict)
-                        except json.JSONDecodeError:
-                            continue
-
-    def _post(self, path: str, payload: dict) -> dict:
-        url = f"{self._client.base_url}{path}"
-        headers = self._headers()
-        with httpx.Client(timeout=self._client.timeout) as client:
-            response = client.post(url, json=payload, headers=headers)
+        with self._client._client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
-            return response.json()
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk_dict = json.loads(data)
+                        yield ChatCompletionChunk.from_dict(chunk_dict)
+                    except json.JSONDecodeError:
+                        continue
 
-    def _headers(self) -> dict:
-        headers = {"Content-Type": "application/json"}
-        if self._client.api_key:
-            headers["Authorization"] = f"Bearer {self._client.api_key}"
-        return headers
+    def _request_with_retry(self, method: str, path: str, payload: dict) -> dict:
+        """POST with retry and exponential backoff."""
+        url = f"{self._client.base_url}{path}"
+        headers = self._client._base_headers()
+        last_error: Exception | None = None
+        for attempt in range(self._client.max_retries + 1):
+            try:
+                response = self._client._client.request(method, url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 500, 502, 503, 504) and attempt < self._client.max_retries:
+                    delay = min(1.0 * (2 ** attempt), 30.0)
+                    time.sleep(delay)
+                    last_error = e
+                    continue
+                raise
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < self._client.max_retries:
+                    delay = min(1.0 * (2 ** attempt), 30.0)
+                    time.sleep(delay)
+                    last_error = e
+                    continue
+                raise
+        raise last_error  # type: ignore[misc]
 
 
 class Completions:
@@ -148,13 +172,10 @@ class Completions:
             **kwargs,
         }
         url = f"{self._client.base_url}/completions"
-        headers = {"Content-Type": "application/json"}
-        if self._client.api_key:
-            headers["Authorization"] = f"Bearer {self._client.api_key}"
-        with httpx.Client(timeout=self._client.timeout) as client:
-            response = client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            return Completion.from_dict(response.json())
+        headers = self._client._base_headers()
+        response = self._client._client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return Completion.from_dict(response.json())
 
 
 class Embeddings:
@@ -172,13 +193,10 @@ class Embeddings:
         """Create embeddings."""
         payload = {"model": model, "input": input, **kwargs}
         url = f"{self._client.base_url}/embeddings"
-        headers = {"Content-Type": "application/json"}
-        if self._client.api_key:
-            headers["Authorization"] = f"Bearer {self._client.api_key}"
-        with httpx.Client(timeout=self._client.timeout) as client:
-            response = client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            return EmbeddingResponse.from_dict(response.json())
+        headers = self._client._base_headers()
+        response = self._client._client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return EmbeddingResponse.from_dict(response.json())
 
 
 class Models:
@@ -190,16 +208,20 @@ class Models:
     def list(self) -> Any:
         """List available models."""
         url = f"{self._client.base_url}/models"
-        headers = {"Content-Type": "application/json"}
-        if self._client.api_key:
-            headers["Authorization"] = f"Bearer {self._client.api_key}"
-        with httpx.Client(timeout=self._client.timeout) as client:
-            response = client.get(url, headers=headers)
-            response.raise_for_status()
-            return ModelList.from_dict(response.json())
+        headers = self._client._base_headers()
+        response = self._client._client.get(url, headers=headers)
+        response.raise_for_status()
+        return ModelList.from_dict(response.json())
 
 
 # ── Response Objects ──────────────────────────────────────────────────────
+#
+# Parsing contract (Wave-2 item 38): DistLLM extends the OpenAI schemas with
+# native extras — top-level ``generation_time``, v2 ``system_fingerprint`` /
+# ``api_version``, and extended ``usage`` objects (cost summaries,
+# ``processing_time``).  Unknown fields are IGNORED (ignore-extra semantics);
+# required structure (objects/lists/string content) is still validated with
+# clear ValueErrors so callers get actionable errors on malformed payloads.
 
 
 @dataclass
@@ -222,6 +244,47 @@ class Usage:
     total_tokens: int = 0
 
 
+def _require_dict(value: Any, what: str) -> dict:
+    """Validate that ``value`` is a JSON object."""
+    if not isinstance(value, dict):
+        raise ValueError(f"{what} must be an object, got {type(value).__name__}")
+    return value
+
+
+def _require_list(value: Any, what: str) -> list:
+    """Validate that ``value`` is a JSON array."""
+    if not isinstance(value, list):
+        raise ValueError(f"{what} must be a list, got {type(value).__name__}")
+    return value
+
+
+def _token_count(value: Any) -> int:
+    """Coerce a usage counter to int; unknown/non-numeric values count as 0."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _parse_usage(data: Any) -> Usage:
+    """Parse a ``usage`` object with ignore-extra semantics.
+
+    DistLLM merges cost summaries into the usage object (see
+    ``core/streaming_cost.to_final_summary`` / ``api/streaming.py``) and adds
+    ``processing_time`` on embeddings.  Unknown keys are ignored instead of
+    crashing; the three standard counters are coerced to ints.
+    """
+    if data is None:
+        return Usage()
+    _require_dict(data, "usage")
+    return Usage(
+        prompt_tokens=_token_count(data.get("prompt_tokens")),
+        completion_tokens=_token_count(data.get("completion_tokens")),
+        total_tokens=_token_count(data.get("total_tokens")),
+    )
+
+
 @dataclass
 class ChatCompletion:
     id: str = ""
@@ -233,25 +296,42 @@ class ChatCompletion:
 
     @classmethod
     def from_dict(cls, data: dict) -> ChatCompletion:
+        _require_dict(data, "chat completion")
+        raw_choices = _require_list(data.get("choices", []), "choices")
         choices = []
-        for c in data.get("choices", []):
-            msg = c.get("message", {})
+        for c in raw_choices:
+            _require_dict(c, "choice")
+            msg = c.get("message")
+            if msg is None:
+                msg = {}
+            _require_dict(msg, "message")
+            role = msg.get("role", "assistant")
+            if role is None:
+                role = "assistant"
+            if not isinstance(role, str):
+                raise ValueError(
+                    f"message.role must be a string, got {type(role).__name__}"
+                )
+            content = msg.get("content")
+            # Server sends content=null when tool_calls are present.
+            if content is None:
+                content = ""
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"message.content must be a string, got "
+                    f"{type(content).__name__}"
+                )
             choices.append(Choice(
                 index=c.get("index", 0),
-                message=Message(role=msg.get("role", "assistant"), content=msg.get("content", "")),
+                message=Message(role=role, content=content),
                 finish_reason=c.get("finish_reason", "stop"),
             ))
-        usage = data.get("usage", {})
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             created=data.get("created", int(time.time())),
             model=data.get("model", ""),
             choices=choices,
-            usage=Usage(
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
-            ),
+            usage=_parse_usage(data.get("usage")),
         )
 
 
@@ -259,13 +339,25 @@ class ChatCompletion:
 class ChatCompletionChunk:
     id: str = ""
     object: str = "chat.completion.chunk"
+    created: int = 0
+    model: str = ""
     choices: list[dict] = field(default_factory=list)
+    usage: Usage | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ChatCompletionChunk:
+        _require_dict(data, "chunk")
+        choices = _require_list(data.get("choices", []), "choices")
+        for c in choices:
+            _require_dict(c, "chunk choice")
+        usage_data = data.get("usage")
         return cls(
             id=data.get("id", ""),
-            choices=data.get("choices", []),
+            object=data.get("object", "chat.completion.chunk"),
+            created=data.get("created", 0),
+            model=data.get("model", ""),
+            choices=choices,
+            usage=_parse_usage(usage_data) if usage_data is not None else None,
         )
 
 
@@ -278,11 +370,12 @@ class Completion:
 
     @classmethod
     def from_dict(cls, data: dict) -> Completion:
-        usage = data.get("usage", {})
+        _require_dict(data, "completion")
         return cls(
             id=data.get("id", ""),
-            choices=data.get("choices", []),
-            usage=Usage(**usage) if usage else Usage(),
+            object=data.get("object", "text_completion"),
+            choices=_require_list(data.get("choices", []), "choices"),
+            usage=_parse_usage(data.get("usage")),
         )
 
 
@@ -294,11 +387,11 @@ class EmbeddingResponse:
 
     @classmethod
     def from_dict(cls, data: dict) -> EmbeddingResponse:
-        usage = data.get("usage", {})
+        _require_dict(data, "embedding response")
         return cls(
-            data=data.get("data", []),
+            data=_require_list(data.get("data", []), "data"),
             model=data.get("model", ""),
-            usage=Usage(**usage) if usage else Usage(),
+            usage=_parse_usage(data.get("usage")),
         )
 
 
@@ -309,7 +402,8 @@ class ModelList:
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelList:
+        _require_dict(data, "model list")
         return cls(
             object=data.get("object", "list"),
-            data=data.get("data", []),
+            data=_require_list(data.get("data", []), "data"),
         )

@@ -6,10 +6,30 @@ delimiter "__" (e.g., DISTLLM_MODEL__NAME).
 """
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from distllm.config._application import AgentSettings, PluginSettings, RAGSettings
+from distllm.config._backends import LlamacppSettings, VLLMSettings
+from distllm.config._cache import (
+    CachePersistenceSettings,
+    CacheSettings,
+    DefragmentationSettings,
+    GossipSettings,
+    PredictiveCacheSettings,
+    PrefixCacheSettings,
+)
+from distllm.config._deployment import (
+    CanarySettings,
+    CostSettings,
+    RolloutStageModel,
+    TenantSettings,
+    VersionSettings,
+)
+from distllm.config._generation import GenerationSettings
+from distllm.config._hardware import HardwareSettings
 
 # Domain module imports
 from distllm.config._model import (
@@ -35,13 +55,10 @@ from distllm.config._network import (
     TLSSettings,
     WideAreaSettings,
 )
-from distllm.config._cache import (
-    CachePersistenceSettings,
-    CacheSettings,
-    DefragmentationSettings,
-    GossipSettings,
-    PredictiveCacheSettings,
-    PrefixCacheSettings,
+from distllm.config._observability import (
+    AlertingSettings,
+    ChaosSettings,
+    MonitoringSettings,
 )
 from distllm.config._parallelism import (
     BatchingSettings,
@@ -62,22 +79,6 @@ from distllm.config._performance import (
     CudaGraphSettings,
     SelfOptimizingSettings,
 )
-from distllm.config._hardware import HardwareSettings
-from distllm.config._backends import LlamacppSettings, VLLMSettings
-from distllm.config._generation import GenerationSettings
-from distllm.config._observability import (
-    AlertingSettings,
-    ChaosSettings,
-    MonitoringSettings,
-)
-from distllm.config._deployment import (
-    CanarySettings,
-    CostSettings,
-    RolloutStageModel,
-    TenantSettings,
-    VersionSettings,
-)
-from distllm.config._application import AgentSettings, PluginSettings, RAGSettings
 
 if TYPE_CHECKING:
     pass
@@ -168,8 +169,8 @@ def _note_validation_context(exc: "ValidationError", config_path: str) -> None:
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
-    Environment variables use DISTLLM__ prefix with __ delimiter.
-    Example: DISTLLM__MODEL__NAME=my-model sets model.name.
+    Environment variables use DISTLLM_ prefix with __ delimiter.
+    Example: DISTLLM_MODEL__NAME=my-model sets model.name.
     """
     model_config = SettingsConfigDict(
         env_prefix="DISTLLM_",
@@ -238,6 +239,30 @@ class DistLLMSettings(BaseSettings):
     # ------------------------------------------------------------------
     # Cross-field validation
     # ------------------------------------------------------------------
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_flat_model(cls, data: Any) -> Any:
+        """Accept a bare string for ``model`` as ``model.name``.
+
+        The Dockerfile, Helm chart, kustomize base and inference deployment all
+        set the flat form::
+
+            ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
+
+        but ``model`` is a nested ModelSettings, so pydantic-settings tried to
+        JSON-parse that string and failed with
+
+            SettingsError: error parsing value for field "model"
+
+        before the server could start. Coercing here means both the flat and
+        the nested (``DISTLLM_MODEL__NAME``) forms work.
+        """
+        if isinstance(data, dict):
+            model_value = data.get("model")
+            if isinstance(model_value, str) and model_value.strip():
+                data = {**data, "model": {"name": model_value.strip()}}
+        return data
 
     @model_validator(mode="after")
     def _validate_cross_field(self) -> "DistLLMSettings":
@@ -389,29 +414,60 @@ class DistLLMSettings(BaseSettings):
         # SECURITY/CORRECTNESS: pydantic-settings precedence is
         # ``init kwargs > env > dotenv > secrets > defaults``.  Passing YAML as
         # init kwargs (``cls(**data)``) would let a checked-in config file
-        # silently override ``DISTLLM__*`` env vars — e.g. an operator's
+        # silently override ``DISTLLM_*`` env vars — e.g. an operator's
         # env-set secret could be clobbered by a committed YAML value.  We
         # therefore read the environment-provided values directly and merge
         # YAML underneath them, preserving ``CLI > env > YAML > defaults``.
         from pydantic_settings import EnvSettingsSource
 
-        env_values: dict[str, Any] = EnvSettingsSource(cls)()
-
-        merged = _deep_merge(dict(yaml_data), dict(env_values))
+        # A flat DISTLLM_MODEL=<id> is what the Dockerfile, the Helm chart, the
+        # kustomize base and the inference deployment all set, but `model` is a
+        # nested ModelSettings, so pydantic tries to JSON-parse the value and
+        # dies with
+        #   SettingsError: error parsing value for field "model"
+        # before the server can start. Normalise the flat form into the nested
+        # one for the whole load (model_validate on a BaseSettings subclass
+        # re-runs the sources, so restoring it earlier is not enough);
+        # DISTLLM_MODEL__NAME still wins.
+        flat_model = os.environ.get("DISTLLM_MODEL", "").strip()
+        nested_model = os.environ.get("DISTLLM_MODEL__NAME", "").strip()
+        restore: list[tuple[str, str]] = []
+        injected_nested = False
+        if flat_model:
+            # ALWAYS hide the flat key: pydantic-settings JSON-parses it as a
+            # nested field regardless of whether the proper nested var is also
+            # present. Only inject the nested form when it is not already set,
+            # so DISTLLM_MODEL__NAME keeps precedence.
+            restore.append(("DISTLLM_MODEL", os.environ.pop("DISTLLM_MODEL")))
+            if not nested_model:
+                os.environ["DISTLLM_MODEL__NAME"] = flat_model
+                injected_nested = True
 
         try:
-            settings = cls.model_validate(merged)
-        except ValidationError as e:
-            # Preserve the ValidationError type for callers, but attach the
-            # config file path as a note (Python 3.11+) so tracebacks show
-            # which file the bad value came from.
-            if config_path:
-                _note_validation_context(e, config_path)
-            raise
+            env_values: dict[str, Any] = EnvSettingsSource(cls)()
+            merged = _deep_merge(dict(yaml_data), dict(env_values))
 
-        if cli_overrides:
-            cli_merged = cls._apply_cli_overrides(settings.model_dump(), cli_overrides)
-            settings = cls.model_validate(cli_merged)
+            try:
+                settings = cls.model_validate(merged)
+            except ValidationError as e:
+                # Preserve the ValidationError type for callers, but attach the
+                # config file path as a note (Python 3.11+) so tracebacks show
+                # which file the bad value came from.
+                if config_path:
+                    _note_validation_context(e, config_path)
+                raise
+
+            # CLI overrides are applied last and re-validated. Keep them inside
+            # the env normalisation above: model_validate on a BaseSettings
+            # re-reads os.environ, so a flat DISTLLM_MODEL would fail here too.
+            if cli_overrides:
+                cli_merged = cls._apply_cli_overrides(settings.model_dump(), cli_overrides)
+                settings = cls.model_validate(cli_merged)
+        finally:
+            if injected_nested:
+                os.environ.pop("DISTLLM_MODEL__NAME", None)
+            for key, value in restore:
+                os.environ[key] = value
 
         return settings
 

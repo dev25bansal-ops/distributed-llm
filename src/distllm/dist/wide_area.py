@@ -251,6 +251,7 @@ class WideAreaPipeline(PipelineOrchestrator):
                 import statistics
                 return max(1.0, statistics.median(recent))
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return default
 

@@ -9,30 +9,54 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from distllm.errors.types import (
+    BatchCapacityError,
+    BatchError,
+    CircuitBreakerError,
+    ConfigError,
+    ConfigValidationError,
+    ConstraintError,
+    ConstraintViolationError,
     DistLLMError,
+    GatewayError,
+    GRPCTimeoutError,
+    InputValidationError,
+    ModelError,
+    ModelLoadError,
+    ModelNotFoundError,
     NodeError,
     NodeUnreachableError,
     OOMError,
-    GRPCTimeoutError,
-    ModelError,
-    ModelNotFoundError,
-    ModelLoadError,
-    ConfigError,
-    ConfigValidationError,
-    BatchError,
-    BatchCapacityError,
-    ConstraintError,
-    ConstraintViolationError,
-    InputValidationError,
-    GatewayError,
     ProviderTimeoutError,
-    CircuitBreakerError,
 )
+
+# ── Feature-disabled signalling ─────────────────────────────────────────────
+#
+# A 503 that means "this feature is off by configuration" is NOT a downstream
+# failure: sweeping deliberately-disabled routes must not trip the global
+# circuit breaker (which would then 503 unrelated routes). Responses raise
+# ``FeatureDisabledError``; the registered exception handler stamps them with
+# FEATURE_DISABLED_HEADER, and CircuitBreakerMiddleware records marked
+# responses as NEUTRAL (neither success nor failure).
+
+FEATURE_DISABLED_HEADER = "X-DistLLM-Feature-Disabled"
+
+
+class FeatureDisabledError(HTTPException):
+    """A feature is disabled by configuration — a neutral 503, not a failure.
+
+    The circuit breaker treats these responses as neither success nor failure
+    (see ``CircuitBreakerMiddleware.dispatch``), so deliberately-disabled
+    features cannot open the breaker for unrelated routes.
+    """
+
+    def __init__(self, feature: str, detail: str) -> None:
+        super().__init__(status_code=503, detail=detail)
+        self.feature = feature
 
 
 class ErrorCode(str, Enum):

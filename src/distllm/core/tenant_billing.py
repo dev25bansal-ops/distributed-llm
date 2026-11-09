@@ -45,7 +45,6 @@ from distllm.core.metering import (
     get_metering_store,
 )
 
-
 # ── Tier plans ─────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -110,11 +109,11 @@ class AllowDeny:
         return self.allowed
 
     @classmethod
-    def allow(cls, reason: str = "ok") -> "AllowDeny":
+    def allow(cls, reason: str = "ok") -> AllowDeny:
         return cls(allowed=True, reason=reason, status_code=200)
 
     @classmethod
-    def deny(cls, reason: str) -> "AllowDeny":
+    def deny(cls, reason: str) -> AllowDeny:
         return cls(allowed=False, reason=reason, status_code=429)
 
 

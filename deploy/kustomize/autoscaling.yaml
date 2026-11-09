@@ -32,25 +32,28 @@ spec:
           periodSeconds: 120
       selectPolicy: Min
   metrics:
-    # Custom metrics from DistLLM pipeline
+    # Metric names MUST match DistLLMPrometheusExporter
+    # (src/distllm/observability/exporter.py). The previous names
+    # (distllm_in_flight_requests, distllm_gpu_utilization_percent,
+    # distllm_pipeline_latency_ms) never existed, so the HPA never scaled.
     - type: Pods
       pods:
         metric:
-          name: distllm_in_flight_requests
+          name: distllm_coordinator_active_requests
         target:
           type: AverageValue
           averageValue: "10"
     - type: Pods
       pods:
         metric:
-          name: distllm_gpu_utilization_percent
+          name: distllm_node_gpu_utilization_percent
         target:
           type: AverageValue
           averageValue: "80"
     - type: Pods
       pods:
         metric:
-          name: distllm_pipeline_latency_ms
+          name: distllm_node_latency_p99_ms
         target:
           type: AverageValue
           averageValue: "5000"
@@ -76,37 +79,39 @@ metadata:
 data:
   config.yaml: |
     rules:
-      - seriesQuery: 'distllm_in_flight_requests{namespace!="",pod!=""}'
+      - seriesQuery: 'distllm_coordinator_active_requests{namespace!="",pod!=""}'
         resources:
           overrides:
             namespace: {resource: "namespace"}
             pod: {resource: "pod"}
         name:
-          matches: "distllm_in_flight_requests"
-          as: "distllm_in_flight_requests"
-        metricsQuery: 'avg(distllm_in_flight_requests{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+          matches: "^distllm_coordinator_active_requests$"
+          as: "distllm_coordinator_active_requests"
+        metricsQuery: 'avg(distllm_coordinator_active_requests{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
 
-      - seriesQuery: 'distllm_gpu_utilization_percent{namespace!="",pod!=""}'
+      - seriesQuery: 'distllm_node_gpu_utilization_percent{namespace!="",pod!=""}'
         resources:
           overrides:
             namespace: {resource: "namespace"}
             pod: {resource: "pod"}
         name:
-          matches: "distllm_gpu_utilization_percent"
-          as: "distllm_gpu_utilization_percent"
-        metricsQuery: 'avg(distllm_gpu_utilization_percent{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+          matches: "^distllm_node_gpu_utilization_percent$"
+          as: "distllm_node_gpu_utilization_percent"
+        metricsQuery: 'avg(distllm_node_gpu_utilization_percent{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
 
-      - seriesQuery: 'distllm_pipeline_latency_ms{namespace!="",pod!=""}'
+      - seriesQuery: 'distllm_node_latency_p99_ms{namespace!="",pod!=""}'
         resources:
           overrides:
             namespace: {resource: "namespace"}
             pod: {resource: "pod"}
         name:
-          matches: "distllm_pipeline_latency_ms"
-          as: "distllm_pipeline_latency_ms"
-        metricsQuery: 'avg(distllm_pipeline_latency_ms{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+          matches: "^distllm_node_latency_p99_ms$"
+          as: "distllm_node_latency_p99_ms"
+        metricsQuery: 'avg(distllm_node_latency_p99_ms{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
 ---
-# Webhook endpoint for custom metrics
+# Metrics endpoint for the Prometheus adapter / ServiceMonitor. The
+# coordinator's /metrics is served on the API port (8000), not a separate
+# metrics port.
 apiVersion: v1
 kind: Service
 metadata:
@@ -118,11 +123,8 @@ spec:
     app.kubernetes.io/component: coordinator
   ports:
     - name: metrics
-      port: 9090
-      targetPort: 9090
-    - name: webhook
-      port: 8080
-      targetPort: 8080
+      port: 8000
+      targetPort: api
 ---
 # ServiceMonitor for Prometheus scraping
 apiVersion: monitoring.coreos.com/v1

@@ -24,7 +24,8 @@ Compared to a single Linear layer (SelfSpeculativeDecoder):
 from __future__ import annotations
 
 import math
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn

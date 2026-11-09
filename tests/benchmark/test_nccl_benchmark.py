@@ -30,7 +30,7 @@ class TestNcclBandwidth:
         with patch("distllm.dist.nccl.dist") as mock_dist:
             mock_dist.is_initialized.return_value = True
 
-            from distllm.dist.nccl import NcclTransport
+            from distllm.dist.nccl import CommType, NcclTransport
 
             transport = NcclTransport(
                 rank=0, world_size=2, backend="gloo",
@@ -53,7 +53,7 @@ class TestNcclBandwidth:
         with patch("distllm.dist.nccl.dist") as mock_dist:
             mock_dist.is_initialized.return_value = True
 
-            from distllm.dist.nccl import NcclTransport
+            from distllm.dist.nccl import CommType, NcclTransport
 
             transport = NcclTransport(
                 rank=0, world_size=2, backend="gloo",
@@ -79,7 +79,7 @@ class TestNcclPreemptionOverhead:
         with patch("distllm.dist.nccl.dist") as mock_dist:
             mock_dist.is_initialized.return_value = True
 
-            from distllm.dist.nccl import NcclTransport
+            from distllm.dist.nccl import CommType, NcclTransport
 
             transport = NcclTransport(
                 rank=0, world_size=2, backend="gloo",
@@ -106,7 +106,7 @@ class TestNcclStats:
         with patch("distllm.dist.nccl.dist") as mock_dist:
             mock_dist.is_initialized.return_value = True
 
-            from distllm.dist.nccl import NcclTransport
+            from distllm.dist.nccl import CommType, NcclTransport
 
             transport = NcclTransport(
                 rank=0, world_size=2, backend="gloo",
@@ -117,7 +117,7 @@ class TestNcclStats:
             # Generate some stats
             for _ in range(50):
                 transport._record(
-                    transport.CommType.ALL_REDUCE,
+                    CommType.ALL_REDUCE,
                     1024 * 1024, time.perf_counter_ns(),
                 )
 

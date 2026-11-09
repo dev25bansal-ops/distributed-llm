@@ -39,7 +39,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
+    // The site is static: pages are served as-is, exactly as GitHub Pages
+    // serves them from the website/ directory. This used to run `vite dev`,
+    // which meant the tests exercised a transformed bundle rather than the
+    // files that actually ship.
+    command: 'npx serve . -l 3000 --no-clipboard',
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
   },

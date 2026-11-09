@@ -16,7 +16,6 @@ from loguru import logger
 from distllm.core.evaluation.constants import _DEFAULT_DB_PATH
 from distllm.core.evaluation.models import EvalReport
 
-
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS eval_reports (
     report_id TEXT PRIMARY KEY,

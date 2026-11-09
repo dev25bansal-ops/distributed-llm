@@ -135,6 +135,7 @@ class ParallelAutoTuner:
                 free, _ = torch.cuda.mem_get_info(f"cuda:{i}")
                 mem.append(free / (1024**3))
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 mem.append(0.0)
         return mem
 
@@ -179,6 +180,7 @@ class ParallelAutoTuner:
             del block, inp, big
 
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             tokens_per_sec = 1000.0 / (hidden_size / 4096)
             mem_per_token_mb = hidden_size * 4 / 1024
 
@@ -191,6 +193,7 @@ class ParallelAutoTuner:
             try:
                 bw["intra_node"] = self._measure_p2p_bw(0, 1, 128)
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 bw["intra_node"] = 50.0 if self.topology.has_nvlink else 12.5
         else:
             bw["intra_node"] = 12.5
@@ -199,6 +202,7 @@ class ParallelAutoTuner:
             try:
                 bw["inter_node"] = self._measure_network_bw()
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 bw["inter_node"] = self.topology.interconnect_bandwidth_gbps
         else:
             bw["inter_node"] = self.topology.interconnect_bandwidth_gbps

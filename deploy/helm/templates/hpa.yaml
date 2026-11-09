@@ -1,0 +1,37 @@
+{{- if .Values.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-coordinator
+  labels:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    app.kubernetes.io/component: coordinator
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ include "distllm-operator.fullname" . }}-coordinator
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    {{- if eq .Values.hpa.metric "tokens_per_second" }}
+    - type: Pods
+      pods:
+        metric:
+          name: distllm_tokens_per_second
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.hpa.targetValue }}"
+    {{- else if eq .Values.hpa.metric "queue_depth" }}
+    - type: Pods
+      pods:
+        metric:
+          name: distllm_coordinator_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.hpa.targetValue }}"
+    {{- end }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+{{- end }}

@@ -164,6 +164,7 @@ class RequestHandler:
                     c._request_results[request_id] = result
                     c._request_results_created[request_id] = time.monotonic()
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 with c._request_lock:
                     c._request_results[request_id] = f"[Error: {e}]"
                     c._request_results_created[request_id] = time.monotonic()

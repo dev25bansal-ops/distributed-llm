@@ -49,11 +49,20 @@ class _SchedulerMock:
         self._aging_interval_s = 5.0
         self._aging_max_boost = 3
         self._aging_enabled = True
+        # The real BatchScheduler keeps this on its PreemptionManager and
+        # exposes set_max_preempted()/get_max_preempted(); mirror that API
+        # rather than a bare attribute the routes no longer read.
         self._max_preempted = 4
         self._starvation_threshold_s = 120.0
         self._enable_chunked_prefill = True
         self._adapt_prefill_budget = True
         self._priority_weights = {"default": 1.0, "high": 2.0}
+
+    def set_max_preempted(self, value: int) -> None:
+        self._max_preempted = max(0, value)
+
+    def get_max_preempted(self) -> int:
+        return self._max_preempted
 
     def stats(self):
         return {

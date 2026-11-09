@@ -330,11 +330,15 @@ class TestRealAppMounting:
         _state.coordinator = None
 
     def test_routes_exist_on_real_app(self, real_client):
-        paths = {r.path for r in real_client.app.routes}
+        from tests.api._route_helpers import route_paths, routes_matching
+
+        paths = route_paths(real_client.app)
         assert "/v1/api-keys" in paths
         # POST + GET share the path; DELETE adds the param variant.
-        assert any(getattr(r, "methods", None) and "DELETE" in r.methods and r.path == "/v1/api-keys/{key_id}"
-                   for r in real_client.app.routes)
+        assert any(
+            "DELETE" in (getattr(r, "methods", None) or set())
+            for r in routes_matching(real_client.app, "/v1/api-keys/{key_id}")
+        )
 
     def test_full_lifecycle_on_real_app(self, real_client):
         hdr = {"Authorization": f"Bearer {_TEST_ADMIN_KEY}"}

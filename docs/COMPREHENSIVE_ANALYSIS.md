@@ -1,3 +1,5 @@
+
+> **⚠️ HISTORICAL SNAPSHOT (2026-07-18)** — preserved for the audit trail; counts and findings predate the 2026-11-06 hygiene pass. Living docs: [UNIFIED.md](_map/UNIFIED.md) + the 00–11 MOCs.
 # DistLLM — Comprehensive Codebase Analysis
 
 > **Analysis date**: July 18, 2026

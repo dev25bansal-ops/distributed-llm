@@ -1,6 +1,7 @@
 # DistLLM — Y Combinator Startup Package
 
-> **Prepared**: July 2026
+> **Prepared**: July 2026; refreshed 2026-11-06 hygiene pass
+> Canonical numbers: [FINANCIALS.md](FINANCIALS.md)
 > **Product**: Pool GPUs from every device you own to run LLMs no single machine can handle.
 
 ---

@@ -80,7 +80,7 @@ class PeerIdentity:
         return f"spiffe://{td}/peer/{self.peer_id}"
 
     @classmethod
-    def from_spiffe_id(cls, spiffe_id: str) -> "PeerIdentity":
+    def from_spiffe_id(cls, spiffe_id: str) -> PeerIdentity:
         """Parse a SPIFFE ID back into a PeerIdentity (inverse of ``.spiffe_id``)."""
         if not spiffe_id.startswith("spiffe://"):
             raise ValueError(f"not a spiffe id: {spiffe_id!r}")
@@ -247,6 +247,7 @@ def extract_peer_id(svid_pem: str) -> str | None:
     try:
         cert = x509.load_pem_x509_certificate(svid_pem.encode("ascii"))
     except Exception:
+        # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
         return None
     spiffe_id = _extract_spiffe_id(cert)
     if spiffe_id is None:
@@ -282,6 +283,7 @@ def verify_svid(svid_pem: str, trust_domain: str | None = None,
     try:
         cert = x509.load_pem_x509_certificate(svid_pem.encode("ascii"))
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
     if ca_cert_pem is None:
@@ -289,6 +291,7 @@ def verify_svid(svid_pem: str, trust_domain: str | None = None,
     try:
         ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
     # (1) chain to CA: verify the leaf signature with the CA public key.
@@ -300,6 +303,7 @@ def verify_svid(svid_pem: str, trust_domain: str | None = None,
             cert.signature_hash_algorithm,  # type: ignore[arg-type]
         )
     except Exception:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False
 
     # CA must actually be a CA (BasicConstraints).

@@ -8,8 +8,8 @@ Integrates:
 """
 
 import os
-import time
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any
@@ -112,6 +112,7 @@ class HealthManager:
         try:
             self._executor.shutdown(wait=False)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     @property
@@ -353,5 +354,6 @@ class HealthManager:
                     "gpu_memory_free": getattr(node, "gpu_memory_free", 0),
                 }
             except Exception:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 nodes_status[node_id] = {"healthy": False, "state": "unknown"}
         return nodes_status

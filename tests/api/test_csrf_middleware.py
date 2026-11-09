@@ -94,10 +94,12 @@ class TestCsrfWiring:
 
     def test_server_has_state_changing_routes(self):
         """Sanity: the coverage assertion above has something to cover."""
+        from tests.api._route_helpers import iter_routes
+
         mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
         count = sum(
             1
-            for r in server_module.app.routes
+            for r in iter_routes(server_module.app)
             if (getattr(r, "methods", set()) or set()) & mutating_methods
         )
         assert count > 20

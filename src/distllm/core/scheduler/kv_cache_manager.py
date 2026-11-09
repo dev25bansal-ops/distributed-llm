@@ -153,7 +153,7 @@ class KVCacheManager:
     # ── KV compression for preemption ─────────────────────────────────────
 
     @staticmethod
-    def _compress_tensor(tensor: "torch.Tensor", method: str) -> dict:
+    def _compress_tensor(tensor: torch.Tensor, method: str) -> dict:
         """Compress a single tensor with int4 or int8 quantization.
 
         Returns a dict with the quantized tensor and scale factors,
@@ -188,7 +188,7 @@ class KVCacheManager:
         return {"_compressed": False, "data": tensor}
 
     @staticmethod
-    def _decompress_tensor(compressed: dict) -> "torch.Tensor":
+    def _decompress_tensor(compressed: dict) -> torch.Tensor:
         """Restore a tensor compressed by ``_compress_tensor()``."""
         import torch
 

@@ -1,5 +1,7 @@
 """Continuous batch scheduler for pipeline-parallel inference."""
 
+from __future__ import annotations
+
 import heapq
 import math
 import threading
@@ -13,24 +15,26 @@ from loguru import logger
 if TYPE_CHECKING:
     import torch
 
-from distllm.core.request_latency import RequestLatencyTracker
-from distllm.utils.scheduling import group_by_length
+    from distllm.core.advanced_scheduling import PreemptionPolicy, SchedulingPolicy
 
-# Import extracted classes from the scheduler package
-from distllm.core.scheduler.sequence import (
-    SequenceStatus,
-    GenerationConfig,
-    OpenAICompliance,
-    SchedulingHints,
-    Sequence,
-    ScheduledBatch,
-)
-from distllm.core.scheduler.pressure import DecodePressureTracker
+from distllm.core.request_latency import RequestLatencyTracker
 from distllm.core.scheduler.budget import IterationBudget
+from distllm.core.scheduler.budget_computer import BudgetComputer
 from distllm.core.scheduler.chunked_prefill import ChunkedPrefillInfo
 from distllm.core.scheduler.kv_cache_manager import KVCacheManager
 from distllm.core.scheduler.preemption_manager import PreemptionManager
-from distllm.core.scheduler.budget_computer import BudgetComputer
+from distllm.core.scheduler.pressure import DecodePressureTracker
+
+# Import extracted classes from the scheduler package
+from distllm.core.scheduler.sequence import (
+    GenerationConfig,
+    OpenAICompliance,
+    ScheduledBatch,
+    SchedulingHints,
+    Sequence,
+    SequenceStatus,
+)
+from distllm.utils.scheduling import group_by_length
 
 if TYPE_CHECKING:
     from distllm.core.adaptive_batching import AdaptiveBatchingEngine
@@ -195,7 +199,7 @@ class BatchScheduler:
 
     # -- Advanced scheduling configuration ---------------------------------
 
-    def set_node_capabilities(self, nodes: dict[str, "NodeCapabilityInfo"]) -> None:
+    def set_node_capabilities(self, nodes: dict[str, NodeCapabilityInfo]) -> None:
         """Register cluster node capabilities for heterogeneous scheduling.
 
         Enables device-aware budget computation: chunk sizes, batch sizes,
@@ -312,7 +316,7 @@ class BatchScheduler:
             f"budget={max_power_watts}W, cost=${energy_cost_per_kwh}/kWh"
         )
 
-    def set_scheduling_policy(self, policy: "SchedulingPolicy | None") -> None:
+    def set_scheduling_policy(self, policy: SchedulingPolicy | None) -> None:
         """Set a pluggable scheduling policy.
 
         When set, the policy's ``compute_budget`` method is called instead
@@ -333,7 +337,7 @@ class BatchScheduler:
         if policy is not None:
             logger.info(f"Scheduling policy set to {type(policy).__name__}")
 
-    def set_preemption_policy(self, policy: "PreemptionPolicy | None") -> None:
+    def set_preemption_policy(self, policy: PreemptionPolicy | None) -> None:
         """Connect a PreemptionPolicy for SLA-aware preemption decisions.
 
         When set, ``preempt_if_needed()`` uses the policy's GPU memory
@@ -462,7 +466,7 @@ class BatchScheduler:
         """
         return self._priority_weights.get(priority, 1.0)
 
-    def set_adaptive_engine(self, engine: 'AdaptiveBatchingEngine') -> None:
+    def set_adaptive_engine(self, engine: AdaptiveBatchingEngine) -> None:
         """Connect adaptive batching engine for dynamic batch size tuning."""
         self._adaptive_engine = engine
         # Pull initial batch size from engine
@@ -724,6 +728,7 @@ class BatchScheduler:
                 if prefetcher is not None:
                     prefetcher.prefetch_for_stage(active_ids, stage_idx=0)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         return active_items
 
@@ -1057,7 +1062,7 @@ class BatchScheduler:
                     latencies=seq_latencies,
                 )
 
-    def step(self, batch: ScheduledBatch, next_tokens: "torch.Tensor", kv_caches: dict | None = None, decoded_tokens: list[str] | None = None) -> None:
+    def step(self, batch: ScheduledBatch, next_tokens: torch.Tensor, kv_caches: dict | None = None, decoded_tokens: list[str] | None = None) -> None:
         """Process sampling output, update sequences, check for completion.
 
         Args:
@@ -1259,7 +1264,7 @@ class BatchScheduler:
         return self._kv_cache_mgr._compress_kv_for_preemption(kv_data, method)
 
     @staticmethod
-    def _compress_tensor(tensor: "torch.Tensor", method: str) -> dict:
+    def _compress_tensor(tensor: torch.Tensor, method: str) -> dict:
         """Compress a single tensor with int4 or int8 quantization.
 
         Returns a dict with the quantized tensor and scale factors,
@@ -1268,7 +1273,7 @@ class BatchScheduler:
         return KVCacheManager._compress_tensor(tensor, method)
 
     @staticmethod
-    def _decompress_tensor(compressed: dict) -> "torch.Tensor":
+    def _decompress_tensor(compressed: dict) -> torch.Tensor:
         """Restore a tensor compressed by _compress_tensor()."""
         return KVCacheManager._decompress_tensor(compressed)
 
@@ -1329,6 +1334,10 @@ class BatchScheduler:
     def set_max_preempted(self, max_preempted: int) -> None:
         """Set the maximum number of concurrently preempted sequences."""
         self._preemption_mgr.set_max_preempted(max_preempted)
+
+    def get_max_preempted(self) -> int:
+        """Return the cap on concurrently preempted sequences."""
+        return self._preemption_mgr.get_max_preempted()
 
     def get_preempted_count(self) -> int:
         return self._preemption_mgr.get_preempted_count()

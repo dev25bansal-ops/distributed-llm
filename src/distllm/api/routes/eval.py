@@ -13,14 +13,14 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 from loguru import logger
+from pydantic import BaseModel, Field
+
+from distllm.core.evaluation_harness import EvalReport, EvalRunner
 
 from ..api_state import g
 from ..auth_deps import require_role
 from ..services.eval_service import EvalService
-from distllm.core.evaluation_harness import EvalRunner, EvalReport
-
 
 router = APIRouter(prefix="/v1/eval", tags=["evaluation"])
 

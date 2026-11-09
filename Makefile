@@ -57,8 +57,9 @@ memory-profile: ## Run memory profiling tests
 clean: ## Clean build artifacts
 	python -c "import shutil, pathlib, os; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__')]; [p.unlink() for p in pathlib.Path('.').rglob('*.pyc')]; [p.unlink() for p in pathlib.Path('.').rglob('*.pyo')]; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('*.egg-info')]; [shutil.rmtree(d, ignore_errors=True) for d in ['build', 'dist', '.pytest_cache', '.mypy_cache', '.ruff_cache', 'htmlcov'] if pathlib.Path(d).exists()]"
 
-proto: ## Generate protobuf files
-	python -m grpc_tools.protoc -I proto/ --python_out=src/distllm/communication/ --grpc_python_out=src/distllm/communication/ proto/node.proto
+proto: ## Generate protobuf modules (into dist/ — what code imports)
+	python -m pip install -q grpcio-tools
+	python -m grpc_tools.protoc -I proto/ --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ proto/node.proto
 
 docker-build: ## Build Docker image
 	docker build -t distributed-llm .
@@ -80,16 +81,16 @@ run-distributed: ## Run distributed mode (starts all processes)
 
 # --- Helm ---
 helm-install: ## Install Helm chart
-	helm install distllm deploy/helm/ -f deploy/helm/values.yaml
+	helm install distllm deploy/helm/distllm-operator/ -f deploy/helm/distllm-operator/values.yaml
 
 helm-upgrade: ## Upgrade Helm release
-	helm upgrade distllm deploy/helm/ -f deploy/helm/values.yaml --wait --timeout 10m
+	helm upgrade distllm deploy/helm/distllm-operator/ -f deploy/helm/distllm-operator/values.yaml --wait --timeout 10m
 
 helm-template: ## Render Helm templates
-	helm template distllm deploy/helm/ -f deploy/helm/values.yaml
+	helm template distllm deploy/helm/distllm-operator/ -f deploy/helm/distllm-operator/values.yaml
 
 helm-lint: ## Lint Helm chart
-	helm lint deploy/helm/
+	helm lint deploy/helm/distllm-operator/
 
 # --- Kustomize ---
 kustomize-build-dev: ## Build dev overlay manifests

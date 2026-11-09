@@ -46,11 +46,17 @@ def _init_observability() -> None:
     import os as _os
 
     _trace_sample_rate = float(_os.environ.get("DISTLLM_TRACE_SAMPLE_RATE", "0.1"))
-    setup_tracing(
-        service_name="distllm-api",
-        sampling_strategy="head",
-        sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
-    )
+    try:
+        setup_tracing(
+            service_name="distllm-api",
+            sampling_strategy="head",
+            sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
+        )
+    except RuntimeError as exc:
+        # Tracing is optional: the SDK lives in the [observability] extra. A
+        # deployment that did not install it must still serve requests -- the
+        # old unconditional call made the server fail to start at all.
+        logger.info(f"Tracing disabled: {exc}")
 
     state.metrics_exporter = DistLLMPrometheusExporter()
 
@@ -140,12 +146,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                         scheduler.max_batch_size = new_settings.batching.max_batch_size
                                         scheduler.max_tokens_per_batch = new_settings.batching.max_tokens_per_batch
                         else:
-                            logger.info(f"Config reloaded (no coordinator to update)")
+                            logger.info("Config reloaded (no coordinator to update)")
                 except Exception:
                     logger.exception(
-                        "Config reload queue processor crashed -- SIGHUP reloads will not work until the process is restarted"
+                        "Config reload queue processor error -- continuing (SIGHUP reloads remain available)"
                     )
-                    return
+                    continue
 
         signal.signal(signal.SIGHUP, _reload_config)
         logger.info("SIGHUP handler registered for config hot-reload")

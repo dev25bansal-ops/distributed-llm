@@ -251,7 +251,7 @@ class CacheManager:
         ghost_boost = 0.0
         if prefix_hash in self._ghost_cache and (now - self._ghost_cache[prefix_hash]) < self._ghost_cache_ttl:
             ghost_boost = 2.0  # Penalty — was recently evicted
-        return recency + ghost_boost + (size / max(tier["max_bytes"], 1))
+        return recency + ghost_boost + (size / max(self._tiers[tier_name]["max_bytes"], 1))
 
     def lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
         """Lookup prefix across all local and remote tiers.
@@ -357,6 +357,7 @@ class CacheManager:
                 prefix_hash = idx.index_tokens(tokens[:32])
                 self.gossip_protocol.advertise_cache(prefix_hash)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     async def async_lookup_prefix(self, tokens: list[int]) -> tuple[int, Any]:
@@ -551,6 +552,7 @@ class CacheManager:
                                 self._tier_stats["disk"]["hits"] += 1
                             return ("disk", kv_data)
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
 
         # 3. Gossip index lookup

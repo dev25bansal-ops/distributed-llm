@@ -11,9 +11,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from distllm.api.auth_deps import require_role
-from distllm.prompts.library import SystemPromptDef, SYSTEM_PROMPTS
-from distllm.prompts.templates import BUILTIN_TEMPLATES
+from distllm.api.errors import error_openapi_entry
 from distllm.prompts.engine import TemplateEngine
+from distllm.prompts.library import SYSTEM_PROMPTS, SystemPromptDef
+from distllm.prompts.templates import BUILTIN_TEMPLATES
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 router = APIRouter(prefix="/v1/prompts", tags=["prompts"])
 
@@ -141,16 +146,50 @@ def _get_prompt_or_404(prompt_id: str) -> SystemPromptDef:
     return p
 
 
+_SNAPSHOT_CONTENT_FIELDS = ("name", "category", "description", "prompt", "tags")
+
+
+def _snapshot(prompt_id: str, p: SystemPromptDef) -> None:
+    """Record *p* in the version history unless that state is already stored.
+
+    Rule: a snapshot is skipped when any existing entry has the same
+    ``version`` AND equal content fields. Comparing against every entry (not
+    just the last one) matters after ``restore_version``: the history may
+    already contain the state being replaced, and the restored version can
+    legitimately re-appear later in the list. This keeps one snapshot per
+    distinct version state instead of re-appending on every update/restore.
+    """
+    snapshot = asdict(p)
+    history = _version_history.setdefault(prompt_id, [])
+    for existing in history:
+        if existing.get("version") == snapshot["version"] and all(
+            existing.get(field) == snapshot[field]
+            for field in _SNAPSHOT_CONTENT_FIELDS
+        ):
+            return
+    history.append(snapshot)
+
+
 # ── Static-path endpoints (BEFORE /{prompt_id} wildcard) ─────────────────────
 
 
-@router.get("/templates")
+@router.get(
+    "/templates",
+    summary="List names of built-in prompt templates available for apply",
+)
 async def list_templates():
     """List names of built-in prompt templates available for apply."""
     return {"templates": list(BUILTIN_TEMPLATES.keys())}
 
 
-@router.post("/templates/apply", response_model=TemplateApplyResponse)
+@router.post(
+    "/templates/apply",
+    response_model=TemplateApplyResponse,
+    summary="Render a built-in or inline chat template against messages",
+    responses={
+        422: ERR_ENTRY("Invalid apply payload (template or messages malformed)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def apply_template(body: TemplateApplyRequest):
     """Render a built-in or inline chat template against a list of messages."""
     engine = TemplateEngine(template=body.template)
@@ -161,7 +200,16 @@ async def apply_template(body: TemplateApplyRequest):
     return TemplateApplyResponse(result=result)
 
 
-@router.post("/import", response_model=PromptDetail, status_code=201)
+@router.post(
+    "/import",
+    response_model=PromptDetail,
+    status_code=201,
+    summary="Import a prompt with a caller-chosen ID",
+    responses={
+        409: ERR_ENTRY("Prompt with the given ID already exists", type_="invalid_request_error", code="conflict"),
+        422: ERR_ENTRY("Invalid import payload (name and prompt are required)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def import_prompt(body: PromptImport):
     """Import a prompt with a caller-chosen ID; rejects duplicate IDs with 409."""
     _ensure_seeded()
@@ -185,7 +233,14 @@ async def import_prompt(body: PromptImport):
     return _prompt_to_detail(pdef)
 
 
-@router.get("/shared/{share_token}", response_model=PromptDetail)
+@router.get(
+    "/shared/{share_token}",
+    response_model=PromptDetail,
+    summary="Fetch a prompt by its share token",
+    responses={
+        404: ERR_ENTRY("Share token not found, expired, or original prompt no longer exists", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def get_shared_prompt(share_token: str):
     """Fetch a prompt by its share token (from POST /{prompt_id}/share)."""
     _ensure_seeded()
@@ -201,7 +256,11 @@ async def get_shared_prompt(share_token: str):
 # ── List & Create (root path) ────────────────────────────────────────────────
 
 
-@router.get("", response_model=list[PromptSummary])
+@router.get(
+    "",
+    response_model=list[PromptSummary],
+    summary="List prompts with optional category, text-search, and tag filters",
+)
 async def list_prompts(
     category: str | None = Query(None),
     search: str | None = Query(None),
@@ -225,7 +284,15 @@ async def list_prompts(
     return [_prompt_to_summary(p) for p in results]
 
 
-@router.post("", response_model=PromptDetail, status_code=201)
+@router.post(
+    "",
+    response_model=PromptDetail,
+    status_code=201,
+    summary="Create a new prompt (version history starts at version 1)",
+    responses={
+        422: ERR_ENTRY("Invalid create payload (name and prompt are required)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def create_prompt(body: PromptCreate):
     """Create a new prompt; version history starts at version 1."""
     _ensure_seeded()
@@ -247,17 +314,32 @@ async def create_prompt(body: PromptCreate):
 # ── Wildcard prompt_id routes ────────────────────────────────────────────────
 
 
-@router.get("/{prompt_id}", response_model=PromptDetail)
+@router.get(
+    "/{prompt_id}",
+    response_model=PromptDetail,
+    summary="Fetch full prompt detail by ID",
+    responses={
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def get_prompt_detail(prompt_id: str):
     """Fetch full prompt detail by ID."""
     return _prompt_to_detail(_get_prompt_or_404(prompt_id))
 
 
-@router.put("/{prompt_id}", response_model=PromptDetail)
+@router.put(
+    "/{prompt_id}",
+    response_model=PromptDetail,
+    summary="Update a prompt (prior state is snapshotted as a new version)",
+    responses={
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+        422: ERR_ENTRY("Invalid update payload (name and prompt are required)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def update_prompt(prompt_id: str, body: PromptUpdate):
     """Update a prompt; the prior state is snapshotted as a new version."""
     p = _get_prompt_or_404(prompt_id)
-    _version_history[prompt_id].append(asdict(p))
+    _snapshot(prompt_id, p)
     new_version = p.version + 1
     p.name = body.name
     p.category = body.category
@@ -268,7 +350,16 @@ async def update_prompt(prompt_id: str, body: PromptUpdate):
     return _prompt_to_detail(p)
 
 
-@router.delete("/{prompt_id}", status_code=204)
+@router.delete(
+    "/{prompt_id}",
+    status_code=204,
+    summary="Delete a prompt and its version history (admin only)",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def delete_prompt(
     prompt_id: str,
     _admin=Depends(require_role("admin")),
@@ -284,7 +375,16 @@ async def delete_prompt(
         del _share_tokens[t]
 
 
-@router.post("/{prompt_id}/fork", response_model=PromptDetail, status_code=201)
+@router.post(
+    "/{prompt_id}/fork",
+    response_model=PromptDetail,
+    status_code=201,
+    summary="Copy an existing prompt into a new prompt under a new ID and name",
+    responses={
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+        422: ERR_ENTRY("Invalid fork payload (name is required)", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def fork_prompt(prompt_id: str, body: ForkRequest):
     """Copy an existing prompt into a new prompt under a new ID and name."""
     p = _get_prompt_or_404(prompt_id)
@@ -303,7 +403,14 @@ async def fork_prompt(prompt_id: str, body: ForkRequest):
     return _prompt_to_detail(new_pdef)
 
 
-@router.post("/{prompt_id}/share", response_model=ShareResponse)
+@router.post(
+    "/{prompt_id}/share",
+    response_model=ShareResponse,
+    summary="Create an opaque share token that resolves back to this prompt",
+    responses={
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def share_prompt(prompt_id: str):
     """Create an opaque share token that resolves back to this prompt."""
     _get_prompt_or_404(prompt_id)
@@ -312,13 +419,27 @@ async def share_prompt(prompt_id: str):
     return ShareResponse(share_token=share_token, prompt_id=prompt_id)
 
 
-@router.post("/{prompt_id}/export", response_model=PromptDetail)
+@router.post(
+    "/{prompt_id}/export",
+    response_model=PromptDetail,
+    summary="Export the current prompt detail (portable representation)",
+    responses={
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def export_prompt(prompt_id: str):
     """Export the current prompt detail (portable representation)."""
     return _prompt_to_detail(_get_prompt_or_404(prompt_id))
 
 
-@router.get("/{prompt_id}/versions", response_model=list[VersionInfo])
+@router.get(
+    "/{prompt_id}/versions",
+    response_model=list[VersionInfo],
+    summary="List all stored versions of a prompt, oldest first",
+    responses={
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def list_versions(prompt_id: str):
     """List all stored versions of a prompt, oldest first."""
     _get_prompt_or_404(prompt_id)
@@ -336,7 +457,15 @@ async def list_versions(prompt_id: str):
     ]
 
 
-@router.post("/{prompt_id}/versions/{version}", response_model=PromptDetail)
+@router.post(
+    "/{prompt_id}/versions/{version}",
+    response_model=PromptDetail,
+    summary="Restore a prompt to a previous version",
+    responses={
+        404: ERR_ENTRY("Prompt not found, or the requested version does not exist", type_="invalid_request_error", code="not_found"),
+        422: ERR_ENTRY("Invalid version path parameter", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def restore_version(prompt_id: str, version: int):
     """Restore a prompt to a previous version; the current state is snapshotted first."""
     p = _get_prompt_or_404(prompt_id)
@@ -351,7 +480,9 @@ async def restore_version(prompt_id: str, version: int):
             status_code=404,
             detail=f"Version {version} not found for prompt '{prompt_id}'",
         )
-    _version_history[prompt_id].append(asdict(p))
+    # Keep the state being replaced unless it is already recorded, so
+    # restoring away from the current version never loses it.
+    _snapshot(prompt_id, p)
     p.name = target["name"]
     p.category = target["category"]
     p.description = target["description"]

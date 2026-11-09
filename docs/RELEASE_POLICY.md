@@ -38,7 +38,7 @@ DistLLM follows [Semantic Versioning](https://semver.org/):
 ### Major Release
 
 1. Create RFC for breaking changes (minimum 2-week review period)
-2. Create migration guide in `docs/MIGRATION_vX_to_vY.md`
+2. Create migration guide as `docs/MIGRATION_v<OLD>_to_v<NEW>.md` (see `docs/MIGRATION_v0.3_to_v0.4.md` for the template)
 3. Deprecation period: warn for at least 1 minor version before removing
 4. Full security audit
 5. Tag and release with comprehensive release notes

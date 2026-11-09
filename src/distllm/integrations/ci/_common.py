@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Optional
+from collections.abc import Callable
 
 import httpx
 
@@ -37,7 +38,7 @@ def _retry(
     **kwargs: Any,
 ) -> Any:
     """Call *fn* with exponential backoff on transient failures."""
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
             return fn(*args, **kwargs)

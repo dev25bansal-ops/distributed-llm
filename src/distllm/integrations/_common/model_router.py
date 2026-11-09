@@ -91,9 +91,9 @@ class DistLLMModelRouter:
         self,
         task: str,
         *,
-        prefer_tags: Optional[list[str]] = None,
+        prefer_tags: list[str] | None = None,
         min_context_window: int = 0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Auto-select a model for *task* based on available models' metadata.
 
         Parameters

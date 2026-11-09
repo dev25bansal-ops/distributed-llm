@@ -9,7 +9,7 @@ current focus without guilt — the boundaries are clean by design.
 ## 1 · Core Inference Engine — `src/distllm/core/`
 **What:** coordinator, batch scheduler, KV cache, speculative decoding,
 inference engine, model router. The brain of the product.
-**State:** strongest area. ~11,900-test suite green; end-to-end local
+**State:** strongest area. 12,780-test suite green (`pytest --collect-only -q`, 2026-11-06); end-to-end local
 inference verified; paged KV cache + defrag + three speculative engines done.
 **Next up:**
 1. Replace placeholder benchmark numbers with real suite runs (blocks public launch credibility)
@@ -62,8 +62,8 @@ fail-closed patterns throughout.
 2. Publish JS SDK to npm + Go module tag (parity with PyPI)
 3. Integration matrix table on /integrations (tested ✓ vs untested)
 
-## 7 · Website & Docs — `website-astro/`
-**What:** Astro 7 site — home, 17-page docs, playground, blog, changelog.
+## 7 · Website & Docs — `website/`
+**What:** Vite static site — home, 17-page docs (docs.html), playground, blog, changelog.
 Deployed on Vercel. Dark terminal theme.
 **State:** strong visually; content thin spots remain (docs word counts,
 placeholder benchmark data).

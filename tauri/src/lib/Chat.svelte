@@ -36,10 +36,11 @@
     chatStore.updateOptions(saved);
   });
 
-  // afterUpdate() was removed in runes mode. An $effect reading `messages`
-  // re-runs on every list change and runs after the DOM is updated.
+  // afterUpdate() was removed in runes mode. An $effect that reads `messages`
+  // re-runs whenever the message list changes -- the same trigger -- and
+  // scrolls to the bottom after the DOM updates.
   $effect(() => {
-    messages;
+    messages;  // track the dependency
     if (messagesEl) {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }

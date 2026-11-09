@@ -35,7 +35,6 @@ import typer
 from loguru import logger
 from rich.console import Console
 
-
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -53,6 +52,10 @@ class LiveMetric:
     completion_tokens: int
     gpu_mem_gb: float
     rss_mem_gb: float
+    # Label so nobody mistakes a demo stream for a measurement. Every frame
+    # from LiveBenchmark.snapshot() carries "synthetic"; a future
+    # coordinator-backed producer sets "measured".
+    source: str = "synthetic"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -86,11 +89,13 @@ class LiveBenchmark:
     # -- synthetic producer --------------------------------------------------
 
     def snapshot(self) -> LiveMetric:
-        """Produce a synthetic metric snapshot.
+        """Produce a SYNTHETIC metric snapshot.
 
-        Real implementations would call the coordinator and time the
-        round-trip. For the streaming demo we simulate drift around a
-        plausible baseline so the dashboard renders useful values.
+        These numbers come from random.gauss around a plausible baseline --
+        they are NOT measurements of the running cluster. The frame is
+        labelled ``source="synthetic"`` so a consumer can tell. Wiring this to
+        a real producer means timing coordinator round-trips and reading
+        actual GPU memory; until then this is a dashboard demo.
         """
         self.iteration += 1
         # Slow drift so charts move
@@ -103,6 +108,7 @@ class LiveBenchmark:
 
             rss_gb = psutil.Process(os.getpid()).memory_info().rss / 1e9
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             rss_gb = 0.2 + 0.001 * self.iteration
         gpu_gb = max(0.0, 14.0 + random.gauss(0, 0.2))
 
@@ -129,6 +135,7 @@ class LiveBenchmark:
             try:
                 await ws.send(payload)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 dead.append(ws)
         for ws in dead:
             await self.unregister(ws)
@@ -155,6 +162,7 @@ async def _ws_handler(ws: Any, benchmark: LiveBenchmark) -> None:
             try:
                 await ws.send(metric.to_json())
             except Exception:
+                # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
                 return
         # Keep the connection alive until the client closes
         async for _msg in ws:
@@ -198,7 +206,12 @@ def register(benchmark_app: typer.Typer) -> None:
         port: int = typer.Option(8765, "--port", "-p", help="WebSocket port"),
         interval: float = typer.Option(1.0, "--interval", "-i", help="Seconds between metric updates"),
     ) -> None:
-        """Stream live TTFT/tokens/memory metrics over WebSocket."""
+        """Stream TTFT/tokens/memory metrics over WebSocket."""
+        console.print(
+            "[yellow]Note:[/yellow] this stream is [bold]synthetic[/bold] -- "
+            "values are simulated, not measured from the cluster. "
+            'Each frame carries source="synthetic".'
+        )
         asyncio.run(_serve(LiveBenchmark(model=model, interval=interval), port))
 
 
@@ -231,4 +244,4 @@ def run_bench_live(model: str, port: int = 8765, interval: float = 1.0) -> None:
 if __name__ == "__main__":
     console = Console()
     console.print("[yellow]Usage:[/yellow] distllm bench live --model <name>")
-    sys.exit(1)
+    sys.exit(1)

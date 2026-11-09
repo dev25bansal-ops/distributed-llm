@@ -63,7 +63,7 @@ class SchemaValidator:
     # workloads repeatedly validate against the SAME schema (every request
     # with the same response_format), so a (schema, data) hit skips the
     # field-walk entirely. 512 entries bounds memory to ~a few MB.
-    _RESULT_CACHE: dict[tuple[str, str], "ValidationResult"] = {}
+    _RESULT_CACHE: dict[tuple[str, str], ValidationResult] = {}
     _RESULT_CACHE_MAX = 512
     _RESULT_CACHE_HITS = 0
     _RESULT_CACHE_MISSES = 0

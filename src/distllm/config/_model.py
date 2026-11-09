@@ -1,7 +1,7 @@
 """Model, quantization, speculative decoding, LoRA, MoE, compression,
 embedding, prompt template, and model hub configuration classes."""
 
-from pydantic import BaseModel, Field, field_validator, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 # Canonical (settings-space) names for quantization methods. The validator
 # in QuantizationSettings also accepts the CLI-space aliases
@@ -48,7 +48,7 @@ class ModelSettings(BaseModel):
             raise ValueError(
                 "model.name must be set — specify a HuggingFace model ID (e.g. "
                 "'meta-llama/Llama-2-7b') or a local path, or set the "
-                "DISTLLM__MODEL__NAME environment variable."
+                "DISTLLM_MODEL__NAME environment variable."
             )
         return v.strip()
 
@@ -233,7 +233,7 @@ class ModelHubSettings(BaseModel):
     cache_dir: str | None = None
     max_cache_size_gb: float = 50.0
     offline_mode: bool = False
-    hf_token: SecretStr | None = Field(default=None, description="HuggingFace token. Set via DISTLLM__MODEL_HUB__HF_TOKEN env var or .env file, NOT in YAML config.")
+    hf_token: SecretStr | None = Field(default=None, description="HuggingFace token. Set via DISTLLM_MODEL_HUB__HF_TOKEN env var or .env file, NOT in YAML config.")
     download_timeout_s: int = 300
 
     @field_validator("hf_token")

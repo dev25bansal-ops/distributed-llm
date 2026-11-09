@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 
-from fastapi import Request
-from loguru import logger
 from ..api_state import g
 from ..auth_deps import require_role
+from ..errors import FeatureDisabledError, error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(tags=["prompt-exchange"], prefix="/v1/exchange")
@@ -77,12 +82,23 @@ class ExchangeStatsResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/prompts", response_model=PromptResponse, dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/prompts",
+    response_model=PromptResponse,
+    dependencies=[Depends(require_role("admin"))],
+    summary="Publish a prompt to the exchange",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid publish payload (e.g. missing name or system_prompt)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def publish_prompt(req: PublishPromptRequest):
     """Publish a prompt to the exchange."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     from distllm.prompts.exchange import PromptLicense
     try:
@@ -105,7 +121,16 @@ async def publish_prompt(req: PublishPromptRequest):
     return _prompt_to_response(prompt)
 
 
-@router.get("/prompts", response_model=list[PromptResponse])
+@router.get(
+    "/prompts",
+    response_model=list[PromptResponse],
+    summary="Browse published prompts",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        422: ERR_ENTRY("Invalid filter value (e.g. unrecognized license)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def browse_prompts(
     category: str = "",
     tag: str = "",
@@ -118,15 +143,15 @@ async def browse_prompts(
     """Browse published prompts."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     from distllm.prompts.exchange import PromptLicense
     lic = None
     if license:
-        try:
+        # An unrecognised license filter is ignored rather than rejecting the
+        # whole browse request -- the listings still come back unfiltered.
+        with contextlib.suppress(ValueError):
             lic = PromptLicense(license)
-        except ValueError:
-            pass
 
     tags = [tag] if tag else None
     prompts = exchange.browse(
@@ -141,7 +166,16 @@ async def browse_prompts(
     return [_prompt_to_response(p) for p in prompts]
 
 
-@router.get("/prompts/search", response_model=list[PromptResponse])
+@router.get(
+    "/prompts/search",
+    response_model=list[PromptResponse],
+    summary="Search prompts by name, description, tags, or content",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        422: ERR_ENTRY("Missing required search query parameter `q`", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def search_prompts(
     q: str = Query(..., description="Search query"),
     limit: int = Query(20, ge=1, le=100),
@@ -149,18 +183,27 @@ async def search_prompts(
     """Search prompts by name, description, tags, or content."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     prompts = exchange.search(q, limit=limit)
     return [_prompt_to_response(p) for p in prompts]
 
 
-@router.get("/prompts/{prompt_id}", response_model=PromptResponse)
+@router.get(
+    "/prompts/{prompt_id}",
+    response_model=PromptResponse,
+    summary="Get a specific prompt",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_prompt(prompt_id: str):
     """Get a specific prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     prompt = exchange.get_prompt(prompt_id)
     if not prompt:
@@ -168,12 +211,22 @@ async def get_prompt(prompt_id: str):
     return _prompt_to_response(prompt)
 
 
-@router.post("/prompts/{prompt_id}/acquire")
+@router.post(
+    "/prompts/{prompt_id}/acquire",
+    summary="Acquire a prompt (free or token-gated)",
+    responses={
+        402: ERR_ENTRY("Insufficient tokens or prompt not found", type_="invalid_request_error", code="payment_required"),
+        401: ERR_ENTRY("Missing or invalid API key, or authentication required", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("user_id does not match the authenticated identity", type_="auth_error", code="forbidden"),
+        404: ERR_ENTRY("Prompt not found", type_="invalid_request_error", code="not_found"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def acquire_prompt(prompt_id: str, request: Request, user_id: str = Query(...)):
     """Acquire a prompt (free or token-gated)."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     # SECURITY: Bind user_id to the authenticated identity so a caller cannot
     # act as another user (IDOR protection). The API-key owner is authoritative
@@ -198,23 +251,40 @@ async def acquire_prompt(prompt_id: str, request: Request, user_id: str = Query(
     }
 
 
-@router.get("/prompts/{prompt_id}/access")
+@router.get(
+    "/prompts/{prompt_id}/access",
+    summary="Check if a user has access to a prompt",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        422: ERR_ENTRY("Missing required query parameter `user_id`", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def check_access(prompt_id: str, user_id: str = Query(...)):
     """Check if a user has access to a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     has = exchange.has_access(user_id, prompt_id)
     return {"prompt_id": prompt_id, "user_id": user_id, "has_access": has}
 
 
-@router.post("/prompts/{prompt_id}/review")
+@router.post(
+    "/prompts/{prompt_id}/review",
+    summary="Add a review for a prompt",
+    responses={
+        400: ERR_ENTRY("Review cannot be added (e.g. duplicate review for this user)", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        422: ERR_ENTRY("Invalid review payload (rating must be 1-5)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def add_review(prompt_id: str, req: ReviewRequest):
     """Add a review for a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     review = exchange.add_review(req.user_id, prompt_id, req.rating, req.comment)
     if not review:
@@ -226,12 +296,19 @@ async def add_review(prompt_id: str, req: ReviewRequest):
     }
 
 
-@router.get("/prompts/{prompt_id}/reviews")
+@router.get(
+    "/prompts/{prompt_id}/reviews",
+    summary="Get reviews for a prompt",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_reviews(prompt_id: str, limit: int = 20):
     """Get reviews for a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     reviews = exchange.get_reviews(prompt_id, limit=limit)
     return [
@@ -247,12 +324,20 @@ async def get_reviews(prompt_id: str, limit: int = 20):
     ]
 
 
-@router.post("/prompts/{prompt_id}/usage")
+@router.post(
+    "/prompts/{prompt_id}/usage",
+    summary="Record usage metrics for a prompt",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        422: ERR_ENTRY("Invalid usage payload (e.g. negative token counts)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def record_usage(prompt_id: str, req: UsageRecordRequest):
     """Record usage metrics for a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     exchange.record_usage(
         prompt_id=prompt_id,
@@ -265,12 +350,24 @@ async def record_usage(prompt_id: str, req: UsageRecordRequest):
     return {"recorded": True, "prompt_id": prompt_id}
 
 
-@router.post("/prompts/{prompt_id}/fork", response_model=PromptResponse, dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/prompts/{prompt_id}/fork",
+    response_model=PromptResponse,
+    dependencies=[Depends(require_role("admin"))],
+    summary="Fork an existing prompt",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        404: ERR_ENTRY("Original prompt not found", type_="invalid_request_error", code="not_found"),
+        422: ERR_ENTRY("Missing required query parameter `user_id`", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def fork_prompt(prompt_id: str, user_id: str = Query(...), new_name: str = ""):
     """Fork an existing prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     fork = exchange.fork_prompt(user_id, prompt_id, new_name=new_name)
     if not fork:
@@ -278,7 +375,15 @@ async def fork_prompt(prompt_id: str, user_id: str = Query(...), new_name: str =
     return _prompt_to_response(fork)
 
 
-@router.get("/leaderboard")
+@router.get(
+    "/leaderboard",
+    summary="Get prompt leaderboard",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        422: ERR_ENTRY("Invalid metric value (expected uses, rating, throughput, or quality)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_leaderboard(
     category: str = "",
     metric: str = Query("uses", description="Metric: uses, rating, throughput, quality"),
@@ -287,27 +392,42 @@ async def get_leaderboard(
     """Get prompt leaderboard."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     return {"leaderboard": exchange.get_leaderboard(category=category, metric=metric, limit=limit)}
 
 
-@router.get("/stats", response_model=ExchangeStatsResponse)
+@router.get(
+    "/stats",
+    response_model=ExchangeStatsResponse,
+    summary="Get exchange statistics",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_exchange_stats():
     """Get exchange statistics."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     return exchange.get_exchange_stats()
 
 
-@router.get("/wallet/{user_id}")
+@router.get(
+    "/wallet/{user_id}",
+    summary="Get user's token wallet",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_wallet(user_id: str):
     """Get user's token wallet."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     wallet = exchange.get_wallet(user_id)
     return {
@@ -318,12 +438,22 @@ async def get_wallet(user_id: str):
     }
 
 
-@router.post("/wallet/{user_id}/topup", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/wallet/{user_id}/topup",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Top up user's token wallet",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid topup amount (must be a positive integer)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def top_up_wallet(user_id: str, amount: int = Query(..., gt=0)):
     """Top up user's token wallet."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     wallet = exchange.top_up(user_id, amount)
     return {
@@ -333,12 +463,20 @@ async def top_up_wallet(user_id: str, amount: int = Query(..., gt=0)):
     }
 
 
-@router.get("/library/{user_id}", response_model=list[PromptResponse])
+@router.get(
+    "/library/{user_id}",
+    response_model=list[PromptResponse],
+    summary="Get all prompts a user has access to",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Prompt exchange not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_user_library(user_id: str):
     """Get all prompts a user has access to."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     prompts = exchange.get_user_library(user_id)
     return [_prompt_to_response(p) for p in prompts]

@@ -6,7 +6,6 @@ from typing import Any
 
 from distllm.core.vectorstore.base import VectorDBInterface
 
-
 # The registry maps provider names (case-insensitive) to implementation classes.
 # The provider classes themselves do not import SDKs at module level — SDKs are
 # loaded lazily inside the provider methods, so having a subset of SDKs
@@ -23,6 +22,9 @@ def _populate_registry() -> None:
     if _PROVIDER_REGISTRY:
         return
 
+    from distllm.core.vectorstore.providers.milvus import (
+        _MilvusStore,  # noqa: PLC0415
+    )
     from distllm.core.vectorstore.providers.pinecone import (
         _PineconeStore,  # noqa: PLC0415
     )
@@ -31,9 +33,6 @@ def _populate_registry() -> None:
     )
     from distllm.core.vectorstore.providers.weaviate import (
         _WeaviateStore,  # noqa: PLC0415
-    )
-    from distllm.core.vectorstore.providers.milvus import (
-        _MilvusStore,  # noqa: PLC0415
     )
 
     _PROVIDER_REGISTRY.update(

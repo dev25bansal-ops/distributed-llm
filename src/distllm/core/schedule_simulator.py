@@ -33,7 +33,7 @@ class TraceEntry:
     max_latency_ms: float | None = None
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TraceEntry":
+    def from_dict(cls, d: dict) -> TraceEntry:
         return cls(
             request_id=d.get("request_id", ""),
             arrival_time=d.get("arrival_time", 0),

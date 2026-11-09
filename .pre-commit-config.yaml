@@ -4,14 +4,24 @@ repos:
     hooks:
       - id: detect-secrets
         args: ['--baseline', '.secrets.baseline']
-        exclude: ^\.secrets\.baseline$
+        exclude: ^(\.secrets\.baseline|\.bandit-baseline\.json)$
 
   - repo: https://github.com/PyCQA/bandit
-    rev: 1.8.3
+    rev: 1.9.3
     hooks:
       - id: bandit
-        args: ['-c', 'pyproject.toml', '-r', 'src/distllm/']
+        # Gate blocks NEW findings only. -b compares against the 419-entry
+        # baseline (2026-11-07) that captures pre-existing issues across the
+        # codebase; a finding absent from the baseline fails the hook.
+        # Regenerate the baseline ONLY with a reviewed delta (like a lockfile).
+        # Pinned to 1.9.3 (not 1.8.3):
+        # 1.8.3 crashes ('Constant object has no attribute s') on Python 3.13+
+        # docstrings/match statements — the exact crash seen in CI's autofix
+        # on verification/test_verify.py and verification/runner.py.
+        pass_filenames: false
+        args: ['-c', 'pyproject.toml', '-r', 'src/distllm/', '-b', '.bandit-baseline.json', '-q']
         additional_dependencies: ['bandit[toml]']
+        exclude: ^\.bandit-baseline\.json$
 
   - repo: https://github.com/regebro/pyroma
     rev: "4.2"

@@ -38,9 +38,12 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    import torch
 
 
 # ── Compression levels ───────────────────────────────────────────────────────

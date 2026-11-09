@@ -3,8 +3,8 @@
 from typing import Any
 
 from distllm.dist.latency import LatencyTracker
-from distllm.dist.straggler import StragglerDetector
 from distllm.dist.recovery import NodeRecoveryManager
+from distllm.dist.straggler import StragglerDetector
 
 
 class MetricsCollector:

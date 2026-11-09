@@ -120,3 +120,77 @@ def test_adaptive_quantizer_apply_sets_no_scale_for_fp16():
     sk, sv = cache.get_scales()
     assert sk[0] is not None and sv[0] is not None
     assert sk[1] is None and sv[1] is None
+
+
+def _bytes_per_token(cache: KVCache) -> float:
+    """Bytes stored per token (K+V) for layer 0, straight from the tensors.
+
+    Per token, each of K and V stores num_heads * head_dim elements.
+    """
+    k, v = cache.cache[0]
+    seq_len = k.shape[-2]
+    return (k.element_size() * k.numel() + v.element_size() * v.numel()) / seq_len
+
+
+def _expected_bytes_per_token(num_heads: int, head_dim: int, bytes_per_elem: int) -> float:
+    """Documented-dtype bytes per token: K and V, each heads*head_dim elems."""
+    return 2 * num_heads * head_dim * bytes_per_elem
+
+
+def _make_fp16_cache(num_layers: int = 1) -> KVCache:
+    """KVCache whose stored tensors are fp16, matching the documented
+    "2x vs fp16" baseline."""
+    torch.manual_seed(0)
+    cache = KVCache()
+    cache.init_cache(num_layers=num_layers, batch_size=1, num_heads=2, head_dim=8, device="cpu")
+    for layer_idx in range(num_layers):
+        k = torch.randn(1, 2, 4, 8).half()
+        v = torch.randn(1, 2, 4, 8).half()
+        cache.cache[layer_idx] = (k, v)
+    return cache
+
+
+@pytest.mark.parametrize(
+    "method,dtype,bytes_per_elem",
+    [
+        ("int8", torch.int8, 1),
+        # INT4 = 4-bit *range*, but storage is one int8 slot per element
+        # (int8-equivalent, not packed nibbles).
+        ("int4", torch.int8, 1),
+    ],
+)
+def test_compressed_bytes_per_token_matches_documented_dtype(method, dtype, bytes_per_elem):
+    """compress(method) must store the documented dtype, and bytes_per_token
+    must match that dtype's element size (head_dim * bytes_per_elem * 2 for
+    K+V), not a packed-4-bit figure."""
+    cache = _make_fp16_cache(num_layers=1)  # head_dim=8, seq_len=4, fp16 base
+    stats = cache.compress(method)
+    assert stats["method"] == method
+
+    k, v = cache.cache[0]
+    assert k.dtype == dtype and v.dtype == dtype
+
+    head_dim = k.shape[-1]
+    num_heads = k.shape[1]
+    expected_bytes_per_token = _expected_bytes_per_token(num_heads, head_dim, bytes_per_elem)
+    assert _bytes_per_token(cache) == expected_bytes_per_token
+
+    # fp16 baseline: int8-equivalent storage is exactly half the bytes.
+    assert stats["compressed_bytes"] == stats["original_bytes"] / 2
+    assert abs(stats["ratio"] - 0.5) < 1e-9
+
+
+def test_compress_int4_is_not_packed_nibbles():
+    """INT4 must not pack two values per byte: shape keeps full head_dim and
+    dtype is int8, so savings are int8-equivalent (50% vs fp16), not 75%
+    as a packed-4-bit layout would claim."""
+    cache = _make_fp16_cache(num_layers=1)
+    head_dim_before = cache.cache[0][0].shape[-1]
+    stats = cache.compress("int4")
+    k, v = cache.cache[0]
+    assert k.shape[-1] == head_dim_before  # no head_dim//2 packing
+    assert k.dtype == torch.int8
+    assert k.element_size() == 1
+    # 75% savings would imply 4-bit packing; real int8 storage gives 50%.
+    assert abs(stats["savings_pct"] - 50.0) < 1e-9
+    assert abs(stats["ratio"] - 0.5) < 1e-9

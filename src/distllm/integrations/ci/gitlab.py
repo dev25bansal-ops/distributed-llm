@@ -13,8 +13,8 @@ import httpx
 
 from distllm.integrations.ci._common import (
     _DEFAULT_TIMEOUT,
-    _retry,
     EvalResult,
+    _retry,
 )
 
 logger = logging.getLogger("distllm")
@@ -42,7 +42,7 @@ class GitLabCIIntegration:
         self,
         url: str,
         token: str,
-        project: Optional[str] = None,
+        project: str | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
         verify_ssl: bool = True,
     ) -> None:
@@ -67,9 +67,9 @@ class GitLabCIIntegration:
 
     def __exit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[Any],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any | None,
     ) -> None:
         self.close()
 
@@ -78,7 +78,7 @@ class GitLabCIIntegration:
     def _api_url(self, path: str) -> str:
         return f"{self._base_url}/api/v4{path}"
 
-    def _resolve_project(self, project: Optional[str] = None) -> str:
+    def _resolve_project(self, project: str | None = None) -> str:
         resolved = project or self._default_project
         if not resolved:
             raise ValueError(
@@ -111,10 +111,10 @@ class GitLabCIIntegration:
 
     def trigger_eval(
         self,
-        project: Optional[str] = None,
-        ref: Optional[str] = None,
-        model: Optional[str] = None,
-        variables: Optional[dict[str, str]] = None,
+        project: str | None = None,
+        ref: str | None = None,
+        model: str | None = None,
+        variables: dict[str, str] | None = None,
     ) -> int:
         """Trigger an evaluation pipeline on GitLab CI.
 
@@ -169,8 +169,8 @@ class GitLabCIIntegration:
 
     def get_results(
         self,
-        project: Optional[str] = None,
-        pipeline_id: Optional[int] = None,
+        project: str | None = None,
+        pipeline_id: int | None = None,
     ) -> EvalResult:
         """Fetch evaluation results for a completed pipeline.
 
@@ -254,9 +254,9 @@ class GitLabCIIntegration:
 
     def report_to_mr(
         self,
-        project: Optional[str] = None,
-        mr_iid: Optional[int] = None,
-        report: Optional[Any] = None,
+        project: str | None = None,
+        mr_iid: int | None = None,
+        report: Any | None = None,
     ) -> int:
         """Post evaluation results as a merge-request note.
 

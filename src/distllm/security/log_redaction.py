@@ -28,7 +28,6 @@ import os
 import re
 from typing import Any
 
-
 # PII patterns (consistent with request_auditor.PII_PATTERNS)
 _PII_PATTERNS: dict[str, re.Pattern] = {
     "email": re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
@@ -164,7 +163,7 @@ class RedactingFilter(logging.Filter):
         self.patterns: list[re.Pattern] = list((patterns or DEFAULT_PATTERNS).values())
 
     @classmethod
-    def from_env(cls, name: str = "") -> "RedactingFilter":
+    def from_env(cls, name: str = "") -> RedactingFilter:
         """Build a filter honouring ``DISTLLM_LOG_REDACTION`` / ``DISTLLM_REDACT_PATTERNS``."""
         enabled = (
             os.environ.get(ENV_REDACTION_ENABLED, "on").strip().lower()
@@ -201,6 +200,7 @@ class RedactingFilter(logging.Filter):
             record.msg = self.redact_message(message)
             record.args = ()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return True
 
@@ -245,6 +245,7 @@ def _loguru_patcher(record: dict) -> None:
                 _SHARED_REDACTOR = RedactingFilter.from_env()
             record["message"] = _SHARED_REDACTOR.redact_message(message)
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
 
 
@@ -253,7 +254,7 @@ def _loguru_patcher(record: dict) -> None:
 # installing ours necessarily replaces any previously-configured one).
 _loguru_patcher._distllm_redaction = True  # type: ignore[attr-defined]
 
-_SHARED_REDACTOR: "RedactingFilter | None" = None
+_SHARED_REDACTOR: RedactingFilter | None = None
 
 
 def _patcher_enabled() -> bool:

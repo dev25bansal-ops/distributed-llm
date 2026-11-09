@@ -10,7 +10,6 @@ from transformers import AutoConfig
 
 from distllm.security import hf_revision
 
-
 __all__ = [
     "partition_model_across_nodes",
     "partition_model_gpu_aware",

@@ -100,8 +100,9 @@ class GCPPricingFetcher(PricingFetcher):
             if not cred_path:
                 logger.warning("GCP auth: GOOGLE_APPLICATION_CREDENTIALS not set")
                 return ""
-            import httpx
             import json
+
+            import httpx
             with open(cred_path) as f:
                 creds = json.load(f)
             resp = httpx.post(
@@ -139,6 +140,7 @@ class GCPPricingFetcher(PricingFetcher):
             sig = key.sign(message, padding.PKCS1v15(), hashes.SHA256())
             return (message + b"." + base64.urlsafe_b64encode(sig).rstrip(b"=")).decode()
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return ""
 
     def _extract_instance_type(self, description: str) -> str:
@@ -184,6 +186,7 @@ class GCPAvailabilityChecker(AvailabilityChecker):
                 available=available,
             )
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return self._fallback_info(instance_type, region)
 
     def list_gpu_instances(self, region: str | None = None) -> list[InstanceSpec]:
@@ -207,7 +210,11 @@ class GCPAvailabilityChecker(AvailabilityChecker):
             if not cred_path:
                 logger.warning("GCP auth: GOOGLE_APPLICATION_CREDENTIALS not set")
                 return ""
-            import httpx, json, time, base64
+            import base64
+            import json
+            import time
+
+            import httpx
             with open(cred_path) as f:
                 creds = json.load(f)
             header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=")

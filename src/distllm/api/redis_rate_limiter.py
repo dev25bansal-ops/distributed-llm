@@ -17,11 +17,41 @@ Env var ``DISTLLM_REDIS_URL`` enables the Redis backend.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections import deque
 from typing import Any
 
 from loguru import logger
+
+_CONSUME_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local cutoff = tonumber(ARGV[2])
+local max_attempts = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local member = ARGV[5]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+local count = redis.call('ZCARD', key)
+if count >= max_attempts then
+  return {0, count}
+end
+redis.call('ZADD', key, now, member)
+redis.call('EXPIRE', key, ttl)
+return {1, count + 1}
+"""
+
+_COUNT_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local cutoff = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+local count = redis.call('ZCARD', key)
+local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+local oldest_score = -1
+if oldest and #oldest >= 2 then oldest_score = tonumber(oldest[2]) end
+return {count, oldest_score}
+"""
 
 
 class RedisRateLimiter:
@@ -55,6 +85,11 @@ class RedisRateLimiter:
         # Sliding window: deque per IP with maxlen = max_attempts + 1
         # Automatically evicts oldest entries when full
         self._local: dict[str, deque[float]] = {}
+        # Most-recent record time per IP (O(1) LRU candidate for eviction).
+        # Kept in sync with _local by _local_record / _local_evict.
+        self._local_last_record: dict[str, float] = {}
+        # Local fallback is shared across event-loop threads and sync calls.
+        self._local_lock = threading.Lock()
 
     async def _get_redis(self) -> Any:
         """Lazy-init Redis connection."""
@@ -75,11 +110,85 @@ class RedisRateLimiter:
     def _local_key(self, ip: str) -> str:
         return f"{self._key_prefix}{ip}"
 
+    def _local_evict(self) -> None:
+        """Evict stale/oldest local entries once over *max_tracked_ips*.
+
+        O(1) amortised: the stale sweep only walks entries whose window has
+        already expired (they are dropped, not rescanned), and the LRU
+        fallback evicts a single entry per call instead of a full
+        ``min(..., key=...)`` scan.  The LRU candidate is tracked by
+        ``_local_last_record`` — the key whose most recent record is oldest
+        — which is exactly the entry a sliding window will re-populate
+        last, so evicting it loses the least information.
+        """
+        if len(self._local) <= self._max_tracked_ips:
+            return
+        now = time.time()
+        cutoff = now - self._window * 2
+        stale = [
+            k for k, v in self._local.items()
+            if not v or v[-1] < cutoff
+        ]
+        for k in stale:
+            del self._local[k]
+            self._local_last_record.pop(k, None)
+        if len(self._local) <= self._max_tracked_ips:
+            return
+        # Still over cap: evict the least-recently-recorded key.  Keys
+        # missing from _local_last_record (e.g. injected by tests) sort to
+        # the front via a +inf sentinel so they are *kept*, not evicted —
+        # only keys we have real record times for are candidates.
+        oldest_ip = min(
+            (k for k in self._local if k in self._local_last_record),
+            key=lambda k: self._local_last_record[k],
+            default=None,
+        )
+        if oldest_ip is None:
+            return
+        del self._local[oldest_ip]
+        self._local_last_record.pop(oldest_ip, None)
+
     async def is_rate_limited(self, ip: str) -> bool:
         redis = await self._get_redis()
         if redis:
             return await self._redis_check(ip, redis)
         return self._local_check(ip)
+
+    async def try_consume(self, ip: str) -> bool:
+        """Atomically check-and-record one attempt for *ip*.
+
+        Returns True if under the limit and the attempt was recorded,
+        False if rate limited.  Unlike the ``is_rate_limited`` +
+        ``record_attempt`` two-call pattern there is no cross-process
+        TOCTOU window between check and record.
+        """
+        redis = await self._get_redis()
+        if redis:
+            return await self._redis_consume(ip, redis)
+        return self._local_consume(ip)
+
+    async def allow(self, ip: str) -> bool:
+        """Alias for :meth:`try_consume` (check + record, atomic)."""
+        return await self.try_consume(ip)
+
+    async def _redis_consume(self, ip: str, redis: Any) -> bool:
+        key = self._local_key(ip)
+        now = time.time()
+        cutoff = now - self._window
+        import uuid as _uuid
+        member = f"{now}:{_uuid.uuid4().hex}"
+        result = await redis.eval(
+            _CONSUME_LUA, 1, key,
+            str(now), str(cutoff), self._max_attempts,
+            self._window * 2, member,
+        )
+        return int(result[0]) == 1
+
+    def _local_consume(self, ip: str) -> bool:
+        if self._local_check(ip):
+            return False
+        self._local_record(ip)
+        return True
 
     async def _redis_check(self, ip: str, redis: Any) -> bool:
         key = self._local_key(ip)
@@ -94,20 +203,20 @@ class RedisRateLimiter:
     def _local_check(self, ip: str) -> bool:
         now = time.time()
         cutoff = now - self._window
-        timestamps = self._local.get(ip)
-        if timestamps is None:
-            return False
-        # Prune expired entries from the left of the deque
-        while timestamps and timestamps[0] <= cutoff:
-            timestamps.popleft()
-        if not timestamps:
-            del self._local[ip]
-            return False
-        # Evict oldest IPs if over cap
-        if len(self._local) > self._max_tracked_ips:
-            oldest_ip = min(self._local, key=lambda k: self._local[k][0] if self._local[k] else now)
-            del self._local[oldest_ip]
-        return len(timestamps) >= self._max_attempts
+        with self._local_lock:
+            timestamps = self._local.get(ip)
+            if timestamps is None:
+                return False
+            # Prune expired entries from the left of the deque
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            if not timestamps:
+                del self._local[ip]
+                self._local_last_record.pop(ip, None)
+                return False
+            # Evict oldest IPs if over cap
+            self._local_evict()
+            return len(timestamps) >= self._max_attempts
 
     async def retry_after(self, ip: str) -> int:
         redis = await self._get_redis()
@@ -118,19 +227,22 @@ class RedisRateLimiter:
     async def _redis_retry_after(self, ip: str, redis: Any) -> int:
         key = self._local_key(ip)
         now = time.time()
-        timestamps = await redis.zrangebyscore(key, now - self._window, now)
-        if len(timestamps) >= self._max_attempts:
-            oldest = float(timestamps[0])
+        # Read withscores so the timestamp comes from the score, not the
+        # member (members are "<now>:<uuid>" for uniqueness).
+        rows = await redis.zrangebyscore(key, now - self._window, now, withscores=True)
+        if len(rows) >= self._max_attempts:
+            oldest = float(rows[0][1])
             return max(1, int(self._window - (now - oldest)))
         return 0
 
     def _local_retry_after(self, ip: str) -> int:
         now = time.time()
-        timestamps = self._local.get(ip)
-        if timestamps and len(timestamps) >= self._max_attempts:
-            oldest = timestamps[0]
-            return max(1, int(self._window - (now - oldest)))
-        return 0
+        with self._local_lock:
+            timestamps = self._local.get(ip)
+            if timestamps and len(timestamps) >= self._max_attempts:
+                oldest = timestamps[0]
+                return max(1, int(self._window - (now - oldest)))
+            return 0
 
     async def record_attempt(self, ip: str) -> None:
         redis = await self._get_redis()
@@ -148,17 +260,10 @@ class RedisRateLimiter:
         await pipe.execute()
 
     def _local_record(self, ip: str) -> None:
-        if ip not in self._local:
-            self._local[ip] = deque(maxlen=self._max_attempts + 1)
-        self._local[ip].append(time.time())
-        # Evict stale IPs periodically
-        if len(self._local) > self._max_tracked_ips:
-            now = time.time()
-            cutoff = now - self._window * 2
-            stale = [k for k, v in self._local.items() if not v or v[-1] < cutoff]
-            for k in stale:
-                del self._local[k]
-            # If still over cap, evict oldest
-            if len(self._local) > self._max_tracked_ips:
-                oldest_ip = min(self._local, key=lambda k: self._local[k][0] if self._local[k] else now)
-                del self._local[oldest_ip]
+        with self._local_lock:
+            if ip not in self._local:
+                self._local[ip] = deque(maxlen=self._max_attempts + 1)
+            self._local[ip].append(time.time())
+            self._local_last_record[ip] = time.time()
+            # Evict stale IPs periodically
+            self._local_evict()

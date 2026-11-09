@@ -18,6 +18,7 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
+from distllm.cli.http_client import auth_headers
 
 # ---------------------------------------------------------------------------
 # Model heuristics
@@ -230,7 +231,7 @@ def run_tune_batch(
     max_tps_per_gpu = mem_bandwidth_bytes_per_sec / max(effective_bytes, 1)
     theoretical_max_tps = max_tps_per_gpu * gpu_count
 
-    console.print(f"\n[bold]Batch Size Optimizer[/bold]")
+    console.print("\n[bold]Batch Size Optimizer[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  GPUs: {gpu_count}")
     console.print(f"  Target latency: {target_latency_ms:.0f} ms")
@@ -254,7 +255,7 @@ def run_tune_batch(
         errors = 0
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=120.0, headers=auth_headers()) as client:
                 for _ in range(3):  # 3 samples per batch size
                     start = time.monotonic()
                     try:
@@ -270,16 +271,26 @@ def run_tune_batch(
                         resp.raise_for_status()
                         latencies.append(time.monotonic() - start)
                     except Exception:
+                        # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
                         errors += 1
 
-            avg_lat = sum(latencies) / len(latencies) * 1000 if latencies else float("inf")
-            tps = (32 * bs) / (sum(latencies) / len(latencies)) if latencies else 0.0
-            console.print(f"avg {avg_lat:.0f}ms, ~{tps:.1f} tok/s")
+            if latencies:
+                avg_s = sum(latencies) / len(latencies)
+                avg_lat: float | None = avg_s * 1000
+                tps: float | None = (32 * bs) / avg_s
+                console.print(f"avg {avg_lat:.0f}ms, ~{tps:.1f} tok/s")
+            else:
+                # A probe with zero successful samples has no measured latency.
+                # Represent it as null in the report — never inf/NaN, which are
+                # not valid JSON (RFC 8259).
+                avg_lat = None
+                tps = None
+                console.print("[red]all samples failed[/red]")
 
             results.append({
                 "batch_size": bs,
-                "avg_latency_ms": round(avg_lat, 1),
-                "throughput_tok_s": round(tps, 1),
+                "avg_latency_ms": round(avg_lat, 1) if avg_lat is not None else None,
+                "throughput_tok_s": round(tps, 1) if tps is not None else None,
                 "errors": errors,
             })
         except httpx.ConnectError:
@@ -291,15 +302,26 @@ def run_tune_batch(
                 "errors": 3,
             })
 
+    # Only probes that produced at least one real latency sample are usable.
+    valid = [r for r in results if r["avg_latency_ms"] is not None]
+
+    if not valid:
+        # Every probe failed: there is nothing to recommend and writing a
+        # result file would fabricate a measurement that never happened.
+        console.print(
+            f"\n[red]all probes failed — is the API server running at "
+            f"{host}:{port} and is the API key valid?[/red]"
+        )
+        raise SystemExit(1)
+
     # Find optimal: highest batch_size whose avg_latency <= target
-    viable = [r for r in results if r["avg_latency_ms"] is not None and r["avg_latency_ms"] <= target_latency_ms and r["errors"] == 0]
+    viable = [r for r in valid if r["avg_latency_ms"] <= target_latency_ms and r["errors"] == 0]
 
     if viable:
         best = max(viable, key=lambda r: r["throughput_tok_s"])
     else:
-        # Fall back to lowest-latency result
-        valid = [r for r in results if r["avg_latency_ms"] is not None]
-        best = min(valid, key=lambda r: r["avg_latency_ms"]) if valid else results[0]
+        # Fall back to lowest-latency result that has a real sample
+        best = min(valid, key=lambda r: r["avg_latency_ms"])
 
     # Estimate max_tokens_per_batch (prompt + generation budget)
     hidden_dim = _estimate_hidden_dim(model)
@@ -338,7 +360,14 @@ def run_tune_batch(
     console.print(table)
 
     if output:
-        Path(output).write_text(json.dumps(result_data, indent=2), encoding="utf-8")
+        # allow_nan=False: anything non-finite reaching this point is a bug —
+        # fail loudly instead of writing Infinity/NaN (invalid per RFC 8259).
+        try:
+            payload = json.dumps(result_data, indent=2, allow_nan=False)
+        except ValueError as exc:
+            console.print(f"[red]internal error: non-finite value in results: {exc}[/red]")
+            raise SystemExit(1) from exc
+        Path(output).write_text(payload, encoding="utf-8")
         console.print(f"\n[green]Results saved to {output}[/green]")
 
 
@@ -451,7 +480,7 @@ def run_tune_cache(
     }
 
     # Display
-    console.print(f"\n[bold]Cache Sizing Calculator[/bold]")
+    console.print("\n[bold]Cache Sizing Calculator[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  GPU memory: {gpu_memory_gb:.0f} GB")
     console.print(f"  Concurrency: {concurrency}")

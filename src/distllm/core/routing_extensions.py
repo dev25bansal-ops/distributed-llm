@@ -488,7 +488,7 @@ class RoutingMetrics:
     def _init_prometheus(self) -> bool:
         """Try to initialize Prometheus counters."""
         try:
-            from prometheus_client import Counter, Histogram, CollectorRegistry
+            from prometheus_client import CollectorRegistry, Counter, Histogram
 
             # Use a dedicated registry to avoid duplicate metric errors
             registry = CollectorRegistry()

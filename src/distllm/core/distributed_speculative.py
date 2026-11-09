@@ -726,6 +726,7 @@ class RemoteDraftModel:
                     result = self._extract_from_completions(data)
                     break
                 except Exception as e:
+                    # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                     last_error = e
                     if attempt < self._config.max_retries:
                         base_delay = min(0.1 * (2 ** attempt), max_delay)

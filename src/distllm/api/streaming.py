@@ -1,6 +1,5 @@
 """Streaming SSE response helpers for chat and completion endpoints.
 
-from loguru import logger
 Deduplicates the nearly-identical _stream_chat and _stream_completion
 functions into a single _stream_response() that parameterizes the
 object_type and request_id prefix.
@@ -17,11 +16,14 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any
+from collections.abc import AsyncGenerator
 
+from loguru import logger
+
+from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer
-from distllm.core.param_update_channel import ParamUpdateChannel
 
 
 def _get_client_id(request: Any) -> str:
@@ -45,8 +47,9 @@ import threading
 
 import torch
 
-from .api_state import g
 from distllm.core.token_generator import TokenGenerator
+
+from .api_state import g
 
 _token_gen: TokenGenerator | None = None
 _token_gen_lock = threading.Lock()
@@ -108,6 +111,60 @@ def _build_chunk(
     )
 
 
+def _step_local_model(
+    model,
+    model_input,
+    past_key_values,
+    tokenizer,
+    token_gen: TokenGenerator,
+    temp: float,
+    tp: float,
+    tk: int,
+    constraint,
+    include_logprobs: bool,
+    top_logprobs_n: int,
+    prefill: bool,
+):
+    """Run one autoregressive step for the local-partitioner path.
+
+    Executed inside a single asyncio.to_thread hop (PERF-07-STREAM) so the
+    stateful model call and the sample/decode/logprob CPU work do not block
+    the event loop. Reproduces the original per-token semantics exactly:
+    prefill feeds input_ids, decode feeds the last next_token with the KV
+    cache; constrained decoding masks logits before sampling; the sampled
+    token is reshaped to [batch, 1] and decoded; the constraint FSM is
+    updated with the decoded text; logprobs are computed when requested.
+    """
+    if prefill:
+        outputs = model(model_input, use_cache=True)
+    else:
+        outputs = model(model_input, past_key_values=past_key_values, use_cache=True)
+
+    logits = outputs.logits[:, -1, :]
+
+    if constraint is not None:
+        mask = constraint.get_logits_mask(logits.shape[-1], tokenizer)
+        logits[:, ~mask] = float('-inf')
+
+    next_token, _ = token_gen.sample(logits, temperature=temp, top_p=tp, top_k=tk)
+    if next_token.dim() == 0:
+        next_token = next_token.unsqueeze(0).unsqueeze(0)
+    elif next_token.dim() == 1:
+        next_token = next_token.unsqueeze(-1)
+    token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
+
+    if constraint is not None:
+        constraint.update(token_text)
+
+    logprob_data = None
+    if include_logprobs:
+        logprob_data = TokenGenerator._compute_logprobs(
+            logits, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
+        )
+
+    return outputs, next_token, token_text, logprob_data
+
+
 async def _generate_tokens(
     prompt: str,
     request_id: str,
@@ -159,6 +216,7 @@ async def _generate_tokens(
         past_key_values = None
 
         prefill_start = time.monotonic()
+        token_gen = _get_token_gen()
 
         with torch.no_grad():
             for step in range(max_tokens):
@@ -181,33 +239,36 @@ async def _generate_tokens(
                         include_logprobs = getattr(params, 'include_logprobs', False)
                         top_logprobs_n = getattr(params, 'top_logprobs', 0)
 
+                # PERF-07-STREAM: run the whole per-token body — the stateful
+                # model call (it consumes/updates past_key_values) plus the
+                # sample/decode/logprob CPU work — in ONE to_thread hop. The
+                # loop is autoregressive so hops cannot be merged across
+                # tokens, but coalescing the CPU work here keeps one hop per
+                # token with the sample/decode/logprobs moved off the event
+                # loop instead of blocking it after a separate hop.
                 if step == 0:
-                    outputs = await asyncio.to_thread(model, input_ids, use_cache=True)
+                    outputs, next_token, token_text, logprob_data = await asyncio.to_thread(
+                        _step_local_model,
+                        model, input_ids, None,
+                        tokenizer=tokenizer, token_gen=token_gen,
+                        temp=temp, tp=tp, tk=tk,
+                        constraint=constraint, include_logprobs=include_logprobs,
+                        top_logprobs_n=top_logprobs_n,
+                        prefill=True,
+                    )
                 else:
-                    outputs = await asyncio.to_thread(model, next_token, past_key_values=past_key_values, use_cache=True)
+                    outputs, next_token, token_text, logprob_data = await asyncio.to_thread(
+                        _step_local_model,
+                        model, next_token, past_key_values,
+                        tokenizer=tokenizer, token_gen=token_gen,
+                        temp=temp, tp=tp, tk=tk,
+                        constraint=constraint, include_logprobs=include_logprobs,
+                        top_logprobs_n=top_logprobs_n,
+                        prefill=False,
+                    )
 
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
-
-                if constraint is not None:
-                    mask = constraint.get_logits_mask(logits.shape[-1], tokenizer)
-                    logits[:, ~mask] = float('-inf')
-
-                next_token, _ = _get_token_gen().sample(logits, temperature=temp, top_p=tp, top_k=tk)
-                if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0).unsqueeze(0)
-                elif next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)
-                token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
-
-                if constraint is not None:
-                    constraint.update(token_text)
-
-                logprob_data = None
-                if include_logprobs:
-                    logprob_data = TokenGenerator._compute_logprobs(
-                        logits, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
-                    )
 
                 ttft = None
                 if step == 0:
@@ -395,8 +456,8 @@ async def _stream_response(
         _full_text_trimmed = full_text.strip()
         if _full_text_trimmed and ('"tool_calls"' in _full_text_trimmed or '<tool_call>' in _full_text_trimmed):
             try:
-                from distllm.api.routes.chat import _ToolCallingEngine
-                _tc_engine = _ToolCallingEngine()
+                from distllm.api.tool_calling import ToolCallingEngine
+                _tc_engine = ToolCallingEngine()
                 parsed_calls = _tc_engine.extract_tool_calls(_full_text_trimmed)
                 if parsed_calls:
                     tool_calls_data = []

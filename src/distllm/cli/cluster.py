@@ -8,15 +8,18 @@ import time
 import uuid
 
 import httpx
+import typer
+from loguru import logger
 from rich.console import Console
 from rich.table import Table
-from loguru import logger
+
+from distllm.cli.http_client import client_for, format_http_error
 
 console = Console()
 
 
 def _get_client(host: str, port: int) -> httpx.Client:
-    return httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0)
+    return client_for(host, port)
 
 
 def _admin_headers() -> dict[str, str]:
@@ -82,34 +85,27 @@ def _cluster_status(host: str, port: int):
             console.print("[yellow]Coordinator reachable but no model is loaded.[/yellow]")
             console.print("Start one with: distllm system api --model <model>")
         else:
-            console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+            console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _cluster_scale(host: str, port: int, nodes: int, gpu_type: str | None = None):
     """Scale cluster to target node count."""
-    try:
-        with _get_client(host, port) as client:
-            resp = client.post("/v1/cluster/scale", json={
-                "target_nodes": nodes,
-                "gpu_type": gpu_type,
-            })
-            resp.raise_for_status()
-            data = resp.json()
-
-        console.print(f"[green]Scaling initiated:[/green] {data.get('message', '')}")
-        if data.get("job_id"):
-            console.print(f"Job ID: {data['job_id']}")
-    except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+    # The server has no scale endpoint: /v1/cluster/scale never existed and
+    # there is no /admin equivalent. Sending the request produced a bare 404
+    # that read like a transient fault.
+    console.print(
+        "[yellow]Cluster scaling is not supported by this server build.[/yellow]\n"
+        "Start or stop worker nodes directly:  distllm cluster join / cluster leave"
+    )
+    raise typer.Exit(2)
 
 
 def _cluster_drain(host: str, port: int, node_id: str):
     """Drain a node (gracefully remove from service)."""
     try:
         with _get_client(host, port) as client:
-            resp = client.post("/v1/cluster/drain", json={"node_id": node_id})
+            # The drain route lives in the admin router, addressed by node id.
+            resp = client.post(f"/admin/v1/nodes/{node_id}/drain")
             resp.raise_for_status()
             data = resp.json()
 
@@ -118,29 +114,79 @@ def _cluster_drain(host: str, port: int, node_id: str):
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _cluster_rebalance(host: str, port: int, strategy: str = "balanced"):
     """Rebalance load across cluster nodes."""
-    try:
-        with _get_client(host, port) as client:
-            resp = client.post("/v1/cluster/rebalance", json={"strategy": strategy})
-            resp.raise_for_status()
-            data = resp.json()
+    # Documented in dist/api_docs.py but never implemented by any handler.
+    console.print(
+        "[yellow]Cluster rebalancing is not implemented by this server build.[/yellow]\n"
+        "Pipeline layers are assigned at join time; rebalance requires a restart."
+    )
+    raise typer.Exit(2)
 
-        console.print(f"[green]Rebalance initiated:[/green] strategy={strategy}")
-        if data.get("message"):
-            console.print(data["message"])
-    except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+
+def _validate_model_or_exit(model: str) -> None:
+    """Fail fast on a model id that cannot be loaded.
+
+    ``cluster start`` spawns the coordinator and API server as subprocesses, so
+    a bad model id produced a raw transformers traceback from the child process
+    before this check existed:
+
+        OSError: definitely/not-a-real-model is not a local folder and is not a
+        valid model identifier listed on 'https://huggingface.co/models'
+
+    Checking here turns that into one sentence with a next step, before either
+    subprocess is spawned.
+    """
+    import os
+    from pathlib import Path
+
+    candidate = Path(model).expanduser()
+    if candidate.exists():
+        return  # local directory or file: transformers will handle it
+
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.errors import (
+            GatedRepoError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
+    except ImportError:
+        return  # hub not installed; the server will surface any problem
+
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    try:
+        HfApi().model_info(model, token=token, timeout=10)
+    except GatedRepoError:
+        console.print(
+            f"[red]Model is gated:[/red] {model}\n"
+            "Accept its license on huggingface.co, then set [cyan]HF_TOKEN[/cyan]."
+        )
+        raise SystemExit(1) from None
+    except RepositoryNotFoundError:
+        console.print(
+            f"[red]Model not found:[/red] {model}\n"
+            "Hugging Face has no repository by that name.\n"
+            "Find one that fits this machine:\n"
+            "  [cyan]distllm model search[/cyan]"
+        )
+        raise SystemExit(1) from None
+    except (HfHubHTTPError, httpx.HTTPError, OSError):
+        # Network trouble, rate limit, offline: do not block the start. The
+        # server will report the real problem if the model genuinely fails.
+        # Deliberately narrow: an unexpected error here should surface rather
+        # than silently skip validation.
+        return
 
 
 def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str, debug: bool):
     """Start a coordinator and optionally the REST API."""
-    console.print(f"[bold]Starting coordinator...[/bold]")
+    _validate_model_or_exit(model)
+
+    console.print("[bold]Starting coordinator...[/bold]")
     console.print(f"  Model: {model}")
     console.print(f"  gRPC port: {port}")
     console.print(f"  API port: {api_port}")
@@ -187,7 +233,7 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
         if coord_ready:
             console.print(f"[green]Coordinator ready[/green] on port {port}")
         else:
-            console.print(f"[yellow]Coordinator may not be ready[/yellow] (timeout)")
+            console.print("[yellow]Coordinator may not be ready[/yellow] (timeout)")
 
         api_proc = subprocess.Popen(api_args)
         console.print(f"[green]API server started[/green] (PID: {api_proc.pid})")
@@ -206,7 +252,7 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
         if api_ready:
             console.print(f"[green]API server ready[/green] on port {api_port}")
         else:
-            console.print(f"[yellow]API server may not be ready[/yellow] (timeout)")
+            console.print("[yellow]API server may not be ready[/yellow] (timeout)")
 
         console.print()
         console.print(f"Workers join: distllm cluster join --coordinator localhost:{port}")
@@ -222,10 +268,12 @@ def _cluster_start(model: str, port: int, api_port: int, local: bool, dtype: str
             try:
                 coord_proc.wait(timeout=5)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 coord_proc.kill()
             try:
                 api_proc.wait(timeout=5)
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 api_proc.kill()
             console.print("[yellow]Cluster stopped[/yellow]")
     except FileNotFoundError:
@@ -290,6 +338,7 @@ def _cluster_join(
                     if models:
                         model_name = models[0].get("id", "unknown")
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     if model_name == "unknown":
@@ -366,6 +415,7 @@ def _cluster_join(
             else:
                 console.print(f"[yellow]Registration: {resp.status_code} {resp.text[:100]}[/yellow]")
         except Exception as e:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(f"[yellow]Registration: {e}[/yellow]")
         try:
             for line in iter(proc.stdout.readline, ''):
@@ -383,10 +433,17 @@ def _cluster_leave(node_id: str, coordinator_host: str, coordinator_port: int):
     """Gracefully remove a worker node from the cluster."""
     console.print(f"Removing node [cyan]{node_id}[/cyan] from cluster...")
     try:
-        with httpx.Client(base_url=f"http://{coordinator_host}:{coordinator_port}") as client:
-            resp = client.post(f"/v1/cluster/nodes/{node_id}/drain")
+        # Admin router, addressed by node id, and authenticated -- the old
+        # bare httpx.Client sent no key, so this was always a 401.
+        with _get_client(coordinator_host, coordinator_port) as client:
+            resp = client.post(f"/admin/v1/nodes/{node_id}/drain", headers=_admin_headers())
             if resp.status_code == 200:
                 console.print(f"[green]Node {node_id} drained[/green]")
+            elif resp.status_code in (401, 403):
+                console.print(
+                    "[red]Unauthorized:[/red] draining a node requires an admin API key. "
+                    "Set the [bold]DISTLLM_API_KEY[/bold] environment variable and retry."
+                )
             else:
                 console.print(f"[yellow]Drain returned: {resp.status_code}[/yellow]")
     except httpx.ConnectError:

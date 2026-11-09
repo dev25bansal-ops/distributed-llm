@@ -235,6 +235,7 @@ class RecoveryDrill:
                 for _ in range(self._autoscaler.current_count()):
                     pass  # just checking it's alive
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         # If we have history, pick a node not recently drilled.

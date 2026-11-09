@@ -22,26 +22,78 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
+# Ubuntu 22.04 ships pip 22.0.2 / setuptools 59.6.0. Setuptools <61 cannot read
+# PEP 621 [project] metadata from pyproject.toml, and this repo has no setup.py
+# or setup.cfg, so the build silently produced an empty UNKNOWN-0.0.0 wheel
+# (961 bytes, no console scripts) and the runtime image had no `distllm-api`
+# binary. The floors below are the first versions that understand this file:
+# setuptools 61 (PEP 621) and pip 23 (Metadata-Version 2.4 wheels).
+RUN python3 -m pip install --no-cache-dir --upgrade \
+    "pip>=23.0" "setuptools>=68.0,<82" wheel
+
 WORKDIR /build
+
+# Interpreter for the whole image: a venv keeps one consistent layout (Debian
+# Python searches .../dist-packages while `pip --prefix` writes site-packages)
+# and we copy it wholesale to the runtime at this same absolute path.
+RUN python3 -m venv /install
+ENV PATH=/install/bin:${PATH}
 
 # Install PyTorch with CUDA support (pre-built wheel for speed)
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-# NCCL: install from system (already in cuda-devel image) and ensure NCCL headers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnccl-dev libnccl2 \
-    && rm -rf /var/lib/apt/lists/*
+# NCCL: already provided by the nvidia/cuda:*-devel base image (headers + libs).
+# Installing the distro libnccl-dev/libnccl2 changes held packages and makes
+# apt fail under -y ("Held packages were changed ... --allow-change-held-packages"),
+# so we rely on the base image's NCCL instead.
 
 # Install locked dependencies first (cached layer, pinning all transitive deps)
 COPY requirements.lock .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy project files and install the package itself (without re-resolving deps)
 COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-RUN pip install --no-cache-dir --prefix=/install "./src" --no-deps
+# node_pb2*.py are gitignored build products (see .gitignore), so they are
+# absent from the build context and the installed package has no protobuf
+# modules -- the container then dies on `ImportError: cannot import name
+# 'node_pb2' from 'distllm.dist'`. Generate them exactly as `make proto` does.
+#
+# grpcio-tools emits a *flat* `import node_pb2 as node__pb2` in the _grpc file,
+# which only resolves when distllm/dist is on sys.path; imported as a package
+# it raises ModuleNotFoundError. Rewrite it to the package-relative form.
+RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
+    && python -m grpc_tools.protoc -I proto/ \
+        --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
+        proto/node.proto \
+    && sed -i 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+        src/distllm/dist/node_pb2_grpc.py \
+    && test -f src/distllm/dist/node_pb2.py \
+    && grep -q '^from distllm.dist import node_pb2 as node__pb2$' src/distllm/dist/node_pb2_grpc.py
+# The package metadata (pyproject.toml) lives at the repo root, not in src/,
+# so install the current directory. PIP finds the distllm package under
+# src/ because pyproject sets package-dir = {"" = "src"}.
+#
+# Install the self-hosted extra too: core.coordinator imports transformers at
+# module scope, and requirements.lock does not carry it, so a bare install
+# produced an image that built fine and then died on
+# `ModuleNotFoundError: No module named 'transformers'` when the coordinator
+# started. torch is already installed from the CUDA index above and satisfies
+# the extra's requirement, so pip will not pull a second copy.
+RUN pip install --no-cache-dir "transformers>=4.48.0" \
+    "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
+    "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
+RUN pip install --no-cache-dir . --no-deps
+
+# Fail the build (not the container at runtime) if the package installed without
+# its console scripts. A metadata-parsing failure yields an empty wheel that
+# pip reports as success, and the image then starts with "distllm-api: not found".
+RUN test -x /install/bin/distllm-api \
+    && test -x /install/bin/distllm-coordinator \
+    && test -x /install/bin/distllm-node \
+    || { echo "ERROR: distllm console scripts missing from /install/bin"; ls -la /install/bin || true; exit 1; }
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
@@ -70,14 +122,15 @@ WORKDIR /app
 # Install ONLY runtime dependencies (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
-    libnccl2 \
     curl ca-certificates \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the installed packages from builder
-COPY --from=builder /install /usr/local
+# Copy the venv at the SAME absolute path it was built at: pyvenv.cfg and the
+# console-script shebangs embed /install, so relocating it would break both.
+COPY --from=builder /install /install
+ENV PATH=/install/bin:${PATH}
 
 # Create non-root user
 RUN groupadd -r distllm && \
@@ -90,11 +143,11 @@ RUN chmod +x /app/docker-entrypoint.sh
 USER distllm
 
 # Default env for deployment
-ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
-ENV DISTLLM_START_LAYER=0
-ENV DISTLLM_END_LAYER=3
-ENV DISTLLM_TOTAL_LAYERS=8
+ENV DISTLLM_MODEL__NAME=meta-llama/Llama-3.2-1B
+ENV DISTLLM_MODEL__DTYPE=float16
+# A container must listen on all interfaces; the library default is
+# localhost, which is unreachable through a published port.
+ENV DISTLLM_COORDINATOR__HOST=0.0.0.0
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

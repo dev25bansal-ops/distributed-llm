@@ -272,6 +272,7 @@ class EbpfTransportObserver(WANTransportObserver):
             # because it cannot run on the verification host.
             self.kernel_attached = False
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self.kernel_attached = False
 
     def _peer(self, peer_id: str) -> dict[str, float]:

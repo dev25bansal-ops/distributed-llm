@@ -37,9 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from loguru import logger
-
 import torch
+from loguru import logger
 
 if TYPE_CHECKING:
     from distllm.core.model_router import ModelRouter, RouteMatch, RoutingContext

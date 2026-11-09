@@ -31,13 +31,15 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections.abc import Callable
 from enum import Enum
-from typing import Callable
 
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from distllm.api.errors import FEATURE_DISABLED_HEADER
 
 
 class CircuitState(str, Enum):
@@ -198,6 +200,20 @@ class ServerCircuitBreaker:
                 if self._failures >= self._threshold or self._should_trip_on_rate():
                     self._transition_to_locked(CircuitState.OPEN)
 
+    def record_neutral(self) -> None:
+        """Record a call whose outcome says nothing about downstream health.
+
+        Used for feature-gated 503s (``FeatureDisabledError``): a success would
+        wrongly reset the consecutive-failure streak and mask a real outage,
+        while a failure would let deliberately-disabled features open the
+        circuit for unrelated routes.  NEUTRAL does neither — it only releases
+        a HALF_OPEN probe slot if this call was admitted as a probe, so probe
+        capacity cannot leak.
+        """
+        with self._lock:
+            if self._state == CircuitState.HALF_OPEN:
+                self._release_probe_slot()
+
     def reset(self) -> None:
         """Manually reset the circuit breaker to a pristine CLOSED state."""
         with self._lock:
@@ -330,7 +346,11 @@ class CircuitBreakerMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-            if response.status_code < 500:
+            if response.headers.get(FEATURE_DISABLED_HEADER):
+                # Deliberately-disabled feature (config): says nothing about
+                # downstream health — neutral, not a failure and not a success.
+                _breaker.record_neutral()
+            elif response.status_code < 500:
                 _breaker.record_success()
             else:
                 _breaker.record_failure()

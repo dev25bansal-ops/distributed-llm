@@ -18,8 +18,9 @@ import os
 import shlex
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import httpx
 from rich.console import Console
@@ -295,6 +296,7 @@ async def _do_streaming_turn(
             try:
                 detail = e.response.text
             except Exception:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 detail = str(e)
             console.print(f"[red]API error ({e.response.status_code}):[/red] {detail}")
             return None

@@ -1,0 +1,18 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+      app.kubernetes.io/component: coordinator
+  endpoints:
+    - port: api
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+{{- end }}

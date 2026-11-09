@@ -6,7 +6,7 @@ plus helpers for recording TTFT (time-to-first-token) events.
 
 from __future__ import annotations
 
-from contextlib import contextmanager, asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

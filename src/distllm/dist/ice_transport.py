@@ -776,6 +776,7 @@ def _get_local_addresses() -> list[tuple[str, int]]:
                 else:
                     addrs.append((ip, socket.AF_INET))
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     if not addrs:
@@ -1977,6 +1978,7 @@ class TURNServer:
             except OSError:
                 break
             except Exception:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 with self._lock:
                     self._stats["errors"] += 1
 

@@ -8,13 +8,13 @@ aliases:
 ---
 # CLI, Config & Client — `src/distllm/{cli,config,client}/`
 
-**64 .py files · ~13.1K LOC** (`cli/` 44 · `config/` 18 · `client/` 2).
+**70 .py files · ~12.9K LOC** (`cli/` 50 · `config/` 18 · `client/` 2).
 
 > The operator surface: the all-in-one **Typer CLI** (`distllm`), the full **pydantic-settings configuration model** (`DistLLMSettings`, ~60 nested settings classes), and the public **async/sync Python client** for the coordinator REST API.
 >
 > **Tests:** `tests/cli/`, `tests/config/`, `tests/client/` + `tests/sdk/test_client.py` (`python -m pytest tests/cli tests/config tests/client -v`).
 
-## `cli/` — the `distllm` CLI (44 files)
+## `cli/` — the `distllm` CLI (50 files)
 
 | file | LOC | purpose |
 |------|-----|---------|
@@ -102,3 +102,5 @@ aliases:
 
 ## Depends on
 `config` ← only `pydantic`/`yaml`/`loguru`; `cli` ← `config`, `client`, `api` (REST), `core` (cluster/quota); `client` ← `httpx` → [[03 API Server]].
+
+<!-- recounted 2026-11-06 by hygiene pass -->

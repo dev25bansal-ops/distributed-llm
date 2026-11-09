@@ -15,10 +15,11 @@ from __future__ import annotations
 import os
 import sys
 
-# Re-export first-party integration components.
-from distllm.integrations.mlflow_tracking import MLflowIntegration as MLflowIntegration
 from distllm.integrations.ci.gitlab import GitLabCIIntegration as GitLabCIIntegration
 from distllm.integrations.ci.jenkins import JenkinsIntegration as JenkinsIntegration
+
+# Re-export first-party integration components.
+from distllm.integrations.mlflow_tracking import MLflowIntegration as MLflowIntegration
 
 
 def _discover_integration_paths() -> list[str]:
@@ -57,6 +58,7 @@ def _discover_pkg_dirs() -> list[str]:
         # Some Python versions need different entry_points() call
         pass
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     return discovered
 

@@ -11,12 +11,13 @@ import gzip
 import json
 import os
 import shutil
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -126,6 +127,7 @@ class BackupManager:
                 data = json.loads(manifest_file.read_text())
                 manifests.append(BackupManifest(**data))
             except Exception:
+                # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                 continue
         return manifests
 

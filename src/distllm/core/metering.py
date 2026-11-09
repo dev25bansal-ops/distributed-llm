@@ -38,12 +38,12 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+from collections.abc import Sequence
 
 from loguru import logger
 
 from distllm.core.cost_tracker import get_cost_tracker
-
 
 # ── UsageRecord ────────────────────────────────────────────────────────────
 

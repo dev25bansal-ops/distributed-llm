@@ -12,14 +12,14 @@ where possible, with DistLLM-specific extensions documented below.
 
 ---
 
-## v0.5.0 (Unreleased)
+## v0.5.0 (Unreleased, 2026-11-06)
 
 ### New Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/embeddings/rerank` | POST | Cross-encoder reranking |
-| `/v1/embeddings/rerank/hybrid` | POST | Hybrid embedding + reranking with RRF |
+| `/v1/rerank` | POST | Cross-encoder reranking |
+| `/v1/rerank/hybrid` | POST | Hybrid embedding + reranking with RRF |
 | `/v1/batch` | POST | Batch processing (up to 100 requests) |
 | `/v1/scheduler/stats` | GET | Scheduler statistics |
 | `/v1/scheduler/config` | GET/PATCH | Scheduler tuning |

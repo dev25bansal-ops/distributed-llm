@@ -33,7 +33,6 @@ from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-
 # Default allowed origins (can be overridden via env var)
 _DEFAULT_ALLOWED_ORIGINS: list[str] = []
 

@@ -15,7 +15,8 @@ import socket
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -165,6 +166,7 @@ class ProviderHealthProber:
             status_code = resp.status_code
             healthy = 200 <= resp.status_code < 500
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             latency = (time.time() - start) * 1000
             error = str(e)
 
@@ -201,6 +203,7 @@ class ProviderHealthProber:
                     try:
                         self._on_health_change(health)
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
             if self._router and healthy and latency > 0:
                 self._router.update_latency(f"{provider}:{region}", latency)

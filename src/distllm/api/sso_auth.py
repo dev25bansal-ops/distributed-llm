@@ -31,13 +31,39 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
+
+# ─── Shared pooled HTTP client (PERF-01) ────────────────────────────────────
+#
+# Sync httpx helpers (httpx.get/post) build a fresh Client — plus a fresh TCP
+# + TLS handshake — for every request, and block the event loop when invoked
+# from async contexts (SsoMiddleware.dispatch, /v1/auth/token). A module-level
+# httpx.AsyncClient with an explicit Limits pool reuses keep-alive connections
+# across requests, keeping p99 latency flat under concurrent login bursts.
+# Sync entry points keep their existing semantics and offload to the async
+# path internally, so there is exactly one HTTP code path to audit.
+_HTTP_LIMITS = None
+_HTTP_TIMEOUT = None
+
+
+def _get_async_client():
+    """Return the process-wide pooled AsyncClient for SSO IdP calls."""
+    global _HTTP_LIMITS, _HTTP_TIMEOUT
+    import httpx
+    if _HTTP_LIMITS is None:
+        _HTTP_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=50)
+        _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+    client = getattr(_get_async_client, "_client", None)
+    if client is None:
+        client = httpx.AsyncClient(limits=_HTTP_LIMITS, timeout=_HTTP_TIMEOUT)
+        _get_async_client._client = client
+    return client
 
 
 # ── JWKS cache policy (SEC-A9) ─────────────────────────────────────────────────
@@ -182,12 +208,19 @@ class OIDCHandler:
         authority: str,
         callback_url: str,
         jwks_url: str | None = None,
+        allow_unverified_id_token: bool = False,
     ):
         self._client_id = client_id
         self._client_secret = client_secret
         self._authority = authority.rstrip("/")
         self._callback_url = callback_url
         self._jwks_url = jwks_url
+        # Fail-closed by default: if the id_token signature cannot be
+        # cryptographically verified (no JWKS discovered) we reject the
+        # authentication rather than trusting an unverified subject. Opt-in
+        # only for deployments that intentionally trust the IdP token
+        # endpoint over authenticated TLS.
+        self._allow_unverified_id_token = allow_unverified_id_token
 
         # Discovered endpoints
         self._authorization_endpoint = ""
@@ -200,6 +233,11 @@ class OIDCHandler:
         self._nonce_store: dict[str, float] = {}
         self._nonce_ttl = 600.0  # 10 minutes
 
+        # PKCE code verifier store — maps state -> code_verifier.
+        # PKCE prevents authorization code interception attacks when the
+        # callback is delivered over an untrusted channel.
+        self._pkce_store: dict[str, str] = {}
+
         # SEC-A9: JWKS response cache + single-flight, keyed by the JWKS URL.
         # The cache key is ALWAYS an operator-configured or discovery-derived
         # endpoint — never anything taken from a token (no ``jku``/``x5u``
@@ -211,6 +249,27 @@ class OIDCHandler:
         self._jwks_last_error: dict[str, tuple[float, Exception]] = {}
 
         self._discover()
+
+    async def async_discover(self) -> None:
+        """ASYNC OIDC discovery via the pooled AsyncClient (PERF-01)."""
+        try:
+            import httpx
+
+            discovery_url = f"{self._authority}/.well-known/openid-configuration"
+            resp = await _get_async_client().get(discovery_url, timeout=10.0)
+            if resp.status_code == 200:
+                config = resp.json()
+                self._authorization_endpoint = config.get("authorization_endpoint", "")
+                self._token_endpoint = config.get("token_endpoint", "")
+                self._userinfo_endpoint = config.get("userinfo_endpoint", "")
+                self._discovered_jwks_url = config.get("jwks_uri", "")
+                logger.info(f"OIDC endpoints discovered from {discovery_url}")
+            else:
+                logger.warning(f"OIDC discovery failed: {resp.status_code}")
+                self._set_default_endpoints()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning(f"OIDC discovery error: {e}")
+            self._set_default_endpoints()
 
     def _discover(self) -> None:
         """Discover OIDC endpoints from the well-known configuration."""
@@ -232,8 +291,15 @@ class OIDCHandler:
             logger.warning("httpx not installed, using default OIDC endpoints")
             self._set_default_endpoints()
         except Exception as e:
-            logger.warning(f"OIDC discovery error: {e}")
-            self._set_default_endpoints()
+            # Network/HTTP/JSON errors only; auth failures must not be masked
+            # as "discovery errors". Re-raise anything that isn't I/O related.
+            import httpx as _httpx
+
+            if isinstance(e, (_httpx.HTTPError, ValueError, OSError)):
+                logger.warning(f"OIDC discovery error: {e}")
+                self._set_default_endpoints()
+            else:
+                raise
 
     def _set_default_endpoints(self) -> None:
         """Set default OIDC endpoint paths based on the authority URL."""
@@ -258,6 +324,22 @@ class OIDCHandler:
             "nonce": nonce,
             "expires": time.time() + self._nonce_ttl,
         }
+        # PKCE: bind a code_verifier to this state so a stolen/intercepted
+        # authorization code is unusable without the verifier (RFC 7636).
+        # S256 challenge is advertised in the URL; the verifier is stored
+        # server-side and presented at the token exchange.
+        import base64
+        import hashlib
+
+        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
+        pkce_store = getattr(self, "_pkce_store", None)
+        if pkce_store is None:
+            pkce_store = self._pkce_store = {}
+        pkce_store[state] = code_verifier
+
         params = urllib.parse.urlencode({
             "response_type": "code",
             "client_id": self._client_id,
@@ -265,18 +347,151 @@ class OIDCHandler:
             "scope": "openid profile email",
             "state": state,
             "nonce": nonce,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         })
         return f"{self._authorization_endpoint}?{params}"
 
-    def handle_callback(self, code: str, expected_state: str = "") -> SSOUserInfo | None:
+    async def async_handle_callback(
+        self, code: str, expected_state: str = "", expected_nonce: str = ""
+    ) -> SSOUserInfo | None:
+        """ASYNC OIDC callback via the pooled AsyncClient (PERF-01).
+
+        Token/userinfo calls use the shared pooled AsyncClient so they
+        never block the event loop and reuse keep-alive connections.
+        CSRF state, mandatory ID-token verification (H-13), and nonce
+        replay protection are identical to the sync version.
+        """
+        import time
+
+        # SECURITY: state is mandatory for the authorization-code flow (OAuth2
+        # CSRF protection).  A callback without a state cannot be bound to a
+        # login the user actually initiated.
+        if not expected_state:
+            logger.error("OAuth state missing — refusing code exchange")
+            return None
+        stored_expiry = self._state_store.pop(expected_state, None)
+        if stored_expiry is None:
+            logger.error("OAuth state not found — possible CSRF attack")
+            return None
+        if time.time() > stored_expiry:
+            logger.error("OAuth state expired")
+            return None
+
+        # Caller-supplied nonce (RFC 8252 binding): when present it must
+        # match the nonce issued for this state. The stored entry is kept
+        # (not popped) — single-use semantics come from the state store,
+        # and the id_token's nonce claim is checked against the same entry
+        # after signature validation.
+        if expected_nonce:
+            stored_nonce = self._nonce_store.get(expected_state)
+            if isinstance(stored_nonce, dict):
+                stored_nonce = stored_nonce.get("nonce")
+            if stored_nonce is None or stored_nonce != expected_nonce:
+                logger.error("OIDC nonce mismatch — possible authorization-code replay")
+                return None
+        try:
+            import httpx
+
+            client = _get_async_client()
+
+            # Exchange code for tokens (with PKCE code_verifier when the
+            # login URL issued one). Fail closed: a state with no bound
+            # verifier (already consumed, or a login that never issued
+            # PKCE) must not silently downgrade to a verifier-less
+            # exchange (SEC-API-04 / RFC 7636; mirrors GenericOAuth2Handler).
+            code_verifier = self._pkce_store.pop(expected_state, None)
+            if not code_verifier:
+                logger.error("OIDC PKCE verifier missing — possible code interception")
+                return None
+            token_data = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "redirect_uri": self._callback_url,
+            }
+            token_data["code_verifier"] = code_verifier
+            token_resp = await client.post(
+                self._token_endpoint,
+                data=token_data,
+                timeout=15.0,
+            )
+            if token_resp.status_code != 200:
+                logger.error(f"Token exchange failed: {token_resp.status_code} {token_resp.text}")
+                return None
+
+            tokens = token_resp.json()
+            access_token = tokens.get("access_token", "")
+            id_token = tokens.get("id_token", "")
+
+            if id_token:
+                try:
+                    validated = self.validate_token(id_token)
+                except Exception as e:
+                    logger.error(f"OIDC ID token validation failed with exception: {e}")
+                    return None
+                if validated is None:
+                    logger.error(
+                        "OIDC ID token validation failed (signature/JWKS) — "
+                        "rejecting authentication"
+                    )
+                    return None
+                logger.debug("OIDC ID token signature verified")
+
+                stored_nonce = self._nonce_store.pop(expected_state, None)
+                if stored_nonce is None or time.time() > stored_nonce.get("expires", 0):
+                    logger.error("OIDC nonce missing or expired — possible replay attack")
+                    return None
+                token_nonce = (getattr(validated, "raw_attributes", {}) or {}).get("nonce")
+                if not token_nonce or token_nonce != stored_nonce.get("nonce"):
+                    logger.error("OIDC nonce mismatch — possible replay attack")
+                    return None
+
+            if access_token and self._userinfo_endpoint:
+                user_resp = await client.get(
+                    self._userinfo_endpoint,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10.0,
+                )
+                if user_resp.status_code == 200:
+                    user_data = user_resp.json()
+                    return SSOUserInfo(
+                        sub=user_data.get("sub", ""),
+                        email=user_data.get("email", ""),
+                        name=user_data.get("name", ""),
+                        roles=user_data.get("roles", []),
+                        groups=user_data.get("groups", user_data.get("groups_v2", [])),
+                        provider="oidc",
+                        raw_attributes=user_data,
+                    )
+
+            return SSOUserInfo(sub=tokens.get("sub", ""), provider="oidc")
+
+        except ImportError:
+            logger.error("httpx required for OIDC callback handling")
+            return None
+        except Exception as e:
+            logger.error(f"OIDC async callback handling failed: {e}")
+            return None
+
+    def handle_callback(
+        self, code: str, expected_state: str = "", expected_nonce: str = ""
+    ) -> SSOUserInfo | None:
         """Exchange authorization code for tokens and get user info.
 
         If *expected_state* is provided, validates it against the stored
         state parameter to prevent OAuth2 CSRF attacks.
-        """
-        import time
-        import secrets
 
+        If *expected_nonce* is provided, validates the nonce in the ID token
+        to prevent authorization code replay (OIDC nonce binding, :rfc:`8252`).
+        """
+        import secrets
+        import time
+
+        # SECURITY: state is mandatory for the authorization-code flow (OAuth2
+        # CSRF protection).  A callback without a state cannot be bound to a
+        # login the user actually initiated.
         # SECURITY: state is mandatory for the authorization-code flow (OAuth2
         # CSRF protection).  A callback without a state cannot be bound to a
         # login the user actually initiated.
@@ -291,19 +506,42 @@ class OIDCHandler:
         if time.time() > stored_expiry:
             logger.error("OAuth state expired")
             return None
+
+        # Caller-supplied nonce (RFC 8252 binding): when present it must
+        # match the nonce issued for this state. The stored entry is kept
+        # (not popped) — single-use semantics come from the state store,
+        # and the id_token's nonce claim is checked against the same entry
+        # after signature validation.
+        if expected_nonce:
+            stored_nonce = self._nonce_store.get(expected_state)
+            if isinstance(stored_nonce, dict):
+                stored_nonce = stored_nonce.get("nonce")
+            if stored_nonce is None or stored_nonce != expected_nonce:
+                logger.error("OIDC nonce mismatch — possible authorization-code replay")
+                return None
         try:
             import httpx
 
-            # Exchange code for tokens
+            # Exchange code for tokens (with PKCE code_verifier when the
+            # login URL issued one). Fail closed: a state with no bound
+            # verifier (already consumed, or a login that never issued
+            # PKCE) must not silently downgrade to a verifier-less
+            # exchange (SEC-API-04 / RFC 7636; mirrors GenericOAuth2Handler).
+            code_verifier = self._pkce_store.pop(expected_state, None)
+            if not code_verifier:
+                logger.error("OIDC PKCE verifier missing — possible code interception")
+                return None
+            token_data = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "redirect_uri": self._callback_url,
+            }
+            token_data["code_verifier"] = code_verifier
             token_resp = httpx.post(
                 self._token_endpoint,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    "redirect_uri": self._callback_url,
-                },
+                data=token_data,
                 timeout=15.0,
             )
             if token_resp.status_code != 200:
@@ -457,12 +695,89 @@ class OIDCHandler:
                 self._jwks_inflight.pop(jwks_url, None)
             event.set()
 
-    def validate_token(self, access_token: str) -> SSOUserInfo | None:
-        """Validate an OIDC access token using JWKS."""
+    async def async_validate_token(self, access_token: str) -> SSOUserInfo | None:
+        """ASYNC OIDC token validation (PERF-01): JWKS fetch through the
+        pooled AsyncClient, identical verification semantics.
+
+        SEC-A9 preserved: the JWKS document is read through the same TTL +
+        negative-cache + single-flight ``_fetch_jwks_cached`` path (executed
+        off-loop), so repeated bad tokens cannot fan out one outbound request
+        each.  Only a cache miss performs an HTTP fetch.
+        """
         jwks_url = self._jwks_url or self._discovered_jwks_url
         if not jwks_url:
             logger.warning("No JWKS URL configured — cannot validate token locally")
             return None
+        try:
+            import asyncio
+
+            import jwt  # PyJWT
+
+            # Cache hit is instant; a miss runs the blocking (single-flight)
+            # fetch in a worker thread so the event loop never stalls.
+            jwks_data = await asyncio.to_thread(self._fetch_jwks_cached, jwks_url)
+            unverified_header = jwt.get_unverified_header(access_token)
+            kid = unverified_header.get("kid", "")
+            public_key = None
+            for key_data in jwks_data.get("keys", []):
+                if key_data.get("kid") == kid:
+                    public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key_data))
+                    break
+            if public_key is None:
+                logger.warning("No matching JWK found for token kid")
+                return None
+            payload = jwt.decode(
+                access_token,
+                public_key,
+                algorithms=["RS256", "RS384", "RS512"],
+                audience=self._client_id,
+            )
+            return SSOUserInfo(
+                sub=payload.get("sub", ""),
+                email=payload.get("email", ""),
+                name=payload.get("name", ""),
+                roles=payload.get("roles", []),
+                groups=payload.get("groups", []),
+                provider="oidc",
+                raw_attributes=payload,
+            )
+        except Exception as e:
+            logger.error(f"Token validation failed: {e}")
+            return None
+
+    def validate_token(self, access_token: str) -> SSOUserInfo | None:
+        """Validate an OIDC access token using JWKS."""
+        import jwt  # PyJWT
+
+        jwks_url = self._jwks_url or self._discovered_jwks_url
+        if not jwks_url:
+            # Fail-closed: without a JWKS URL the signature cannot be
+            # cryptographically verified, so reject — unless the operator
+            # explicitly opted into trusting unverified id_tokens (deployments
+            # that intentionally trust the IdP token endpoint over TLS).
+            allow = getattr(self, "_allow_unverified_id_token", False)
+            if not allow:
+                logger.warning(
+                    "No JWKS URL configured — cannot validate token locally; "
+                    "rejecting (fail-closed)"
+                )
+                return None
+            logger.warning(
+                "No JWKS URL configured — accepting unverified token "
+                "(allow_unverified_id_token=True)"
+            )
+            payload = jwt.decode(
+                access_token, options={"verify_signature": False}
+            )
+            return SSOUserInfo(
+                sub=payload.get("sub", ""),
+                email=payload.get("email", ""),
+                name=payload.get("name", ""),
+                roles=payload.get("roles", []),
+                groups=payload.get("groups", []),
+                provider="oidc",
+                raw_attributes=payload,
+            )
 
         try:
             import jwt  # PyJWT
@@ -538,43 +853,152 @@ class GenericOAuth2Handler:
         # OAuth2 state store for CSRF protection
         self._state_store: dict[str, float] = {}
         self._state_ttl = 600.0  # 10 minutes
+        # PKCE code verifier store — maps state -> code_verifier.
+        # PKCE prevents authorization code interception attacks when the
+        # redirect is intercepted (RFC 7636). S256 challenge is advertised
+        # in get_login_url; the verifier is bound to the state and must be
+        # presented at the token exchange.
+        self._pkce_store: dict[str, str] = {}
 
     def get_login_url(self, state: str = "") -> str:
-        """Generate OAuth2 authorization URL with CSRF-protected state."""
+        """Generate OAuth2 authorization URL with CSRF-protected state and PKCE."""
         state = state or os.urandom(16).hex()
-        import time
+        import base64
+        import hashlib
+
         self._state_store[state] = time.time() + self._state_ttl
+
+        # PKCE: generate code_verifier (43-128 chars per RFC 7636) and the
+        # S256 challenge. The verifier is stored server-side, keyed by state.
+        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
+        self._pkce_store[state] = code_verifier
+
         params = urllib.parse.urlencode({
             "response_type": "code",
             "client_id": self._client_id,
             "redirect_uri": self._callback_url,
             "scope": self._scope,
             "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         })
         return f"{self._authorize_url}?{params}"
 
-    def handle_callback(self, code: str, expected_state: str = "") -> SSOUserInfo | None:
-        """Exchange code for token. Validates state if provided."""
+    async def async_handle_callback(
+        self, code: str, expected_state: str = ""
+    ) -> SSOUserInfo | None:
+        """ASYNC OAuth2 callback via the pooled AsyncClient (PERF-01)."""
         import time
-        if expected_state:
-            stored_expiry = self._state_store.pop(expected_state, None)
-            if stored_expiry is None:
-                logger.error("OAuth2 state not found — possible CSRF attack")
-                return None
-            if time.time() > stored_expiry:
-                logger.error("OAuth2 state expired")
-                return None
+
+        if not expected_state:
+            logger.error("OAuth2 state missing — refusing code exchange")
+            return None
+        stored_expiry = self._state_store.pop(expected_state, None)
+        if stored_expiry is None:
+            logger.error("OAuth2 state not found — possible CSRF attack")
+            return None
+        if time.time() > stored_expiry:
+            logger.error("OAuth2 state expired")
+            return None
+        code_verifier = self._pkce_store.pop(expected_state, None)
+        if not code_verifier:
+            logger.error("OAuth2 PKCE verifier missing — possible code interception")
+            return None
         try:
             import httpx
 
-            # Exchange code for token
-            resp = httpx.post(
+            client = _get_async_client()
+            resp = await client.post(
                 self._token_url,
                 data={
+                    "grant_type": "authorization_code",
                     "client_id": self._client_id,
                     "client_secret": self._client_secret,
                     "code": code,
                     "redirect_uri": self._callback_url,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Accept": "application/json"},
+                timeout=15.0,
+            )
+            if resp.status_code != 200:
+                logger.error(f"OAuth2 token exchange failed: {resp.status_code}")
+                return None
+            token_data_resp = resp.json()
+            access_token = token_data_resp.get("access_token", "")
+            user_resp = await client.get(
+                self._userinfo_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10.0,
+            )
+            if user_resp.status_code != 200:
+                return None
+            user_data = user_resp.json()
+            return SSOUserInfo(
+                sub=str(user_data.get("id", user_data.get("login", ""))),
+                email=user_data.get("email", ""),
+                name=user_data.get("name", user_data.get("login", "")),
+                roles=user_data.get("roles", []),
+                provider="oauth2",
+                raw_attributes=user_data,
+            )
+        except Exception as e:
+            logger.error(f"OAuth2 async callback failed: {e}")
+            return None
+
+    def handle_callback(self, code: str, expected_state: str = "") -> SSOUserInfo | None:
+        """Exchange code for token. Requires non-empty state and validates PKCE.
+
+        SECURITY (SEC-API-04): state is mandatory — a callback with an
+        empty or missing state cannot be bound to a login the user
+        initiated and is rejected. The state must have been issued by
+        :meth:`get_login_url` (and must not have expired), and the PKCE
+        code_verifier bound to that state must be present and is sent to
+        the token endpoint. Both are single-use: state and verifier are
+        consumed (popped) on first use, so replays are rejected.
+        """
+        import secrets
+        import time
+
+        # SECURITY: state is mandatory for the authorization-code flow
+        # (OAuth2 CSRF protection).  A callback without a state cannot be
+        # bound to a login the user actually initiated.
+        if not expected_state:
+            logger.error("OAuth2 state missing — refusing code exchange")
+            return None
+
+        stored_expiry = self._state_store.pop(expected_state, None)
+        if stored_expiry is None:
+            logger.error("OAuth2 state not found — possible CSRF attack")
+            return None
+        if time.time() > stored_expiry:
+            logger.error("OAuth2 state expired")
+            return None
+
+        # SECURITY: PKCE is mandatory. The verifier bound to this state at
+        # get_login_url() must exist; if the login never issued a verifier
+        # (e.g. a forged/forged-state attempt), refuse the exchange.
+        code_verifier = self._pkce_store.pop(expected_state, None)
+        if not code_verifier:
+            logger.error("OAuth2 PKCE verifier missing — possible code interception")
+            return None
+
+        try:
+            import httpx
+
+            # Exchange code for token (with PKCE code_verifier)
+            resp = httpx.post(
+                self._token_url,
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "code": code,
+                    "redirect_uri": self._callback_url,
+                    "code_verifier": code_verifier,
                 },
                 headers={"Accept": "application/json"},
                 timeout=15.0,
@@ -698,23 +1122,33 @@ class SSOAuthHandler:
         return self._handler.handle_callback(code)
 
     async def async_handle_callback(self, code: str, state: str = "") -> SSOUserInfo | None:
-        """Async wrapper for :meth:`handle_callback`.
+        """ASYNC callback via the provider's pooled AsyncClient (PERF-01).
 
-        ``handle_callback`` performs **blocking** outbound HTTP calls to the
-        IdP's token/userinfo endpoints (``httpx.post/get`` sync API), so it
-        must never run directly on the event loop — offload it to a worker
-        thread.
+        Prefers the provider's native ``async_handle_callback`` so the
+        event loop is never blocked and connections are pooled; falls
+        back to a worker thread only for providers without one (SAML).
         """
+        if self._handler is None:
+            return None
+        native = getattr(self._handler, "async_handle_callback", None)
+        if native is not None:
+            return await native(code, expected_state=state)
         import asyncio
 
         return await asyncio.to_thread(self.handle_callback, code, state)
 
     async def async_validate_token(self, access_token: str) -> SSOUserInfo | None:
-        """Async wrapper for :meth:`validate_token`.
+        """ASYNC token validation (PERF-01): revocation check, then the
+        provider's native async path, else a worker-thread fallback."""
+        import hashlib
 
-        Validation can trigger a blocking JWKS fetch over the network;
-        offload it to a worker thread so the event loop stays responsive.
-        """
+        token_hash = hashlib.sha256(access_token.encode()).hexdigest()
+        self._cleanup_revoked()
+        if token_hash in self._revoked_tokens:
+            return None
+        native = getattr(self._handler, "async_validate_token", None)
+        if native is not None:
+            return await native(access_token)
         import asyncio
 
         return await asyncio.to_thread(self.validate_token, access_token)

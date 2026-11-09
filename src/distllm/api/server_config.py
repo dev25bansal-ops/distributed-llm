@@ -87,7 +87,7 @@ def _load_settings(args: Any) -> DistLLMSettings:
     Precedence (lowest to highest):
     1. Pydantic defaults
     2. YAML config file
-    3. Environment variables (``DISTLLM__*``) — handled by pydantic-settings
+    3. Environment variables (``DISTLLM_*``) — handled by pydantic-settings
     4. CLI arguments (highest)
     """
     # Resolve config path
@@ -97,7 +97,7 @@ def _load_settings(args: Any) -> DistLLMSettings:
         config_path = ConfigResolver.resolve_config_path("api", args)
 
     # Build CLI overrides
-    cli_overrides = {}
+    cli_overrides: dict[str, dict[str, Any]] = {}
     if args.model:
         cli_overrides.setdefault("model", {})["name"] = args.model
     if args.dtype:
@@ -115,6 +115,82 @@ def _load_settings(args: Any) -> DistLLMSettings:
     )
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a positive integer from the environment, falling back to *default*.
+
+    Invalid or non-positive values log a warning and use the default rather
+    than crashing server startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(f"Ignoring invalid {name}={raw!r}; using default {default}")
+        return default
+    if value < 1:
+        logger.warning(f"Ignoring non-positive {name}={value}; using default {default}")
+        return default
+    return value
+
+
+# Production-safe defaults that preserve historical single-worker behavior.
+DEFAULT_UVICORN_WORKERS = 1
+DEFAULT_UVICORN_LIMIT_CONCURRENCY = 10000
+DEFAULT_UVICORN_BACKLOG = 2048
+DEFAULT_UVICORN_TIMEOUT_KEEP_ALIVE = 30
+DEFAULT_GRPC_MAX_WORKERS = 4
+
+
+def _build_uvicorn_config(
+    app: Any,
+    host: str,
+    port: int,
+    workers: int | None = None,
+    limit_concurrency: int | None = None,
+    backlog: int | None = None,
+    timeout_keep_alive: int | None = None,
+) -> Any:
+    """Build a :class:`uvicorn.Config` from CLI values, env, and defaults.
+
+    Resolution order per knob: explicit argument (CLI) > ``DISTLLM_UVICORN_*``
+    env var > safe default. Defaults keep the pre-existing single-worker
+    behavior (``workers=1``); concurrency/backlog/timeout defaults are
+    production-sane upper bounds rather than uvicorn's unbounded values.
+    """
+    import uvicorn
+
+    if workers is None:
+        workers = _env_int("DISTLLM_UVICORN_WORKERS", DEFAULT_UVICORN_WORKERS)
+    if limit_concurrency is None:
+        limit_concurrency = _env_int(
+            "DISTLLM_UVICORN_LIMIT_CONCURRENCY", DEFAULT_UVICORN_LIMIT_CONCURRENCY
+        )
+    if backlog is None:
+        backlog = _env_int("DISTLLM_UVICORN_BACKLOG", DEFAULT_UVICORN_BACKLOG)
+    if timeout_keep_alive is None:
+        timeout_keep_alive = _env_int(
+            "DISTLLM_UVICORN_TIMEOUT_KEEP_ALIVE", DEFAULT_UVICORN_TIMEOUT_KEEP_ALIVE
+        )
+
+    return uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        workers=workers,
+        limit_concurrency=limit_concurrency,
+        backlog=backlog,
+        timeout_keep_alive=timeout_keep_alive,
+    )
+
+
+def _grpc_max_workers() -> int:
+    """gRPC coordinator worker threads: ``DISTLLM_GRPC_MAX_WORKERS`` or 4."""
+    return _env_int("DISTLLM_GRPC_MAX_WORKERS", DEFAULT_GRPC_MAX_WORKERS)
+
+
 def _extract_prom_gauge(data: bytes, metric_name: str) -> float | None:
     """Extract a single gauge value from Prometheus text format."""
     try:
@@ -123,6 +199,7 @@ def _extract_prom_gauge(data: bytes, metric_name: str) -> float | None:
                 parts = line.rsplit(" ", 1)
                 return float(parts[-1]) if len(parts) == 2 else None
     except Exception:
+        # CQ-08: fail-open: unparseable override file -> keep defaults rather than refuse startup.
         return None
     return None
 
@@ -136,5 +213,6 @@ def _extract_prom_counter(data: bytes, metric_name: str) -> float | None:
                 if len(parts) == 2:
                     return float(parts[-1])
     except Exception:
+        # CQ-08: fail-open: unparseable override file -> keep defaults rather than refuse startup.
         return None
     return None

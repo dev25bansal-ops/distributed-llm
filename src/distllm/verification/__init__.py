@@ -22,14 +22,14 @@ Usage:
 
 from .comparator import (
     OutputComparison,
-    compare_logits,
     compare_hidden_states,
-    compare_tokens,
+    compare_logits,
     compare_text,
+    compare_tokens,
 )
-from .hash_registry import compute_output_hash, GenerationOutput, OutputHashRegistry
+from .hash_registry import GenerationOutput, OutputHashRegistry, compute_output_hash
 from .report import VerificationReport, generate_report
-from .runner import AccuracyVerifier, verify_accuracy, run_verification_cli
+from .runner import AccuracyVerifier, run_verification_cli, verify_accuracy
 
 __all__ = [
     "OutputComparison",

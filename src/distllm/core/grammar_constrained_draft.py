@@ -88,4 +88,5 @@ class GrammarConstrainedDraftPolicy:
             try:
                 fn(token_id)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass

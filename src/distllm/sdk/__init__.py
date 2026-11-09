@@ -1,34 +1,40 @@
 """DistLLM SDK - Python client for Distributed LLM API."""
 
-from distllm.sdk.client import DistLLMClient, DistLLMClientSync, RetryConfig, PoolConfig
-from distllm.sdk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState
+from distllm.sdk.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerError,
+    CircuitState,
+)
+from distllm.sdk.client import DistLLMClient, DistLLMClientSync, PoolConfig, RetryConfig
 from distllm.sdk.types import (
-    ChatCompletionResponse,
-    ChatMessage,
-    ChatChoice,
-    CompletionResponse,
-    CompletionChoice,
-    ModelInfo,
-    ModelList,
-    EmbeddingResponse,
-    EmbeddingObject,
-    BatchJob,
-    BatchList,
-    TranscriptionResponse,
-    SpeechResponse,
-    ImageGenerationResponse,
-    ImageObject,
-    ModerationResponse,
-    ModerationResult,
-    FileInfo,
-    FineTuningJob,
-    UsageInfo,
-    ClientStats,
-    CallStats,
     ApiError,
     AuthenticationError,
+    BatchJob,
+    BatchList,
+    CallStats,
+    ChatChoice,
+    ChatCompletionResponse,
+    ChatMessage,
+    ClientStats,
+    CompletionChoice,
+    CompletionResponse,
+    EmbeddingObject,
+    EmbeddingResponse,
+    FileInfo,
+    FineTuningJob,
+    ImageGenerationResponse,
+    ImageObject,
+    ModelInfo,
+    ModelList,
+    ModerationResponse,
+    ModerationResult,
     RateLimitError,
+    SpeechResponse,
     TimeoutError_,
+    TranscriptionResponse,
+    UnsupportedEndpointError,
+    UsageInfo,
 )
 
 __all__ = [
@@ -79,4 +85,5 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "TimeoutError_",
+    "UnsupportedEndpointError",
 ]

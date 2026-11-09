@@ -41,7 +41,8 @@ import warnings
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, IO, List, Optional, Sequence, Tuple
+from typing import IO, Any, Dict, List, Optional, Tuple
+from collections.abc import Callable, Sequence
 
 # ---------------------------------------------------------------------------
 # Optional yaml — no-op fallback when not installed
@@ -74,7 +75,7 @@ _GRAFANA_PANEL_H = 8
 _GRAFANA_PANEL_W = 8
 _GRAFANA_ROW_GAP = 1
 
-GPU_PERFORMANCE_INDEX: Dict[str, float] = {
+GPU_PERFORMANCE_INDEX: dict[str, float] = {
     "A100": 1.0,
     "A100-80GB": 1.05,
     "V100": 0.6,
@@ -152,7 +153,7 @@ class PerformanceSnapshot:
     token_throughput: float
     avg_latency_ms: float
     active_nodes: int
-    gpu_snapshots: Tuple[GPUSnapshot, ...]
+    gpu_snapshots: tuple[GPUSnapshot, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -217,7 +218,7 @@ class ScalingRecommendation:
     description: str
     suggested_action: str
     estimated_impact: str
-    metric_evidence: Dict[str, Any]
+    metric_evidence: dict[str, Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -236,7 +237,7 @@ class GPUUsageSession:
     node_id: str
     gpu_type: str
     start_time: datetime
-    end_time: Optional[datetime]
+    end_time: datetime | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -257,13 +258,13 @@ class CapacityPlanReport:
     """
 
     generated_at: datetime
-    gpu_trend: Optional[TrendResult]
-    memory_trend: Optional[TrendResult]
-    request_rate_trend: Optional[TrendResult]
-    throughput_trend: Optional[TrendResult]
+    gpu_trend: TrendResult | None
+    memory_trend: TrendResult | None
+    request_rate_trend: TrendResult | None
+    throughput_trend: TrendResult | None
     active_nodes: int
-    scaling_triggers: List[Dict[str, Any]]
-    recommendations: List[ScalingRecommendation]
+    scaling_triggers: list[dict[str, Any]]
+    recommendations: list[ScalingRecommendation]
     snapshot_count: int
 
 
@@ -289,7 +290,7 @@ def _to_timestamp_seconds(dt: datetime) -> float:
 
 def _linear_regression(
     x: np.ndarray, y: np.ndarray
-) -> Tuple[float, float, float]:
+) -> tuple[float, float, float]:
     """Fit a line ``y = slope * x + intercept`` and compute R-squared.
 
     Args:
@@ -312,7 +313,7 @@ def _linear_regression(
     return float(slope), float(intercept), r_squared
 
 
-def _gpu_hours(start: datetime, end: Optional[datetime]) -> float:
+def _gpu_hours(start: datetime, end: datetime | None) -> float:
     """Compute GPU-hours between *start* and *end*.
 
     Args:
@@ -327,7 +328,7 @@ def _gpu_hours(start: datetime, end: Optional[datetime]) -> float:
     return max(0.0, delta.total_seconds() / _HOUR_SECONDS)
 
 
-def _next_id(counter: List[int]) -> int:
+def _next_id(counter: list[int]) -> int:
     """Increment a single-element list counter and return the new value."""
     counter[0] += 1
     return counter[0]
@@ -389,7 +390,7 @@ class CapacityPlanner:
         self._util_threshold = util_threshold
         self._util_window = util_window
         self._lock = threading.Lock()
-        self._snapshots: List[PerformanceSnapshot] = []
+        self._snapshots: list[PerformanceSnapshot] = []
 
     # ------------------------------------------------------------------
     # Properties
@@ -445,7 +446,7 @@ class CapacityPlanner:
         token_throughput: float = 0.0,
         avg_latency_ms: float = 0.0,
         active_nodes: int = 1,
-        timestamp: Optional[datetime] = None,
+        timestamp: datetime | None = None,
     ) -> None:
         """Convenience method to record a single-GPU snapshot.
 
@@ -490,7 +491,7 @@ class CapacityPlanner:
     def _compute_trend(
         self,
         value_extractor: Callable[[PerformanceSnapshot], float],
-    ) -> Optional[TrendResult]:
+    ) -> TrendResult | None:
         """Run linear regression on extracted values over time.
 
         Args:
@@ -539,7 +540,7 @@ class CapacityPlanner:
             forecast_90d=forecast_90d,
         )
 
-    def gpu_trend(self) -> Optional[TrendResult]:
+    def gpu_trend(self) -> TrendResult | None:
         """Linear regression trend for average GPU utilisation.
 
         Returns:
@@ -553,7 +554,7 @@ class CapacityPlanner:
             )
         )
 
-    def memory_trend(self) -> Optional[TrendResult]:
+    def memory_trend(self) -> TrendResult | None:
         """Linear regression trend for average GPU memory utilisation.
 
         Returns:
@@ -575,7 +576,7 @@ class CapacityPlanner:
             )
         )
 
-    def request_rate_trend(self) -> Optional[TrendResult]:
+    def request_rate_trend(self) -> TrendResult | None:
         """Linear regression trend for request rate (req/s).
 
         Returns:
@@ -583,7 +584,7 @@ class CapacityPlanner:
         """
         return self._compute_trend(lambda s: s.request_rate)
 
-    def throughput_trend(self) -> Optional[TrendResult]:
+    def throughput_trend(self) -> TrendResult | None:
         """Linear regression trend for token throughput (tokens/s).
 
         Returns:
@@ -595,7 +596,7 @@ class CapacityPlanner:
     # Scaling triggers
     # ------------------------------------------------------------------
 
-    def _check_utilization_trigger(self) -> List[Dict[str, Any]]:
+    def _check_utilization_trigger(self) -> list[dict[str, Any]]:
         """Check if GPU utilisation has exceeded the threshold.
 
         Examines snapshots within ``_util_window`` and returns a trigger
@@ -615,7 +616,7 @@ class CapacityPlanner:
             if not window_snapshots:
                 return []
 
-            all_utils: List[float] = []
+            all_utils: list[float] = []
             for s in window_snapshots:
                 for g in s.gpu_snapshots:
                     all_utils.append(g.gpu_utilization)
@@ -653,8 +654,8 @@ class CapacityPlanner:
         return []
 
     def _check_growth_triggers(
-        self, trends: Dict[str, Optional[TrendResult]]
-    ) -> List[Dict[str, Any]]:
+        self, trends: dict[str, TrendResult | None]
+    ) -> list[dict[str, Any]]:
         """Generate triggers from rapid growth trends.
 
         Args:
@@ -663,7 +664,7 @@ class CapacityPlanner:
         Returns:
             List of trigger dicts.
         """
-        triggers: List[Dict[str, Any]] = []
+        triggers: list[dict[str, Any]] = []
 
         for metric_name, trend in trends.items():
             if trend is None:
@@ -713,14 +714,14 @@ class CapacityPlanner:
         req_trend = self.request_rate_trend()
         tp_trend = self.throughput_trend()
 
-        trends: Dict[str, Optional[TrendResult]] = {
+        trends: dict[str, TrendResult | None] = {
             "gpu": gpu_trend,
             "memory": mem_trend,
             "request_rate": req_trend,
             "throughput": tp_trend,
         }
 
-        scaling_triggers: List[Dict[str, Any]] = []
+        scaling_triggers: list[dict[str, Any]] = []
         scaling_triggers.extend(self._check_utilization_trigger())
         scaling_triggers.extend(self._check_growth_triggers(trends))
 
@@ -748,9 +749,9 @@ class CapacityPlanner:
 
     def _build_recommendations(
         self,
-        trends: Dict[str, Optional[TrendResult]],
-        triggers: List[Dict[str, Any]],
-    ) -> List[ScalingRecommendation]:
+        trends: dict[str, TrendResult | None],
+        triggers: list[dict[str, Any]],
+    ) -> list[ScalingRecommendation]:
         """Translate trends and triggers into recommendations.
 
         Args:
@@ -760,7 +761,7 @@ class CapacityPlanner:
         Returns:
             Ordered list of recommendations (highest priority first).
         """
-        recs: List[ScalingRecommendation] = []
+        recs: list[ScalingRecommendation] = []
 
         # --- Check utilisation triggers for immediate action ----------
         for t in triggers:
@@ -1023,7 +1024,7 @@ class WhatIfCalculator:
 
     def what_if_add_gpu(
         self, count: int = 1, model: str = "A100"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Estimate the impact of adding *count* GPUs of type *model*.
 
         The estimate assumes the new GPUs are added to new nodes, each
@@ -1081,7 +1082,7 @@ class WhatIfCalculator:
 
     def what_if_upgrade_gpu(
         self, existing: str = "A100", new: str = "H100"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Estimate the improvement from upgrading GPU type.
 
         Args:
@@ -1128,7 +1129,7 @@ class WhatIfCalculator:
 
     def what_if_change_batch_size(
         self, new_batch_size: int
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Estimate the throughput impact of changing batch size.
 
         Uses a simple saturation model:
@@ -1260,10 +1261,10 @@ class HPAConfig:
         service: str,
         min_replicas: int = 1,
         max_replicas: int = 10,
-        metrics: Optional[List[str]] = None,
-        cpu_target: Optional[int] = None,
-        memory_target: Optional[int] = None,
-        rps_target: Optional[int] = None,
+        metrics: list[str] | None = None,
+        cpu_target: int | None = None,
+        memory_target: int | None = None,
+        rps_target: int | None = None,
     ) -> str:
         """Generate a Kubernetes HPA v2 YAML manifest.
 
@@ -1298,7 +1299,7 @@ class HPAConfig:
                 f"min_replicas ({min_replicas})"
             )
 
-        metric_list: List[Dict[str, Any]] = []
+        metric_list: list[dict[str, Any]] = []
         selected = (
             list(metrics) if metrics is not None else ["cpu", "memory"]
         )
@@ -1354,7 +1355,7 @@ class HPAConfig:
                 }
             )
 
-        hpa: Dict[str, Any] = {
+        hpa: dict[str, Any] = {
             "apiVersion": "autoscaling/v2",
             "kind": "HorizontalPodAutoscaler",
             "metadata": {
@@ -1418,7 +1419,7 @@ class HPAConfig:
                 f"got {update_mode!r}"
             )
 
-        vpa: Dict[str, Any] = {
+        vpa: dict[str, Any] = {
             "apiVersion": "autoscaling.k8s.io/v1",
             "kind": "VerticalPodAutoscaler",
             "metadata": {
@@ -1521,7 +1522,7 @@ class CapacityDashboard:
         Returns:
             Pretty-printed JSON string.
         """
-        panels: List[Dict[str, Any]] = []
+        panels: list[dict[str, Any]] = []
         pid = [0]  # mutable counter
 
         # ---- Row 1: usage trends (y=0) -------------------------------
@@ -1658,7 +1659,7 @@ class CapacityDashboard:
             )
         )
 
-        dashboard: Dict[str, Any] = {
+        dashboard: dict[str, Any] = {
             "title": self._title,
             "description": (
                 "Capacity planning dashboard generated by DistLLM "
@@ -1725,7 +1726,7 @@ class CapacityDashboard:
         w: int,
         h: int,
         unit: str = "none",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build a standard time-series panel.
 
         Args:
@@ -1781,13 +1782,13 @@ class CapacityDashboard:
     def _build_forecast_panel(
         pid: int,
         title: str,
-        trend: Optional[TrendResult],
+        trend: TrendResult | None,
         query_actual: str,
         y: int,
         x: int,
         w: int,
         h: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build a time-series panel with actual data and forecast.
 
         When a trend is available, adds a constant-line override for the
@@ -1803,7 +1804,7 @@ class CapacityDashboard:
         Returns:
             Panel dict.
         """
-        overrides: List[Dict[str, Any]] = []
+        overrides: list[dict[str, Any]] = []
         if trend is not None:
             overrides.append(
                 {
@@ -1825,7 +1826,7 @@ class CapacityDashboard:
                 }
             )
 
-        targets: List[Dict[str, Any]] = [
+        targets: list[dict[str, Any]] = [
             {
                 "expr": query_actual,
                 "legendFormat": "Actual",
@@ -1880,7 +1881,7 @@ class CapacityDashboard:
         x: int,
         w: int,
         h: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Stat panel showing the count of scaling recommendations.
 
         Args:
@@ -1963,7 +1964,7 @@ class CapacityDashboard:
         x: int,
         w: int,
         h: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Stat panel showing projected monthly GPU cost.
 
         Uses the active node count and an assumed hourly rate to estimate
@@ -2042,7 +2043,7 @@ class CapacityDashboard:
         x: int,
         w: int,
         h: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Time-series panel showing estimated daily GPU cost.
 
         Args:
@@ -2113,7 +2114,7 @@ class GPUBilling:
     def __init__(self) -> None:
         """Initialise the billing tracker."""
         self._lock = threading.Lock()
-        self._sessions: List[GPUUsageSession] = []
+        self._sessions: list[GPUUsageSession] = []
         self._next_id: int = 1
 
     # ------------------------------------------------------------------
@@ -2125,7 +2126,7 @@ class GPUBilling:
         node_id: str,
         gpu_type: str,
         start_time: datetime,
-        end_time: Optional[datetime] = None,
+        end_time: datetime | None = None,
     ) -> str:
         """Record a GPU usage session.
 
@@ -2161,7 +2162,7 @@ class GPUBilling:
 
         return session_id
 
-    def stop_usage(self, session_id: str, end_time: Optional[datetime] = None) -> None:
+    def stop_usage(self, session_id: str, end_time: datetime | None = None) -> None:
         """Stop a running GPU usage session.
 
         Args:
@@ -2196,8 +2197,8 @@ class GPUBilling:
         self,
         period: timedelta,
         *,
-        node_id: Optional[str] = None,
-        gpu_type: Optional[str] = None,
+        node_id: str | None = None,
+        gpu_type: str | None = None,
     ) -> float:
         """Compute total GPU-hours over *period*.
 
@@ -2229,10 +2230,10 @@ class GPUBilling:
     def get_cost(
         self,
         period: timedelta,
-        rates: Optional[Dict[str, float]] = None,
+        rates: dict[str, float] | None = None,
         *,
-        node_id: Optional[str] = None,
-        gpu_type: Optional[str] = None,
+        node_id: str | None = None,
+        gpu_type: str | None = None,
     ) -> float:
         """Compute total GPU cost over *period*.
 
@@ -2246,7 +2247,7 @@ class GPUBilling:
         Returns:
             Total cost in USD.
         """
-        effective_rates: Dict[str, float] = {
+        effective_rates: dict[str, float] = {
             "A100": 3.00,
             "A100-80GB": 3.50,
             "V100": 1.50,
@@ -2290,7 +2291,7 @@ class GPUBilling:
     def generate_report(
         self,
         period: timedelta,
-        rates: Optional[Dict[str, float]] = None,
+        rates: dict[str, float] | None = None,
         fmt: str = "json",
     ) -> str:
         """Generate a GPU billing report for *period*.
@@ -2321,8 +2322,8 @@ class GPUBilling:
             ]
 
         # Build per-node breakdown
-        node_breakdown: Dict[str, float] = {}
-        type_breakdown: Dict[str, float] = {}
+        node_breakdown: dict[str, float] = {}
+        type_breakdown: dict[str, float] = {}
         all_types: set = set()
 
         for s in relevant:
@@ -2338,7 +2339,7 @@ class GPUBilling:
 
         total_hours = sum(node_breakdown.values())
 
-        effective_rates: Dict[str, float] = {
+        effective_rates: dict[str, float] = {
             "A100": 3.00,
             "A100-80GB": 3.50,
             "V100": 1.50,
@@ -2357,7 +2358,7 @@ class GPUBilling:
             effective_rates.update(rates)
 
         # Per-GPU-type cost
-        type_cost: Dict[str, float] = {}
+        type_cost: dict[str, float] = {}
         total_cost = 0.0
         for gpu_type, hours in type_breakdown.items():
             rate = effective_rates.get(gpu_type, 2.00)
@@ -2365,7 +2366,7 @@ class GPUBilling:
             type_cost[gpu_type] = cost
             total_cost += cost
 
-        report: Dict[str, Any] = {
+        report: dict[str, Any] = {
             "generated_at": _now().isoformat(),
             "period_days": period.total_seconds() / _DAY_SECONDS,
             "period_start": cutoff.isoformat(),
@@ -2397,7 +2398,7 @@ class GPUBilling:
         )
 
     @staticmethod
-    def _report_to_csv(report: Dict[str, Any]) -> str:
+    def _report_to_csv(report: dict[str, Any]) -> str:
         """Convert a billing report dict to CSV format.
 
         Args:
@@ -2496,8 +2497,8 @@ class CapacityConfigurator:
 
     def __init__(
         self,
-        planner: Optional[CapacityPlanner] = None,
-        billing: Optional[GPUBilling] = None,
+        planner: CapacityPlanner | None = None,
+        billing: GPUBilling | None = None,
         collection_interval_seconds: float = 60.0,
     ) -> None:
         """Initialise the capacity configurator.
@@ -2517,7 +2518,7 @@ class CapacityConfigurator:
         self._dashboard = CapacityDashboard(self._planner)
         self._collection_interval = collection_interval_seconds
         self._running = False
-        self._collector_thread: Optional[threading.Thread] = None
+        self._collector_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
     # ------------------------------------------------------------------
@@ -2641,7 +2642,7 @@ class CapacityConfigurator:
         token_throughput: float = 0.0,
         avg_latency_ms: float = 0.0,
         active_nodes: int = 1,
-        timestamp: Optional[datetime] = None,
+        timestamp: datetime | None = None,
     ) -> None:
         """Record a GPU snapshot (delegates to ``CapacityPlanner``).
 
@@ -2675,7 +2676,7 @@ class CapacityConfigurator:
         node_id: str,
         gpu_type: str,
         start_time: datetime,
-        end_time: Optional[datetime] = None,
+        end_time: datetime | None = None,
     ) -> str:
         """Track a GPU billing session (delegates to ``GPUBilling``).
 
@@ -2704,11 +2705,11 @@ class CapacityConfigurator:
         self,
         path: str,
         period: timedelta = timedelta(days=30),
-        rates: Optional[Dict[str, float]] = None,
+        rates: dict[str, float] | None = None,
         include_dashboard: bool = True,
         include_hpa: bool = False,
         service_name: str = "distllm",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Generate a comprehensive capacity-planning report.
 
         Writes the following files under *path*:
@@ -2743,7 +2744,7 @@ class CapacityConfigurator:
 
         os.makedirs(path, exist_ok=True)
 
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
 
         # -- Capacity plan --
         plan = self._planner.plan()
@@ -2834,9 +2835,9 @@ class CapacityConfigurator:
 
     def __exit__(
         self,
-        exc_type: Optional[type],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[object],
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
     ) -> None:
         """Exit context: stops collection."""
         self.stop()

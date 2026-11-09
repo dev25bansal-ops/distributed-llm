@@ -29,7 +29,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -405,6 +405,7 @@ def _run_live_concurrent(
 ) -> float:
     """Fire *concurrency* requests simultaneously, return aggregate tok/s."""
     import concurrent.futures
+
     import httpx
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}

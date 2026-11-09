@@ -21,6 +21,11 @@ from pydantic import BaseModel, Field
 from distllm.core.api_key_store import get_api_key_store
 
 from ..auth_deps import require_coordinator, require_role
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 router = APIRouter(
     prefix="/v1/api-keys",
@@ -77,7 +82,17 @@ def _created_at_for(store, key_id: str) -> float | None:
     return created_at
 
 
-@router.post("", response_model=CreateAPIKeyResponse, status_code=201)
+@router.post(
+    "",
+    response_model=CreateAPIKeyResponse,
+    status_code=201,
+    summary="Create a new API key",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid label, or role is not a recognized role", type_="invalid_request_error", code="invalid_request"),
+    },
+)
 async def create_api_key(body: CreateAPIKeyRequest):
     """Create a new API key.
 
@@ -104,7 +119,15 @@ async def create_api_key(body: CreateAPIKeyRequest):
     )
 
 
-@router.get("", response_model=APIKeyListResponse)
+@router.get(
+    "",
+    response_model=APIKeyListResponse,
+    summary="List all API keys (key values are never returned)",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+    },
+)
 async def list_api_keys():
     """List all API keys (key values are NOT returned)."""
     store = get_api_key_store()
@@ -122,7 +145,16 @@ async def list_api_keys():
     )
 
 
-@router.delete("/{key_id}")
+@router.delete(
+    "/{key_id}",
+    summary="Revoke an API key by ID",
+    responses={
+        400: ERR_ENTRY("Cannot revoke the API key used for this request", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        404: ERR_ENTRY("API key with the given ID not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def revoke_api_key(key_id: str, request: Request):
     """Revoke an API key by ID (every stored entry with that ID).
 

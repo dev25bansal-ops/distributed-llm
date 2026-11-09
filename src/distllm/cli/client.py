@@ -214,6 +214,7 @@ class DistLLMClient:
             try:
                 self._session.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._session = None
 
@@ -223,6 +224,7 @@ class DistLLMClient:
             try:
                 await self._async_session.aclose()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._async_session = None
 

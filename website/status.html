@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Status — DistLLM</title>
     <meta name="description" content="Real-time status and uptime monitoring for DistLLM services.">
@@ -21,14 +21,14 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--red:#ef4444;--amber:#f59e0b;--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        :root{--bg:#1c1c1c;--surface:#262626;--card:#2a2a2a;--card-hover:#303030;--border:#383838;--border-hover:#4a4a4a;--text:#f1f1ef;--text-secondary:#c4c4be;--dim:#9a9b96;--muted:#9a9b96;--green:#8fa68e;--green-dim:#7a9179;--green-glow:rgba(143,166,142,0.14);--green-bg:rgba(143,166,142,0.08);--green-bd:rgba(143,166,142,0.28);--red:#c97b6e;--amber:#c9a26e;--blue:#7e93ad;--field-1:#c8c5ba;--field-1-ink:#1c1c1c;--radius:6px;--radius-sm:4px;--font-sans:'Archivo',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
         a{color:inherit;text-decoration:none}
         .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
-        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(28,28,28,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
         .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
         .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
         .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
@@ -68,13 +68,17 @@
         .incident{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-top:32px}
         .incident h2{font-size:18px;font-weight:700;margin-bottom:16px;padding-top:0;border-top:none}
         .incident-item{padding:12px 0;border-bottom:1px solid var(--border)}.incident-item:last-child{border-bottom:none}
-        .incident-item h4{font-size:14px;font-weight:600;margin-bottom:4px}
+        .incident-item h3{font-size:14px;font-weight:600;margin-bottom:4px}
         .incident-item p{font-size:13px;color:var(--text-secondary);margin-bottom:4px}
         .incident-item .time{font-size:11px;color:var(--dim);font-family:var(--font-mono)}
         footer{border-top:1px solid var(--border);margin-top:80px}
         .ft-bottom{max-width:1100px;margin:0 auto;padding:24px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
         .ft-social{display:flex;gap:12px}.ft-social a{color:var(--dim);transition:color 0.15s}.ft-social a:hover{color:var(--green)}
         @media(max-width:768px){.nav-links{display:none}.service{flex-direction:column;align-items:flex-start}}
+    .section{padding:100px 0;position:relative;z-index:1}
+.sec-h{text-align:center;margin-bottom:56px}
+.sec-h h2{font-size:clamp(26px,4vw,38px);font-weight:800;letter-spacing:-1px;line-height:1.15}
+.fade-up{opacity:1;transform:none}
     </style>
 
     <!-- Structured data -->
@@ -110,66 +114,39 @@
             <h1>System Status</h1>
             <p class="subtitle">Real-time status of DistLLM managed services.</p>
 
-            <div class="overall">
-                <span class="overall-dot"></span>
-                <span class="overall-text">All Systems Operational</span>
-                <div class="overall-sub">Last updated: 2 minutes ago</div>
+            <div class="overall" style="border-color:var(--border)">
+                <span class="overall-dot" style="background:var(--dim)"></span>
+                <span class="overall-text">No managed service is running</span>
+                <div class="overall-sub">This page is a template, not a live monitor.</div>
             </div>
 
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">API Server</div><div class="service-desc">chat/completions, embeddings, models</div></div>
-                </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">99.99%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px" title="Day 1: 100%"></div><div class="day" style="height:20px" title="Day 2: 100%"></div><div class="day" style="height:20px" title="Day 3: 100%"></div><div class="day" style="height:20px" title="Day 4: 100%"></div><div class="day" style="height:20px" title="Day 5: 100%"></div><div class="day" style="height:20px" title="Day 6: 100%"></div><div class="day" style="height:20px" title="Day 7: 100%"></div><div class="day" style="height:20px" title="Day 8: 100%"></div><div class="day" style="height:20px" title="Day 9: 100%"></div><div class="day" style="height:20px" title="Day 10: 100%"></div><div class="day" style="height:20px" title="Day 11: 100%"></div><div class="day" style="height:20px" title="Day 12: 100%"></div><div class="day" style="height:20px" title="Day 13: 100%"></div><div class="day" style="height:20px" title="Day 14: 100%"></div><div class="day" style="height:20px" title="Day 15: 100%"></div><div class="day" style="height:20px" title="Day 16: 100%"></div><div class="day" style="height:20px" title="Day 17: 100%"></div><div class="day" style="height:20px" title="Day 18: 100%"></div><div class="day" style="height:20px" title="Day 19: 100%"></div><div class="day" style="height:20px" title="Day 20: 100%"></div><div class="day" style="height:20px" title="Day 21: 100%"></div><div class="day" style="height:20px" title="Day 22: 100%"></div><div class="day" style="height:20px" title="Day 23: 100%"></div><div class="day" style="height:20px" title="Day 24: 100%"></div><div class="day" style="height:20px" title="Day 25: 100%"></div><div class="day" style="height:20px" title="Day 26: 100%"></div><div class="day" style="height:20px" title="Day 27: 100%"></div><div class="day" style="height:20px" title="Day 28: 100%"></div><div class="day" style="height:20px" title="Day 29: 100%"></div><div class="day" style="height:20px" title="Day 30: 100%"></div></div>
-                </div>
+            <div class="note" style="border-left:3px solid var(--amber);margin:24px 0 32px">
+                <strong>Why this page looks like this.</strong> DistLLM is free, open source software you run yourself. We do not operate a hosted service, so there is no uptime to report and no status to monitor from our side. This page previously displayed uptime figures and service states that were not measured against anything; we removed them rather than show numbers we cannot stand behind.
             </div>
 
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">Coordinator</div><div class="service-desc">Cluster management, scheduling, routing</div></div>
+            <h2>Checking your own deployment</h2>
+            <p class="sec-p">If you run DistLLM, you can observe your own cluster rather than relying on this page:</p>
+            <div class="method-grid">
+                <div class="method-card">
+                    <h3>Health endpoints</h3>
+                    <p><code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/health</code>, <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/ready</code> and <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/live</code> report real state from your own coordinator.</p>
                 </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">99.98%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div></div>
+                <div class="method-card">
+                    <h3>Metrics</h3>
+                    <p><code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/metrics</code> exposes Prometheus counters you can scrape and alert on yourself.</p>
                 </div>
-            </div>
-
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">Workers</div><div class="service-desc">GPU inference, model execution</div></div>
-                </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">99.97%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div></div>
-                </div>
-            </div>
-
-            <div class="service">
-                <div class="service-info">
-                    <div class="service-dot dot-green"></div>
-                    <div><div class="service-name">Monitoring</div><div class="service-desc">Prometheus, Grafana, alerting</div></div>
-                </div>
-                <div class="service-right">
-                    <span class="service-status status-green">Operational</span>
-                    <span class="uptime-pct">100%</span>
-                    <div class="uptime-bar" aria-label="90-day uptime"><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div><div class="day" style="height:20px"></div></div>
+                <div class="method-card">
+                    <h3>CLI</h3>
+                    <p><code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">distllm cluster status</code> prints the live node list and model state for your pool.</p>
                 </div>
             </div>
 
             <div class="incident">
-                <h2>Recent Incidents</h2>
+                <h2>Incidents that affect you</h2>
                 <div class="incident-item">
-                    <h4>No recent incidents</h4>
-                    <p>All services have been operating normally for the past 30 days.</p>
-                    <span class="time">Updated 2026-06-03 00:00 UTC</span>
+                    <h3>Reported on GitHub</h3>
+                    <p>Since distribution and operation are yours, regressions are tracked in the repository's issue tracker rather than here. That is the honest source of truth for what is broken and what was fixed.</p>
+                    <span class="time">Open issues: <a href="https://github.com/dev25bansal-ops/distributed-llm/issues" target="_blank" rel="noopener noreferrer" style="color:var(--green)">github.com/dev25bansal-ops/distributed-llm/issues</a></span>
                 </div>
             </div>
         </div>

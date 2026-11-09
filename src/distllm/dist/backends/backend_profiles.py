@@ -345,6 +345,7 @@ class BackendProfileManager:
             try:
                 gpu_count = torch.cuda.device_count()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             profile = _DEFAULT_PROFILES["pytorch"]
             if gpu_count > 0:

@@ -14,9 +14,9 @@ from typing import Any
 from loguru import logger
 
 from distllm.security.content_moderation.base import (
-    _lazy_import,
     PIEEntity,
     PIIResult,
+    _lazy_import,
 )
 
 # Regex patterns for common PII types.  Each entry maps a human-readable

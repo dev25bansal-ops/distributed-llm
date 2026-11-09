@@ -5,6 +5,7 @@
 """
 
 import warnings
+
 warnings.warn(
     "distllm.core.predictive_cache is deprecated. "
     "Import from distllm.dist.predictive_cache instead.",
@@ -13,11 +14,11 @@ warnings.warn(
 )
 
 from distllm.dist.predictive_cache import (
+    CachePrediction,
+    CacheTier,
     PatternLearner,
     PredictiveCacheManager,
     PrefixPattern,
-    CachePrediction,
-    CacheTier,
 )
 
 __all__ = [

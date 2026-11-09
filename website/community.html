@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Community — DistLLM</title>
     <meta name="description" content="Join the DistLLM community — showcase gallery, contributors, newsletter, and events.">
@@ -21,7 +21,7 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/base.css">
     <link rel="stylesheet" href="css/layout.css">
     <link rel="stylesheet" href="css/components.css">
@@ -49,7 +49,7 @@
     <nav class="nav" role="navigation" aria-label="Main navigation">
         <div class="nav-in">
             <a href="index.html" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
-            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="community.html" class="active">Community</a><a href="learn.html">Learn</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="blog.html">Blog</a><a href="community.html" class="active">Community</a><a href="learn.html">Learn</a><a href="index.html#pricing">Pricing</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
             <div class="nav-right">
                 <a href="https://github.com/dev25bansal-ops/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
                 <a href="https://github.com/dev25bansal-ops/distributed-llm#getting-started" class="nav-cta">Get Started</a>
@@ -103,7 +103,7 @@
                             <div class="showcase-placeholder">🖥️</div>
                         </div>
                         <div class="showcase-info">
-                            <h4>4× RTX 4090 Homelab</h4>
+                            <h3>4× RTX 4090 Homelab</h3>
                             <p>Running Llama 3.1 70B at 42 tok/s with pipeline parallelism.</p>
                             <div class="showcase-meta">
                                 <span class="showcase-author">by @homelab_ai</span>
@@ -117,7 +117,7 @@
                             <div class="showcase-placeholder">🏗️</div>
                         </div>
                         <div class="showcase-info">
-                            <h4>Office GPU Rack</h4>
+                            <h3>Office GPU Rack</h3>
                             <p>8× A100 cluster serving 50+ developers via DistLLM.</p>
                             <div class="showcase-meta">
                                 <span class="showcase-author">by @techcorp_eng</span>
@@ -132,7 +132,7 @@
                             <div class="showcase-placeholder">📊</div>
                         </div>
                         <div class="showcase-info">
-                            <h4>DistLLM vs Cloud APIs</h4>
+                            <h3>DistLLM vs Cloud APIs</h3>
                             <p>5× cost reduction vs OpenAI for 100K daily users.</p>
                             <div class="showcase-meta">
                                 <span class="showcase-author">by @startup_cto</span>
@@ -146,7 +146,7 @@
                             <div class="showcase-placeholder">⚡</div>
                         </div>
                         <div class="showcase-info">
-                            <h4>Throughput Benchmarks</h4>
+                            <h3>Throughput Benchmarks</h3>
                             <p>68 tok/s on 4× RTX 4090 with Mixtral 8x7B.</p>
                             <div class="showcase-meta">
                                 <span class="showcase-author">by @gpu_benchmarks</span>
@@ -161,7 +161,7 @@
                             <div class="showcase-placeholder">🏥</div>
                         </div>
                         <div class="showcase-info">
-                            <h4>HIPAA-Compliant Deployment</h4>
+                            <h3>HIPAA-Compliant Deployment</h3>
                             <p>Air-gapped DistLLM cluster for medical AI at a hospital network.</p>
                             <div class="showcase-meta">
                                 <span class="showcase-author">by @medai_team</span>
@@ -175,7 +175,7 @@
                             <div class="showcase-placeholder">🏦</div>
                         </div>
                         <div class="showcase-info">
-                            <h4>Financial Services Cluster</h4>
+                            <h3>Financial Services Cluster</h3>
                             <p>10× A100 across 3 data centers with 99.99% uptime.</p>
                             <div class="showcase-meta">
                                 <span class="showcase-author">by @fintech_infra</span>
@@ -221,7 +221,7 @@
                         <p>Get monthly updates delivered to your inbox. No spam, unsubscribe anytime.</p>
                     </div>
                     <form class="newsletter-form" id="newsletterForm">
-                        <input type="email" placeholder="your@email.com" required>
+                        <input type="email" placeholder="your@email.com" aria-label="Email address" required>
                         <button type="submit" class="btn btn-primary">Subscribe</button>
                     </form>
                 </div>
@@ -245,7 +245,7 @@
                             <span class="event-day">15</span>
                         </div>
                         <div class="event-info">
-                            <h4>DistLLM Community Call #4</h4>
+                            <h3>DistLLM Community Call #4</h3>
                             <p>Monthly community call — roadmap updates, community demos, Q&A with maintainers.</p>
                             <span class="event-time">Online · 10:00 AM PST</span>
                         </div>
@@ -257,7 +257,7 @@
                             <span class="event-day">10</span>
                         </div>
                         <div class="event-info">
-                            <h4>Distributed AI Meetup — San Francisco</h4>
+                            <h3>Distributed AI Meetup — San Francisco</h3>
                             <p>In-person meetup with talks on pipeline parallelism, federated learning, and cost optimization.</p>
                             <span class="event-time">San Francisco · 6:00 PM PST</span>
                         </div>
@@ -269,7 +269,7 @@
                             <span class="event-day">20</span>
                         </div>
                         <div class="event-info">
-                            <h4>DistLLM Hackathon</h4>
+                            <h3>DistLLM Hackathon</h3>
                             <p>48-hour virtual hackathon. Build projects with DistLLM and win prizes.</p>
                             <span class="event-time">Online · Starts 12:00 PM UTC</span>
                         </div>
@@ -312,7 +312,7 @@
         async function loadContributors() {
             const grid = document.getElementById('contributorsGrid');
             try {
-                const response = await fetch('https://api.github.com/repos/distributed-llm/distributed-llm/contributors?per_page=30');
+                const response = await fetch('https://api.github.com/repos/dev25bansal-ops/distributed-llm/contributors?per_page=30');
                 if (!response.ok) throw new Error('API error');
                 const contributors = await response.json();
 

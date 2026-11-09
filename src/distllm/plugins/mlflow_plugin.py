@@ -37,6 +37,7 @@ class MLflowPlugin:
                 mlflow.log_param(k, v)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def log_metrics(self, metrics: dict[str, float], step: int | None = None) -> bool:
@@ -46,6 +47,7 @@ class MLflowPlugin:
             mlflow.log_metrics(metrics, step=step)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def log_run_end(self, status: str = "FINISHED") -> bool:
@@ -56,6 +58,7 @@ class MLflowPlugin:
             self._run_id = None
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def log_artifacts(self, local_dir: str) -> bool:
@@ -65,6 +68,7 @@ class MLflowPlugin:
             mlflow.log_artifacts(local_dir)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def get_run_id(self) -> str | None:

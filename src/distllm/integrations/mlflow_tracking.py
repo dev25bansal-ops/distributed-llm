@@ -57,8 +57,8 @@ class MLflowIntegration:
 
     def __init__(
         self,
-        tracking_uri: Optional[str] = None,
-        registry_uri: Optional[str] = None,
+        tracking_uri: str | None = None,
+        registry_uri: str | None = None,
         autolog: bool = True,
     ) -> None:
         """Initialise the MLflow integration.
@@ -97,11 +97,11 @@ class MLflowIntegration:
     def log_run(
         self,
         experiment_name: str,
-        params: Optional[dict[str, Any]] = None,
-        metrics: Optional[dict[str, float]] = None,
-        description: Optional[str] = None,
-        tags: Optional[dict[str, str]] = None,
-    ) -> "_RunContext":
+        params: dict[str, Any] | None = None,
+        metrics: dict[str, float] | None = None,
+        description: str | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> _RunContext:
         """Start a new MLflow run under *experiment_name*.
 
         Returns a context manager that automatically ends the run on
@@ -204,8 +204,8 @@ class MLflowIntegration:
 
     def get_runs(
         self,
-        experiment: Optional[str] = None,
-        order_by: Optional[list[str]] = None,
+        experiment: str | None = None,
+        order_by: list[str] | None = None,
         max_results: int = 100,
     ) -> list[dict[str, Any]]:
         """Retrieve runs for *experiment* as plain dictionaries.
@@ -356,7 +356,7 @@ class _RunContext:
             return None
         return self._run.info
 
-    def __enter__(self) -> "_RunContext":
+    def __enter__(self) -> _RunContext:
         return self
 
     def __exit__(

@@ -15,7 +15,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
-    libnccl2 curl ca-certificates && rm -rf /var/lib/apt/lists/* \
+    curl ca-certificates && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python
 
@@ -28,20 +28,53 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
     python3-pip python3-setuptools python3-wheel \
-    gcc g++ ninja-build git curl libnccl-dev libnccl2 \
+    gcc g++ ninja-build git curl \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
+# Ubuntu 22.04 ships setuptools 59.6.0, which cannot read PEP 621 [project]
+# metadata; with no setup.py/setup.cfg the build then yields an empty
+# UNKNOWN-0.0.0 wheel and the image has no distllm-api binary at runtime.
+RUN python3 -m pip install --no-cache-dir --upgrade \
+    "pip>=23.0" "setuptools>=68.0,<82" wheel
+# Interpreter for the whole image: a venv keeps one consistent layout (Debian
+# Python searches .../dist-packages while `pip --prefix` writes site-packages)
+# and we copy it wholesale to the runtime at this same absolute path.
+RUN python3 -m venv /install
+ENV PATH=/install/bin:${PATH}
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 COPY requirements.lock .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
-RUN pip install --no-cache-dir --prefix=/install . --no-deps
+COPY proto/ proto/
+# node_pb2*.py are gitignored build products, absent from the build context --
+# generate them as `make proto` does, before the package install below. The
+# generated _grpc file imports node_pb2 flatly, which only resolves when
+# distllm/dist is on sys.path; rewrite it to the package-relative form.
+RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
+    && python -m grpc_tools.protoc -I proto/ \
+        --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
+        proto/node.proto \
+    && sed -i 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+        src/distllm/dist/node_pb2_grpc.py \
+    && test -f src/distllm/dist/node_pb2.py \
+    && grep -q '^from distllm.dist import node_pb2 as node__pb2$' src/distllm/dist/node_pb2_grpc.py
+# self-hosted extra: core.coordinator imports transformers at module scope and
+# requirements.lock does not carry it (torch is already installed above).
+RUN pip install --no-cache-dir "transformers>=4.48.0" \
+    "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
+    "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
+RUN pip install --no-cache-dir . --no-deps
+RUN test -x /install/bin/distllm-api \
+    && test -x /install/bin/distllm-coordinator \
+    && test -x /install/bin/distllm-node \
+    || { echo "ERROR: distllm console scripts missing from /install/bin"; ls -la /install/bin || true; exit 1; }
 
 FROM runtime-base
-COPY --from=builder /install /usr/local
+COPY --from=builder /install /install
+ENV PATH=/install/bin:${PATH}
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
@@ -49,11 +82,11 @@ RUN groupadd -r distllm && useradd -r -g distllm -d /app -s /bin/bash distllm \
     && chown -R distllm:distllm /app
 USER distllm
 
-ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=roneneldan/TinyStories-1M
-ENV DISTLLM_START_LAYER=0
-ENV DISTLLM_END_LAYER=3
-ENV DISTLLM_TOTAL_LAYERS=8
+ENV DISTLLM_MODEL__NAME=roneneldan/TinyStories-1M
+ENV DISTLLM_MODEL__DTYPE=float16
+# A container must listen on all interfaces; the library default is
+# localhost, which is unreachable through a published port.
+ENV DISTLLM_COORDINATOR__HOST=0.0.0.0
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

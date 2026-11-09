@@ -11,7 +11,8 @@ import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Generator
+from typing import Any
+from collections.abc import Generator
 
 from loguru import logger
 
@@ -214,4 +215,5 @@ def multi_provider_session(
             try:
                 session.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass

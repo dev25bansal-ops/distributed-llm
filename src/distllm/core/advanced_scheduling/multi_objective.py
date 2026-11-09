@@ -24,7 +24,6 @@ from typing import Any
 
 from loguru import logger
 
-
 # ── Objective weights (adapted dynamically) ──────────────────────────────────
 
 @dataclass

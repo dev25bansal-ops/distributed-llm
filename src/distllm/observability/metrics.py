@@ -1,10 +1,45 @@
-"""OpenTelemetry metrics for distributed LLM."""
+"""OpenTelemetry metrics for distributed LLM.
 
-from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, MetricExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.metrics import Histogram, Counter
+The OTel SDK lives in the ``observability`` extra. Importing it unconditionally
+made `import distllm.api.server` fail with
+
+    ModuleNotFoundError: No module named 'opentelemetry.sdk'
+
+for anyone who installed ``distributed-llm[cli,self-hosted]``, because
+``server.py`` imports this package at module scope -- so the console script
+`distllm-api` was installed but could not start. The SDK is optional here:
+the module now imports cleanly and raises a message naming the extra only if
+`setup_metrics` is actually called without it.
+"""
+
+from __future__ import annotations
+
+try:  # opentelemetry-api may be present without the SDK
+    from opentelemetry import metrics
+except ImportError:  # pragma: no cover - no OTel at all
+    metrics = None  # type: ignore[assignment]
+
+try:
+    from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider
+    from opentelemetry.sdk.metrics.export import (
+        MetricExporter,
+        PeriodicExportingMetricReader,
+    )
+    from opentelemetry.sdk.resources import Resource
+
+    _HAS_SDK = True
+except ImportError:  # pragma: no cover - the common case without the extra
+    _HAS_SDK = False
+    Counter = Histogram = MeterProvider = object  # type: ignore[assignment,misc]
+    MetricExporter = object  # type: ignore[assignment,misc]
+    PeriodicExportingMetricReader = object  # type: ignore[assignment,misc]
+    Resource = None  # type: ignore[assignment]
+
+
+_MISSING_SDK_MESSAGE = (
+    "OpenTelemetry metrics require the SDK: "
+    'pip install "distributed-llm[observability]"'
+)
 
 
 def setup_metrics(
@@ -21,7 +56,13 @@ def setup_metrics(
 
     Returns:
         Configured MeterProvider.
+
+    Raises:
+        RuntimeError: when the observability extra is not installed.
     """
+    if not _HAS_SDK:
+        raise RuntimeError(_MISSING_SDK_MESSAGE)
+
     resource = Resource.create({"service.name": service_name})
 
     readers = []

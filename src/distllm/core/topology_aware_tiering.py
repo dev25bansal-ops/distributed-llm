@@ -131,6 +131,7 @@ class TopologyCostMatrix:
                                     if j != i:
                                         peers.append(f"gpu-{j}")
                         except Exception:
+                            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                             pass
                     peers = list(set(peers))
 

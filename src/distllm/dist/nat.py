@@ -361,6 +361,7 @@ class TurnRelayServer:
             ).hexdigest()
             return hmac.compare_digest(signature, expected)
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _check_rate_limit(self, ip: str) -> bool:
@@ -554,6 +555,7 @@ class TurnRelayServer:
                     try:
                         self._relay_sock.sendto(b"PEER_DISCONNECTED", remaining)
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
                 logger.info(f"Peer {addr} left session {token}")
 
@@ -701,6 +703,7 @@ class TurnRelayClient:
             try:
                 self._sock.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._sock = None
 
@@ -755,6 +758,7 @@ class WebRTCNatTransport:
                 loop.close()
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def recv(self, bufsize: int = 65535, timeout: float | None = None) -> bytes | None:
@@ -778,6 +782,7 @@ class WebRTCNatTransport:
                 return b""
             return None
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def close(self) -> None:
@@ -788,6 +793,7 @@ class WebRTCNatTransport:
                 loop.run_until_complete(self._transport.close())
                 loop.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._transport = None
 

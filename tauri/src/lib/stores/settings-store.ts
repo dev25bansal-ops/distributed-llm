@@ -16,6 +16,7 @@ export interface AppSettings {
   };
   pythonPath: string;
   apiEndpoint: string;
+  apiKey: string;
   updateServerUrl: string;
 }
 
@@ -35,6 +36,7 @@ const defaults: AppSettings = {
   },
   pythonPath: "",
   apiEndpoint: "",
+  apiKey: "",
   updateServerUrl: "https://releases.distributed-llm.dev",
 };
 
@@ -61,30 +63,32 @@ export function applyTheme(theme?: "dark" | "light" | "auto") {
   const isDark = t === "dark" || (t === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 
   if (isDark) {
-    root.style.setProperty("--bg-primary", "#0f0f1a");
-    root.style.setProperty("--bg-secondary", "#1a1a2e");
-    root.style.setProperty("--bg-card", "#1e1e36");
-    root.style.setProperty("--bg-input", "#252542");
-    root.style.setProperty("--border", "#2d2d50");
-    root.style.setProperty("--text-primary", "#e0e0f0");
-    root.style.setProperty("--text-secondary", "#9090b0");
-    root.style.setProperty("--text-muted", "#606080");
-    root.style.setProperty("--success", "#22cc66");
-    root.style.setProperty("--warning", "#ffaa33");
-    root.style.setProperty("--danger", "#ff4466");
+    root.style.setProperty("--bg-primary", "#1c1c1c");
+    root.style.setProperty("--bg-secondary", "#232323");
+    root.style.setProperty("--bg-card", "#262626");
+    root.style.setProperty("--bg-input", "#2a2a2a");
+    root.style.setProperty("--border", "#383838");
+    root.style.setProperty("--text-primary", "#f1f1ef");
+    root.style.setProperty("--text-secondary", "#c4c4be");
+    root.style.setProperty("--text-muted", "#9a9b96");
+    root.style.setProperty("--success", "#8fa68e");
+    root.style.setProperty("--warning", "#c9a26e");
+    root.style.setProperty("--danger", "#c97b6e");
     root.style.colorScheme = "dark";
   } else {
-    root.style.setProperty("--bg-primary", "#f5f5fa");
-    root.style.setProperty("--bg-secondary", "#ebebfa");
-    root.style.setProperty("--bg-card", "#ffffff");
-    root.style.setProperty("--bg-input", "#e8e8f5");
-    root.style.setProperty("--border", "#d0d0e0");
-    root.style.setProperty("--text-primary", "#1a1a30");
-    root.style.setProperty("--text-secondary", "#606080");
-    root.style.setProperty("--text-muted", "#9090b0");
-    root.style.setProperty("--success", "#1a9a4a");
-    root.style.setProperty("--warning", "#cc7700");
-    root.style.setProperty("--danger", "#cc2244");
+    /* Light is the same design on a pale field, not a different palette:
+       concrete ground, near-black ink, the same sage accent. */
+    root.style.setProperty("--bg-primary", "#c8c5ba");
+    root.style.setProperty("--bg-secondary", "#d2cfc4");
+    root.style.setProperty("--bg-card", "#e0ded4");
+    root.style.setProperty("--bg-input", "#dedbd1");
+    root.style.setProperty("--border", "#b3b0a5");
+    root.style.setProperty("--text-primary", "#1c1c1c");
+    root.style.setProperty("--text-secondary", "#3a3a34");
+    root.style.setProperty("--text-muted", "#5c5c56");
+    root.style.setProperty("--success", "#5c7a5b");
+    root.style.setProperty("--warning", "#8a6a3a");
+    root.style.setProperty("--danger", "#a4523f");
     root.style.colorScheme = "light";
   }
 }

@@ -43,7 +43,6 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-
 # ── GPU Diagnostics ──────────────────────────────────────────────────────
 
 def _check_cuda() -> list[dict[str, Any]]:
@@ -54,11 +53,25 @@ def _check_cuda() -> list[dict[str, Any]]:
         results.append({"check": "PyTorch version", "status": "ok", "value": torch.__version__})
 
         cuda_available = torch.cuda.is_available()
-        results.append({
-            "check": "CUDA available",
-            "status": "ok" if cuda_available else "error",
-            "value": str(cuda_available),
-        })
+        # "CUDA available: False" is ambiguous and the single most confusing
+        # failure for a new user: it reads the same whether the machine has no
+        # GPU or PyTorch is the CPU-only wheel. pip installs the CPU wheel by
+        # default from PyPI, so a machine with an A10 reports False. Name the
+        # cause and the fix.
+        is_cpu_build = "+cpu" in torch.__version__
+        if cuda_available:
+            status, detail = "ok", "True"
+        elif is_cpu_build:
+            status = "error"
+            detail = (
+                "False — this is the CPU-only PyTorch build ('+cpu'), not a "
+                "missing GPU. Install a CUDA build: "
+                "pip install torch --index-url https://download.pytorch.org/whl/cu128"
+            )
+        else:
+            status = "error"
+            detail = "False — no CUDA device visible to PyTorch (driver or GPU?)"
+        results.append({"check": "CUDA available", "status": status, "value": detail})
 
         if cuda_available:
             results.append({"check": "CUDA version", "status": "ok", "value": torch.version.cuda or "unknown"})
@@ -183,6 +196,7 @@ def _check_gpu_benchmarks() -> list[dict[str, Any]]:
         torch.cuda.empty_cache()
 
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         results.append({"check": "GPU benchmark", "status": "error", "value": str(e)})
 
     return results
@@ -349,6 +363,7 @@ def _check_config() -> list[dict[str, Any]]:
                     if data.get("rate_limiting", {}).get("enabled") is False:
                         results.append({"check": "Rate limiting", "status": "warn", "value": "disabled"})
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 results.append({"check": f"config {path}", "status": "error", "value": str(e)})
         else:
             results.append({"check": f"config {path}", "status": "info", "value": "not found (OK for defaults)"})

@@ -19,7 +19,6 @@ from loguru import logger
 
 from distllm.core.structured_output import JSONSchemaConstraint
 
-
 # ── FSM State ────────────────────────────────────────────────────────────────
 
 
@@ -96,6 +95,7 @@ class TokenIndex:
                 text = tokenizer.decode([tid])
                 id_to_bytes[tid] = text.encode("utf-8")
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 id_to_bytes[tid] = b""
 
         return cls(vocab_size, eos_token_id, id_to_bytes)

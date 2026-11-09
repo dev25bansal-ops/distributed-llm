@@ -12,7 +12,6 @@ from typing import Any
 
 from distllm.core.evaluation.constants import EvalStatus
 
-
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------

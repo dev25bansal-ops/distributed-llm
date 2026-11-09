@@ -4,7 +4,7 @@
   import { Card, ErrorBanner, toastStore } from "./ui";
   import type { ModelInfo } from "./types";
   import { onMount, onDestroy } from "svelte";
-  import { listen } from "@tauri-apps/api/event";
+  import { listenEvent } from "./transport";
 
   let models = $state<ModelInfo[]>([]);
   let loading = $state(true);
@@ -30,10 +30,9 @@
   // 3.6: Listen for download progress events
   onMount(async () => {
     await loadModels();
-    unlistenProgress = await listen<{ model_id: string; status: string; detail: string }>(
+    unlistenProgress = await listenEvent<{ model_id: string; status: string; detail: string }>(
       "download-progress",
-      (e) => {
-        const { model_id, status, detail } = e.payload;
+      ({ model_id, status, detail }) => {
         if (status === "completed") {
           downloadProgress = new Map([...downloadProgress].filter(([k]) => k !== model_id));
           downloading = new Set([...downloading].filter((id) => id !== model_id));

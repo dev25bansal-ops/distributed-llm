@@ -81,7 +81,7 @@ pip install -e ".[dev]"
 
 - **Pipeline parallelism** — split any HuggingFace model across N devices
 - **Auto-discovery** — mDNS/zeroconf device finding on LAN
-- **10 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch, Triton, NIM, MLX, WebGPU
+- **12 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch, Triton, NIM, MLX, WebGPU, Ollama, TGI
 - **Auth plugin** — JWT authentication + RBAC role-based access control
 - **Health watchdog** — continuous node health monitoring with auto circuit-breaking
 - **Semantic caching** — deduplicate repeated prompts with embedding similarity
@@ -171,13 +171,13 @@ GPT-2, GPT-Neo, Llama 2/3, Mistral, Mixtral, Qwen2.5, Phi, DeepSeek, StableLM, P
 
 ## Roadmap
 
-- **v0.4.x** (current): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache, RBAC auth, 10 backends
-- **Planned**: 
-  - **mDNS auto-discovery** (in progress — CLI supports `--discover`)
+- **v0.4.x** (current): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache, RBAC auth, 12 backends, speculative decoding, mDNS auto-discovery
+- **Planned**:
   - **GPU marketplace reputation system**
-  - **Speculative decoding & distributed draft models**
   - **Privacy-preserving split inference with differential privacy**
-- **2027**: Federated clusters, cross-internet NAT traversal, incentive systems
+  - **Federated clusters, cross-internet NAT traversal, incentive systems** (2027)
+
+> Full canonical project map: [`docs/_map/UNIFIED.md`](docs/_map/UNIFIED.md) — single entry point for architecture, modules, API, ops, security, and the hygiene log.
 
 ## Contributing
 

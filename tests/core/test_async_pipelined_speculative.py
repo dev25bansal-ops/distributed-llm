@@ -251,15 +251,22 @@ class TestPipelinedSpeculativeDecoder:
         assert output.shape[1] >= 3 + 10
         decoder.close()
 
-    @pytest.mark.skip(reason="ThreadPoolExecutor race condition on CI")
     def test_draft_failure_handling(self):
         """Draft failure should gracefully fall back to target-only generation."""
+        import threading
+
+        # The draft generator may be invoked from a worker thread, so the
+        # counter needs its own lock: the unsynchronised `nonlocal` increment
+        # was the race this test was skipped for.
         call_count = 0
+        count_lock = threading.Lock()
 
         def failing_draft(prompt, num_tokens):
             nonlocal call_count
-            call_count += 1
-            if call_count <= 2:
+            with count_lock:
+                call_count += 1
+                this_call = call_count
+            if this_call <= 2:
                 raise RuntimeError("Draft model unavailable")
             return [99] * num_tokens, [0.0] * num_tokens  # Recover after 2 failures
 

@@ -19,9 +19,9 @@ Credit economy:
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
-import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 

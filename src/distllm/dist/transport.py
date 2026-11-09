@@ -439,6 +439,7 @@ def estimate_bandwidth(
         _os.environ["_DISTLLM_BW_CACHE"] = f"{host},{bw_gbps},{_time.time()}"
         return round(bw_gbps, 2)
     except Exception:
+        # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
         return 0.0
 
 

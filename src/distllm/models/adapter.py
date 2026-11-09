@@ -10,15 +10,17 @@ S-LoRA style: shared base model + per-request adapter weights in one batch.
 - Adapter quantization (int8) for higher density
 """
 
-import time
-import threading
 import queue
+import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 import torch
 from loguru import logger
+
 from distllm.security import hf_revision
 
 
@@ -628,8 +630,8 @@ class AdapterManager:
         Returns:
             True on success.
         """
-        import tempfile
         import os
+        import tempfile
 
         if not path:
             path = os.path.join(

@@ -6,7 +6,10 @@ import gc
 import inspect
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from transformers import BitsAndBytesConfig
 
 import torch
 import torch.nn as nn
@@ -44,7 +47,7 @@ def _get_base_prefix(model: Any) -> str:
     return ""
 
 
-def build_quantization_config(quant_config: QuantizationConfig | None) -> "BitsAndBytesConfig | None":
+def build_quantization_config(quant_config: QuantizationConfig | None) -> BitsAndBytesConfig | None:
     """Build a BitsAndBytesConfig from QuantizationConfig dataclass."""
     if quant_config.method == "none":
         return None
@@ -451,6 +454,7 @@ class ModelPartitioner:
             partial_model.load_state_dict(state_dict, strict=False, assign=True)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _extract_subset(self, full_model: Any, start_layer: int, end_layer: int, total_layers: int, device: str) -> None:

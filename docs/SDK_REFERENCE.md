@@ -148,7 +148,7 @@ package main
 import (
     "context"
     "fmt"
-    distllm "github.com/distributed-llm/distributed-llm/sdk/go"
+    distllm "github.com/distributed-llm/distllm-sdk-go/sdk/go"
 )
 
 func main() {
@@ -192,7 +192,7 @@ if err := <-errCh; err != nil {
 
 ```toml
 [dependencies]
-distllm-sdk = "0.4"
+distllm-sdk = "1.0.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -240,3 +240,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `TIMEOUT` | 504 | Request timed out | [Troubleshooting](https://distllm.dev/docs/troubleshooting#5-performance-issues) |
 | `NODE_UNREACHABLE` | 503 | Worker node down | [Troubleshooting](https://distllm.dev/docs/troubleshooting#3-distributed-pipeline-errors) |
 | `OOM_ERROR` | 500 | GPU out of memory | [Troubleshooting](https://distllm.dev/docs/troubleshooting#6-gpu-issues) |
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06): the distllm.dev URLs in the Error
+> Codes table above are external; this hygiene pass could not verify them.

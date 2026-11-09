@@ -17,7 +17,24 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from rich.console import Console
 from rich.table import Table
 
+from distllm.cli.http_client import client_for, format_http_error, resolve_api_key
+
 console = Console()
+
+
+def _report_connect_error(host: str, port: int) -> None:
+    """Explain an unreachable API server the way `cluster status` does.
+
+    The bare "Could not connect to host:port" left users to work out why on
+    their own; the cluster commands already tell them what to run instead.
+    """
+    console.print(
+        f"[red]Error:[/red] Could not connect to {host}:{port}.\n"
+        "Is the API server running? Start one with:\n"
+        "  [cyan]distllm cluster start --model <model>[/cyan]   "
+        "(REST API on port 8000)\n"
+        "or point at another host/port with [cyan]--host/--port[/cyan]."
+    )
 
 
 class CoordinatorArgs(BaseModel):
@@ -69,7 +86,7 @@ class WorkerArgs(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _validate_layer_bounds(self) -> "WorkerArgs":
+    def _validate_layer_bounds(self) -> WorkerArgs:
         """Ensure the worker covers at least one layer (no zero-layer workers)."""
         if self.start_layer >= self.total_layers:
             raise ValueError(
@@ -85,8 +102,13 @@ class WorkerArgs(BaseModel):
 # ── ``distllm model`` group helpers ─────────────────────────────────────────
 
 
+def _resolve_api_key() -> str | None:
+    """Backwards-compatible alias for the shared resolver."""
+    return resolve_api_key()
+
+
 def _get_client(host: str, port: int) -> httpx.Client:
-    return httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0)
+    return client_for(host, port)
 
 
 def _list_models(host: str, port: int):
@@ -112,9 +134,9 @@ def _list_models(host: str, port: int):
 
         console.print(table)
     except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
+        _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _model_info(host: str, port: int, model_id: str):
@@ -141,16 +163,16 @@ def _model_info(host: str, port: int, model_id: str):
 
         console.print(table)
     except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
+        _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _load_model(host: str, port: int, model: str, dtype: str = "float16"):
     """Load a model into the server."""
     try:
         with _get_client(host, port) as client:
-            resp = client.post("/v1/models/load", json={
+            resp = client.post("/api/models/load", json={
                 "model": model,
                 "dtype": dtype,
             })
@@ -159,20 +181,20 @@ def _load_model(host: str, port: int, model: str, dtype: str = "float16"):
 
         console.print(f"[green]Model loaded:[/green] {data.get('model', model)}")
     except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
+        _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _unload_model(host: str, port: int, model_id: str):
     """Unload a model from the server."""
     try:
         with _get_client(host, port) as client:
-            resp = client.post("/v1/models/unload", json={"model": model_id})
+            resp = client.post("/api/models/unload", json={"model": model_id})
             resp.raise_for_status()
 
         console.print(f"[green]Model unloaded:[/green] {model_id}")
     except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
+        _report_connect_error(host, port)
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")

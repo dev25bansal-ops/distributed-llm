@@ -60,6 +60,7 @@ benchmarks/*.json
 htmlcov/
 .coverage
 coverage.xml
+coverage-delta.md
 
 # Temporary files
 tmp/
@@ -97,3 +98,25 @@ _b41_*.txt
 _qa_*
 _zero_importers.txt
 _dead_code.tsv
+
+# runtime data dir (get_data_dir default: persistent_store.py) — never commit
+.distllm/
+.usage.db*
+
+# generated SDK/integration artifacts (rebuild in CI, never commit)
+sdk/dist/
+sdk/js/dist/
+integrations/*/dist/
+
+# python + hygiene
+*.pyc
+.benchmarks/
+
+# hypothesis property-test artifacts
+.hypothesis/
+
+# generated protobuf modules (make proto; CI regenerates)
+node_pb2.py
+node_pb2_grpc.py
+*_pb2.py
+*_pb2_grpc.py

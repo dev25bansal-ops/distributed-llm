@@ -261,6 +261,7 @@ class BackendHealthMonitor:
                 consecutive_loop_errors = 0
 
             except Exception:
+                # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
                 consecutive_loop_errors += 1
                 backoff = min(consecutive_loop_errors * 2.0, 60.0)
                 if self._health_event.wait(backoff):
@@ -314,6 +315,7 @@ class BackendHealthMonitor:
             self._gossip_propagate(backend_id)
 
         except Exception as exc:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             elapsed = time.monotonic() - t0
             result = ProbeResult(
                 success=False,
@@ -501,6 +503,7 @@ class BackendHealthMonitor:
             for peer in self._gossip_protocol.get_peers():
                 self._gossip_client.exchange(peer, signed)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     def process_gossip_health_message(self, msg: dict) -> None:

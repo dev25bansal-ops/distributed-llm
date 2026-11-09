@@ -5,5 +5,8 @@ export const ENDPOINTS = {
   "createEmbedding": { method: "post", path: "/v1/embeddings" },
   "listModels": { method: "get", path: "/v1/models" },
   "getHealth": { method: "get", path: "/health" },
-  "listBatches": { method: "post", path: "/v1/batches" },
+  "createBatch": { method: "post", path: "/v1/batch/submit" },
+  "getBatchStatus": { method: "get", path: "/v1/batch/{batch_id}/status" },
+  "streamBatchResults": { method: "get", path: "/v1/batch/{batch_id}/stream" },
+  "cancelBatch": { method: "post", path: "/v1/batch/{batch_id}/cancel" },
 } as const;

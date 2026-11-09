@@ -33,7 +33,8 @@ import json
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 try:
     import torch
@@ -41,7 +42,6 @@ except ImportError:  # pragma: no cover
     torch = None  # type: ignore
 
 from loguru import logger
-
 
 # ---------------------------------------------------------------------------
 # Preference store

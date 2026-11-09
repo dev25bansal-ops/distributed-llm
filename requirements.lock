@@ -32,6 +32,8 @@ httpcore==1.0.9
     # via httpx
 httpx==0.28.1
     # via distllm (pyproject.toml)
+grpcio==1.85.1
+    # via distllm (pyproject.toml)
 idna==3.15
     # via
     #   anyio
@@ -42,8 +44,12 @@ markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-numpy==2.4.6
+numpy>=2.0,<2.3
     # via distllm (pyproject.toml)
+protobuf==7.36.2
+    # via
+    #   distllm (pyproject.toml)
+    #   grpcio-tools
 opentelemetry-api==1.42.0
     # via
     #   distllm (pyproject.toml)
@@ -83,6 +89,9 @@ pygments==2.20.0
     # via rich
 python-dotenv==1.2.2
     # via pydantic-settings
+python-multipart==0.0.32
+    # via distllm (pyproject.toml) -- FastAPI raises at import time without it;
+    # 0.0.33 requires Python >=3.11 and the image is 3.10.
 pyyaml==6.0.3
     # via distllm (pyproject.toml)
 rich==15.0.0

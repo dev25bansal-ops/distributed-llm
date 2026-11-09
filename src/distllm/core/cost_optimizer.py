@@ -22,7 +22,8 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -294,6 +295,7 @@ class CostOptimizer:
                     try:
                         self._pricing.refresh()
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
 
                 # Check for arbitrage opportunities

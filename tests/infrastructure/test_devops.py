@@ -79,8 +79,13 @@ class TestDockerBuilds:
         assert ENTRYPOINT.exists()
 
     def test_entrypoint_env_vars(self):
-        _check(ENTRYPOINT, "DISTLLM_NODE_ID", "DISTLLM_MODEL", "DISTLLM_START_LAYER",
-               "DISTLLM_END_LAYER", "DISTLLM_TOTAL_LAYERS")
+        # The entrypoint routes on DISTLLM_ROLE only. Model identity is
+        # DISTLLM_MODEL__NAME / DISTLLM_MODEL__DTYPE (the
+        # DISTLLM_<SECTION>__<FIELD> pydantic-settings form); the old flat
+        # DISTLLM_MODEL / DISTLLM_START_LAYER names are never read by the
+        # entrypoint (it only execs a console script) and are not used here.
+        _check(ENTRYPOINT, "DISTLLM_ROLE")
+        _check(DOCKERFILE, "DISTLLM_MODEL__NAME", "DISTLLM_MODEL__DTYPE")
 
     def test_compose_exists(self):
         assert COMPOSE.exists()

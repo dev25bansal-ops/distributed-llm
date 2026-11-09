@@ -140,18 +140,17 @@ const response = await client.chat.completions.create({
 | 504 | timeout_error | Request exceeded timeout |
 | 503 | node_unavailable | Worker node unavailable or unreachable |
 
-## Additional Endpoints (v0.4.0+)
+## Additional Endpoints (v0.4.1+)
 
 ### Marketplace API
 
-- `GET  /v1/marketplace/ads` — List active KV cache advertisements
-- `POST /v1/marketplace/ads` — Advertise a cached KV state
-- `POST /v1/marketplace/purchase` — Purchase a cache advertisement
+- `GET  /v1/marketplace/listings` — List GPU marketplace listings
+- `POST /v1/marketplace/listings` — Create a GPU listing (admin)
+- `POST /v1/marketplace/jobs` — Create a marketplace job (admin)
 
 ### Federation API
 
-- `POST /v1/federated/heartbeat` — Receive heartbeat from federated peers
-- `GET  /v1/federated/peers` — List federated peer clusters
+- `POST /v1/federation/heartbeat` — Receive heartbeat from federated peers
 
 ### WebRTC API
 
@@ -171,11 +170,11 @@ const response = await client.chat.completions.create({
 
 ### Gossip API
 
-- `POST /v1/gossip/message` — Exchange gossip messages
-- `GET  /v1/gossip/peers` — List gossip peers
+- `POST /v1/gossip/exchange` — Exchange gossip advertisements (HMAC-signed)
+- `POST /v1/gossip/fetch` — Fetch gossip cache entries (HMAC-signed)
 
 ### Admin API
 
 - `POST /admin/v1/nodes/register` — Register a worker node
 - `GET  /admin/v1/nodes` — List all nodes
-- `POST /admin/v1/models/compress` — Start model compression
+- `POST /admin/v1/compress` — Start model compression

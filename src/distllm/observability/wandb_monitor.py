@@ -35,6 +35,7 @@ class WandBMonitor:
             self._run = wandb.init(project=self.config.project, entity=self.config.entity, tags=self.config.tags)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def log_metrics(self, metrics: dict[str, float]) -> bool:
@@ -44,6 +45,7 @@ class WandBMonitor:
             wandb.log(metrics)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def log_eval_results(self, results: dict[str, Any]) -> bool:
@@ -55,6 +57,7 @@ class WandBMonitor:
             wandb.log({"evaluation": wandb.Table(dataframe=df)})
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def stop(self) -> None:
@@ -62,5 +65,6 @@ class WandBMonitor:
             try:
                 wandb.finish()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._run = None

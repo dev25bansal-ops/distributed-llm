@@ -69,6 +69,12 @@
 | **ExLlamaV2** | GPTQ models | Consumer GPUs | Fast INT4 inference |
 | **ONNX** | Exported models | Cross-platform | Limited model support |
 | **TensorRT-LLM** | NVIDIA-optimized | NVIDIA GPUs | Best single-GPU perf |
+| **MLX** | Apple Silicon models | Mac (M1–M4, unified memory) | `is_available()` = `mlx` importable |
+| **NIM** | NVIDIA NIM-hosted models | NVIDIA NIM endpoints | `is_available()` = `httpx` importable (network-only) |
+| **Ollama** | Ollama-served models | Local Ollama servers | `is_available()` = `httpx` importable (HTTP-only) |
+| **TGI** | HuggingFace TGI-served models | HF Text Generation Inference servers | `is_available()` = `text_generation` client installed |
+| **Triton** | Triton-served models | Triton Inference Server (HTTP/gRPC) | `is_available()` = `tritonclient.http`/`.grpc` importable |
+| **WebGPU** | Browser-tab workers | Browser-based inference | `is_available()` = `aiortc` installed |
 
 ---
 
@@ -124,4 +130,4 @@ To add support for a new model architecture:
 - **Architecture not supported**: May need to add layer mapping in `ModelPartitioner`
 - **Trust remote code**: Some models require `--trust-remote-code`
 - **Custom tokenizer**: Ensure tokenizer loads correctly
-- **Gated models**: Set `HUGGING_FACE_HUB_TOKEN` for gated models
+- **Gated models**: Set `HF_TOKEN` or `DISTLLM__MODEL_HUB__HF_TOKEN` for gated models

@@ -195,7 +195,7 @@ class ScheduledBatch:
             self.is_prefill,
         )
 
-    def build_attention_mask(self) -> "torch.Tensor":
+    def build_attention_mask(self) -> torch.Tensor:
         """All-visible attention mask for the flat ragged layout.
 
         The flat layout packs every sequence's tokens contiguously into a

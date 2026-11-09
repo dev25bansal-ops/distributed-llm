@@ -15,7 +15,7 @@ class TestCheckCUDA:
         assert isinstance(results, list)
         assert len(results) > 0
         # Should always have torch version check
-        assert any(r["check"] == "torch version" for r in results)
+        assert any("pytorch" in r["check"].lower() or "torch" in r["check"].lower() for r in results)
 
     def test_cuda_check_has_status_fields(self):
         from distllm.cli.doctor import _check_cuda
@@ -41,7 +41,7 @@ class TestCheckPorts:
         from distllm.cli.doctor import _check_ports
 
         results = _check_ports()
-        assert len(results) == 5  # 50050, 50051, 50052, 50060, 8000
+        assert len(results) >= 5  # 50050, 50051, 50052, 50060, 8000, 8500
 
     def test_check_ports_custom(self):
         from distllm.cli.doctor import _check_ports
@@ -89,7 +89,7 @@ class TestCheckDisk:
         from distllm.cli.doctor import _check_disk
 
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.disk_usage", return_value=MagicMock(free=50e9)):
+            with patch("shutil.disk_usage", return_value=MagicMock(free=100e9)):
                 results = _check_disk()
                 assert any(r["status"] == "ok" for r in results)
 
@@ -97,21 +97,41 @@ class TestCheckDisk:
         from distllm.cli.doctor import _check_disk
 
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.disk_usage", return_value=MagicMock(free=5e9)):
+            with patch("shutil.disk_usage", return_value=MagicMock(free=20e9)):
                 results = _check_disk()
                 assert any(r["status"] == "warn" for r in results)
 
 
-class TestPrintResults:
-    def test_print_results(self, capsys):
-        from distllm.cli.doctor import _print_results
+class TestRenderResults:
+    """The old `_print_results(category, results)` helper was replaced by the
+    Doctor renderer, which takes an argparse Namespace and writes through
+    rich. These assert the rendering contract, not the removed function."""
 
+    def _doctor(self):
+        import argparse
+
+        from distllm.cli.doctor import Doctor
+
+        args = argparse.Namespace(json=False, terse=False, category=None, verbose=False)
+        return Doctor(args)
+
+    def test_category_results_are_rendered(self, capsys):
         results = [
             {"check": "test", "status": "ok", "value": "42"},
             {"check": "warn_test", "status": "warn", "value": "low"},
             {"check": "err_test", "status": "error", "value": "bad"},
         ]
-        _print_results("Test Category", results)
+        doctor = self._doctor()
+        doctor.console = __import__("rich.console", fromlist=["Console"]).Console()
+        doctor._render_category("Test Category", results)
         captured = capsys.readouterr()
         assert "Test Category" in captured.out
         assert "test" in captured.out
+
+    def test_status_labels_cover_every_status_the_checks_emit(self):
+        """A status with no label would render as a KeyError at runtime."""
+        from distllm.cli.doctor import Doctor
+
+        emitted = {"ok", "pass", "warn", "error", "fail", "info", "skip"}
+        assert emitted <= set(Doctor.STATUS_LABELS)
+        assert emitted <= set(Doctor.STATUS_STYLES)

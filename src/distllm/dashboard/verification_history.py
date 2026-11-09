@@ -47,6 +47,7 @@ def compute_logit_cosine(
         d = draft_logits.reshape(-1).float()
         t = target_logits.reshape(-1).float()
     except Exception:
+        # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
         return None
     if d.numel() == 0 or t.numel() == 0:
         return None

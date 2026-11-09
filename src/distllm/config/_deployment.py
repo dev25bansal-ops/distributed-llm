@@ -1,6 +1,6 @@
 """Canary rollout, versioning, cost, and tenant configuration classes."""
 
-from pydantic import BaseModel, Field, field_validator, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 __all__ = [
     "RolloutStageModel",
@@ -92,4 +92,4 @@ class TenantSettings(BaseModel):
     """Multi-tenant SaaS configuration."""
     enabled: bool = False
     default_tier: str = "free"
-    admin_api_key: SecretStr | None = Field(default=None, description="Admin API key for tenant management. Set via DISTLLM__TENANT__ADMIN_API_KEY env var.")
+    admin_api_key: SecretStr | None = Field(default=None, description="Admin API key for tenant management. Set via DISTLLM_TENANT__ADMIN_API_KEY env var.")

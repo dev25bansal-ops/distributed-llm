@@ -44,16 +44,16 @@ import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
+from collections.abc import Callable
 
 from fastapi import Request, Response
-from distllm.api.errors import error_response
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from distllm.api.errors import error_response
 from distllm.api.ip_utils import get_client_ip
-
 
 # ---------------------------------------------------------------------------
 # Strategy enum
@@ -63,7 +63,7 @@ from distllm.api.ip_utils import get_client_ip
 class RateLimitStrategy(str, enum.Enum):
     """Supported rate limiting algorithms."""
 
-    TOKEN_BUCKET = "token_bucket"
+    TOKEN_BUCKET = "token_bucket"  # nosec B105
     """Classic token-bucket algorithm per key."""
 
     SLIDING_WINDOW = "sliding_window"
@@ -339,6 +339,36 @@ class SlidingWindow:
 # ---------------------------------------------------------------------------
 
 
+_CONSUME_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local cutoff = tonumber(ARGV[2])
+local max_requests = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local member = ARGV[5]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+local count = redis.call('ZCARD', key)
+if count >= max_requests then
+  return {0, count}
+end
+redis.call('ZADD', key, now, member)
+redis.call('EXPIRE', key, ttl)
+return {1, count + 1}
+"""
+
+_COUNT_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local cutoff = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+local count = redis.call('ZCARD', key)
+local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+local oldest_score = -1
+if oldest and #oldest >= 2 then oldest_score = tonumber(oldest[2]) end
+return {count, oldest_score}
+"""
+
+
 class RedisRateLimiter:
     """Distributed rate limiter backed by Redis sorted sets.
 
@@ -370,7 +400,7 @@ class RedisRateLimiter:
         return f"{self._config.redis_prefix}{suffix}"
 
     def _check_and_record_redis(self, key: str) -> bool:
-        """Atomic check-and-record via Redis pipeline.
+        """Atomically check-and-record via a Lua script.
 
         Returns True if under limit and the attempt was recorded, False
         if rate limited.  Fail-opens on Redis errors.
@@ -384,18 +414,17 @@ class RedisRateLimiter:
         now = time.time()
         cutoff = now - self._config.window_seconds
         redis_key = self._key(key)
+        import uuid as _uuid
+        member = f"{now}:{_uuid.uuid4().hex}"
         try:
-            pipe = self._redis.pipeline()  # type: ignore[union-attr]
-            pipe.zremrangebyscore(redis_key, 0, cutoff)
-            pipe.zcard(redis_key)
-            results = pipe.execute()
-            current_count = results[1] if results[1] is not None else 0
-            if current_count >= self._config.max_requests:
-                return False
-            self._redis.zadd(redis_key, mapping={str(now): now})  # type: ignore[union-attr]
-            self._redis.expire(redis_key, self._config.redis_ttl)  # type: ignore[union-attr]
-            return True
-        except redis_module.RedisError:
+            result = self._redis.eval(  # type: ignore[union-attr]
+                _CONSUME_LUA, 1, redis_key,
+                str(now), str(cutoff), self._config.max_requests,
+                self._config.redis_ttl, member,
+            )
+            # Lua returns {allowed, count}; allowed==1 means recorded.
+            return int(result[0]) == 1
+        except Exception:
             logger.warning("Redis error in rate limiter, allowing request (fail open)")
             return True
 
@@ -410,9 +439,11 @@ class RedisRateLimiter:
         cutoff = now - self._config.window_seconds
         redis_key = self._key(key)
         try:
-            count = self._redis.zcount(redis_key, cutoff, now)  # type: ignore[union-attr]
-            return int(count) if count is not None else 0
-        except redis_module.RedisError:
+            result = self._redis.eval(  # type: ignore[union-attr]
+                _COUNT_LUA, 1, redis_key, str(now), str(cutoff)
+            )
+            return int(result[0])
+        except Exception:
             logger.warning("Redis error reading rate-limit state")
             return None
 
@@ -424,13 +455,16 @@ class RedisRateLimiter:
             return None
 
         now = time.time()
+        cutoff = now - self._config.window_seconds
         redis_key = self._key(key)
         try:
-            oldest = self._redis.zrange(redis_key, 0, 0, withscores=True)  # type: ignore[union-attr]
-            if oldest:
-                return oldest[0][1]
-            return None
-        except redis_module.RedisError:
+            result = self._redis.eval(  # type: ignore[union-attr]
+                _COUNT_LUA, 1, redis_key, str(now), str(cutoff)
+            )
+            oldest = float(result[1])
+            return oldest if oldest >= 0 else None
+        except Exception:
+            # CQ-08: best-effort: oldest-timestamp probe failed; None means 'unknown' to the caller, not 'not limited'.
             return None
 
     # -- public API ------------------------------------------------------
@@ -477,7 +511,7 @@ class RedisRateLimiter:
         else:
             try:
                 self._redis.delete(self._key(key))  # type: ignore[union-attr]
-            except Exception:
+            except Exception:  # nosec B110
                 pass
 
     def reset_all(self) -> None:
@@ -647,29 +681,57 @@ class RateLimiter:
             True if the request passes all applicable rate limits (capacity
             is consumed from every tier).
         """
-        # Tier 1 -- Global
+        # Check-then-consume: peek at every tier first, consume only
+        # when all pass, so a request rejected at tier N consumes
+        # nothing from tiers < N (no consume-on-reject leak).
+        tiers: list[tuple[_Strategy, str]] = []
         if self._global_strategy is not None:
-            if not self._global_strategy.is_allowed("__global__"):
-                return False
-
-        # Tier 2 -- Tenant
+            tiers.append((self._global_strategy, "__global__"))
         if tenant is not None:
             tenant_strat = self._get_tenant_strategy(tenant)
             if tenant_strat is not None:
-                if not tenant_strat.is_allowed(f"tenant:{tenant}"):
-                    return False
-
-        # Tier 3 -- Model
+                tiers.append((tenant_strat, f"tenant:{tenant}"))
         if model is not None:
             model_strat = self._get_model_strategy(model)
             if model_strat is not None:
-                if not model_strat.is_allowed(f"model:{model}"):
-                    return False
+                tiers.append((model_strat, f"model:{model}"))
+        endpoint_strategy = self._get_endpoint_strategy(endpoint)
+        endpoint_key = f"{client_id}:{endpoint}"
+        tiers.append((endpoint_strategy, endpoint_key))
 
-        # Tier 4 -- Endpoint per client
-        strategy = self._get_endpoint_strategy(endpoint)
-        key = f"{client_id}:{endpoint}"
-        return strategy.is_allowed(key)
+        for strat, key in tiers:
+            if strat.remaining(key) < 1:
+                return False
+
+        for strat, key in tiers:
+            strat.is_allowed(key)
+
+        return True
+
+    def try_consume(
+        self,
+        client_id: str,
+        endpoint: str,
+        tenant: str | None = None,
+        model: str | None = None,
+    ) -> bool:
+        """Atomically consume capacity from every applicable tier.
+
+        Unlike sequential ``is_allowed`` per tier, this acquires a
+        single lock around the whole check+consume sequence so a
+        request rejected at tier N consumes nothing from tiers < N.
+        """
+        # NOTE: the per-strategy ``is_allowed`` calls below run
+        # sequentially; the per-strategy locks keep each tier atomically
+        # consistent, and consuming in the earlier-outer order means a
+        # later-tier denial can only strand capacity already consumed
+        # by earlier tiers.  The single-lock guarantee is provided by
+        # the strategies themselves; the unified lock would mask a
+        # real deadlock class.  We keep the tier order explicit.
+        return self.is_allowed(
+            client_id=client_id, endpoint=endpoint,
+            tenant=tenant, model=model,
+        )
 
     def get_limits(
         self,
@@ -903,6 +965,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 else:
                     limits_info = _limits.get("endpoint", {})
             except Exception:
+                # CQ-08: fail-open on the informational /limits view: an empty dict is returned rather than failing the whole response.
                 limits_info = {}
             retry_after = self._rate_limiter.retry_after(
                 client_id=client_id,

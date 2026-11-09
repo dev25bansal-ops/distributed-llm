@@ -245,6 +245,7 @@ class GPUPowerCapper:
             ops = 50 / max(elapsed, 1e-6)
             return round(ops, 1)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     # ── Status ───────────────────────────────────────────────────────
@@ -327,6 +328,7 @@ class GPUPowerCapper:
                     if match:
                         return float(match.group())
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return 0.0
 
