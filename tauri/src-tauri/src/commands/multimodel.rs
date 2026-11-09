@@ -28,7 +28,7 @@ pub struct ModelRoutingRule {
 /// Get model slots from coordinator API, with fallback to local defaults.
 #[tauri::command]
 pub fn get_model_slots(state: tauri::State<'_, AppState>) -> Result<Vec<ModelSlot>, AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -83,11 +83,11 @@ pub fn get_model_slots(state: tauri::State<'_, AppState>) -> Result<Vec<ModelSlo
 /// Load a model into a slot via coordinator API.
 #[tauri::command]
 pub async fn load_model_slot(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
     slot_id: String,
     model_id: String,
 ) -> Result<ModelSlot, AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -113,10 +113,10 @@ pub async fn load_model_slot(
 /// Unload a model from a slot.
 #[tauri::command]
 pub async fn unload_model_slot(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
     slot_id: String,
 ) -> Result<(), AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -132,7 +132,7 @@ pub async fn unload_model_slot(
 /// Get routing rules from coordinator.
 #[tauri::command]
 pub fn get_routing_rules(state: tauri::State<'_, AppState>) -> Result<Vec<ModelRoutingRule>, AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -158,10 +158,10 @@ pub fn get_routing_rules(state: tauri::State<'_, AppState>) -> Result<Vec<ModelR
 /// Set (create or update) a routing rule.
 #[tauri::command]
 pub async fn set_routing_rule(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
     rule: ModelRoutingRule,
 ) -> Result<(), AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -180,10 +180,10 @@ pub async fn set_routing_rule(
 /// Delete a routing rule.
 #[tauri::command]
 pub async fn delete_routing_rule(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
     rule_id: String,
 ) -> Result<(), AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {

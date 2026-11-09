@@ -22,6 +22,42 @@ pub fn api_get(port: u16, path: &str, token: Option<&str>) -> Result<serde_json:
     api_get_to("127.0.0.1", port, path, token)
 }
 
+/// Make a POST request to the coordinator API using pooled connections.
+pub fn api_post(
+    port: u16,
+    path: &str,
+    token: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, AppError> {
+    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let mut req = get_agent().post(&url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {}", t));
+    }
+    let resp = req.send_json(body.clone()).map_err(|e| {
+        eprintln!("[api_post] Request failed for {}: {}", url, e);
+        AppError::ApiUnreachable
+    })?;
+    let text = resp.into_string().map_err(|_| AppError::ApiInvalidResponse)?;
+    serde_json::from_str(&text).map_err(|_| AppError::ApiInvalidResponse)
+}
+
+/// Make a POST request to a specific host:port with no body (for actions
+/// like `/v1/plugins/{name}/enable`).
+pub fn api_post_empty(port: u16, path: &str, token: Option<&str>) -> Result<serde_json::Value, AppError> {
+    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let mut req = get_agent().post(&url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {}", t));
+    }
+    let resp = req.call().map_err(|e| {
+        eprintln!("[api_post] Request failed for {}: {}", url, e);
+        AppError::ApiUnreachable
+    })?;
+    let text = resp.into_string().map_err(|_| AppError::ApiInvalidResponse)?;
+    serde_json::from_str(&text).map_err(|_| AppError::ApiInvalidResponse)
+}
+
 /// Make a GET request to a specific host using pooled connections.
 pub fn api_get_to(
     host: &str,
@@ -72,8 +108,12 @@ pub fn fetch_from_api(port: u16, token: Option<&str>) -> ClusterStatus {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .into(),
+                    // /admin/v1/nodes exposes `gpu_memory_util_pct`, not
+                    // `gpu_utilization`. Reading the wrong key yielded Some(0.0)
+                    // for every node, so live GPU load always rendered as 0%.
                     gpu_utilization: n
-                        .get("gpu_utilization")
+                        .get("gpu_memory_util_pct")
+                        .or_else(|| n.get("gpu_utilization"))
                         .and_then(|v| v.as_f64())
                         .unwrap_or(0.0),
                     layers: format!(

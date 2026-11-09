@@ -24,7 +24,7 @@ pub struct WebDashboardStatus {
 pub fn get_web_dashboard_config(
     state: tauri::State<'_, AppState>,
 ) -> Result<WebDashboardConfig, AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -47,10 +47,10 @@ pub fn get_web_dashboard_config(
 /// Update web dashboard configuration.
 #[tauri::command]
 pub async fn set_web_dashboard_config(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
     config: WebDashboardConfig,
 ) -> Result<(), AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -65,7 +65,7 @@ pub async fn set_web_dashboard_config(
 pub fn get_web_dashboard_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<WebDashboardStatus, AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -86,9 +86,9 @@ pub fn get_web_dashboard_status(
 /// Start the web dashboard server.
 #[tauri::command]
 pub async fn start_web_dashboard(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<WebDashboardStatus, AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {
@@ -105,9 +105,9 @@ pub async fn start_web_dashboard(
 /// Stop the web dashboard server.
 #[tauri::command]
 pub async fn stop_web_dashboard(
-    state: tauri::State<'_, _>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
-    let port = state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token = state.auth_token.lock().map_err(|e| AppError::Internal(e.to_string()))?;
 
     if let Some(p) = port {

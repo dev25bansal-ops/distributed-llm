@@ -1,11 +1,9 @@
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
-
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::api_client::api_get;
 use crate::error::AppError;
-use crate::process::ensure_distllm;
+use crate::process::validate_model_name;
 use crate::state::AppState;
 use crate::types::ModelInfo;
 
@@ -30,39 +28,63 @@ impl Drop for DownloadGuard<'_> {
     }
 }
 
-/// List available models. Async because it spawns a Python subprocess.
+/// List models from the coordinator's OpenAI-compatible `/v1/models` endpoint.
+///
+/// The old implementation shelled out to `distllm models list --json`. That
+/// command does not exist — the CLI group is `model` (singular) and its `list`
+/// takes no `--json` flag — so it returned exit code 2 and the command failed
+/// unconditionally. The coordinator API is the real source of truth.
 #[tauri::command]
-pub async fn list_models() -> Result<Vec<ModelInfo>, AppError> {
-    let python = ensure_distllm()?;
-    let output = tokio::task::spawn_blocking(move || {
-        Command::new(python)
-            .args(["-m", "distllm.cli.main", "models", "list", "--json"])
-            .output()
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?
-    .map_err(|e| AppError::SpawnFailed(format!("models list: {}", e)))?;
+pub fn list_models(state: tauri::State<'_, AppState>) -> Result<Vec<ModelInfo>, AppError> {
+    let port = *state.api_port.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let token = state
+        .auth_token
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .clone();
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.trim().is_empty() {
-            return Ok(vec![]);
-        }
-        serde_json::from_str(&stdout).map_err(|_| AppError::ApiInvalidResponse)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(AppError::CliError(stderr.trim().to_string()))
-    }
+    let Some(p) = port else {
+        return Ok(vec![]);
+    };
+
+    let val = api_get(p, "/v1/models", token.as_deref())?;
+    let arr = val
+        .get("data")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(arr
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str())?.to_string();
+            Some(ModelInfo {
+                name: id.rsplit('/').next().unwrap_or(&id).to_string(),
+                id,
+                size: String::new(),
+                downloaded: true,
+                quantization: vec![],
+                gpu_required: String::new(),
+            })
+        })
+        .collect())
 }
 
-/// Download model with progress streaming. Async because it runs a long subprocess.
+/// Request that the coordinator load (download + initialise) a model.
+///
+/// The old implementation invoked `distllm models download --model <id>`,
+/// which does not exist and exited with a "No such command 'models'" error.
+/// Model acquisition lives on `POST /api/models/load`, which requires the
+/// `model-admin` role and streams nothing, so there is no per-token progress
+/// to emit; we report started/completed/failed around the request instead.
 #[tauri::command]
 pub async fn download_model(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     model_id: String,
 ) -> Result<String, AppError> {
-    // Prevent duplicate downloads
+    validate_model_name(&model_id)?;
+
     {
         let mut downloads = state
             .active_downloads
@@ -75,87 +97,75 @@ pub async fn download_model(
     }
 
     let _guard = DownloadGuard {
-        state: &state,
+        state: state.inner(),
         model_id: model_id.clone(),
     };
 
-    let python = ensure_distllm()?;
-    let mut child = Command::new(python)
-        .args([
-            "-m",
-            "distllm.cli.main",
-            "models",
-            "download",
-            "--model",
-            &model_id,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| AppError::SpawnFailed(format!("model download: {}", e)))?;
+    let port = (*state
+        .api_port
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?)
+    .ok_or(AppError::NotConnected)?;
+    let token = state
+        .auth_token
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .clone();
 
     let _ = app.emit(
         "download-progress",
         DownloadProgress {
             model_id: model_id.clone(),
             status: "started".into(),
-            detail: "Starting download...".into(),
+            detail: "Requesting model load from coordinator...".into(),
         },
     );
 
-    // Stream stderr for progress updates
-    let stderr = child.stderr.take();
-    let app_clone = app.clone();
-    let model_clone = model_id.clone();
+    let body = serde_json::json!({ "model": model_id });
+    // Blocking ureq call, matching the existing pattern in cluster.rs's async
+    // create_cluster. (`tokio::task::spawn_blocking` is unavailable here: it
+    // needs tokio's "rt" feature, which Cargo.toml does not enable.)
+    let result = crate::api_client::api_post(port, "/api/models/load", token.as_deref(), &body);
 
-    let progress_handle = stderr.map(|stderr| {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let _ = app_clone.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            model_id: model_clone.clone(),
-                            status: "downloading".into(),
-                            detail: line,
-                        },
-                    );
-                }
-            }
-        })
-    });
-
-    // Wait for process in a blocking thread to not block the async runtime
-    let output = tokio::task::spawn_blocking(move || child.wait_with_output())
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .map_err(|e| AppError::DownloadFailed(e.to_string()))?;
-
-    if let Some(handle) = progress_handle {
-        let _ = handle.join();
-    }
-
-    if output.status.success() {
-        let _ = app.emit(
-            "download-progress",
-            DownloadProgress {
-                model_id: model_id.clone(),
-                status: "completed".into(),
-                detail: format!("Model {} downloaded successfully", model_id),
-            },
-        );
-        Ok(format!("Model {} downloaded successfully", model_id))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = app.emit(
-            "download-progress",
-            DownloadProgress {
-                model_id: model_id.clone(),
-                status: "failed".into(),
-                detail: stderr.trim().to_string(),
-            },
-        );
-        Err(AppError::DownloadFailed(stderr.trim().to_string()))
+    match result {
+        Ok(val) if val.get("error").is_none() => {
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress {
+                    model_id: model_id.clone(),
+                    status: "completed".into(),
+                    detail: format!("Model {} load requested successfully", model_id),
+                },
+            );
+            Ok(format!("Model {} load requested", model_id))
+        }
+        Ok(val) => {
+            let detail = val
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("coordinator rejected the load request")
+                .to_string();
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress {
+                    model_id: model_id.clone(),
+                    status: "failed".into(),
+                    detail: detail.clone(),
+                },
+            );
+            Err(AppError::DownloadFailed(detail))
+        }
+        Err(e) => {
+            let detail = e.to_string();
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress {
+                    model_id: model_id.clone(),
+                    status: "failed".into(),
+                    detail: detail.clone(),
+                },
+            );
+            Err(AppError::DownloadFailed(detail))
+        }
     }
 }

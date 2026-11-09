@@ -12,7 +12,16 @@ pub fn get_gpu_metrics() -> Result<Vec<GpuInfo>, AppError> {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
-        let nvml_result = NVML_HANDLE.get_or_try_init(nvml_wrapper::Nvml::init);
+        // `OnceLock::get_or_try_init` is still unstable, so resolve manually:
+        // reuse a cached handle, otherwise initialise once and store it.
+        let nvml_result: Result<&nvml_wrapper::Nvml, nvml_wrapper::error::NvmlError> =
+            match NVML_HANDLE.get() {
+                Some(nvml) => Ok(nvml),
+                None => match nvml_wrapper::Nvml::init() {
+                    Ok(nvml) => Ok(NVML_HANDLE.get_or_init(|| nvml)),
+                    Err(e) => Err(e),
+                },
+            };
         match nvml_result {
             Ok(nvml) => {
                 let count = nvml.device_count().unwrap_or(0);

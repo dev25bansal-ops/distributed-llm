@@ -27,6 +27,7 @@
     updateServerUrl: "https://releases.distributed-llm.dev",
   });
   let error = $state<string | null>(null);
+  const themes: AppSettings["theme"][] = ["dark", "light", "auto"];
   let unsubscribe: (() => void) | undefined;
 
   // Update check state
@@ -144,7 +145,7 @@
     <div class="form-row">
       <span class="form-label" aria-hidden="true">Theme</span>
       <div class="theme-options">
-        {#each ["dark", "light", "auto"] as theme (theme)}
+        {#each themes as theme (theme)}
           <button
             class="theme-btn"
             class:selected={settings.theme === theme}
