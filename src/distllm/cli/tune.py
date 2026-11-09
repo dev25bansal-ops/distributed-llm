@@ -18,6 +18,8 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
+from distllm.cli.http_client import auth_headers
+
 # ---------------------------------------------------------------------------
 # Model heuristics
 # ---------------------------------------------------------------------------
@@ -253,7 +255,7 @@ def run_tune_batch(
         errors = 0
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=120.0, headers=auth_headers()) as client:
                 for _ in range(3):  # 3 samples per batch size
                     start = time.monotonic()
                     try:

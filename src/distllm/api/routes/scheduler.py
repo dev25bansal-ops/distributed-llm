@@ -148,7 +148,10 @@ async def update_scheduler_config(
                 updated["aging_enabled"] = update.aging_enabled
 
             if update.max_preempted is not None:
-                scheduler._max_preempted = update.max_preempted
+                # The cap lives on the preemption manager; writing
+                # scheduler._max_preempted created a shadow attribute that
+                # nothing read.
+                scheduler.set_max_preempted(update.max_preempted)
                 updated["max_preempted"] = update.max_preempted
 
             if update.starvation_threshold_s is not None:
@@ -191,7 +194,7 @@ async def get_scheduler_config(request: Request):
         "aging_interval_s": scheduler._aging_interval_s,
         "aging_max_boost": scheduler._aging_max_boost,
         "aging_enabled": scheduler._aging_enabled,
-        "max_preempted": scheduler._max_preempted,
+        "max_preempted": scheduler.get_max_preempted(),
         "starvation_threshold_s": scheduler._starvation_threshold_s,
         "enable_chunked_prefill": scheduler._enable_chunked_prefill,
         "adapt_prefill_budget": scheduler._adapt_prefill_budget,

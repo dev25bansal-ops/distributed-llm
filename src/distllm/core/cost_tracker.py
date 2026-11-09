@@ -423,7 +423,14 @@ class CostTracker:
     def get_history(self, limit: int = 100) -> list[dict[str, Any]]:
         """Get recent cost history."""
         with self._lock:
-            recent = self._history[-limit:]
+            # _history is a deque (maxlen=10000); deque has no slicing, so
+            # [-limit:] raised TypeError and made GET /api/cost/history a 500.
+            if limit <= 0:
+                recent: list[CostEstimate] = []
+            elif limit >= len(self._history):
+                recent = list(self._history)
+            else:
+                recent = list(self._history)[-limit:]
             return [
                 {
                     "model": e.model_name,

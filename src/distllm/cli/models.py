@@ -172,7 +172,7 @@ def _load_model(host: str, port: int, model: str, dtype: str = "float16"):
     """Load a model into the server."""
     try:
         with _get_client(host, port) as client:
-            resp = client.post("/v1/models/load", json={
+            resp = client.post("/api/models/load", json={
                 "model": model,
                 "dtype": dtype,
             })
@@ -190,7 +190,7 @@ def _unload_model(host: str, port: int, model_id: str):
     """Unload a model from the server."""
     try:
         with _get_client(host, port) as client:
-            resp = client.post("/v1/models/unload", json={"model": model_id})
+            resp = client.post("/api/models/unload", json={"model": model_id})
             resp.raise_for_status()
 
         console.print(f"[green]Model unloaded:[/green] {model_id}")

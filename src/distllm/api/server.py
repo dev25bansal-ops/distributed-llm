@@ -1583,7 +1583,11 @@ async def api_pipeline_health(request: Request) -> dict:
     pipeline = getattr(coord, '_pipeline', None)
     if pipeline is None:
         return {"status": "no_pipeline"}
-    metrics = pipeline.get_pipeline_metrics()
+    # PipelineOrchestrator exposes stats()/health_check(), not
+    # get_pipeline_metrics(); calling the latter made this route a 500.
+    metrics = pipeline.stats() if hasattr(pipeline, "stats") else {}
+    if not isinstance(metrics, dict):
+        metrics = {}
 
     # Add per-node health and latency
     nodes = {}
@@ -1593,7 +1597,8 @@ async def api_pipeline_health(request: Request) -> dict:
         if latency_tracker is not None:
             node_latency = latency_tracker.get_avg(node_id) if hasattr(latency_tracker, 'get_avg') else None
         nodes[node_id] = {
-            "healthy": getattr(node, 'healthy', False),
+            # PipelineNode carries is_healthy; there is no `healthy`.
+            "healthy": bool(getattr(node, 'is_healthy', getattr(node, 'healthy', False))),
             "latency_ms": node_latency,
             "start_layer": getattr(node, 'start_layer', 0),
             "end_layer": getattr(node, 'end_layer', 0),

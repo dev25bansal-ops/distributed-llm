@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from distllm.cli.main import app
@@ -65,44 +66,26 @@ class TestClusterStatus:
 
 
 class TestClusterScale:
-    def test_scale_success(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"message": "Scaling to 4 nodes", "job_id": "job-123"}
-        mock_resp.raise_for_status = MagicMock()
+    """Scaling has no server route; the command must say so, not 404."""
+
+    def test_scale_reports_unsupported(self):
+        from distllm.cli.cluster import _cluster_scale
 
         with patch("distllm.cli.cluster.client_for") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.return_value = mock_resp
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+            with pytest.raises(typer.Exit) as exc:
+                _cluster_scale("localhost", 8000, 4, "A100")
+        assert exc.value.exit_code == 2
+        mock_client_cls.assert_not_called()
 
-            from distllm.cli.cluster import _cluster_scale
-            _cluster_scale("localhost", 8000, 4, "A100")
+    def test_scale_message_names_the_alternative(self):
+        from distllm.cli.cluster import _cluster_scale
 
-            mock_client.post.assert_called_once_with(
-                "/v1/cluster/scale",
-                json={"target_nodes": 4, "gpu_type": "A100"},
-            )
-
-    def test_scale_http_error(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 400
-        mock_resp.text = "Bad request"
-        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "bad", request=MagicMock(), response=mock_resp
-        )
-
-        with patch("distllm.cli.cluster.client_for") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.return_value = mock_resp
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            from distllm.cli.cluster import _cluster_scale
-            _cluster_scale("localhost", 8000, 4)
+        with patch("distllm.cli.cluster.console") as mock_console:
+            with pytest.raises(typer.Exit):
+                _cluster_scale("localhost", 8000, 4)
+        printed = " ".join(str(c.args[0]) for c in mock_console.print.call_args_list if c.args)
+        assert "not supported" in printed.lower()
+        assert "cluster join" in printed
 
 
 class TestClusterListNodes:

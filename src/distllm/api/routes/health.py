@@ -303,9 +303,16 @@ async def readiness_check(request: Request):
 
     # Check if at least one node is healthy (for distributed mode)
     if coord.nodes:
+        # health_check() returns a status envelope, not a node_id -> status
+        # map: {"status", "num_nodes", ..., "nodes": {node_id: {...}}}. Calling
+        # .get("healthy") on its top-level values raised AttributeError as soon
+        # as any node was registered, making /ready a 500.
         node_health = coord.health_check()
-        healthy_nodes = sum(1 for h in node_health.values() if h.get("healthy"))
-        if healthy_nodes == 0:
+        nodes = node_health.get("nodes", {}) if isinstance(node_health, dict) else {}
+        healthy_nodes = sum(
+            1 for h in nodes.values() if isinstance(h, dict) and h.get("healthy")
+        )
+        if nodes and healthy_nodes == 0:
             return error_response_from_request(503, "Service Unavailable", "No healthy nodes available", "health_error", request)
 
     return {"status": "ready"}
@@ -411,8 +418,11 @@ def _get_health_plugin():
     return None
 
 
+# `{model_id:path}` lets the id contain "/" -- every real HuggingFace id is
+# "org/name", and a plain {model_id} matched only the first segment, so the
+# route 404'd for every model this server actually loads.
 @router.post(
-    "/v1/models/{model_id}/warmup",
+    "/v1/models/{model_id:path}/warmup",
     summary="Warm up a model (CUDA graphs, caches)",
     description="Send dummy tokens through the model to warm CUDA graphs, kernel caches, and memory pools before production traffic arrives."
                 " This reduces first-token latency (TTFT) for subsequent requests. Restricted to model-admin or higher.",

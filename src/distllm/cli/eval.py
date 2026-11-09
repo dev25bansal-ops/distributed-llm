@@ -111,7 +111,7 @@ def eval_run(
 
     try:
         client = DistLLMClient(base_url=coordinator_url, api_key=api_key_resolved)
-        response = client.post("/api/v1/eval/run", json=payload, timeout=600.0)
+        response = client.post("/v1/eval/run", json=payload, timeout=600.0)
     except Exception as exc:
         console.print(f"[red]Error connecting to coordinator: {exc}[/red]")
         raise typer.Exit(1)

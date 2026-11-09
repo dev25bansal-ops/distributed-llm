@@ -197,20 +197,10 @@ async def list_leaderboard(
     }
 
 
-@router.get(
-    "/v1/leaderboard/{entry_id}",
-    summary="Fetch a single benchmark submission by its entry ID",
-    responses={
-        404: ERR_ENTRY("Benchmark entry not found", type_="invalid_request_error", code="not_found"),
-    },
-)
-async def get_leaderboard_entry(entry_id: str):
-    """Fetch a single benchmark submission by its entry ID."""
-    _ensure_loaded()
-    entry = _store.get(entry_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="Benchmark entry not found")
-    return entry
+# NOTE: GET /v1/leaderboard/{entry_id} is registered at the END of this module,
+# after the static routes (/summary, /top, /community, /verified). FastAPI
+# matches in registration order, so declaring it here would shadow every static
+# sibling registered below and make them unreachable.
 
 
 @router.post(
@@ -439,3 +429,22 @@ async def verified_entries():
     """Get all verified benchmark submissions."""
     entries = [_store[eid] for eid in _verified if eid in _store]
     return {"entries": entries, "total": len(entries)}
+
+
+# Registered last on purpose: a dynamic /{entry_id} route declared before the
+# static siblings above would swallow /summary, /top, /community and /verified
+# and answer each with "Benchmark entry not found".
+@router.get(
+    "/v1/leaderboard/{entry_id}",
+    summary="Fetch a single benchmark submission by its entry ID",
+    responses={
+        404: ERR_ENTRY("Benchmark entry not found", type_="invalid_request_error", code="not_found"),
+    },
+)
+async def get_leaderboard_entry(entry_id: str):
+    """Fetch a single benchmark submission by its entry ID."""
+    _ensure_loaded()
+    entry = _store.get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Benchmark entry not found")
+    return entry

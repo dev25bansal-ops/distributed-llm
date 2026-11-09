@@ -1335,6 +1335,10 @@ class BatchScheduler:
         """Set the maximum number of concurrently preempted sequences."""
         self._preemption_mgr.set_max_preempted(max_preempted)
 
+    def get_max_preempted(self) -> int:
+        """Return the cap on concurrently preempted sequences."""
+        return self._preemption_mgr.get_max_preempted()
+
     def get_preempted_count(self) -> int:
         return self._preemption_mgr.get_preempted_count()
 

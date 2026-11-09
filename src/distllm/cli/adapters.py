@@ -1,6 +1,7 @@
 """Adapters command group: distllm adapters."""
 
 import httpx
+import typer
 from rich.console import Console
 from rich.table import Table
 
@@ -13,8 +14,24 @@ def _get_client(host: str, port: int) -> httpx.Client:
     return client_for(host, port)
 
 
+_ADAPTERS_UNSUPPORTED = (
+    "Adapter management is not supported by this server build: there is no "
+    "/v1/adapters route.\n"
+    "Per-request adapters still work -- pass `adapter` in a chat request "
+    "(e.g. via the API / SDK) to apply a loaded LoRA.\n"
+    "This command is a placeholder until an adapter registry exists."
+)
+
+
+def _unsupported() -> None:
+    """Report adapter management as unsupported instead of a bare 404."""
+    console.print(f"[yellow]{_ADAPTERS_UNSUPPORTED}[/yellow]")
+    raise typer.Exit(2)
+
+
 def _list_adapters(host: str, port: int):
     """List loaded adapters."""
+    _unsupported()
     try:
         with _get_client(host, port) as client:
             resp = client.get("/v1/adapters")
@@ -49,6 +66,7 @@ def _list_adapters(host: str, port: int):
 
 def _load_adapter(host: str, port: int, adapter_id: str, source: str, adapter_type: str = "lora"):
     """Load an adapter (LoRA, etc.)."""
+    _unsupported()
     try:
         with _get_client(host, port) as client:
             resp = client.post("/v1/adapters/load", json={
@@ -69,6 +87,7 @@ def _load_adapter(host: str, port: int, adapter_id: str, source: str, adapter_ty
 
 def _set_adapter(host: str, port: int, adapter_id: str):
     """Set an adapter as the active adapter."""
+    _unsupported()
     try:
         with _get_client(host, port) as client:
             resp = client.post("/v1/adapters/set", json={"adapter_id": adapter_id})
@@ -83,6 +102,7 @@ def _set_adapter(host: str, port: int, adapter_id: str):
 
 def _unload_adapter(host: str, port: int, adapter_id: str):
     """Unload an adapter."""
+    _unsupported()
     try:
         with _get_client(host, port) as client:
             resp = client.post("/v1/adapters/unload", json={"adapter_id": adapter_id})

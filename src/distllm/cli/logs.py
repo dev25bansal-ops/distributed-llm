@@ -34,7 +34,7 @@ def _stream_logs(
         with client_for(host, port) as client:
             if follow:
                 params["follow"] = True
-                with client.stream("GET", "/v1/logs", params=params) as resp:
+                with client.stream("GET", "/admin/v1/logs", params=params) as resp:
                     resp.raise_for_status()
                     for line in resp.iter_lines():
                         if line:
@@ -44,7 +44,7 @@ def _stream_logs(
                             except json.JSONDecodeError:
                                 console.print(line)
             else:
-                resp = client.get("/v1/logs", params=params)
+                resp = client.get("/admin/v1/logs", params=params)
                 resp.raise_for_status()
                 data = resp.json()
 

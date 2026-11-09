@@ -4,6 +4,7 @@ setup, status, tutorial, verify, webhook.
 """
 from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
+import typer
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -15,124 +16,39 @@ runner = CliRunner()
 
 
 class TestCliAdapters:
-    """Tests for distllm.cli.adapters — _list_adapters, _load_adapter,
-    _set_adapter, _unload_adapter.
+    """Adapter management is unsupported: the server has no /v1/adapters.
+
+    These commands used to fire a request at /v1/adapters* -- a route that has
+    never existed -- and print a bare HTTP 404 while exiting 0. They now say
+    so plainly and exit non-zero, which is what these tests pin.
     """
 
-    def test_list_adapters_happy_path(self):
-        from distllm.cli.adapters import _list_adapters
+    @pytest.mark.parametrize("func,args", [
+        ("_list_adapters", ("localhost", 8000)),
+        ("_load_adapter", ("localhost", 8000, "my-lora", "hf://user/lora")),
+        ("_set_adapter", ("localhost", 8000, "my-lora")),
+        ("_unload_adapter", ("localhost", 8000, "my-lora")),
+    ])
+    def test_adapter_commands_report_unsupported(self, func, args):
+        import distllm.cli.adapters as adapters_mod
 
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "adapters": [
-                {"id": "lora-1", "source": "hf://user/lora",
-                 "status": "loaded", "active": True},
-                {"id": "lora-2", "source": "local://path",
-                 "status": "loaded", "active": False},
-            ]
-        }
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.get.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _list_adapters("localhost", 8000)
+        fn = getattr(adapters_mod, func)
+        with patch("distllm.cli.adapters.console") as mock_console:
+            with pytest.raises(typer.Exit) as exc:
+                fn(*args)
+        assert exc.value.exit_code == 2
+        printed = " ".join(str(c.args[0]) for c in mock_console.print.call_args_list if c.args)
+        assert "not supported" in printed.lower()
+        assert "/v1/adapters" not in printed or "no /v1/adapters route" in printed.lower()
 
-        inst.get.assert_called_once_with("/v1/adapters")
-
-    def test_list_adapters_empty(self):
-        from distllm.cli.adapters import _list_adapters
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"adapters": []}
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.get.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _list_adapters("localhost", 8000)
-
-    def test_list_adapters_connect_error(self):
+    def test_adapter_commands_never_hit_the_network(self):
+        """No request is sent: the guard fires before any client is built."""
         from distllm.cli.adapters import _list_adapters
 
         with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            from httpx import ConnectError
-            inst.get.side_effect = ConnectError("refused")
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _list_adapters("badhost", 9999)
-
-    def test_list_adapters_http_error(self):
-        from distllm.cli.adapters import _list_adapters
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_resp.text = "Internal error"
-        from httpx import HTTPStatusError
-        mock_resp.raise_for_status.side_effect = HTTPStatusError(
-            "error", request=MagicMock(), response=mock_resp
-        )
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.get.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _list_adapters("localhost", 8000)
-
-    def test_load_adapter_happy_path(self):
-        from distllm.cli.adapters import _load_adapter
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"status": "ok"}
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.post.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _load_adapter("localhost", 8000, "my-lora", "hf://user/lora")
-
-        inst.post.assert_called_once()
-        assert "/v1/adapters/load" in str(inst.post.call_args[0])
-
-    def test_set_adapter_happy_path(self):
-        from distllm.cli.adapters import _set_adapter
-
-        mock_resp = MagicMock()
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.post.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _set_adapter("localhost", 8000, "my-lora")
-
-    def test_unload_adapter_happy_path(self):
-        from distllm.cli.adapters import _unload_adapter
-
-        mock_resp = MagicMock()
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.post.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _unload_adapter("localhost", 8000, "my-lora")
-
-    def test_load_adapter_http_error(self):
-        from distllm.cli.adapters import _load_adapter
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 400
-        mock_resp.text = "Bad adapter"
-        from httpx import HTTPStatusError
-        mock_resp.raise_for_status.side_effect = HTTPStatusError(
-            "error", request=MagicMock(), response=mock_resp
-        )
-        with patch("distllm.cli.adapters.httpx.Client") as mc:
-            inst = MagicMock()
-            inst.post.return_value = mock_resp
-            mc.return_value.__enter__ = MagicMock(return_value=inst)
-            mc.return_value.__exit__ = MagicMock(return_value=False)
-            _load_adapter("localhost", 8000, "bad-lora", "hf://bad")
+            with pytest.raises(typer.Exit):
+                _list_adapters("localhost", 8000)
+        mc.assert_not_called()
 
 
 # ===========================================================================
@@ -1681,15 +1597,66 @@ class TestCliWebhook:
         assert result.exit_code == 0
 
     @patch("distllm.cli.webhook.WebhookManager")
-    def test_webhook_test(self, mock_mgr_cls):
+    def test_webhook_test_delivers_synchronously(self, mock_mgr_cls):
+        """The command must report the real delivery result.
+
+        It used to call dispatch() (enqueue only) without ever starting the
+        worker and print "sent" regardless, so nothing was delivered and a
+        broken endpoint looked healthy.
+        """
+        from types import SimpleNamespace
+
         from distllm.cli.webhook import webhook_app
 
         mock_mgr = MagicMock()
+        mock_mgr.register.return_value = True
+        mock_mgr._targets = [SimpleNamespace(url="https://hooks.example.com/events")]
+        mock_mgr._deliver.return_value = SimpleNamespace(
+            success=True, status_code=200, duration_ms=12.5, error="",
+        )
         mock_mgr_cls.return_value = mock_mgr
 
         result = runner.invoke(webhook_app, [
             "test", "https://hooks.example.com/events",
         ], catch_exceptions=False)
         assert result.exit_code == 0
-        mock_mgr.register.assert_called_once()
-        mock_mgr.dispatch.assert_called_once()
+        mock_mgr._deliver.assert_called_once()
+        # dispatch() only enqueues; it must not be the delivery mechanism.
+        mock_mgr.dispatch.assert_not_called()
+
+    @patch("distllm.cli.webhook.WebhookManager")
+    def test_webhook_test_fails_loudly_on_delivery_error(self, mock_mgr_cls):
+        from types import SimpleNamespace
+
+        from distllm.cli.webhook import webhook_app
+
+        mock_mgr = MagicMock()
+        mock_mgr.register.return_value = True
+        mock_mgr._targets = [SimpleNamespace(url="https://hooks.example.com/events")]
+        mock_mgr._deliver.return_value = SimpleNamespace(
+            success=False, status_code=500, duration_ms=3.0, error="server error",
+        )
+        mock_mgr_cls.return_value = mock_mgr
+
+        result = runner.invoke(webhook_app, [
+            "test", "https://hooks.example.com/events",
+        ], catch_exceptions=False)
+        assert result.exit_code == 1
+
+    @patch("distllm.cli.webhook.WebhookManager")
+    def test_webhook_test_rejects_unknown_event(self, mock_mgr_cls):
+        from types import SimpleNamespace
+
+        from distllm.cli.webhook import webhook_app
+
+        mock_mgr = MagicMock()
+        mock_mgr.register.return_value = True
+        mock_mgr._targets = [SimpleNamespace(url="https://hooks.example.com/events")]
+        mock_mgr_cls.return_value = mock_mgr
+
+        result = runner.invoke(webhook_app, [
+            "test", "https://hooks.example.com/events", "--event", "not.a.real.event",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2
+        # No silent fallback to node.joined.
+        mock_mgr._deliver.assert_not_called()

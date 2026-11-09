@@ -61,6 +61,10 @@ class PreemptionManager:
         """Set the maximum number of concurrently preempted sequences."""
         self._max_preempted = max(0, max_preempted)
 
+    def get_max_preempted(self) -> int:
+        """Return the configured cap on concurrently preempted sequences."""
+        return self._max_preempted
+
     def get_preempted_count(self) -> int:
         """Return the number of currently preempted sequences."""
         return len(self._preempted)

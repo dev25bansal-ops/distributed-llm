@@ -11,6 +11,8 @@ from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 
+from distllm.cli.http_client import auth_headers
+
 console = Console()
 
 
@@ -105,18 +107,20 @@ def run_deploy(
         console.print("[yellow]Dry run — no changes made.[/yellow]")
         return
 
-    # Build request headers
-    headers = {"Content-Type": "application/json"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
+    # Build request headers. The HF token is not a DistLLM credential -- the
+    # API key comes from auth_headers(), or every deploy was a 401.
+    headers = {"Content-Type": "application/json", **auth_headers()}
 
     # Send deployment request to coordinator
     console.print("[bold]Sending deployment request...[/bold]")
     try:
         with httpx.Client(timeout=30.0, headers=headers) as client:
             response = client.post(
-                f"http://{host}:{port}/v1/models/{model}/load",
+                # /api/models/load, not /v1/models/{model}/load -- the latter
+                # is not a route the server has ever served.
+                f"http://{host}:{port}/api/models/load",
                 json={
+                    "model": model,
                     "dtype": dtype,
                     "quantization": quantization,
                     "num_nodes": nodes,
@@ -139,7 +143,7 @@ def run_deploy(
         start = time.time()
         while time.time() - start < max_wait:
             try:
-                with httpx.Client(timeout=10.0) as client:
+                with httpx.Client(timeout=10.0, headers=auth_headers()) as client:
                     resp = client.get(f"http://{host}:{port}/health")
                     resp.raise_for_status()
                     data = resp.json()

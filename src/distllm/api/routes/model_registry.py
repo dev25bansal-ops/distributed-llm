@@ -185,8 +185,10 @@ async def get_model_registry():
     return _get_registry()
 
 
+# `:path` so "org/name" HuggingFace ids resolve; a plain {model_id} left the
+# route unreachable for every model the server actually has.
 @router.get(
-    "/api/models/registry/{model_id}",
+    "/api/models/registry/{model_id:path}",
     summary="Model Registry Detail",
     description="Return detailed info for a single model from the registry.",
 )

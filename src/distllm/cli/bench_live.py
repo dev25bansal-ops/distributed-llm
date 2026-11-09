@@ -52,6 +52,10 @@ class LiveMetric:
     completion_tokens: int
     gpu_mem_gb: float
     rss_mem_gb: float
+    # Label so nobody mistakes a demo stream for a measurement. Every frame
+    # from LiveBenchmark.snapshot() carries "synthetic"; a future
+    # coordinator-backed producer sets "measured".
+    source: str = "synthetic"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -85,11 +89,13 @@ class LiveBenchmark:
     # -- synthetic producer --------------------------------------------------
 
     def snapshot(self) -> LiveMetric:
-        """Produce a synthetic metric snapshot.
+        """Produce a SYNTHETIC metric snapshot.
 
-        Real implementations would call the coordinator and time the
-        round-trip. For the streaming demo we simulate drift around a
-        plausible baseline so the dashboard renders useful values.
+        These numbers come from random.gauss around a plausible baseline --
+        they are NOT measurements of the running cluster. The frame is
+        labelled ``source="synthetic"`` so a consumer can tell. Wiring this to
+        a real producer means timing coordinator round-trips and reading
+        actual GPU memory; until then this is a dashboard demo.
         """
         self.iteration += 1
         # Slow drift so charts move
@@ -200,7 +206,12 @@ def register(benchmark_app: typer.Typer) -> None:
         port: int = typer.Option(8765, "--port", "-p", help="WebSocket port"),
         interval: float = typer.Option(1.0, "--interval", "-i", help="Seconds between metric updates"),
     ) -> None:
-        """Stream live TTFT/tokens/memory metrics over WebSocket."""
+        """Stream TTFT/tokens/memory metrics over WebSocket."""
+        console.print(
+            "[yellow]Note:[/yellow] this stream is [bold]synthetic[/bold] -- "
+            "values are simulated, not measured from the cluster. "
+            'Each frame carries source="synthetic".'
+        )
         asyncio.run(_serve(LiveBenchmark(model=model, interval=interval), port))
 
 

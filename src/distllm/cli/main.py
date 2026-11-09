@@ -33,6 +33,18 @@ def _force_utf8_output() -> None:
 _force_utf8_output()
 
 
+def _cli_auth_headers() -> dict[str, str]:
+    """Authorization headers for commands implemented inline in main.py.
+
+    Several subcommands here build a bare httpx request instead of going
+    through client_for(), so they sent no credentials and every call was a 401
+    against a key-protected server. Resolve once, here, so they all agree.
+    """
+    from distllm.cli.http_client import auth_headers
+
+    return auth_headers()
+
+
 def _display_qr(port: int = 50050) -> None:
     """Display a QR code for joining the cluster."""
     import socket
@@ -416,7 +428,7 @@ def defrag_status(
 
     base_url = f"http://{host}:{port}"
     try:
-        resp = httpx.get(f"{base_url}/v1/defrag/status", timeout=5.0)
+        resp = httpx.get(f"{base_url}/v1/defrag/status", timeout=5.0, headers=_cli_auth_headers())
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -464,7 +476,7 @@ def defrag_run(
 
     base_url = f"http://{host}:{port}"
     try:
-        resp = httpx.post(f"{base_url}/v1/defrag/run", timeout=120.0)
+        resp = httpx.post(f"{base_url}/v1/defrag/run", timeout=120.0, headers=_cli_auth_headers())
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -499,7 +511,7 @@ def defrag_stats(
 
     base_url = f"http://{host}:{port}"
     try:
-        resp = httpx.get(f"{base_url}/v1/defrag/stats", timeout=5.0)
+        resp = httpx.get(f"{base_url}/v1/defrag/stats", timeout=5.0, headers=_cli_auth_headers())
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -1114,7 +1126,7 @@ def federate_train(
         # 2. Submit to coordinator for merging
         console.print("  Submitting to coordinator...")
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=30.0, headers=_cli_auth_headers()) as client:
                 resp = client.post(
                     f"{base_url}/v1/federated/rounds/submit",
                     json={
@@ -1133,7 +1145,7 @@ def federate_train(
 
         # 3. Trigger merge if coordinator available
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=30.0, headers=_cli_auth_headers()) as client:
                 resp = client.post(f"{base_url}/v1/federated/rounds/merge")
                 if resp.status_code == 200:
                     data = resp.json()
@@ -1154,7 +1166,7 @@ def federate_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=10.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/v1/federated/stats")
             resp.raise_for_status()
             stats = resp.json()
@@ -1553,7 +1565,7 @@ def system_slo_report(
     import httpx
     from rich.table import Table
     try:
-        resp = httpx.get(f"http://{host}:{port}/api/cluster/reputation", timeout=5)
+        resp = httpx.get(f"http://{host}:{port}/api/cluster/reputation", timeout=5, headers=_cli_auth_headers())
         data = resp.json()
         table = Table(title="Cluster SLO Report")
         table.add_column("Metric")
@@ -1677,7 +1689,7 @@ def daas_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/metrics")
             resp.raise_for_status()
             metrics = resp.json()
@@ -1766,7 +1778,7 @@ def draft_fleet_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/v1/speculative/fleet")
             resp.raise_for_status()
             data = resp.json()
@@ -1810,7 +1822,7 @@ def draft_migration_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/v1/speculative/migration")
             resp.raise_for_status()
             data = resp.json()

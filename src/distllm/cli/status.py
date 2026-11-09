@@ -25,13 +25,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from distllm.cli.http_client import client_for
+
 
 def show_status(host: str, port: int, console: Console):
     """Show cluster status and node health."""
     base_url = f"http://{host}:{port}"
 
     try:
-        with httpx.Client() as client:
+        with client_for(host, port, timeout=10.0) as client:
             # Health check
             response = client.get(f"{base_url}/health", timeout=10.0)
             response.raise_for_status()
@@ -108,7 +110,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with client_for(host, port, timeout=timeout) as client:
             # /health — coordinator liveness
             try:
                 health_resp = client.get(f"{base_url}/health")
@@ -121,9 +123,10 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
                 )
                 return json.dumps(summary)
 
-            # /v1/cluster/nodes — node roster (path varies; try common forms)
+            # Node roster. /api/cluster/nodes is the live route; /admin/v1/nodes
+            # is the admin alias. /v1/cluster/nodes and /v1/nodes never existed.
             nodes: list[dict[str, Any]] = []
-            for path in ("/v1/cluster/nodes", "/admin/v1/nodes", "/v1/nodes"):
+            for path in ("/api/cluster/nodes", "/admin/v1/nodes"):
                 try:
                     nodes_resp = client.get(f"{base_url}{path}")
                     if nodes_resp.status_code == 200:

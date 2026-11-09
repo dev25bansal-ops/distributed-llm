@@ -8,6 +8,7 @@ import time
 import uuid
 
 import httpx
+import typer
 from loguru import logger
 from rich.console import Console
 from rich.table import Table
@@ -89,29 +90,22 @@ def _cluster_status(host: str, port: int):
 
 def _cluster_scale(host: str, port: int, nodes: int, gpu_type: str | None = None):
     """Scale cluster to target node count."""
-    try:
-        with _get_client(host, port) as client:
-            resp = client.post("/v1/cluster/scale", json={
-                "target_nodes": nodes,
-                "gpu_type": gpu_type,
-            })
-            resp.raise_for_status()
-            data = resp.json()
-
-        console.print(f"[green]Scaling initiated:[/green] {data.get('message', '')}")
-        if data.get("job_id"):
-            console.print(f"Job ID: {data['job_id']}")
-    except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {format_http_error(e)}")
+    # The server has no scale endpoint: /v1/cluster/scale never existed and
+    # there is no /admin equivalent. Sending the request produced a bare 404
+    # that read like a transient fault.
+    console.print(
+        "[yellow]Cluster scaling is not supported by this server build.[/yellow]\n"
+        "Start or stop worker nodes directly:  distllm cluster join / cluster leave"
+    )
+    raise typer.Exit(2)
 
 
 def _cluster_drain(host: str, port: int, node_id: str):
     """Drain a node (gracefully remove from service)."""
     try:
         with _get_client(host, port) as client:
-            resp = client.post("/v1/cluster/drain", json={"node_id": node_id})
+            # The drain route lives in the admin router, addressed by node id.
+            resp = client.post(f"/admin/v1/nodes/{node_id}/drain")
             resp.raise_for_status()
             data = resp.json()
 
@@ -125,19 +119,12 @@ def _cluster_drain(host: str, port: int, node_id: str):
 
 def _cluster_rebalance(host: str, port: int, strategy: str = "balanced"):
     """Rebalance load across cluster nodes."""
-    try:
-        with _get_client(host, port) as client:
-            resp = client.post("/v1/cluster/rebalance", json={"strategy": strategy})
-            resp.raise_for_status()
-            data = resp.json()
-
-        console.print(f"[green]Rebalance initiated:[/green] strategy={strategy}")
-        if data.get("message"):
-            console.print(data["message"])
-    except httpx.ConnectError:
-        console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {format_http_error(e)}")
+    # Documented in dist/api_docs.py but never implemented by any handler.
+    console.print(
+        "[yellow]Cluster rebalancing is not implemented by this server build.[/yellow]\n"
+        "Pipeline layers are assigned at join time; rebalance requires a restart."
+    )
+    raise typer.Exit(2)
 
 
 def _validate_model_or_exit(model: str) -> None:
@@ -446,10 +433,17 @@ def _cluster_leave(node_id: str, coordinator_host: str, coordinator_port: int):
     """Gracefully remove a worker node from the cluster."""
     console.print(f"Removing node [cyan]{node_id}[/cyan] from cluster...")
     try:
-        with httpx.Client(base_url=f"http://{coordinator_host}:{coordinator_port}") as client:
-            resp = client.post(f"/v1/cluster/nodes/{node_id}/drain")
+        # Admin router, addressed by node id, and authenticated -- the old
+        # bare httpx.Client sent no key, so this was always a 401.
+        with _get_client(coordinator_host, coordinator_port) as client:
+            resp = client.post(f"/admin/v1/nodes/{node_id}/drain", headers=_admin_headers())
             if resp.status_code == 200:
                 console.print(f"[green]Node {node_id} drained[/green]")
+            elif resp.status_code in (401, 403):
+                console.print(
+                    "[red]Unauthorized:[/red] draining a node requires an admin API key. "
+                    "Set the [bold]DISTLLM_API_KEY[/bold] environment variable and retry."
+                )
             else:
                 console.print(f"[yellow]Drain returned: {resp.status_code}[/yellow]")
     except httpx.ConnectError:
