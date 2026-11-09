@@ -27,15 +27,14 @@ pub fn run() {
             // 5.8: Register deep link handler for distllm:// URLs
             let handle = app.handle().clone();
             app.listen("deep-link://new-url", move |event| {
-                if let Some(urls) = event.payload().as_str() {
-                    // Payload is a JSON array of URLs, parse the first one
-                    if let Ok(parsed) = serde_json::from_str::<Vec<String>>(urls) {
-                        if let Some(url) = parsed.first() {
-                            let _ = handle.emit("deep-link-connect", url.as_str());
-                            if let Some(window) = handle.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                let urls = event.payload();
+                // Payload is a JSON array of URLs, parse the first one
+                if let Ok(parsed) = serde_json::from_str::<Vec<String>>(urls) {
+                    if let Some(url) = parsed.first() {
+                        let _ = handle.emit("deep-link-connect", url.as_str());
+                        if let Some(window) = handle.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
                 }

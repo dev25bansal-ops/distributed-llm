@@ -15,44 +15,50 @@ pub fn start_health_monitor(app: AppHandle) {
         loop {
             std::thread::sleep(Duration::from_secs(5));
 
-            let Some(state) = app.try_state::<AppState>() else {
-                // State was torn down (app shutting down) — stop watching.
-                break;
+            // Scope the (borrowing) State so it is released before the next
+            // iteration — otherwise its MutexGuard temporaries outlive it.
+            let alive = {
+                let Some(state) = app.try_state::<AppState>() else {
+                    // State was torn down (app shutting down) — stop watching.
+                    break;
+                };
+
+                // Check coordinator process
+                if let Ok(mut guard) = state.coordinator.lock() {
+                    if let Some(ref mut child) = *guard {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                eprintln!("[health] Coordinator exited unexpectedly: {}", status);
+                                *guard = None;
+                                let _ = app.emit("process-crashed", "coordinator");
+                            }
+                            Ok(None) => {} // Still running
+                            Err(e) => {
+                                eprintln!("[health] Failed to check coordinator: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // Check worker process
+                if let Ok(mut guard) = state.worker.lock() {
+                    if let Some(ref mut child) = *guard {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                eprintln!("[health] Worker exited unexpectedly: {}", status);
+                                *guard = None;
+                                let _ = app.emit("process-crashed", "worker");
+                            }
+                            Ok(None) => {} // Still running
+                            Err(e) => {
+                                eprintln!("[health] Failed to check worker: {}", e);
+                            }
+                        }
+                    }
+                }
+                true
             };
-
-            // Check coordinator process
-            if let Ok(mut guard) = state.coordinator.lock() {
-                if let Some(ref mut child) = *guard {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            eprintln!("[health] Coordinator exited unexpectedly: {}", status);
-                            *guard = None;
-                            let _ = app.emit("process-crashed", "coordinator");
-                        }
-                        Ok(None) => {} // Still running
-                        Err(e) => {
-                            eprintln!("[health] Failed to check coordinator: {}", e);
-                        }
-                    }
-                }
-            }
-
-            // Check worker process
-            if let Ok(mut guard) = state.worker.lock() {
-                if let Some(ref mut child) = *guard {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            eprintln!("[health] Worker exited unexpectedly: {}", status);
-                            *guard = None;
-                            let _ = app.emit("process-crashed", "worker");
-                        }
-                        Ok(None) => {} // Still running
-                        Err(e) => {
-                            eprintln!("[health] Failed to check worker: {}", e);
-                        }
-                    }
-                }
-            }
+            let _ = alive;
         }
     });
 }
