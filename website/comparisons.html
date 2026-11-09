@@ -366,23 +366,23 @@ distllm cluster start \\
 
                 <div class="comp-verdict">
                     <h3>Performance Comparison</h3>
-                    <div class="comp-perf-grid">
-                        <div class="comp-perf-item">
-                            <div class="perf-label">Single vLLM Node</div>
-                            <div class="perf-value">18 tok/s</div>
-                            <div class="perf-desc">Llama 3.1 70B on 1x A100</div>
-                        </div>
-                        <div class="comp-perf-item highlight">
-                            <div class="perf-label">DistLLM + vLLM (3 nodes)</div>
-                            <div class="perf-value">52 tok/s</div>
-                            <div class="perf-desc">2.9x speedup with pipeline parallelism</div>
-                        </div>
-                        <div class="comp-perf-item">
-                            <div class="perf-label">DistLLM + vLLM (4 nodes)</div>
-                            <div class="perf-value">68 tok/s</div>
-                            <div class="perf-desc">3.8x speedup, near-linear scaling</div>
-                        </div>
-                    </div>
+                    <p style="color:var(--text-secondary);font-size:15px;line-height:1.7;max-width:66ch">
+                        We are not publishing a head-to-head throughput table here, because we
+                        have not measured one. This section previously showed 18 / 52 / 68 tok/s
+                        on Llama&nbsp;3.1&nbsp;70B across one, three and four A100-class nodes,
+                        described as "2.9x" and "near-linear scaling". None of those runs happened,
+                        and the scaling claim contradicted our own measured figure elsewhere in the
+                        repo. Our only real measurement is a single-row laptop GPU result, published
+                        on the <a href="benchmarks.html" style="color:var(--green)">benchmarks page</a>
+                        with its hardware and method stated.
+                    </p>
+                    <p style="color:var(--text-secondary);font-size:15px;line-height:1.7;max-width:66ch;margin-top:12px">
+                        The honest version of the architecture claim: a model too large for one
+                        card can be split across several, so it runs at all where a single node
+                        would run out of memory. Whether that is faster than one big card depends
+                        on your network and your model, and you should measure it on your own
+                        hardware before believing anyone's number — including ours.
+                    </p>
                 </div>
             </section>
 

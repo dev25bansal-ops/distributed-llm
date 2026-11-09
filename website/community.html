@@ -60,7 +60,7 @@
         <div class="wrap page">
             <div class="tag">Community</div>
             <h1>Join the DistLLM Community</h1>
-            <p class="subtitle">Thousands of developers building the future of distributed AI inference.</p>
+            <p class="subtitle">A young project, built in the open. The showcase below is empty because we would rather show nothing than invent deployments.</p>
 
             <!-- Community Stats -->
             <div class="community-stats-row">
@@ -89,99 +89,10 @@
                     <p>Cluster photos, benchmark screenshots, and deployment stories from the community.</p>
                 </div>
 
-                <div class="showcase-filters">
-                    <button class="showcase-filter active" data-category="all">All</button>
-                    <button class="showcase-filter" data-category="cluster">Cluster Photos</button>
-                    <button class="showcase-filter" data-category="benchmark">Benchmarks</button>
-                    <button class="showcase-filter" data-category="deployment">Deployments</button>
-                </div>
-
                 <div class="showcase-grid" id="showcaseGrid">
-                    <!-- Cluster Photos -->
-                    <div class="showcase-item" data-category="cluster">
-                        <div class="showcase-image">
-                            <div class="showcase-placeholder">🖥️</div>
-                        </div>
-                        <div class="showcase-info">
-                            <h3>4× RTX 4090 Homelab</h3>
-                            <p>Running Llama 3.1 70B at 42 tok/s with pipeline parallelism.</p>
-                            <div class="showcase-meta">
-                                <span class="showcase-author">by @homelab_ai</span>
-                                <span class="showcase-specs">4× RTX 4090, 128GB RAM</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="showcase-item" data-category="cluster">
-                        <div class="showcase-image">
-                            <div class="showcase-placeholder">🏗️</div>
-                        </div>
-                        <div class="showcase-info">
-                            <h3>Office GPU Rack</h3>
-                            <p>8× A100 cluster serving 50+ developers via DistLLM.</p>
-                            <div class="showcase-meta">
-                                <span class="showcase-author">by @techcorp_eng</span>
-                                <span class="showcase-specs">8× A100 80GB, 10GbE</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Benchmarks -->
-                    <div class="showcase-item" data-category="benchmark">
-                        <div class="showcase-image">
-                            <div class="showcase-placeholder">📊</div>
-                        </div>
-                        <div class="showcase-info">
-                            <h3>DistLLM vs Cloud APIs</h3>
-                            <p>5× cost reduction vs OpenAI for 100K daily users.</p>
-                            <div class="showcase-meta">
-                                <span class="showcase-author">by @startup_cto</span>
-                                <span class="showcase-specs">Llama 3.1 70B, INT4</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="showcase-item" data-category="benchmark">
-                        <div class="showcase-image">
-                            <div class="showcase-placeholder">⚡</div>
-                        </div>
-                        <div class="showcase-info">
-                            <h3>Throughput Benchmarks</h3>
-                            <p>68 tok/s on 4× RTX 4090 with Mixtral 8x7B.</p>
-                            <div class="showcase-meta">
-                                <span class="showcase-author">by @gpu_benchmarks</span>
-                                <span class="showcase-specs">4× RTX 4090, Mixtral 8x7B</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Deployments -->
-                    <div class="showcase-item" data-category="deployment">
-                        <div class="showcase-image">
-                            <div class="showcase-placeholder">🏥</div>
-                        </div>
-                        <div class="showcase-info">
-                            <h3>HIPAA-Compliant Deployment</h3>
-                            <p>Air-gapped DistLLM cluster for medical AI at a hospital network.</p>
-                            <div class="showcase-meta">
-                                <span class="showcase-author">by @medai_team</span>
-                                <span class="showcase-specs">5× H100, Air-gapped</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="showcase-item" data-category="deployment">
-                        <div class="showcase-image">
-                            <div class="showcase-placeholder">🏦</div>
-                        </div>
-                        <div class="showcase-info">
-                            <h3>Financial Services Cluster</h3>
-                            <p>10× A100 across 3 data centers with 99.99% uptime.</p>
-                            <div class="showcase-meta">
-                                <span class="showcase-author">by @fintech_infra</span>
-                                <span class="showcase-specs">10× A100, Multi-region</span>
-                            </div>
-                        </div>
+                    <div style="grid-column:1/-1;padding:32px 0;text-align:center;color:var(--text-secondary)">
+                        <p style="font-size:16px;margin-bottom:8px"><strong>No deployments to show yet.</strong></p>
+                        <p style="font-size:14px;max-width:52ch;margin:0 auto">This page used to display example clusters with usernames and throughput figures. None of them were real, so we removed them. When someone shares a genuine deployment, it will appear here with their permission and a link to prove it.</p>
                     </div>
                 </div>
 
@@ -291,23 +202,6 @@
         </div>
     </footer>
     <script type="module">
-        // Showcase filters
-        document.querySelectorAll('.showcase-filter').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.showcase-filter').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-
-                const category = btn.dataset.category;
-                document.querySelectorAll('.showcase-item').forEach(item => {
-                    if (category === 'all' || item.dataset.category === category) {
-                        item.style.display = '';
-                    } else {
-                        item.style.display = 'none';
-                    }
-                });
-            });
-        });
-
         // Load contributors from GitHub API
         async function loadContributors() {
             const grid = document.getElementById('contributorsGrid');

@@ -229,8 +229,8 @@
                         <ul class="arch-specs">
                             <li>4-8 GPUs (A100/H100)</li>
                             <li>Automatic failover</li>
-                            <li>99.9% uptime SLA</li>
-                            <li>Sub-50ms latency</li>
+                            <li>Health probes and failover built in</li>
+                            <li>Latency you measure on your own hardware</li>
                         </ul>
                     </div>
 
@@ -295,103 +295,30 @@
             <section id="case-studies" class="enterprise-section">
                 <div class="ent-section-header">
                     <h2>Case Studies</h2>
-                    <p>Real-world deployment scenarios and outcomes.</p>
+                    <p>There are none yet, and we are not going to invent them.</p>
                 </div>
 
-                <div class="case-studies-grid">
-                    <div class="case-study">
-                        <div class="case-header">
-                            <div class="case-company">
-                                <div class="case-logo">AC</div>
-                                <div>
-                                    <h3>Acme Corp</h3>
-                                    <p class="case-industry">Financial Services</p>
-                                </div>
-                            </div>
-                            <div class="case-metric">
-                                <span class="case-metric-value">10×</span>
-                                <span class="case-metric-label">A100 GPUs</span>
-                            </div>
-                        </div>
-                        <div class="case-content">
-                            <p><strong>Challenge:</strong> Process 50,000+ daily financial reports with LLMs while maintaining SOC 2 compliance and sub-second latency.</p>
-                            <p><strong>Solution:</strong> Deployed DistLLM across 3 data centers (US-East, US-West, EU) with automatic failover and data residency controls.</p>
-                            <p><strong>Results:</strong></p>
-                            <ul>
-                                <li>99.99% uptime over 6 months</li>
-                                <li>42ms P50 latency (vs 200ms with cloud APIs)</li>
-                                <li>$47K/month savings vs OpenAI Enterprise</li>
-                                <li>SOC 2 Type II compliant deployment</li>
-                            </ul>
-                        </div>
-                        <blockquote class="case-quote">
-                            "DistLLM let us run our financial models on-premise with the performance of cloud APIs. The security features exceeded our compliance requirements."
-                            <cite>— CTO, Acme Corp</cite>
-                        </blockquote>
-                    </div>
-
-                    <div class="case-study">
-                        <div class="case-header">
-                            <div class="case-company">
-                                <div class="case-logo">MH</div>
-                                <div>
-                                    <h3>MedHealth Systems</h3>
-                                    <p class="case-industry">Healthcare</p>
-                                </div>
-                            </div>
-                            <div class="case-metric">
-                                <span class="case-metric-value">5×</span>
-                                <span class="case-metric-label">H100 GPUs</span>
-                            </div>
-                        </div>
-                        <div class="case-content">
-                            <p><strong>Challenge:</strong> HIPAA-compliant clinical decision support requiring air-gapped deployment with no external API calls.</p>
-                            <p><strong>Solution:</strong> Air-gapped DistLLM cluster with mTLS, audit logging, and encrypted storage. Running Llama 3.1 70B for medical Q&A.</p>
-                            <p><strong>Results:</strong></p>
-                            <ul>
-                                <li>100% on-premise, zero external dependencies</li>
-                                <li>HIPAA BAA signed and compliant</li>
-                                <li>28 tok/s throughput on 70B model</li>
-                                <li>Reduced clinical documentation time by 40%</li>
-                            </ul>
-                        </div>
-                        <blockquote class="case-quote">
-                            "The air-gapped deployment was a must-have for our HIPAA requirements. DistLLM delivered without compromising on performance."
-                            <cite>— VP Engineering, MedHealth Systems</cite>
-                        </blockquote>
-                    </div>
-
-                    <div class="case-study">
-                        <div class="case-header">
-                            <div class="case-company">
-                                <div class="case-logo">TX</div>
-                                <div>
-                                    <h3>TechX Labs</h3>
-                                    <p class="case-industry">AI Startup</p>
-                                </div>
-                            </div>
-                            <div class="case-metric">
-                                <span class="case-metric-value">24×</span>
-                                <span class="case-metric-label">RTX 4090 GPUs</span>
-                            </div>
-                        </div>
-                        <div class="case-content">
-                            <p><strong>Challenge:</strong> Serve 100K+ daily users on a startup budget. Cloud APIs too expensive at scale.</p>
-                            <p><strong>Solution:</strong> 24× RTX 4090 cluster with DistLLM pipeline parallelism. Running Mixtral 8x7B with INT4 quantization.</p>
-                            <p><strong>Results:</strong></p>
-                            <ul>
-                                <li>$0.003/1K tokens (vs $0.015 on OpenAI)</li>
-                                <li>5× cost reduction vs cloud APIs</li>
-                                <li>68 tok/s throughput</li>
-                                <li>Scales to 200K+ daily users</li>
-                            </ul>
-                        </div>
-                        <blockquote class="case-quote">
-                            "We went from $50K/month on OpenAI to $10K/month running our own cluster. DistLLM paid for itself in the first month."
-                            <cite>— Founder, TechX Labs</cite>
-                        </blockquote>
-                    </div>
+                <div style="max-width:72ch">
+                    <p style="color:var(--text-secondary);font-size:16px;line-height:1.7;margin-bottom:16px">
+                        This section previously listed three customer deployments — a financial
+                        services firm, a healthcare provider and an AI startup — complete with
+                        uptime percentages, cost savings and quotes attributed to their executives.
+                        <strong>None of those customers existed.</strong> The names were placeholders,
+                        the metrics were illustrative, and the healthcare entry made claims about
+                        clinical outcomes and HIPAA business associate agreements that were never
+                        true. We removed all of it.
+                    </p>
+                    <p style="color:var(--text-secondary);font-size:16px;line-height:1.7;margin-bottom:16px">
+                        We would rather have an empty case-studies page than a convincing one
+                        built on fiction. If you run DistLLM and would like to be the first
+                        published deployment, we would genuinely like to hear from you — and we
+                        will link to your own write-up so a reader can verify it.
+                    </p>
+                    <p style="margin-top:24px">
+                        <a class="btn btn-primary" href="https://github.com/dev25bansal-ops/distributed-llm/discussions/categories/showcase" target="_blank" rel="noopener noreferrer">Share your deployment</a>
+                    </p>
                 </div>
+            </section>
             </section>
 
             <!-- Contact Sales -->
