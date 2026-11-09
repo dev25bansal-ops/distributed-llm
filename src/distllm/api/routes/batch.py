@@ -50,11 +50,11 @@ import math
 import socket
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
-from collections.abc import AsyncGenerator
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request

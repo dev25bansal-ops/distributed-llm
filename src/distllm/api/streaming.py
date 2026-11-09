@@ -15,9 +15,9 @@ import json
 import os
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
-from collections.abc import AsyncGenerator
 
 from loguru import logger
 

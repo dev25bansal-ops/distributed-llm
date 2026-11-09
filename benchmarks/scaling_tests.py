@@ -37,7 +37,7 @@ from loguru import logger
 
 # ── Targets ────────────────────────────────────────────────────────────────────
 
-SCALING_TARGETS: Dict[str, dict] = {
+SCALING_TARGETS: dict[str, dict] = {
     "100b-model": {
         "metric": "generation_tokens",
         "target": 50,
@@ -239,7 +239,7 @@ def test_context_length(model_name: str = "meta-llama/Llama-3.1-70B") -> Scaling
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_node_scaling(model_name: str = "meta-llama/Llama-3.1-70B",
-                      node_counts: Optional[List[int]] = None) -> ScalingTestResult:
+                      node_counts: list[int] | None = None) -> ScalingTestResult:
     """Run same model on 2/4/8/16 nodes, measure throughput vs node count.
 
     Verifies throughput scales gracefully (not flatlining or regressing
@@ -250,7 +250,7 @@ def test_node_scaling(model_name: str = "meta-llama/Llama-3.1-70B",
     result.target_value = SCALING_TARGETS["node-scaling"]["target"]
 
     node_counts = node_counts or [2, 4, 8, 16]
-    results_map: Dict[int, float] = {}
+    results_map: dict[int, float] = {}
 
     for n in node_counts:
         # Estimate: throughput = base * n^0.85 (sub-linear scaling)
@@ -568,7 +568,7 @@ def test_long_running(model_name: str = "roneneldan/TinyStories-1M",
     except (ImportError, Exception) as e:
         logger.warning(f"Real model unavailable ({e}); simulating memory tracking")
         prompt_text = "Once upon a time, "
-        memory_samples: List[float] = []
+        memory_samples: list[float] = []
         iteration = 0
         mock_coord = _simulate_coordinator(model_name)
         deadline = time.time() + min(duration_sec, 10)
@@ -718,7 +718,7 @@ SCALING_TEST_REGISTRY = {
 }
 
 
-def print_results_table(results: List[ScalingTestResult]):
+def print_results_table(results: list[ScalingTestResult]):
     """Print scaling test results with pass/fail status."""
     print("\n" + "=" * 90)
     print("  SCALING TESTS — Summary")

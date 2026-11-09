@@ -122,7 +122,7 @@ class APISettings(BaseSettings):
 
 
 # Global singleton
-_settings: Optional[APISettings] = None
+_settings: APISettings | None = None
 
 
 def get_api_settings() -> APISettings:
