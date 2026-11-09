@@ -4,6 +4,7 @@ import threading
 import time
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..api_state import g
@@ -47,7 +48,6 @@ def _build_registry():
             if hasattr(coord, "list_models"):
                 model_names = coord.list_models() or []
         except Exception:
-            # CQ-08: fail-open: version metadata unavailable -> omit versions rather than fail the model list.
             model_names = [coord.model_name] if getattr(coord, "model_name", None) else []
 
         for m_name in model_names:
@@ -99,7 +99,6 @@ def _build_registry():
     except ImportError:
         pass
     except Exception:
-        # CQ-08: fail-open: optional model-hub feature unavailable -> omit its data rather than fail the list.
         pass
 
     # ── Model Hub cached data ──
@@ -119,7 +118,6 @@ def _build_registry():
     except ImportError:
         pass
     except Exception:
-        # CQ-08: fail-open: optional model-hub feature unavailable -> omit its data rather than fail the list.
         pass
 
     # ── Merge into final model list ──
@@ -185,10 +183,8 @@ async def get_model_registry():
     return _get_registry()
 
 
-# `:path` so "org/name" HuggingFace ids resolve; a plain {model_id} left the
-# route unreachable for every model the server actually has.
 @router.get(
-    "/api/models/registry/{model_id:path}",
+    "/api/models/registry/{model_id}",
     summary="Model Registry Detail",
     description="Return detailed info for a single model from the registry.",
 )
@@ -230,11 +226,18 @@ async def load_model(body: LoadModelRequest):
             result = coord.hot_swap_load(body.model)
         else:
             return {"error": "no load_model method available"}
+        # ``result is False`` means the coordinator declined (no hot-swap
+        # manager configured, or the model could not be loaded).  Reporting
+        # ``status: ok`` here would be a 200 that loaded nothing.
+        if result is False:
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"model '{body.model}' was not loaded"},
+            )
         _get_registry(force=True)
         return {"status": "ok", "model": body.model, "result": result}
     except Exception as e:
-        # CQ-08: failure is returned to the caller as {"error": str(e)}; nothing is swallowed.
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.post(
@@ -255,8 +258,15 @@ async def unload_model(body: UnloadModelRequest):
             result = coord.hot_swap_unload(body.model)
         else:
             return {"error": "no unload_model method available"}
+        # ``Coordinator.hot_swap_unload`` returns False when no hot-swap
+        # manager is configured and when the model is not loaded.  Both mean
+        # nothing was unloaded, so a 200 ``status: ok`` would be a lie.
+        if result is False:
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"model '{body.model}' was not unloaded"},
+            )
         _get_registry(force=True)
         return {"status": "ok", "model": body.model, "result": result}
     except Exception as e:
-        # CQ-08: failure is returned to the caller as {"error": str(e)}; nothing is swallowed.
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})

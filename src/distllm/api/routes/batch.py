@@ -405,30 +405,85 @@ async def _process_single(
         )
 
 
+def _message_text(content: Any) -> str:
+    """Flatten a message's content to text (mirrors chat.py's ``_extract_text``).
+
+    Batch accepts raw request bodies, so ``content`` may be a string or a
+    multi-modal list of ``{"type": "text"|...,"text": ...}`` parts.  Only text
+    and image parts survive, exactly as in the chat route; an unknown part
+    (audio, file, ...) is dropped rather than inlined as raw dict repr, which
+    would leak JSON into the prompt and diverge from /v1/chat/completions.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif isinstance(item, dict) and item.get("type") == "image_url":
+                parts.append("[image]")
+        return " ".join(p for p in parts if p)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _build_chat_prompt(messages: list[dict], coordinator: Any) -> str:
+    """Render the whole conversation with the model's chat template.
+
+    Previously the batch path took only the last ``user`` message, which threw
+    away the system prompt and every prior turn.  This mirrors the chat route:
+    format through :class:`TemplateEngine` (which uses the tokenizer's
+    ``apply_chat_template`` when available) and fall back to a role-prefixed
+    join only if the template engine itself fails.
+    """
+    normalised = [
+        {"role": msg.get("role", "user"), "content": _message_text(msg.get("content"))}
+        for msg in messages
+    ]
+
+    try:
+        from distllm.prompts.engine import TemplateEngine
+
+        engine = TemplateEngine()
+        tokenizer = getattr(coordinator, "tokenizer", None)
+        if tokenizer is not None:
+            engine.set_tokenizer(tokenizer)
+        return engine.apply(normalised, add_generation_prompt=True)
+    except Exception:
+        return "\n".join(
+            f"{msg['role']}: {msg['content']}" for msg in normalised
+        )
+
+
 async def _process_chat(body: dict, coordinator: Any) -> dict:
     """Process a chat completion request."""
     messages = body.get("messages", [])
     if not messages:
         raise ValueError("messages is required")
 
-    # Extract the last user message as the prompt
-    prompt = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            prompt = msg.get("content", "")
-            break
+    # A conversation needs at least one user turn; a lone system prompt has
+    # nothing for the model to answer.
+    if not any(msg.get("role") == "user" for msg in messages):
+        raise ValueError("No user message found")
 
+    prompt = _build_chat_prompt(messages, coordinator)
     if not prompt:
         raise ValueError("No user message found")
 
     max_tokens = body.get("max_tokens", 128)
     temperature = body.get("temperature", 0.7)
+    top_p = body.get("top_p", 0.9)
+    top_k = body.get("top_k", 0)
 
     result = await asyncio.to_thread(
         coordinator.generate,
         prompt=prompt,
         max_new_tokens=max_tokens,
         temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
     )
 
     return {

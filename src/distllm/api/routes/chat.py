@@ -685,6 +685,14 @@ async def chat_completions(
                 for msg in body.messages
             ])
 
+    # Reject an oversized prompt here, before it reaches the backend: an
+    # over-window request fails there as an opaque 500 (and on the
+    # distributed path the generation budget is silently truncated).
+    from ..context_guard import check_context_length
+    context_error = check_context_length(coord, prompt, body.max_tokens, request)
+    if context_error is not None:
+        return context_error
+
     # Tool calling setup
     tool_engine = _ToolCallingEngine()
     tool_calls_list = []

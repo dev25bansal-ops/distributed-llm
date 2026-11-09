@@ -30,12 +30,36 @@ from rich.table import Table
 
 
 def _find_project_root() -> Path:
-    """Find the project root (contains deploy/ directory)."""
+    """Find the project root (contains deploy/ directory).
+
+    ``src/distllm/deploy/`` is an installed package, not the repo root, so the
+    search skips it and keeps walking.  Only a *real* checkout's root — which
+    also has ``src/`` and ``pyproject.toml`` — is accepted.
+    """
     cur = Path(__file__).resolve()
     for parent in cur.parents:
-        if (parent / "deploy").is_dir():
-            return parent
+        deploy = parent / "deploy"
+        if not deploy.is_dir():
+            continue
+        # The package's own deploy/ dir is not the project root.
+        if (parent / "src" / "distllm" / "deploy").is_dir():
+            continue
+        return parent
     return cur.parent.parent
+
+
+def _observability_output_dir() -> Path:
+    """Directory that generated observability configs are written to.
+
+    Never a source directory: output goes under the user's state directory
+    (``~/.distllm/observability``) so a running ``system observe`` cannot pollute
+    the installed package or the working tree.  ``DISTLLM_OBSERVE_DIR``
+    overrides the location for operators who pin it elsewhere.
+    """
+    override = os.environ.get("DISTLLM_OBSERVE_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".distllm" / "observability"
 
 
 def _check_port(port: int) -> bool:
@@ -249,9 +273,9 @@ def _provision_grafana(
     prometheus_url: str,
 ) -> None:
     """Write Grafana provisioning files and print the stack summary."""
-    # 2. Generate Grafana provisioning
-    project_root = _find_project_root()
-    grafana_dir = project_root / "deploy" / "grafana"
+    # Write under the runtime state dir — never inside the installed package
+    # or the source tree.
+    grafana_dir = _observability_output_dir() / "grafana"
     grafana_dir.mkdir(parents=True, exist_ok=True)
 
     dashboard_json = _generate_grafana_dashboard()

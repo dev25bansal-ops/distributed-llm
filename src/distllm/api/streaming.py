@@ -391,14 +391,33 @@ async def _stream_response(
     local_tokenizer = getattr(local_coord, 'tokenizer', None) if local_coord else None
     prompt_len = len(local_tokenizer.encode(prompt)) if local_tokenizer else 0
 
-    # Initialize streaming cost tracking
+    # Initialize streaming cost tracking. Off unless explicitly enabled:
+    # the per-token cost event is a private DistLLM extension and must not
+    # appear in an OpenAI-compatible stream by default.
     cost_helper = None
+    _cost_on = False
     try:
-        from distllm.api.cost_middleware import StreamingCostMiddleware
-        cost_helper = StreamingCostMiddleware()
-        cost_helper.start_request(request_id, prompt_len, model_name)
+        from distllm.api.api_settings import get_api_settings
+        _cost_on = bool(get_api_settings().cost_tracking)
     except ImportError:
-        pass
+        # The settings module is part of the package; if it cannot be imported
+        # the install is broken, and silently reporting "cost tracking off"
+        # would hide that. Cost tracking itself stays off (the safe default),
+        # but the reason is recorded rather than swallowed.
+        logger.warning(
+            "distllm.api.api_settings unavailable; streaming cost tracking is "
+            "disabled. This indicates a broken installation."
+        )
+    except Exception:
+        logger.opt(exception=True).warning(
+            "could not read cost-tracking setting; assuming off")
+    if _cost_on:
+        try:
+            from distllm.api.cost_middleware import StreamingCostMiddleware
+            cost_helper = StreamingCostMiddleware()
+            cost_helper.start_request(request_id, prompt_len, model_name)
+        except ImportError:
+            pass
 
     from distllm.observability.spans import async_span_generation, record_ttft
 
@@ -424,10 +443,12 @@ async def _stream_response(
             completion_tokens += 1
             full_text += token_text
 
-            # Track streaming cost
-            cost_event = None
+            # Track streaming cost. The event is *not* attached to the
+            # chunk: the OpenAI streaming format has no per-chunk cost
+            # field, and only the final usage chunk (below, under
+            # stream_options.include_usage) may carry a usage object.
             if cost_helper:
-                cost_event = cost_helper.record_token(request_id)
+                cost_helper.record_token(request_id)
 
             if ttft is not None:
                 ttft_recorded = ttft
@@ -441,9 +462,6 @@ async def _stream_response(
                     token_text=batch.text,
                     logprob_data=logprob_data,
                 )
-                # Inject cost data into chunk metadata
-                if cost_event and hasattr(chunk, 'usage'):
-                    chunk.usage = {**(chunk.usage or {}), "_cost": cost_event}
                 yield chunk.to_sse()
 
         batch = token_buffer.finish()
@@ -508,14 +526,16 @@ async def _stream_response(
         if cost_helper:
             cost_summary = cost_helper.finish_request(request_id)
 
-        if include_usage and local_tokenizer:
-            prompt_tokens = len(local_tokenizer.encode(prompt))
+        # Final usage chunk — OpenAI semantics: one chunk with an empty
+        # ``choices`` array, emitted only when the client asked for it via
+        # ``stream_options.include_usage``.
+        if include_usage:
             usage_data = {
-                "prompt_tokens": prompt_tokens,
+                "prompt_tokens": prompt_len,
                 "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
+                "total_tokens": prompt_len + completion_tokens,
             }
-            # Merge cost summary into usage
+            # Merge cost summary into usage when cost tracking is enabled
             if cost_summary:
                 usage_data["cost"] = cost_summary
             usage_chunk = StreamChunk(
