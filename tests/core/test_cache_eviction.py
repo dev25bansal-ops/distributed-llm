@@ -113,9 +113,13 @@ class TestSemanticGrouping:
         assert g.get_group_id([1, 2, 3]) == gid
 
     def test_find_or_create_group_similar_joins(self):
+        # [1, 2, 3] vs [1, 2, 3, 4]: Jaccard = 3/4 = 0.75, comfortably above
+        # the 0.5 threshold for 128-perm MinHash (std ~0.044). The previous
+        # pair [1, 2, 3]/[1, 2, 4] has Jaccard exactly 0.5 — on the threshold —
+        # so hash-seed noise flips the estimate below it.
         g = SemanticGrouping(num_permutations=128, threshold=0.5)
         gid1 = g.find_or_create_group([1, 2, 3])
-        gid2 = g.find_or_create_group([1, 2, 4])
+        gid2 = g.find_or_create_group([1, 2, 3, 4])
         assert gid1 == gid2
 
     def test_find_or_create_group_below_threshold(self):
@@ -125,9 +129,11 @@ class TestSemanticGrouping:
         assert gid1 != gid2
 
     def test_get_group_members(self):
+        # Same robust pair as test_find_or_create_group_similar_joins:
+        # Jaccard 0.75 > threshold 0.5, safe from MinHash estimation noise.
         g = SemanticGrouping(num_permutations=128, threshold=0.5)
         gid = g.find_or_create_group([1, 2, 3])
-        g.find_or_create_group([1, 2, 4])
+        g.find_or_create_group([1, 2, 3, 4])
         members = g.get_group_members(gid)
         assert len(members) == 2
 
