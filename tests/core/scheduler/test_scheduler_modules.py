@@ -1353,7 +1353,8 @@ class TestPreemptionManager:
         assert result == []
 
     def test_restore_preempted_restores_sequences(self) -> None:
-        """restore_preempted should return preempted sequences to active."""
+        """restore_preempted returns preempted sequences to active when the
+        KV can actually be delivered (M2: a kv_cache_state sink is present)."""
         kv_mgr = KVCacheManager()
         mgr = PreemptionManager(kv_cache_mgr=kv_mgr, max_preempted=4)
         pending: list = []
@@ -1361,14 +1362,26 @@ class TestPreemptionManager:
         total_ref = [100]
         active = {"a": make_seq(request_id="a", priority=3, prompt_len=5)}
 
-        # Preempt it
-        victim = mgr.preempt_lowest(active, total_ref, pending, counter, None)
+        # Preempt it, capturing its KV.
+        # ``save_kv_state`` only saves a request's KV when the caller supplies
+        # a dict already holding it; ``restore_kv_state`` then writes back into
+        # whatever dict the caller hands to ``restore_preempted`` — so preempt
+        # with a populated dict and restore with a fresh empty one.
+        source: dict = {"a": {"key_tensor": "k", "value_tensor": "v"}}
+        victim = mgr.preempt_lowest(
+            active, total_ref, pending, counter, None, kv_cache_state=source,
+        )
         assert victim is not None
         assert "a" not in active
         assert len(mgr._preempted) == 1
+        assert "a" in mgr._preempted_kv_state
 
-        # Restore it
-        restored = mgr.restore_preempted(active, total_ref, pending, None)
+        # Restore it, handing a fresh sink back so the KV is deliverable.
+        sink: dict = {}
+        restored = mgr.restore_preempted(
+            active, total_ref, pending, None, kv_cache_state=sink,
+        )
+        assert "a" in sink  # KV delivered to the caller's cache
         assert len(restored) == 1
         assert restored[0].request_id == "a"
         assert "a" in active
@@ -1377,8 +1390,12 @@ class TestPreemptionManager:
         # total_tokens restored
         assert total_ref[0] == 100  # back to original
 
-    def test_restore_preempted_clears_pending_heap(self) -> None:
-        """After restore, the pending heap should no longer contain the request."""
+    def test_restore_preempted_without_sink_requeues(self) -> None:
+        """M2: with no kv_cache_state sink the sequence must NOT be promoted.
+
+        Resuming DECODING would attend over a cache that does not exist, so
+        the sequence is re-queued as PENDING to prefill anew instead.
+        """
         kv_mgr = KVCacheManager()
         mgr = PreemptionManager(kv_cache_mgr=kv_mgr, max_preempted=4)
         pending: list = []
@@ -1387,9 +1404,31 @@ class TestPreemptionManager:
         active = {"a": make_seq(request_id="a", priority=3, prompt_len=5)}
 
         mgr.preempt_lowest(active, total_ref, pending, counter, None)
+        restored = mgr.restore_preempted(active, total_ref, pending, None)
+
+        assert restored == []
+        assert "a" not in active
+        # Re-queued for a fresh prefill rather than dropped.
+        assert [item[2].request_id for item in pending] == ["a"]
+        assert pending[0][2].status == SequenceStatus.PENDING
+        assert mgr.get_preempted_count() == 0
+
+    def test_restore_preempted_clears_pending_heap(self) -> None:
+        """After a successful restore, the pending heap no longer holds it."""
+        kv_mgr = KVCacheManager()
+        mgr = PreemptionManager(kv_cache_mgr=kv_mgr, max_preempted=4)
+        pending: list = []
+        counter = [0]
+        total_ref = [100]
+        active = {"a": make_seq(request_id="a", priority=3, prompt_len=5)}
+
+        source: dict = {"a": {"key_tensor": "k", "value_tensor": "v"}}
+        mgr.preempt_lowest(active, total_ref, pending, counter, None,
+                           kv_cache_state=source)
         assert len(pending) == 1
 
-        mgr.restore_preempted(active, total_ref, pending, None)
+        mgr.restore_preempted(active, total_ref, pending, None,
+                              kv_cache_state={})
         assert len(pending) == 0
 
     def test_preempt_lowest_saves_kv_state(self) -> None:
@@ -1436,9 +1475,15 @@ class TestPreemptionManager:
         kv_mgr.allocate_paged_blocks(seq)
         active = {"a": seq}
 
-        mgr.preempt_lowest(active, total_ref, pending, counter, stub)
+        # M2: restore only promotes when the KV is actually deliverable, so a
+        # populated source on preempt and a sink on restore are both required.
+        source: dict = {"a": {"key_tensor": "k", "value_tensor": "v"}}
+        mgr.preempt_lowest(active, total_ref, pending, counter, stub,
+                           kv_cache_state=source)
         # stub already has pool with restore_block
-        restored = mgr.restore_preempted(active, total_ref, pending, stub)
+        sink: dict = {}
+        restored = mgr.restore_preempted(active, total_ref, pending, stub,
+                                         kv_cache_state=sink)
         assert len(restored) == 1
 
     def test_set_preemption_policy(self) -> None:
