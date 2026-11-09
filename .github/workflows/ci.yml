@@ -426,9 +426,9 @@ jobs:
       - uses: azure/setup-kubectl@v4
       - name: Validate Helm chart
         run: |
-          helm lint deploy/helm/distllm-operator
-          helm template distllm deploy/helm/distllm-operator --namespace distllm --kube-version 1.30.0 > /tmp/distllm-helm.yaml
-          helm template distllm deploy/helm/distllm-operator --namespace distllm --kube-version 1.30.0 --set coordinator.ha.enabled=true > /tmp/distllm-helm-ha.yaml
+          helm lint deploy/helm
+          helm template distllm deploy/helm --namespace distllm --kube-version 1.30.0 > /tmp/distllm-helm.yaml
+          helm template distllm deploy/helm --namespace distllm --kube-version 1.30.0 --set coordinator.ha.enabled=true > /tmp/distllm-helm-ha.yaml
       - name: Validate Kustomize overlays
         run: |
           kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/dev > /tmp/distllm-dev.yaml

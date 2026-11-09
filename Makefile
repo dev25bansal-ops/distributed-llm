@@ -81,16 +81,16 @@ run-distributed: ## Run distributed mode (starts all processes)
 
 # --- Helm ---
 helm-install: ## Install Helm chart
-	helm install distllm deploy/helm/distllm-operator/ -f deploy/helm/distllm-operator/values.yaml
+	helm install distllm deploy/helm/ -f deploy/helm/values.yaml
 
 helm-upgrade: ## Upgrade Helm release
-	helm upgrade distllm deploy/helm/distllm-operator/ -f deploy/helm/distllm-operator/values.yaml --wait --timeout 10m
+	helm upgrade distllm deploy/helm/ -f deploy/helm/values.yaml --wait --timeout 10m
 
 helm-template: ## Render Helm templates
-	helm template distllm deploy/helm/distllm-operator/ -f deploy/helm/distllm-operator/values.yaml
+	helm template distllm deploy/helm/ -f deploy/helm/values.yaml
 
 helm-lint: ## Lint Helm chart
-	helm lint deploy/helm/distllm-operator/
+	helm lint deploy/helm/
 
 # --- Kustomize ---
 kustomize-build-dev: ## Build dev overlay manifests
