@@ -394,7 +394,10 @@ def _message_text(content: Any) -> str:
     """Flatten a message's content to text (mirrors chat.py's ``_extract_text``).
 
     Batch accepts raw request bodies, so ``content`` may be a string or a
-    multi-modal list of ``{"type": "text"|...,"text": ...}`` parts.
+    multi-modal list of ``{"type": "text"|...,"text": ...}`` parts.  Only text
+    and image parts survive, exactly as in the chat route; an unknown part
+    (audio, file, ...) is dropped rather than inlined as raw dict repr, which
+    would leak JSON into the prompt and diverge from /v1/chat/completions.
     """
     if isinstance(content, str):
         return content
@@ -405,8 +408,6 @@ def _message_text(content: Any) -> str:
                 parts.append(item.get("text", ""))
             elif isinstance(item, dict) and item.get("type") == "image_url":
                 parts.append("[image]")
-            else:
-                parts.append(str(item))
         return " ".join(p for p in parts if p)
     if content is None:
         return ""

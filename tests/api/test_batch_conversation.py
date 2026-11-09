@@ -11,10 +11,13 @@ of multi-turn conversations therefore produced answers with no context.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+import os
+import secrets
 
 import pytest
+from fastapi.testclient import TestClient
 
+from distllm.api.server import app
 from distllm.api.routes import batch as batch_mod
 
 
@@ -24,6 +27,8 @@ class _RecordingCoordinator:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.tokenizer = None
+        # The full-app middleware stack reads coord.scheduler for backpressure.
+        self.scheduler = None
 
     def generate(self, prompt, max_new_tokens=128, temperature=0.7, top_p=0.9,
                  top_k=0, **kwargs):
@@ -42,6 +47,12 @@ class _RecordingCoordinator:
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture
+def client():
+    """TestClient on the real app; auth is supplied per-test via API_KEY."""
+    return TestClient(app)
 
 
 def test_system_prompt_is_preserved():
@@ -138,3 +149,61 @@ def test_no_user_message_still_errors():
     with pytest.raises(ValueError):
         _run(batch_mod._process_chat(body, coord))
     assert not coord.calls
+
+
+def test_http_batch_end_to_end_preserves_conversation(client, monkeypatch):
+    """POST /v1/batch with a multi-turn body returns 200 and every turn survives."""
+    import os
+    import secrets
+
+    from distllm.api.api_state import g
+    from distllm.core.api_key_store import reset_api_key_store
+
+    key = secrets.token_urlsafe(32)
+    monkeypatch.setenv("API_KEY", key)
+    monkeypatch.delenv("API_KEY_WAS_SET", raising=False)
+    reset_api_key_store()
+
+    coord = _RecordingCoordinator()
+    original = g.coordinator
+    g.coordinator = coord
+    try:
+        resp = client.post(
+            "/v1/batch",
+            json={
+                "requests": [
+                    {
+                        "method": "chat",
+                        "body": {
+                            "model": "test-model",
+                            "messages": [
+                                {"role": "system", "content": "SYS-PROMPT"},
+                                {"role": "user", "content": "TURN-ONE"},
+                                {"role": "assistant", "content": "REPLY-ONE"},
+                                {"role": "user", "content": "TURN-TWO"},
+                            ],
+                            "max_tokens": 64,
+                            "temperature": 0.4,
+                            "top_p": 0.6,
+                            "top_k": 5,
+                        },
+                    }
+                ]
+            },
+            headers={"Authorization": f"Bearer {key}"},
+        )
+    finally:
+        g.coordinator = original
+        reset_api_key_store()
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["successful"] >= 1, data
+    assert data["failed"] == 0, data
+    prompt = coord.calls[0]["prompt"]
+    for marker in ("SYS-PROMPT", "TURN-ONE", "REPLY-ONE", "TURN-TWO"):
+        assert marker in prompt, (marker, prompt)
+    assert coord.calls[0]["temperature"] == 0.4
+    assert coord.calls[0]["top_p"] == 0.6
+    assert coord.calls[0]["top_k"] == 5
+    assert os.environ  # keep linters quiet about the unused import

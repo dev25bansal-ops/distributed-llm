@@ -37,12 +37,14 @@ def test_generated_files_do_not_land_in_source_tree(tmp_path, monkeypatch):
 
 
 def test_output_dir_is_under_user_state_directory(monkeypatch, tmp_path):
-    """The default location is ``~/.distllm/observability``."""
+    """The default location is ``Path.home()/.distllm/observability``.
+
+    ``Path.home()`` (not ``$HOME``) is the project's convention — see
+    ``cli/benchmark.py`` — and on Windows it reads ``USERPROFILE``.  Pin the
+    function itself so the assertion holds on every platform.
+    """
     fake_home = tmp_path / "home"
     fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    # Path.home() on Windows honours USERPROFILE; make it deterministic.
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
     target = observe._observability_output_dir()
