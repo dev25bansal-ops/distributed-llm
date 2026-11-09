@@ -83,11 +83,11 @@ class TestDeviceRegistry:
             assert hasattr(dev, "device_id")
 
     def test_device_family_mapping(self):
-        assert _constants.DEVICE_TO_FAMILY["cuda"] == _constants.DeviceFamily.NVIDIA
-        assert _constants.DEVICE_TO_FAMILY["rocm"] == _constants.DeviceFamily.AMD
-        assert _constants.DEVICE_TO_FAMILY["mps"] == _constants.DeviceFamily.APPLE
-        assert _constants.DEVICE_TO_FAMILY["xpu"] == _constants.DeviceFamily.INTEL
-        assert _constants.DEVICE_TO_FAMILY["cpu"] == _constants.DeviceFamily.CPU
+        assert _constants.DEVICE_FAMILY["cuda"] == _constants.DeviceFamily.NVIDIA
+        assert _constants.DEVICE_FAMILY["rocm"] == _constants.DeviceFamily.AMD
+        assert _constants.DEVICE_FAMILY["mps"] == _constants.DeviceFamily.APPLE
+        assert _constants.DEVICE_FAMILY["xpu"] == _constants.DeviceFamily.INTEL
+        assert _constants.DEVICE_FAMILY["cpu"] == _constants.DeviceFamily.CPU
 
     def test_device_family_unknown_default(self):
         assert _device_registry.get_device_family("nonexistent") == _constants.DeviceFamily.UNKNOWN
@@ -254,7 +254,10 @@ class TestConstants:
         assert _constants.Device.ROCM.value == "rocm"
         assert _constants.Device.MPS.value == "mps"
         assert _constants.Device.XPU.value == "xpu"
-        assert _constants.Device.VULKAN.value == "vulkan"
+        # vulkan is a supported mapping target (family UNKNOWN) but not a Device
+        # enum member; the registry dict is the source of truth for that.
+        assert "vulkan" in _constants.DEVICE_FAMILY
+        assert _constants.DEVICE_FAMILY["vulkan"] == _constants.DeviceFamily.UNKNOWN
 
     def test_device_family_enum(self):
         assert _constants.DeviceFamily.NVIDIA.value == "nvidia"

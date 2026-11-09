@@ -8,9 +8,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,6 +46,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,testing]"
+      - uses: ./.github/actions/generate-protobuf
       - run: pytest -v --cov=distllm --cov-report=xml --cov-fail-under=80 -m "not e2e and not slow and not chaos"
       - name: Test distributed speculative decoder
         run: |
@@ -72,6 +73,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,testing]"
+      - uses: ./.github/actions/generate-protobuf
       - name: Run distributed-layer unit tests
         run: pytest tests/dist/ -v --cov=distllm.dist --cov-report=xml --cov-fail-under=70 -m "not benchmark and not chaos" --ignore=tests/dist/integration
       - name: Upload dist coverage
@@ -111,6 +113,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,testing]"
+      - uses: ./.github/actions/generate-protobuf
       - name: Run chaos tests
         run: pytest -v -m chaos --tb=short
       - name: Run integration tests
@@ -175,6 +178,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,testing]"
+      - uses: ./.github/actions/generate-protobuf
       - name: Real-package import sweep (C6 — no fake _import_helper)
         env:
           PYTHONPATH: src
@@ -212,15 +216,10 @@ jobs:
       - name: Run CPU-compatible benchmarks (prefix cache, speculative decoding, network util)
         if: ${{ runner.environment != 'gpu' }}
         run: |
-          echo "No GPU runner available — running CPU-compatible regression benchmarks"
-          python benchmarks/run_cpu_benchmarks.py
-      - name: CPU benchmark regression check vs baseline
-        if: ${{ runner.environment != 'gpu' && hashFiles('benchmarks/baseline.json') != '' }}
-        run: |
-          python benchmarks/regression_check.py \
-            --baseline benchmarks/baseline.json \
-            --current benchmarks/results.json \
-            --threshold 10.0
+          # CPU benchmark entry point (benchmarks/run_cpu_benchmarks.py) does not
+          # exist in the repo, so the previous invocation always failed. Fail loud
+          # and skip is wrong too — record the gap instead of faking a benchmark.
+          echo "::warning::No CPU benchmark entry point found (benchmarks/run_cpu_benchmarks.py is absent); skipping CPU benchmark run."
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
@@ -501,3 +500,46 @@ jobs:
           name: performance-report
           path: artifacts/performance-report.md
           retention-days: 90
+
+  # ------------------------------------------------------------------
+  # Test — marketing website (unit + Playwright).
+  # The site is uploaded verbatim by deploy-website.yml, so nothing else
+  # validated it: a broken page shipped with no gate. Unit tests run on all
+  # three engines' worth of markup; e2e runs on chromium only (firefox/webkit
+  # need system libs on the runner and add no coverage for this static site).
+  # ------------------------------------------------------------------
+  website-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install website dependencies
+        working-directory: website
+        run: npm ci
+      - name: Unit tests (vitest)
+        working-directory: website
+        run: npm run test:unit
+      - name: Install Playwright browsers
+        working-directory: website
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Behaviour / a11y / security tests (all four projects)
+        working-directory: website
+        run: |
+          npx playwright test \
+            tests/integration.spec.js tests/accessibility.spec.js tests/security.spec.js
+      - name: Visual-regression tests (chromium baselines only)
+        working-directory: website
+        # Snapshots exist for chromium + mobile-chrome only; the firefox/webkit
+        # projects would fail on missing baselines rather than on a real diff.
+        run: npx playwright test tests/visual-regression.spec.js --project=chromium --project=mobile-chrome
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-playwright-report
+          path: website/playwright-report/
+          retention-days: 14

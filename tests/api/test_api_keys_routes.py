@@ -330,11 +330,15 @@ class TestRealAppMounting:
         _state.coordinator = None
 
     def test_routes_exist_on_real_app(self, real_client):
-        paths = {r.path for r in real_client.app.routes}
-        assert "/v1/api-keys" in paths
+        # Introspect via the OpenAPI schema: include_router results are wrapper
+        # objects without `.path`, so a shallow app.routes walk misses them.
+        schema_paths = real_client.app.openapi()["paths"]
+        assert "/v1/api-keys" in schema_paths
         # POST + GET share the path; DELETE adds the param variant.
-        assert any(getattr(r, "methods", None) and "DELETE" in r.methods and r.path == "/v1/api-keys/{key_id}"
-                   for r in real_client.app.routes)
+        key_id_ops = schema_paths.get("/v1/api-keys/{key_id}", {})
+        assert "delete" in {m.lower() for m in key_id_ops}, (
+            f"/v1/api-keys/{{key_id}} must expose DELETE; has {sorted(key_id_ops)}"
+        )
 
     def test_full_lifecycle_on_real_app(self, real_client):
         hdr = {"Authorization": f"Bearer {_TEST_ADMIN_KEY}"}

@@ -91,6 +91,7 @@ jobs:
         run: |
           pip install -e ".[dev,testing]" 2>/dev/null || pip install pytest pytest-cov httpx
           ${{ inputs.extra-deps && format('pip install {0}', inputs.extra-deps) || '' }}
+      - uses: ./.github/actions/generate-protobuf
       - name: Cache pytest
         uses: actions/cache@v4
         with:

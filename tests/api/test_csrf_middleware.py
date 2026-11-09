@@ -82,10 +82,12 @@ class TestCsrfWiring:
         """
         exempt = CSRFSameOriginMiddleware.EXEMPT_PATHS
         mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
+        # Read the OpenAPI schema: app.routes holds include_router wrappers
+        # without .path/.methods, so walking it directly made this guard
+        # vacuous (0 routes with methods) and it never actually checked anything.
         offenders = []
-        for route in server_module.app.routes:
-            methods = getattr(route, "methods", set()) or set()
-            path = getattr(route, "path", "")
+        for path, ops in server_module.app.openapi()["paths"].items():
+            methods = {m.upper() for m in ops}
             if methods & mutating_methods and path in exempt:
                 offenders.append(f"{sorted(methods & mutating_methods)} {path}")
         assert not offenders, (
@@ -97,8 +99,9 @@ class TestCsrfWiring:
         mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
         count = sum(
             1
-            for r in server_module.app.routes
-            if (getattr(r, "methods", set()) or set()) & mutating_methods
+            for ops in server_module.app.openapi()["paths"].values()
+            for m in ops
+            if m.upper() in mutating_methods
         )
         assert count > 20
 

@@ -45,10 +45,11 @@ def test_sso_middleware_is_wired_into_server(monkeypatch):
 
 def test_auth_routes_are_mounted():
     """POST /v1/auth/{token,refresh,revoke} exist on the real server."""
-    mounted = {
-        getattr(r, "path", None) for r in server_module.app.routes
-    }
-    assert AUTH_PATHS.issubset(mounted)
+    # Introspect the generated OpenAPI schema rather than app.routes: include_router
+    # results are wrapper objects without `.path`, so a shallow route walk sees None
+    # for every included endpoint and the subset assertion can never pass.
+    mounted = set(server_module.app.openapi()["paths"].keys())
+    assert AUTH_PATHS.issubset(mounted), f"missing auth routes; have {sorted(p for p in mounted if 'auth' in p)}"
 
 
 def test_token_endpoint_rejects_empty_body():
