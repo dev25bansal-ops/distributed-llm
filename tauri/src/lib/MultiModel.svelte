@@ -65,7 +65,7 @@
     multiModelStore.removeRule(ruleId);
   }
 
-  function statusColor(status: ModelSlot["status"]): string {
+  function statusColor(status: ModelSlot["status"]): "green" | "red" | "gray" {
     switch (status) {
       case "ready": return "green";
       case "loading": return "gray";

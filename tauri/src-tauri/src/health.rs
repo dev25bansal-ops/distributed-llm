@@ -1,16 +1,24 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::state::AppState;
 
 /// Background health monitor that checks child process status every 5 seconds.
 /// Emits "process-crashed" event if a managed process exits unexpectedly.
-pub fn start_health_monitor(app: AppHandle, state: Arc<AppState>) {
+///
+/// Resolves the managed [`AppState`] from the handle on every tick. An earlier
+/// version took an `Arc<AppState>` built fresh in `setup()`, which shared no
+/// mutexes with the state commands mutate, so it could never see a live child.
+pub fn start_health_monitor(app: AppHandle) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(5));
+
+            let Some(state) = app.try_state::<AppState>() else {
+                // State was torn down (app shutting down) — stop watching.
+                break;
+            };
 
             // Check coordinator process
             if let Ok(mut guard) = state.coordinator.lock() {

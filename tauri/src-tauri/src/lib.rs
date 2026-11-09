@@ -7,8 +7,7 @@ mod state;
 mod tray;
 mod types;
 
-use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Listener, Manager};
 
 pub use error::AppError;
 pub use state::AppState;
@@ -42,10 +41,11 @@ pub fn run() {
                 }
             });
 
-            // 3.5: Start background health monitor for process crash detection
-            let state = app.state::<AppState>();
-            let state_arc = Arc::new(AppState::new());
-            health::start_health_monitor(app.handle().clone(), state_arc);
+            // 3.5: Start background health monitor for process crash detection.
+            // It resolves the *managed* AppState from the handle on each tick;
+            // the previous code passed a freshly constructed AppState that no
+            // other code ever touched, so a real crash was never observed.
+            health::start_health_monitor(app.handle().clone());
 
             Ok(())
         })

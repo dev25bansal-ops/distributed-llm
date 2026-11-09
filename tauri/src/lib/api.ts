@@ -146,7 +146,7 @@ export async function streamChatCompletion(
         if (data === "[DONE]") {
           const totalTime = (performance.now() - startTime) / 1000;
           callbacks.onDone({
-            ttft: ttft,
+            ttft: ttft ?? 0,
             tokens_per_sec: tokenCount / totalTime,
             inter_token_latency:
               tokenTimes.length > 1
@@ -182,7 +182,7 @@ export async function streamChatCompletion(
     // Stream ended without [DONE]
     const totalTime = (performance.now() - startTime) / 1000;
     callbacks.onDone({
-      ttft: ttft,
+      ttft: ttft ?? 0,
       tokens_per_sec: tokenCount / totalTime,
       inter_token_latency:
         tokenTimes.length > 1
