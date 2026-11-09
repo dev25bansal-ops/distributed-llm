@@ -1102,7 +1102,7 @@
 .enterprise-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 48px; }
 .ent-feature { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; text-align: center; }
 .ent-feature-icon { font-size: 32px; margin-bottom: 12px; }
-.ent-feature h3 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.ent-feature h2 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .ent-feature p { font-size: 13px; color: var(--dim); }
 .enterprise-section { margin-top: 64px; padding-top: 48px; border-top: 1px solid var(--border); }
 .ent-section-header { margin-bottom: 32px; }
@@ -1114,14 +1114,14 @@
 .whitepaper-logo { width: 48px; height: 48px; background: var(--green); color: #000; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; margin: 0 auto 12px; }
 .whitepaper-cover h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
 .whitepaper-cover p { font-size: 12px; color: var(--dim); }
-.whitepaper-toc h4 { font-size: 13px; font-weight: 600; color: var(--dim); margin-bottom: 8px; }
+.whitepaper-toc h3 { font-size: 13px; font-weight: 600; color: var(--dim); margin-bottom: 8px; }
 .whitepaper-toc ol { padding-left: 20px; }
 .whitepaper-toc li { font-size: 13px; color: var(--text); line-height: 1.8; }
 .whitepaper-cta { text-align: center; }
 .whitepaper-meta { font-size: 12px; color: var(--dim); margin-top: 8px; }
 .ent-security-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .security-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
-.security-card h4 { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+.security-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
 .security-card p { font-size: 13px; color: var(--dim); line-height: 1.6; margin-bottom: 12px; }
 .security-card code { display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: var(--font-mono); font-size: 11px; overflow-x: auto; }
 .compliance-timeline { display: flex; flex-direction: column; gap: 16px; }
@@ -1132,12 +1132,12 @@
 .compliance-status { font-size: 24px; flex-shrink: 0; }
 .compliance-content { flex: 1; }
 .compliance-date { font-size: 12px; color: var(--dim); font-family: var(--font-mono); margin-bottom: 4px; }
-.compliance-content h4 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.compliance-content h3 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .compliance-content p { font-size: 13px; color: var(--dim); }
 .arch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
 .arch-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
 .arch-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.arch-card-header h4 { font-size: 14px; font-weight: 700; }
+.arch-card-header h3 { font-size: 14px; font-weight: 700; }
 .arch-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; background: rgba(0,230,118,0.1); color: var(--green); }
 .arch-diagram { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 16px; }
 .arch-row { display: flex; gap: 8px; justify-content: center; }
@@ -1156,7 +1156,7 @@
 .case-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .case-company { display: flex; align-items: center; gap: 12px; }
 .case-logo { width: 40px; height: 40px; background: var(--green); color: #000; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; }
-.case-company h4 { font-size: 15px; font-weight: 700; margin: 0; }
+.case-company h3 { font-size: 15px; font-weight: 700; margin: 0; }
 .case-industry { font-size: 12px; color: var(--dim); }
 .case-metric { text-align: right; }
 .case-metric-value { display: block; font-size: 24px; font-weight: 800; font-family: var(--font-mono); color: var(--green); }
@@ -1184,7 +1184,7 @@
 .learn-path { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; text-align: center; transition: all 0.2s; }
 .learn-path:hover { border-color: var(--green); transform: translateY(-2px); }
 .learn-path-icon { font-size: 32px; margin-bottom: 8px; }
-.learn-path h3 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.learn-path h2 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .learn-path p { font-size: 13px; color: var(--dim); margin-bottom: 12px; }
 .learn-path-link { font-size: 13px; font-weight: 600; color: var(--green); }
 .learn-section { margin-top: 64px; padding-top: 48px; border-top: 1px solid var(--border); }
@@ -1227,7 +1227,7 @@
 .video-play { width: 56px; height: 56px; background: var(--green); color: #000; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; }
 .video-duration { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.8); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-family: var(--font-mono); }
 .video-info { padding: 16px; }
-.video-info h4 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+.video-info h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
 .video-info p { font-size: 13px; color: var(--dim); margin-bottom: 8px; }
 .video-meta { font-size: 11px; color: var(--dim); }
 .arch-explainers { display: flex; flex-direction: column; gap: 32px; }
@@ -1295,7 +1295,7 @@
 .integration-install .copy-btn { padding: 4px 8px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; color: var(--dim); font-size: 11px; cursor: pointer; flex-shrink: 0; }
 .integration-install .copy-btn:hover { border-color: var(--green); color: var(--green); }
 .submit-integration { display: flex; justify-content: space-between; align-items: center; gap: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; }
-.submit-info h4 { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.submit-info h3 { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
 .submit-info ul { padding-left: 20px; }
 .submit-info li { font-size: 13px; color: var(--dim); line-height: 1.6; margin-bottom: 4px; }
 
@@ -1312,7 +1312,7 @@
 .api-explorer-container { display: grid; grid-template-columns: 250px 1fr; gap: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .api-explorer-sidebar { background: var(--card); border-right: 1px solid var(--border); padding: 16px; }
 .api-endpoint-group { margin-bottom: 16px; }
-.api-endpoint-group h4 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.api-endpoint-group h3 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
 .api-endpoint { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 4px; font-size: 12px; color: var(--text); text-decoration: none; transition: all 0.2s; }
 .api-endpoint:hover { background: var(--surface); }
 .api-endpoint.active { background: rgba(0,230,118,0.1); }
@@ -1386,7 +1386,7 @@
 .showcase-image { height: 200px; background: var(--card); display: flex; align-items: center; justify-content: center; }
 .showcase-placeholder { font-size: 48px; opacity: 0.5; }
 .showcase-info { padding: 16px; }
-.showcase-info h4 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.showcase-info h3 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .showcase-info p { font-size: 13px; color: var(--dim); line-height: 1.5; margin-bottom: 8px; }
 .showcase-meta { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--dim); }
 .showcase-author { color: var(--green); }
@@ -1415,7 +1415,7 @@
 .event-date { text-align: center; flex-shrink: 0; }
 .event-month { display: block; font-size: 12px; font-weight: 600; color: var(--green); text-transform: uppercase; }
 .event-day { display: block; font-size: 24px; font-weight: 800; font-family: var(--font-mono); color: var(--text); }
-.event-info h4 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.event-info h3 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .event-info p { font-size: 13px; color: var(--dim); line-height: 1.5; margin-bottom: 8px; }
 .event-time { font-size: 12px; color: var(--green); }
 

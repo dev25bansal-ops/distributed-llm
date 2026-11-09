@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>API Playground — DistLLM</title>
     <meta name="description" content="Interactive API playground to explore DistLLM's OpenAI-compatible chat completions API.">
@@ -43,7 +43,7 @@
         .tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}.tag::before{content:'';width:6px;height:6px;background:var(--green);border-radius:50%}
         .playground{display:grid;grid-template-columns:1fr 1fr;gap:16px}
         .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px}
-        .panel h3{font-size:14px;font-weight:700;margin-bottom:16px;color:var(--dim);text-transform:uppercase;letter-spacing:0.5px}
+        .panel h2{font-size:14px;font-weight:700;margin-bottom:16px;color:var(--dim);text-transform:uppercase;letter-spacing:0.5px}
         .form-group{margin-bottom:16px}
         .form-group label{display:block;font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:6px}
         .form-group select,.form-group input[type="text"],.form-group textarea{width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:var(--font-sans);outline:none;transition:border-color 0.15s}.form-group select:focus,.form-group input:focus,.form-group textarea:focus{border-color:var(--green-bd)}
@@ -99,7 +99,7 @@
 
             <div class="playground">
                 <div class="panel">
-                    <h3>Request</h3>
+                    <h2>Request</h2>
                     <div class="form-group">
                         <label for="model">Model</label>
                         <select id="model">
@@ -116,21 +116,21 @@
                         <textarea id="message" placeholder="Enter your message...">Explain distributed LLM inference in simple terms.</textarea>
                     </div>
                     <div class="form-group">
-                        <label>Temperature: <span id="tempVal">0.7</span></label>
+                        <label for="temperature">Temperature: <span id="tempVal">0.7</span></label>
                         <div class="slider-row">
                             <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
                             <span class="slider-val" id="tempDisplay">0.7</span>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>Max Tokens: <span id="maxTokensVal">256</span></label>
+                        <label for="maxTokens">Max Tokens: <span id="maxTokensVal">256</span></label>
                         <div class="slider-row">
                             <input type="range" id="maxTokens" min="1" max="4096" step="1" value="256">
                             <span class="slider-val" id="maxDisplay">256</span>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>Stream</label>
+                        <label for="stream">Stream</label>
                         <div class="slider-row">
                             <input type="range" id="stream" min="0" max="1" step="1" value="1">
                             <span class="slider-val" id="streamDisplay">true</span>
@@ -139,7 +139,7 @@
                 </div>
 
                 <div class="panel">
-                    <h3>Generated Code</h3>
+                    <h2>Generated Code</h2>
                     <div class="code-panel">
                         <div class="code-tabs">
                             <button class="code-tab active" data-lang="curl">cURL</button>

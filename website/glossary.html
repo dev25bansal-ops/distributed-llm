@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Glossary — DistLLM</title>
     <meta name="description" content="Glossary of LLM and distributed computing terms used in DistLLM documentation.">
@@ -45,8 +45,8 @@
         .alpha-nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:32px}
         .alpha-nav a{width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:13px;font-weight:600;color:var(--dim);transition:all 0.15s}.alpha-nav a:hover{color:var(--green);border-color:var(--green-bd)}
         .term{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:12px;scroll-margin-top:80px}
-        .term h3{font-size:17px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
-        .term h3 code{font-size:13px;background:var(--surface);padding:2px 8px;border-radius:4px;font-family:var(--font-mono);color:var(--green);font-weight:500}
+        .term h2{font-size:17px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+        .term h2 code{font-size:13px;background:var(--surface);padding:2px 8px;border-radius:4px;font-family:var(--font-mono);color:var(--green);font-weight:500}
         .term p{font-size:14px;color:var(--text-secondary);line-height:1.7;margin-bottom:0}
         .term-category{font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px}
         footer{border-top:1px solid var(--border);margin-top:80px}
@@ -94,121 +94,121 @@
 
             <div class="term" id="pipeline-parallelism">
                 <div class="term-category">Parallelism</div>
-                <h3>Pipeline Parallelism</h3>
+                <h2>Pipeline Parallelism</h2>
                 <p>A model distribution strategy where consecutive layers of a neural network are placed on different devices. Each device processes a layer and passes hidden states to the next device in the pipeline. DistLLM's primary distribution method for splitting models across heterogeneous GPUs.</p>
             </div>
 
             <div class="term" id="tensor-parallelism">
                 <div class="term-category">Parallelism</div>
-                <h3>Tensor Parallelism</h3>
+                <h2>Tensor Parallelism</h2>
                 <p>A model distribution strategy where individual layers are split across multiple devices. Each device computes a portion of each layer's matrix multiplication. Requires high-bandwidth interconnect (NVLink) for efficiency. DistLLM supports tensor parallelism within pipeline stages.</p>
             </div>
 
             <div class="term" id="kv-cache">
                 <div class="term-category">Memory</div>
-                <h3>KV Cache</h3>
+                <h2>KV Cache</h2>
                 <p>Key-Value cache stores previously computed attention keys and values during autoregressive generation. Avoids recomputing attention for all previous tokens at each step. Memory-intensive for long sequences — DistLLM supports KV cache quantization to reduce VRAM usage.</p>
             </div>
 
             <div class="term" id="pagedattention">
                 <div class="term-category">Memory</div>
-                <h3>PagedAttention</h3>
+                <h2>PagedAttention</h2>
                 <p>A memory management technique (originally from vLLM) that allocates KV cache in fixed-size pages rather than contiguous blocks. Eliminates memory fragmentation and enables higher batch concurrency. DistLLM implements PagedAttention across distributed workers.</p>
             </div>
 
             <div class="term" id="speculative-decoding">
                 <div class="term-category">Performance</div>
-                <h3>Speculative Decoding</h3>
+                <h2>Speculative Decoding</h2>
                 <p>A technique to accelerate autoregressive generation by using a smaller "draft" model to predict multiple tokens, then verifying them in parallel with the large model. Achieves 2-3x speedup with identical output quality. DistLLM supports EAGLE-2, n-gram, and multi-draft strategies.</p>
             </div>
 
             <div class="term" id="continuous-batching">
                 <div class="term-category">Performance</div>
-                <h3>Continuous Batching</h3>
+                <h2>Continuous Batching</h2>
                 <p>A scheduling strategy that dynamically adds and removes requests from a batch as they complete, rather than waiting for the entire batch to finish. Maximizes GPU utilization under variable request loads. Standard in production LLM serving.</p>
             </div>
 
             <div class="term" id="quantization">
                 <div class="term-category">Optimization</div>
-                <h3>Quantization (FP16 / INT8 / INT4)</h3>
+                <h2>Quantization (FP16 / INT8 / INT4)</h2>
                 <p>Reducing model weight precision to decrease memory usage and increase throughput. FP16 (16-bit float) is standard. INT8 halves memory with minimal quality loss. INT4 quarters memory with acceptable loss for most tasks. DistLLM supports GGUF, GPTQ, AWQ, and bitsandbytes quantization.</p>
             </div>
 
             <div class="term" id="gguf">
                 <div class="term-category">Format</div>
-                <h3>GGUF</h3>
+                <h2>GGUF</h2>
                 <p>GGML Universal Format — a binary format for quantized models designed for efficient CPU and GPU inference. Popularized by llama.cpp. Supports multiple quantization levels (Q4_K_M, Q5_K_S, Q8_0, etc.). DistLLM loads GGUF models natively via the llama.cpp backend.</p>
             </div>
 
             <div class="term" id="lora">
                 <div class="term-category">Training</div>
-                <h3>LoRA</h3>
+                <h2>LoRA</h2>
                 <p>Low-Rank Adaptation — a parameter-efficient fine-tuning method that injects trainable low-rank matrices into transformer layers. Typically adds less than 1% trainable parameters. Enables task-specific adaptation without modifying base model weights.</p>
             </div>
 
             <div class="term" id="peft">
                 <div class="term-category">Training</div>
-                <h3>PEFT</h3>
+                <h2>PEFT</h2>
                 <p>Parameter-Efficient Fine-Tuning — a family of methods (LoRA, QLoRA, Prefix Tuning, Adapters) that fine-tune only a small subset of model parameters. Reduces compute, memory, and data requirements for adapting models to specific tasks.</p>
             </div>
 
             <div class="term" id="rlhf">
                 <div class="term-category">Training</div>
-                <h3>RLHF</h3>
+                <h2>RLHF</h2>
                 <p>Reinforcement Learning from Human Feedback — a training approach that uses human preferences to align language model outputs. Involves reward model training and PPO/DPO optimization. Used to make models more helpful, harmless, and honest.</p>
             </div>
 
             <div class="term" id="token-s">
                 <div class="term-category">Metrics</div>
-                <h3>tok/s (Tokens per Second)</h3>
+                <h2>tok/s (Tokens per Second)</h2>
                 <p>The primary throughput metric for LLM inference. Measures output tokens generated per second during the decoding phase (excluding prefill). Higher is better. DistLLM benchmarks typically report tok/s for standardized comparison across hardware configurations.</p>
             </div>
 
             <div class="term" id="ttft">
                 <div class="term-category">Metrics</div>
-                <h3>TTFT</h3>
+                <h2>TTFT</h2>
                 <p>Time To First Token — the latency between sending a request and receiving the first output token. Dominated by prefill computation for the input prompt. Critical for user-perceived responsiveness in streaming applications.</p>
             </div>
 
             <div class="term" id="tpot">
                 <div class="term-category">Metrics</div>
-                <h3>TPOT</h3>
+                <h2>TPOT</h2>
                 <p>Time Per Output Token — the average time to generate each token after the first. Inverse of tok/s. Lower TPOT means faster streaming. Typical targets: under 50ms for interactive use, under 20ms for real-time applications.</p>
             </div>
 
             <div class="term" id="slo">
                 <div class="term-category">Operations</div>
-                <h3>SLO</h3>
+                <h2>SLO</h2>
                 <p>Service Level Objective — a target metric for service quality (e.g., P95 latency under 100ms, 99.9% availability). DistLLM includes built-in SLO tracking, alerting, and reporting via Prometheus and Grafana dashboards.</p>
             </div>
 
             <div class="term" id="grpc">
                 <div class="term-category">Networking</div>
-                <h3>gRPC</h3>
+                <h2>gRPC</h2>
                 <p>Google Remote Procedure Call — a high-performance RPC framework using Protocol Buffers for serialization. DistLLM uses gRPC for inter-node communication between coordinators and workers, offering lower latency and better throughput than REST for internal traffic.</p>
             </div>
 
             <div class="term" id="prometheus">
                 <div class="term-category">Observability</div>
-                <h3>Prometheus</h3>
+                <h2>Prometheus</h2>
                 <p>An open-source monitoring and alerting system. Collects time-series metrics via pull-based scraping. DistLLM exposes Prometheus metrics at <code style="background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)">/metrics</code> including request latency, throughput, GPU utilization, and queue depth.</p>
             </div>
 
             <div class="term" id="otel">
                 <div class="term-category">Observability</div>
-                <h3>OpenTelemetry</h3>
+                <h2>OpenTelemetry</h2>
                 <p>A vendor-neutral observability framework for traces, metrics, and logs. DistLLM supports OpenTelemetry for distributed tracing across coordinator and worker nodes, enabling end-to-end request visualization in tools like Jaeger and SigNoz.</p>
             </div>
 
             <div class="term" id="webgpu">
                 <div class="term-category">Compute</div>
-                <h3>WebGPU</h3>
+                <h2>WebGPU</h2>
                 <p>A web standard for GPU compute in browsers. Enables running machine learning inference directly in the browser using GPU shaders. DistLLM's experimental WebGPU backend allows browser-based clients to contribute GPU cycles to a cluster.</p>
             </div>
 
             <div class="term" id="federated-learning">
                 <div class="term-category">Training</div>
-                <h3>Federated Learning</h3>
+                <h2>Federated Learning</h2>
                 <p>A distributed machine learning approach where models are trained across multiple nodes without centralizing data. Each node trains locally and shares only gradient updates. DistLLM supports federated fine-tuning with differential privacy and secure aggregation protocols.</p>
             </div>
         </div>

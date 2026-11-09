@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Offline — DistLLM</title>
     <meta name="description" content="You're offline. DistLLM works offline for cached pages.">
@@ -242,7 +242,7 @@
         async function loadCachedPages() {
             const container = document.getElementById('cachedPages');
             try {
-                const cache = await caches.open('distllm-v0.4.0');
+                const cache = await caches.open('distllm-v0.6.2.2');
                 const requests = await cache.keys();
                 const pages = requests
                     .filter(r => r.url.endsWith('.html') || r.url.endsWith('/'))

@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>API Reference — DistLLM</title>
     <meta name="description" content="Complete API reference for DistLLM. Interactive Swagger/OpenAPI explorer, SDK downloads, and playground.">
@@ -49,7 +49,7 @@
     <nav class="nav" role="navigation" aria-label="Main navigation">
         <div class="nav-in">
             <a href="index.html" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
-            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="integrations.html">Integrations</a><a href="api.html" class="active">API</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="blog.html">Blog</a><a href="integrations.html">Integrations</a><a href="api.html" class="active">API</a><a href="index.html#pricing">Pricing</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
             <div class="nav-right">
                 <a href="https://github.com/dev25bansal-ops/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
                 <a href="https://github.com/dev25bansal-ops/distributed-llm#getting-started" class="nav-cta">Get Started</a>
@@ -79,44 +79,40 @@
                 <div class="api-explorer-container">
                     <div class="api-explorer-sidebar">
                         <div class="api-endpoint-group">
-                            <h4>Chat</h4>
+                            <h3>Chat</h3>
                             <a href="#chat-completions" class="api-endpoint active">
                                 <span class="api-method post">POST</span>
                                 <span>/v1/chat/completions</span>
                             </a>
                         </div>
                         <div class="api-endpoint-group">
-                            <h4>Models</h4>
-                            <a href="#list-models" class="api-endpoint">
+                            <h3>Models</h3>
+                            <a href="docs.html#models" class="api-endpoint">
                                 <span class="api-method get">GET</span>
                                 <span>/v1/models</span>
                             </a>
-                            <a href="#get-model" class="api-endpoint">
-                                <span class="api-method get">GET</span>
-                                <span>/v1/models/{id}</span>
-                            </a>
                         </div>
                         <div class="api-endpoint-group">
-                            <h4>Embeddings</h4>
-                            <a href="#embeddings" class="api-endpoint">
+                            <h3>Embeddings</h3>
+                            <a href="docs.html#embeddings" class="api-endpoint">
                                 <span class="api-method post">POST</span>
                                 <span>/v1/embeddings</span>
                             </a>
                         </div>
                         <div class="api-endpoint-group">
-                            <h4>Cluster</h4>
-                            <a href="#cluster-status" class="api-endpoint">
+                            <h3>Cluster</h3>
+                            <div class="api-endpoint">
                                 <span class="api-method get">GET</span>
-                                <span>/v1/cluster/status</span>
-                            </a>
-                            <a href="#cluster-nodes" class="api-endpoint">
+                                <span>/admin/v1/cluster/status</span>
+                            </div>
+                            <div class="api-endpoint">
                                 <span class="api-method get">GET</span>
-                                <span>/v1/cluster/nodes</span>
-                            </a>
+                                <span>/admin/v1/nodes</span>
+                            </div>
                         </div>
                         <div class="api-endpoint-group">
-                            <h4>Health</h4>
-                            <a href="#health" class="api-endpoint">
+                            <h3>Health</h3>
+                            <a href="docs.html#health" class="api-endpoint">
                                 <span class="api-method get">GET</span>
                                 <span>/health</span>
                             </a>
@@ -183,14 +179,14 @@
                                 <div class="api-code">
                                     <div class="api-code-header">
                                         <span>curl</span>
-                                        <button class="copy-btn" data-copy='curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $API_KEY" \
-  -d \'{
-    "model": "meta-llama/Llama-3.1-8B",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "temperature": 0.7
-  }\''>Copy</button>
+                                        <button class="copy-btn" data-copy="curl -X POST http://localhost:8000/v1/chat/completions \
+  -H &quot;Content-Type: application/json&quot; \
+  -H &quot;Authorization: Bearer $API_KEY&quot; \
+  -d &#39;{
+    &quot;model&quot;: &quot;meta-llama/Llama-3.1-8B&quot;,
+    &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello!&quot;}],
+    &quot;temperature&quot;: 0.7
+  }&#39;">Copy</button>
                                     </div>
                                     <pre><code>curl -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -208,25 +204,25 @@
                                 <div class="api-code">
                                     <div class="api-code-header">
                                         <span>JSON</span>
-                                        <button class="copy-btn" data-copy='{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1717436800,
-  "model": "meta-llama/Llama-3.1-8B",
-  "choices": [{
-    "index": 0,
-    "message": {
-      "role": "assistant",
-      "content": "Hello! How can I help you today?"
+                                        <button class="copy-btn" data-copy="{
+  &quot;id&quot;: &quot;chatcmpl-abc123&quot;,
+  &quot;object&quot;: &quot;chat.completion&quot;,
+  &quot;created&quot;: 1717436800,
+  &quot;model&quot;: &quot;meta-llama/Llama-3.1-8B&quot;,
+  &quot;choices&quot;: [{
+    &quot;index&quot;: 0,
+    &quot;message&quot;: {
+      &quot;role&quot;: &quot;assistant&quot;,
+      &quot;content&quot;: &quot;Hello! How can I help you today?&quot;
     },
-    "finish_reason": "stop"
+    &quot;finish_reason&quot;: &quot;stop&quot;
   }],
-  "usage": {
-    "prompt_tokens": 10,
-    "completion_tokens": 9,
-    "total_tokens": 19
+  &quot;usage&quot;: {
+    &quot;prompt_tokens&quot;: 10,
+    &quot;completion_tokens&quot;: 9,
+    &quot;total_tokens&quot;: 19
   }
-}'>Copy</button>
+}">Copy</button>
                                     </div>
                                     <pre><code>{
   "id": "chatcmpl-abc123",
@@ -267,7 +263,7 @@
                             <div class="sdk-logo">🐍</div>
                             <div>
                                 <h3>Python</h3>
-                                <span class="sdk-version">v0.4.0</span>
+                                <span class="sdk-version">v0.6.2.2</span>
                             </div>
                         </div>
                         <div class="sdk-install">
@@ -286,7 +282,7 @@
                             <div class="sdk-logo">📦</div>
                             <div>
                                 <h3>Node.js</h3>
-                                <span class="sdk-version">v0.4.0</span>
+                                <span class="sdk-version">v1.0.0</span>
                             </div>
                         </div>
                         <div class="sdk-install">
@@ -294,8 +290,8 @@
                             <button class="copy-btn" data-copy="npm install distllm">Copy</button>
                         </div>
                         <div class="sdk-links">
-                            <a href="https://www.npmjs.com/package/distllm" target="_blank" rel="noopener noreferrer">npm</a>
-                            <a href="https://github.com/distributed-llm/node-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm/tree/master/sdk/js" target="_blank" rel="noopener noreferrer">sdk/js (in-repo)</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a>
                             <a href="docs.html">Docs</a>
                         </div>
                     </div>
@@ -305,16 +301,16 @@
                             <div class="sdk-logo">🐹</div>
                             <div>
                                 <h3>Go</h3>
-                                <span class="sdk-version">v0.4.0</span>
+                                <span class="sdk-version">v1.0.0</span>
                             </div>
                         </div>
                         <div class="sdk-install">
-                            <code>go get github.com/distributed-llm/go-sdk</code>
-                            <button class="copy-btn" data-copy="go get github.com/distributed-llm/go-sdk">Copy</button>
+                            <code>go get github.com/dev25bansal-ops/distributed-llm/sdk/go</code>
+                            <button class="copy-btn" data-copy="go get github.com/dev25bansal-ops/distributed-llm/sdk/go">Copy</button>
                         </div>
                         <div class="sdk-links">
-                            <a href="https://pkg.go.dev/github.com/distributed-llm/go-sdk" target="_blank" rel="noopener noreferrer">pkg.go.dev</a>
-                            <a href="https://github.com/distributed-llm/go-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm/tree/master/sdk/go" target="_blank" rel="noopener noreferrer">sdk/go (in-repo)</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a>
                             <a href="docs.html">Docs</a>
                         </div>
                     </div>
@@ -324,7 +320,7 @@
                             <div class="sdk-logo">🦀</div>
                             <div>
                                 <h3>Rust</h3>
-                                <span class="sdk-version">v0.4.0</span>
+                                <span class="sdk-version">v1.0.0</span>
                             </div>
                         </div>
                         <div class="sdk-install">
@@ -332,8 +328,8 @@
                             <button class="copy-btn" data-copy="cargo add distllm">Copy</button>
                         </div>
                         <div class="sdk-links">
-                            <a href="https://crates.io/crates/distllm" target="_blank" rel="noopener noreferrer">crates.io</a>
-                            <a href="https://github.com/distributed-llm/rust-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm/tree/master/sdk/rust" target="_blank" rel="noopener noreferrer">sdk/rust (in-repo)</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a>
                             <a href="docs.html">Docs</a>
                         </div>
                     </div>
@@ -343,16 +339,15 @@
                             <div class="sdk-logo">☕</div>
                             <div>
                                 <h3>Java</h3>
-                                <span class="sdk-version">v0.4.0</span>
+                                <span class="sdk-version">not published</span>
                             </div>
                         </div>
                         <div class="sdk-install">
-                            <code>implementation 'dev.distllm:client:0.4.0'</code>
-                            <button class="copy-btn" data-copy="implementation 'dev.distllm:client:0.4.0'">Copy</button>
+                            <code>implementation 'dev.distllm:client:0.6.2.2'</code>
+                            <button class="copy-btn" data-copy="implementation 'dev.distllm:client:0.6.2.2'">Copy</button>
                         </div>
                         <div class="sdk-links">
-                            <a href="https://central.sonatype.com/artifact/dev.distllm/client" target="_blank" rel="noopener noreferrer">Maven Central</a>
-                            <a href="https://github.com/distributed-llm/java-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a>
                             <a href="docs.html">Docs</a>
                         </div>
                     </div>
@@ -362,7 +357,7 @@
                             <div class="sdk-logo">💎</div>
                             <div>
                                 <h3>Ruby</h3>
-                                <span class="sdk-version">v0.4.0</span>
+                                <span class="sdk-version">not published</span>
                             </div>
                         </div>
                         <div class="sdk-install">
@@ -370,8 +365,7 @@
                             <button class="copy-btn" data-copy="gem install distllm">Copy</button>
                         </div>
                         <div class="sdk-links">
-                            <a href="https://rubygems.org/gems/distllm" target="_blank" rel="noopener noreferrer">RubyGems</a>
-                            <a href="https://github.com/distributed-llm/ruby-sdk" target="_blank" rel="noopener noreferrer">GitHub</a>
+                            <a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a>
                             <a href="docs.html">Docs</a>
                         </div>
                     </div>
@@ -388,7 +382,7 @@
                 <div class="playground-container">
                     <div class="playground-sidebar">
                         <div class="playground-field">
-                            <label>Endpoint</label>
+                            <label for="playgroundEndpoint">Endpoint</label>
                             <select id="playgroundEndpoint">
                                 <option value="/v1/chat/completions">Chat Completions</option>
                                 <option value="/v1/embeddings">Embeddings</option>
@@ -396,7 +390,7 @@
                             </select>
                         </div>
                         <div class="playground-field">
-                            <label>Model</label>
+                            <label for="playgroundModel">Model</label>
                             <select id="playgroundModel">
                                 <option value="auto">Auto (recommended)</option>
                                 <option value="meta-llama/Llama-3.1-8B">Llama 3.1 8B</option>
@@ -404,16 +398,16 @@
                             </select>
                         </div>
                         <div class="playground-field">
-                            <label>Temperature</label>
+                            <label for="playgroundTemp">Temperature</label>
                             <input type="range" id="playgroundTemp" min="0" max="2" step="0.1" value="0.7">
                             <span class="playground-range-value" id="playgroundTempValue">0.7</span>
                         </div>
                         <div class="playground-field">
-                            <label>Max Tokens</label>
+                            <label for="playgroundMaxTokens">Max Tokens</label>
                             <input type="number" id="playgroundMaxTokens" value="100" min="1" max="4096">
                         </div>
                         <div class="playground-field">
-                            <label>Messages</label>
+                            <label for="playgroundMessages">Messages</label>
                             <textarea id="playgroundMessages" rows="4">[{"role": "user", "content": "Hello!"}]</textarea>
                         </div>
                         <button class="btn btn-primary" id="playgroundSend">Send Request</button>

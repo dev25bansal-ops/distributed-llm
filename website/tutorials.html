@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tutorials — DistLLM</title>
     <meta name="description" content="Step-by-step tutorials for DistLLM — from quickstart to advanced multi-node setups.">
@@ -45,7 +45,7 @@
         .tutorial{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px 28px;display:flex;align-items:center;gap:20px;transition:all 0.2s cubic-bezier(0.16,1,0.3,1);cursor:pointer}.tutorial:hover{border-color:var(--green-bd);transform:translateY(-1px)}
         .tutorial-num{width:44px;height:44px;background:var(--green-bg);border:1px solid var(--green-bd);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--green);font-family:var(--font-mono);flex-shrink:0}
         .tutorial-body{flex:1;min-width:0}
-        .tutorial-body h3{font-size:16px;font-weight:700;margin-bottom:4px}
+        .tutorial-body h2{font-size:16px;font-weight:700;margin-bottom:4px}
         .tutorial-body p{font-size:13px;color:var(--text-secondary);margin-bottom:0;line-height:1.6}
         .tutorial-meta{display:flex;gap:8px;align-items:center;margin-top:8px}
         .tutorial-tag{font-size:10px;font-weight:600;padding:2px 8px;border-radius:100px;text-transform:uppercase}
@@ -97,7 +97,7 @@
                 <div class="tutorial" onclick="window.open('https://github.com/dev25bansal-ops/distributed-llm#getting-started','_blank')">
                     <div class="tutorial-num">1</div>
                     <div class="tutorial-body">
-                        <h3>5-Minute Quickstart</h3>
+                        <h2>5-Minute Quickstart</h2>
                         <p>Install DistLLM, load a model, and make your first API call. Covers single-node setup, Python client, and streaming responses.</p>
                         <div class="tutorial-meta">
                             <span class="tutorial-tag tag-beginner">Beginner</span>
@@ -110,7 +110,7 @@
                 <div class="tutorial" onclick="window.open('https://github.com/dev25bansal-ops/distributed-llm/blob/main/docs/REMOTE_CONNECTIONS.md','_blank')">
                     <div class="tutorial-num">2</div>
                     <div class="tutorial-body">
-                        <h3>Multi-Node Cluster Setup</h3>
+                        <h2>Multi-Node Cluster Setup</h2>
                         <p>Connect multiple machines into a single inference cluster. Covers network configuration, TLS setup, layer partitioning, and performance tuning.</p>
                         <div class="tutorial-meta">
                             <span class="tutorial-tag tag-intermediate">Intermediate</span>
@@ -123,7 +123,7 @@
                 <div class="tutorial" onclick="window.open('https://github.com/dev25bansal-ops/distributed-llm/blob/main/docs/REMOTE_CONNECTIONS.md#colab--kaggle','_blank')">
                     <div class="tutorial-num">3</div>
                     <div class="tutorial-body">
-                        <h3>Connecting Colab / Kaggle</h3>
+                        <h2>Connecting Colab / Kaggle</h2>
                         <p>Use free GPU instances from Google Colab or Kaggle as workers in your local cluster. Covers Tailscale networking and NAT traversal.</p>
                         <div class="tutorial-meta">
                             <span class="tutorial-tag tag-intermediate">Intermediate</span>
@@ -136,7 +136,7 @@
                 <div class="tutorial" onclick="window.open('https://github.com/dev25bansal-ops/distributed-llm/tree/main/src/distributed_llm/backends','_blank')">
                     <div class="tutorial-num">4</div>
                     <div class="tutorial-body">
-                        <h3>Custom Backend Plugin</h3>
+                        <h2>Custom Backend Plugin</h2>
                         <p>Build a custom inference backend for DistLLM. Implement the backend interface, register your plugin, and integrate with the pipeline scheduler.</p>
                         <div class="tutorial-meta">
                             <span class="tutorial-tag tag-advanced">Advanced</span>
@@ -149,7 +149,7 @@
                 <div class="tutorial" onclick="window.open('https://github.com/dev25bansal-ops/distributed-llm/blob/main/docs/FEDERATED.md','_blank')">
                     <div class="tutorial-num">5</div>
                     <div class="tutorial-body">
-                        <h3>Federated Fine-Tuning</h3>
+                        <h2>Federated Fine-Tuning</h2>
                         <p>Run federated learning experiments across distributed nodes. Configure differential privacy, secure aggregation, and LoRA-based fine-tuning.</p>
                         <div class="tutorial-meta">
                             <span class="tutorial-tag tag-advanced">Advanced</span>
@@ -162,7 +162,7 @@
                 <div class="tutorial" onclick="window.open('https://github.com/dev25bansal-ops/distributed-llm/blob/main/docs/PERFORMANCE_TUNING.md','_blank')">
                     <div class="tutorial-num">6</div>
                     <div class="tutorial-body">
-                        <h3>Cost Optimization Guide</h3>
+                        <h2>Cost Optimization Guide</h2>
                         <p>Minimize inference costs with quantization, speculative decoding, spot instances, carbon-aware scheduling, and multi-cloud routing.</p>
                         <div class="tutorial-meta">
                             <span class="tutorial-tag tag-intermediate">Intermediate</span>
