@@ -4,7 +4,6 @@ from pydantic import PrivateAttr
 from llama_index.core.embeddings import BaseEmbedding
 
 from distllm.sdk import DistLLMClient, DistLLMClientSync
-from distllm.sdk.types import EmbeddingResponse
 
 
 class DistLLMEmbeddings(BaseEmbedding):
@@ -57,17 +56,27 @@ class DistLLMEmbeddings(BaseEmbedding):
 
     @staticmethod
     def _extract_single(resp: Any) -> List[float]:
-        if isinstance(resp, EmbeddingResponse):
-            return resp.data[0].embedding if resp.data else []
-        if isinstance(resp, dict):
-            data = resp.get("data", [])
-            return data[0]["embedding"] if data else []
-        return []
+        data = DistLLMEmbeddings._response_data(resp)
+        return _embedding_of(data[0]) if data else []
 
     @staticmethod
     def _extract_all(resp: Any) -> List[List[float]]:
-        if isinstance(resp, EmbeddingResponse):
-            return [e.embedding for e in resp.data]
+        return [_embedding_of(item) for item in DistLLMEmbeddings._response_data(resp)]
+
+    @staticmethod
+    def _response_data(resp: Any) -> List[Any]:
+        """Return the ``data`` list from any SDK/dict/duck-typed response."""
         if isinstance(resp, dict):
-            return [e["embedding"] for e in resp.get("data", [])]
-        return []
+            data = resp.get("data")
+        else:
+            data = getattr(resp, "data", None)
+        return data if isinstance(data, (list, tuple)) else []
+
+
+def _embedding_of(item: Any) -> List[float]:
+    """Read the ``embedding`` field off an EmbeddingObject, dict or mock."""
+    if isinstance(item, dict):
+        embedding = item.get("embedding")
+    else:
+        embedding = getattr(item, "embedding", None)
+    return list(embedding) if embedding else []

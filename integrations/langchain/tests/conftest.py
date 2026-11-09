@@ -24,6 +24,13 @@ _INTEGRATIONS_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.absp
 if _INTEGRATIONS_DIR not in sys.path:
     sys.path.insert(0, _INTEGRATIONS_DIR)
 
+# An editable install of this integration may point at a *different* checkout
+# (e.g. the main repo while the suite runs from a git worktree). site-packages
+# precedes PYTHONPATH, so force this checkout's source to win.
+_THIS_SRC = os.path.join(os.path.dirname(_INTEGRATIONS_DIR), "langchain", "src")
+if os.path.isdir(_THIS_SRC) and sys.path[0] != _THIS_SRC:
+    sys.path.insert(0, _THIS_SRC)
+
 from langchain_core.callbacks import CallbackManagerForLLMRun  # noqa: E402
 
 # Neutralise the buggy on_llm_end call in the integration source.
