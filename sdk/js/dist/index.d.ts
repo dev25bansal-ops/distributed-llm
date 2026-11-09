@@ -121,9 +121,28 @@ export interface ApiError {
 export interface ClientOptions {
     baseUrl?: string;
     apiKey?: string;
+    /**
+     * Timeout in milliseconds.
+     *
+     * - Non-streaming requests: bounds the WHOLE exchange (connection,
+     *   response headers, and body read).
+     * - Streaming (SSE) requests: bounds connection + response headers, then
+     *   acts as an IDLE timeout that re-arms between chunks. A stream that
+     *   keeps producing chunks may legally run longer than this value; a
+     *   stream that goes silent for longer is aborted.
+     *
+     * @default 120_000
+     */
     timeout?: number;
     maxRetries?: number;
     headers?: Record<string, string>;
+}
+/**
+ * Thrown when a request exceeds `timeout`, or a stream exceeds the idle
+ * gap between chunks. Distinguishable from network failures via `name`.
+ */
+export declare class DistLLMTimeoutError extends Error {
+    constructor(message: string);
 }
 /**
  * DistLLM client for Node.js and browsers.
@@ -143,7 +162,18 @@ export declare class DistLLMClient {
     constructor(options?: ClientOptions);
     /** @internal */
     request<T>(method: string, path: string, body?: object): Promise<T>;
-    /** @internal */
+    /**
+     * Streaming SSE request.
+     *
+     * Timeout semantics differ from {@link DistLLMClient.request}: the
+     * configured timeout bounds CONNECTION + RESPONSE HEADERS only. After
+     * headers arrive, the deadline is replaced by an IDLE TIMER that re-arms
+     * before every chunk read — long-lived generations that keep trickling
+     * data are never killed mid-stream, but a silent/dead server cannot hang
+     * the consumer forever.
+     *
+     * @internal
+     */
     stream(method: string, path: string, body: object): AsyncGenerator<string>;
 }
 declare class ChatCompletions {

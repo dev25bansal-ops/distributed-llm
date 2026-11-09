@@ -30,6 +30,7 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./generated/*": "./dist/generated/*",
     "./package.json": "./package.json"
   },
   "sideEffects": false,
@@ -40,6 +41,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {

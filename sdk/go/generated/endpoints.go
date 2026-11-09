@@ -7,6 +7,7 @@ const EndpointcreateCompletion = "/v1/completions"
 const EndpointcreateEmbedding = "/v1/embeddings"
 const EndpointlistModels = "/v1/models"
 const EndpointgetHealth = "/health"
-// Batches take prompts inline and are submitted for background processing;
-// the server has no /v1/batches route and no batch-list route.
 const EndpointcreateBatch = "/v1/batch/submit"
+const EndpointgetBatchStatus = "/v1/batch/{batch_id}/status"
+const EndpointstreamBatchResults = "/v1/batch/{batch_id}/stream"
+const EndpointcancelBatch = "/v1/batch/{batch_id}/cancel"
