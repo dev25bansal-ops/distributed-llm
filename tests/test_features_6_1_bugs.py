@@ -209,7 +209,7 @@ def test_money_no_drift_across_random_charges():
             expected = amt
         else:
             expected += amt
-        total = total.add(amt)  # exact Decimal accumulate; quantize once on read
+        total.add(amt)  # exact Decimal accumulate in place; quantize once on read
 
     # Recorded total (quantized once) must equal the exact sum of charges.
     assert total.value() == expected.quantize(Decimal("0.01")), (

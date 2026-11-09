@@ -1,7 +1,13 @@
 /**
  * Playwright integration tests for DistLLM website.
- * 
+ *
  * Tests navigation, interactive components, and responsive behavior.
+ *
+ * These tests target the current static homepage (website/index.html). That page
+ * was rewritten from the earlier "code tabs / dark-mode toggle / command palette"
+ * design into a single hero + calculator + <details> FAQ layout, and the dark-mode
+ * toggle was removed outright (commit c1055e1). Tests asserting those retired
+ * controls were removed here rather than kept green by resurrecting the feature.
  */
 
 import { test, expect } from '@playwright/test';
@@ -14,13 +20,26 @@ test.describe('Navigation', () => {
 
     test('should have working nav links', async ({ page }) => {
         await page.goto('/');
-        const featuresLink = page.locator('a[href="#features"]').first();
-        await expect(featuresLink).toBeVisible();
+        // At mobile widths the primary nav collapses behind #menuBtn; open it
+        // before asserting visibility so the check is viewport-agnostic.
+        const menuBtn = page.locator('#menuBtn');
+        if (await menuBtn.isVisible()) {
+            await menuBtn.click();
+        }
+        const nav = page.locator('#mainNav');
+        await expect(nav.locator('a[href="docs.html"]').first()).toBeVisible();
     });
 
     test('should have working GitHub link', async ({ page }) => {
         await page.goto('/');
-        const githubLink = page.locator('a[href*="github.com"]').first();
+        const menuBtn = page.locator('#menuBtn');
+        if (await menuBtn.isVisible()) {
+            await menuBtn.click();
+        }
+        // There are GitHub links in both the header actions and the nav; assert a
+        // visible one exists rather than fixing on the first DOM match, whose
+        // visibility differs between desktop and the collapsed mobile header.
+        const githubLink = page.locator('a[href*="github.com"]:visible').first();
         await expect(githubLink).toBeVisible();
     });
 
@@ -33,69 +52,57 @@ test.describe('Navigation', () => {
         await page.goto('/blog.html');
         await expect(page).toHaveTitle(/Blog/);
     });
-});
 
-test.describe('Command Palette', () => {
-    test('should open with Ctrl+K', async ({ page }) => {
+    test('should have a skip-to-content link', async ({ page }) => {
         await page.goto('/');
-        await page.keyboard.press('Control+k');
-        const palette = page.locator('#cmdPalette');
-        await expect(palette).toBeVisible();
-    });
-
-    test('should close with Escape', async ({ page }) => {
-        await page.goto('/');
-        await page.keyboard.press('Control+k');
-        await page.keyboard.press('Escape');
-        const palette = page.locator('#cmdPalette');
-        await expect(palette).not.toBeVisible();
-    });
-});
-
-test.describe('Theme Toggle', () => {
-    test('should toggle dark/light mode', async ({ page }) => {
-        await page.goto('/');
-        const toggle = page.locator('#themeBtn');
-        await toggle.click();
-        // Check that the body class or data attribute changed
-        const html = page.locator('html');
-        await expect(html).not.toHaveAttribute('data-theme', 'dark');
+        const skip = page.locator('a.skip-link[href="#main"]');
+        await expect(skip).toBeAttached();
+        await expect(page.locator('#main')).toBeAttached();
     });
 });
 
 test.describe('Code Tabs', () => {
-    test('should switch between code tabs', async ({ page }) => {
+    test('should switch between install tabs', async ({ page }) => {
         await page.goto('/');
-        const pythonTab = page.locator('.code-tab', { hasText: 'Python' });
-        await pythonTab.click();
-        await expect(pythonTab).toHaveAttribute('aria-selected', 'true');
+        const dockerTab = page.locator('#tab-docker');
+        const pipTab = page.locator('#tab-pip');
+        await expect(pipTab).toHaveAttribute('aria-selected', 'true');
+        await dockerTab.click();
+        await expect(dockerTab).toHaveAttribute('aria-selected', 'true');
+        await expect(pipTab).toHaveAttribute('aria-selected', 'false');
+        await expect(page.locator('#installCmd')).toContainText('docker run');
     });
 
     test('should have working copy button', async ({ page }) => {
         await page.goto('/');
-        const copyBtn = page.locator('.code-copy').first();
+        const copyBtn = page.locator('#copyBtn');
         await copyBtn.click();
-        await expect(copyBtn).toHaveText('Copied!');
+        await expect(copyBtn).toHaveText('Copied');
     });
 });
 
-test.describe('FAQ Accordion', () => {
-    test('should toggle FAQ items', async ({ page }) => {
+test.describe('FAQ', () => {
+    test('FAQ items open on click', async ({ page }) => {
         await page.goto('/');
-        const faqButton = page.locator('.faq-q').first();
-        await faqButton.click();
-        const faqItem = page.locator('.faq-item.open');
-        await expect(faqItem).toBeVisible();
+        // The FAQ is native <details>/<summary>: the first item starts closed and
+        // opens when its summary is clicked. Assert the DOM `open` property, not
+        // the attribute string — Firefox reflects a valueless boolean attribute
+        // such that toHaveAttribute('open', '') is unreliable cross-browser.
+        const firstItem = page.locator('#faq details').first();
+        expect(await firstItem.evaluate((el) => el.open)).toBe(false);
+        // Click the summary, then assert the toggled state through a poll: a
+        // single synthesized click can race the native toggle on some engines.
+        await firstItem.locator('summary').click();
+        await expect.poll(() => firstItem.evaluate((el) => el.open)).toBe(true);
     });
 
-    test('should close other FAQ items', async ({ page }) => {
+    test('FAQ items are independent', async ({ page }) => {
         await page.goto('/');
-        const faq1 = page.locator('.faq-q').nth(0);
-        const faq2 = page.locator('.faq-q').nth(1);
-        await faq1.click();
-        await faq2.click();
-        const openItems = page.locator('.faq-item.open');
-        await expect(openItems).toHaveCount(1);
+        const items = page.locator('#faq details');
+        await items.nth(0).locator('summary').click();
+        expect(await items.nth(0).evaluate((el) => el.open)).toBe(true);
+        // Native <details> do not auto-close each other.
+        expect(await items.nth(1).evaluate((el) => el.open)).toBe(false);
     });
 });
 
@@ -104,21 +111,24 @@ test.describe('Mobile Menu', () => {
 
     test('should toggle mobile menu', async ({ page }) => {
         await page.goto('/');
-        await expect(page.locator('html')).toHaveClass(/js-enabled/);
         const menuBtn = page.locator('#menuBtn');
+        const navLinks = page.locator('#mainNav');
         await menuBtn.click();
-        const navLinks = page.locator('#navLinks');
         await expect(navLinks).toHaveClass(/open/);
+        await expect(menuBtn).toHaveAttribute('aria-expanded', 'true');
     });
 });
 
 test.describe('Calculator', () => {
     test('should update savings on slider change', async ({ page }) => {
         await page.goto('/');
-        const slider = page.locator('#gpuCount');
-        await slider.fill('4');
-        const savings = page.locator('#savingsValue');
-        await expect(savings).not.toBe('$0');
+        const cloudBefore = await page.locator('#ccCloud').innerText();
+        const slider = page.locator('#ccGpus');
+        await slider.fill('8');
+        // #ccCloud recomputes on input; a larger GPU count must change it.
+        await expect(page.locator('#ccGpusOut')).toHaveText('8');
+        await expect(page.locator('#ccCloud')).not.toHaveText(cloudBefore);
+        await expect(page.locator('#ccSave')).not.toHaveText('$0');
     });
 });
 
@@ -127,11 +137,14 @@ test.describe('Hero Section', () => {
         await page.goto('/');
         const hero = page.locator('.hero');
         await expect(hero).toBeVisible();
+        await expect(page.locator('.hero__heading')).toBeVisible();
     });
 
     test('should have working CTA buttons', async ({ page }) => {
         await page.goto('/');
-        const cta = page.locator('.btn-primary').first();
+        // The hero has a primary "Get Started" CTA and the header actions repeat
+        // it; on mobile one of them is collapsed. Assert a visible one.
+        const cta = page.locator('a.btn--primary[href="docs.html"]:visible').first();
         await expect(cta).toBeVisible();
-    });
-});
+        await expect(cta).toHaveAttribute('href', 'docs.html');
+    });});

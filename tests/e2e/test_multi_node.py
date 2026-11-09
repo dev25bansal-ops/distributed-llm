@@ -13,6 +13,14 @@ import time
 import threading
 import requests
 
+import pytest
+
+# Downloads real HF weights and talks to live ports; it must not run in the
+# default (non-e2e) suite. Without this marker the collection-only CI command
+# `pytest -m "not e2e and not slow and not chaos"` still collected and hung on
+# the model download until the job timed out.
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
+
 
 def test_single_node():
     """Test 1: Single-node inference (coordinator only)."""

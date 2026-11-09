@@ -138,6 +138,7 @@ class TestWithRetrySync:
             max_delay=10.0,
             backoff_multiplier=2.0,
             retryable=(IOError,),
+            jitter=0.0,
         )
 
         @with_retry(policy)
@@ -283,6 +284,7 @@ class TestWithRetryAsync:
             max_delay=10.0,
             backoff_multiplier=2.0,
             retryable=(TimeoutError,),
+            jitter=0.0,
         )
 
         @with_retry_async(policy)
@@ -391,6 +393,7 @@ class TestRetryGrpcCall:
                 base_delay=1.0,
                 max_delay=10.0,
                 retryable_exceptions=(TransientError,),
+                jitter=0.0,
             )
 
         expected_delays = [1.0, 2.0, 4.0]

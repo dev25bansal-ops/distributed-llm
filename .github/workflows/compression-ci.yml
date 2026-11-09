@@ -20,6 +20,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,testing]"
+      - uses: ./.github/actions/generate-protobuf
       - run: pytest tests/compression/test_compression.py -v
       - name: Compression accuracy test
         run: |
