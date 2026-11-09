@@ -169,8 +169,8 @@ def _note_validation_context(exc: "ValidationError", config_path: str) -> None:
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
-    Environment variables use DISTLLM__ prefix with __ delimiter.
-    Example: DISTLLM__MODEL__NAME=my-model sets model.name.
+    Environment variables use DISTLLM_ prefix with __ delimiter.
+    Example: DISTLLM_MODEL__NAME=my-model sets model.name.
     """
     model_config = SettingsConfigDict(
         env_prefix="DISTLLM_",
@@ -414,7 +414,7 @@ class DistLLMSettings(BaseSettings):
         # SECURITY/CORRECTNESS: pydantic-settings precedence is
         # ``init kwargs > env > dotenv > secrets > defaults``.  Passing YAML as
         # init kwargs (``cls(**data)``) would let a checked-in config file
-        # silently override ``DISTLLM__*`` env vars — e.g. an operator's
+        # silently override ``DISTLLM_*`` env vars — e.g. an operator's
         # env-set secret could be clobbered by a committed YAML value.  We
         # therefore read the environment-provided values directly and merge
         # YAML underneath them, preserving ``CLI > env > YAML > defaults``.

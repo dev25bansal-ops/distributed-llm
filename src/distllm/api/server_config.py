@@ -87,7 +87,7 @@ def _load_settings(args: Any) -> DistLLMSettings:
     Precedence (lowest to highest):
     1. Pydantic defaults
     2. YAML config file
-    3. Environment variables (``DISTLLM__*``) — handled by pydantic-settings
+    3. Environment variables (``DISTLLM_*``) — handled by pydantic-settings
     4. CLI arguments (highest)
     """
     # Resolve config path

@@ -68,7 +68,7 @@ def generate_config_reference(settings_class: type[BaseModel]) -> str:
     buf.write("# DistLLM Configuration Reference\n\n")
     buf.write("Auto-generated from Pydantic models. All fields can be set via:\n")
     buf.write("- `config.yaml` file\n")
-    buf.write("- Environment variables (prefix: `DISTLLM__`, delimiter: `__`)\n")
+    buf.write("- Environment variables (prefix: `DISTLLM_`, delimiter: `__`)\n")
     buf.write("- CLI arguments\n\n")
     buf.write("---\n\n")
 
@@ -84,7 +84,7 @@ def generate_config_reference(settings_class: type[BaseModel]) -> str:
             buf.write("| Field | Type | Default | Description |\n")
             buf.write("|-------|------|---------|-------------|\n")
         else:
-            env_var = f"`DISTLLM__{row['name'].upper().replace('.', '__')}`"
+            env_var = f"`DISTLLM_{row['name'].upper().replace('.', '__')}`"
             default_str = f"`{row['default']}`" if row["default"] else ""
             desc = row["description"]
             if desc:
@@ -97,9 +97,9 @@ def generate_config_reference(settings_class: type[BaseModel]) -> str:
     buf.write("## Environment Variable Mapping\n\n")
     buf.write("Any config field can be overridden via environment variables:\n\n")
     buf.write("```\n")
-    buf.write("config.yaml:  model.name -> DISTLLM__MODEL__NAME\n")
-    buf.write("config.yaml:  coordinator.port -> DISTLLM__COORDINATOR__PORT\n")
-    buf.write("config.yaml:  tls.enabled -> DISTLLM__TLS__ENABLED\n")
+    buf.write("config.yaml:  model.name -> DISTLLM_MODEL__NAME\n")
+    buf.write("config.yaml:  coordinator.port -> DISTLLM_COORDINATOR__PORT\n")
+    buf.write("config.yaml:  tls.enabled -> DISTLLM_TLS__ENABLED\n")
     buf.write("```\n")
 
     return buf.getvalue()

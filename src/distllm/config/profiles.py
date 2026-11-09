@@ -7,7 +7,7 @@ Profile resolution order:
 1. Base config from top-level YAML keys
 2. Profile-specific overrides (e.g. "production:" section)
 3. Preset overrides (e.g. "gpu-single", "multi-node")
-4. Environment variables (DISTLLM__*) -- always take final precedence
+4. Environment variables (DISTLLM_*) -- always take final precedence
 
 Usage::
 

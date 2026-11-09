@@ -2,7 +2,7 @@
 
 Loads ``DistLLMSettings`` with full precedence:
 
-    CLI overrides > env vars (``DISTLLM__*``) > YAML > defaults
+    CLI overrides > env vars (``DISTLLM_*``) > YAML > defaults
 
 All three entry points (coordinator, API server, worker) use this resolver
 instead of duplicating config logic.
