@@ -153,6 +153,21 @@ Directors commit to their own branches; **only this session merges**, and in thi
 | integrations | `54bf46e2…` branch | ? | working |
 | benchmarks | `f188c914…` branch | ? | working |
 
+### Measured baseline, 2026-11-10 (after website + SDK + deploy merges)
+
+`PYTHONPATH=src pytest tests/api/ tests/core/ -q` → **7091 passed, 48 failed, 366 skipped**, 7m48s.
+
+The 48 cluster into three areas, all inside the runtime director's scope:
+
+| Area | Tests | Files |
+|---|---|---|
+| Speculative decoding | 9 | `test_async_pipelined_speculative.py` |
+| Radix / cache layer | 15 | `test_radix_tree_cache.py` (8), `test_cache_index.py` (7) |
+| Streaming generator | 3 | `test_streaming_generator.py` |
+| Defrag / scheduler / recovery / backends | 21 | assorted, 1–3 each |
+
+Separately, `tests/deploy` = 45 failed / 126 passed — the chart-completeness and stale-workflow tests, not regressions from the merge (`test_kustomize.py` is 28/28 green after the fix).
+
 ---
 
 ## 7. What I need from the user, and by when
