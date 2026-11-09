@@ -82,7 +82,7 @@ distllm cluster deploy meta-llama/Llama-3.1-70b --nodes 4 --dtype bfloat16
 
 ```bash
 # Use llama.cpp backend for Apple Silicon (enabled via config, not a CLI flag)
-DISTLLM__LLAMACPP__ENABLED=true DISTLLM__LLAMACPP__MODEL_PATH=/path/to/model.gguf \
+DISTLLM_LLAMACPP__ENABLED=true DISTLLM_LLAMACPP__MODEL_PATH=/path/to/model.gguf \
   distllm-api --model meta-llama/Llama-3.1-8B
 ```
 
