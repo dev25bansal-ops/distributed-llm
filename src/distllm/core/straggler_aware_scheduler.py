@@ -170,8 +170,15 @@ class StragglerAwareScheduler:
 
         elif tracker.is_recovering:
             current = self._reduction_factors.get(node_id, 1.0)
-            recovery = min(self._recovery_rate, abs(grad) / 100.0)
-            new_factor = min(1.0, current + recovery)
+            # Step at the full recovery rate. Capping the step by the gradient
+            # magnitude (min(rate, abs(grad)/100)) looks cautious but makes a
+            # recovering node advance no faster than the stable branch below --
+            # at the -5.0 gradient a steadily improving node settles at, both
+            # come to 0.05 per sample. is_recovering has already gatekept the
+            # state at < -0.5 ms/sample, so scaling by magnitude again
+            # double-counts it and strands a node that had one transient bad
+            # phase near its floor for many batches.
+            new_factor = min(1.0, current + self._recovery_rate)
             if new_factor >= 1.0:
                 self._reduction_factors.pop(node_id, None)
                 self._speculative_nodes.discard(node_id)
