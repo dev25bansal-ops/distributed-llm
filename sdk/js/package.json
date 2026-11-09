@@ -1,24 +1,52 @@
 {
   "name": "distllm-sdk",
   "version": "1.0.0",
-  "description": "JavaScript/TypeScript SDK for Distributed LLM inference",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "JavaScript/TypeScript client for Distributed LLM — run models across pooled GPUs over an OpenAI-compatible API",
+  "keywords": [
+    "llm",
+    "inference",
+    "distributed",
+    "openai-compatible",
+    "gpu",
+    "pipeline-parallelism",
+    "streaming"
+  ],
+  "license": "Apache-2.0",
+  "author": "Distributed LLM Contributors",
+  "homepage": "https://github.com/dev25bansal-ops/distributed-llm#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dev25bansal-ops/distributed-llm.git",
+    "directory": "sdk/js"
+  },
+  "bugs": {
+    "url": "https://github.com/dev25bansal-ops/distributed-llm/issues"
+  },
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "lint": "eslint src/"
+    "prepublishOnly": "npm run build && npm test"
   },
-  "keywords": ["llm", "inference", "distributed", "openai-compatible"],
-  "license": "Apache-2.0",
-  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vitest": "^1.0.0"
+    "vitest": "^5.1.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "files": ["dist/", "README.md"]
+  }
 }

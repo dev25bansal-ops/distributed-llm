@@ -33,6 +33,7 @@ from distllm.sdk.types import (
     SpeechResponse,
     TimeoutError_,
     TranscriptionResponse,
+    UnsupportedEndpointError,
     UsageInfo,
 )
 
@@ -84,4 +85,5 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "TimeoutError_",
+    "UnsupportedEndpointError",
 ]

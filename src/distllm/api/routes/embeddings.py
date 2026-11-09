@@ -7,7 +7,7 @@ import uuid
 
 import torch
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..api_state import g
 from ..errors import error_openapi_entry
@@ -31,11 +31,40 @@ class EmbeddingRequest(BaseModel):
         }
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
-    input: list[str] = Field(..., max_length=1024, description="Input text(s) to embed (max 1024 texts)")
+    # The OpenAI API accepts a bare string or a list of strings. Declaring only
+    # list[str] rejected `input: "hello"` with a 422, which broke the promise
+    # that any OpenAI client works by changing base_url -- the official SDK
+    # sends a plain string when given one. Pre-tokenized arrays are not
+    # accepted: the handler would tokenize the list's repr and return garbage,
+    # so a clear 422 is better than a silent wrong answer.
+    input: str | list[str] = Field(
+        ..., description="Input text(s) to embed (max 1024 texts)"
+    )
     encoding_format: str = Field(default="float", description="Output format: 'float' or 'base64'")
     dimensions: int | None = Field(default=None, ge=1, description="Number of dimensions for the embedding")
     normalize: bool = Field(default=True, description="Whether to L2-normalize embeddings")
     user: str | None = Field(default=None, description="End-user identifier")
+
+    @field_validator("input")
+    @classmethod
+    def _wrap_single_input(cls, value):
+        """Wrap a bare string so the handler always receives a list.
+
+        The OpenAI spec accepts `input: "hello"` as well as a list; the
+        handler iterates the field, so a plain string would otherwise be
+        walked character by character. An empty or whitespace-only string is
+        rejected rather than embedded, as OpenAI rejects it -- embedding ""
+        would otherwise return a vector for a blank prompt.
+        """
+        if isinstance(value, str):
+            if not value.strip():
+                raise ValueError("input must not be empty")
+            return [value]
+        # max_length on the field would also cap a single string's length, so
+        # the batch limit is enforced here, on the list branch only.
+        if len(value) > 1024:
+            raise ValueError("at most 1024 texts may be embedded per request")
+        return value
 
 
 class EmbeddingObject(BaseModel):

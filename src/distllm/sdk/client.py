@@ -45,6 +45,7 @@ from distllm.sdk.types import (
     ModerationResult,
     SpeechResponse,
     TranscriptionResponse,
+    UnsupportedEndpointError,
     UsageInfo,
 )
 from distllm.sdk.types import (
@@ -193,18 +194,37 @@ class _BaseClient:
         objects = [EmbeddingObject(index=e["index"], embedding=e["embedding"]) for e in data.get("data", [])]
         return EmbeddingResponse(model=data.get("model", model), data=objects, usage=_parse_usage(data))
 
-    async def _batch_submit_async(self, input_file_id: str, endpoint: str, metadata: dict | None = None) -> BatchJob:
-        payload = {"input_file_id": input_file_id, "endpoint": endpoint}
-        if metadata:
-            payload["metadata"] = metadata
-        data = await self._request("POST", "/v1/batches", json=payload)
+    async def _batch_submit_async(
+        self,
+        items: list[dict],
+        *,
+        webhook_url: str | None = None,
+        item_timeout: float | None = None,
+    ) -> BatchJob:
+        payload: dict = {"items": items}
+        if webhook_url:
+            payload["webhook_url"] = webhook_url
+        if item_timeout is not None:
+            payload["item_timeout"] = item_timeout
+        # /v1/batch is the synchronous legacy route; /v1/batch/submit returns
+        # a batch_id immediately and processes in the background, which is the
+        # behaviour this method promises.
+        data = await self._request("POST", "/v1/batch/submit", json=payload)
         return self._parse_batch(data)
 
-    def _batch_submit_sync(self, input_file_id: str, endpoint: str, metadata: dict | None = None) -> BatchJob:
-        payload = {"input_file_id": input_file_id, "endpoint": endpoint}
-        if metadata:
-            payload["metadata"] = metadata
-        data = self._request("POST", "/v1/batches", json=payload)
+    def _batch_submit_sync(
+        self,
+        items: list[dict],
+        *,
+        webhook_url: str | None = None,
+        item_timeout: float | None = None,
+    ) -> BatchJob:
+        payload: dict = {"items": items}
+        if webhook_url:
+            payload["webhook_url"] = webhook_url
+        if item_timeout is not None:
+            payload["item_timeout"] = item_timeout
+        data = self._request("POST", "/v1/batch/submit", json=payload)
         return self._parse_batch(data)
 
     async def _batch_get_async(
@@ -212,52 +232,53 @@ class _BaseClient:
         batch_id: str | None = None,
     ) -> BatchJob | BatchList:
         if batch_id:
-            data = await self._request("GET", f"/v1/batches/{batch_id}")
+            data = await self._request("GET", f"/v1/batch/{batch_id}/status")
             return self._parse_batch(data)
-        data = await self._request("GET", "/v1/batches")
-        return BatchList(data=[self._parse_batch(d) for d in data.get("data", [])])
+        # /v1/batch has no GET: the router mounts a legacy sync POST, a
+        # /submit, and /{id}/{status,stream,cancel}. There is no list route.
+        raise UnsupportedEndpointError(
+            "get_batch", "/v1/batch",
+            "there is no batch-list endpoint; batches are tracked in memory "
+            "and addressed only by the id returned from submit_batch()",
+        )
 
     def _batch_get_sync(
         self,
         batch_id: str | None = None,
     ) -> BatchJob | BatchList:
         if batch_id:
-            data = self._request("GET", f"/v1/batches/{batch_id}")
+            data = self._request("GET", f"/v1/batch/{batch_id}/status")
             return self._parse_batch(data)
-        data = self._request("GET", "/v1/batches")
-        return BatchList(data=[self._parse_batch(d) for d in data.get("data", [])])
+        raise UnsupportedEndpointError(
+            "get_batch", "/v1/batch",
+            "there is no batch-list endpoint; batches are tracked in memory "
+            "and addressed only by the id returned from submit_batch()",
+        )
 
     async def _batch_cancel_async(self, batch_id: str) -> BatchJob:
-        data = await self._request("POST", f"/v1/batches/{batch_id}/cancel")
+        data = await self._request("POST", f"/v1/batch/{batch_id}/cancel")
         return self._parse_batch(data)
 
     def _batch_cancel_sync(self, batch_id: str) -> BatchJob:
-        data = self._request("POST", f"/v1/batches/{batch_id}/cancel")
+        data = self._request("POST", f"/v1/batch/{batch_id}/cancel")
         return self._parse_batch(data)
 
     async def _moderations_async(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
-        data = await self._request("POST", "/v1/moderations", json={"model": model, "input": input})
-        results = [
-            ModerationResult(
-                flagged=r["flagged"],
-                categories=r.get("categories", {}),
-                category_scores=r.get("category_scores", {}),
-            )
-            for r in data.get("results", [])
-        ]
-        return ModerationResponse(id=data.get("id", ""), model=data.get("model", model), results=results)
+        # The server deliberately does not mount routes/moderation.py: content
+        # moderation runs inline in ContentModerationMiddleware. Sending this
+        # request would 404, so say why instead.
+        raise UnsupportedEndpointError(
+            "moderations", "/v1/moderations",
+            "moderation is enforced inline by ContentModerationMiddleware "
+            "(set DISTLLM_MODERATION=1), not at this route",
+        )
 
     def _moderations_sync(self, input: str | list[str], model: str = "distributed-llm") -> ModerationResponse:
-        data = self._request("POST", "/v1/moderations", json={"model": model, "input": input})
-        results = [
-            ModerationResult(
-                flagged=r["flagged"],
-                categories=r.get("categories", {}),
-                category_scores=r.get("category_scores", {}),
-            )
-            for r in data.get("results", [])
-        ]
-        return ModerationResponse(id=data.get("id", ""), model=data.get("model", model), results=results)
+        raise UnsupportedEndpointError(
+            "moderations", "/v1/moderations",
+            "moderation is enforced inline by ContentModerationMiddleware "
+            "(set DISTLLM_MODERATION=1), not at this route",
+        )
 
     async def _transcribe_async(
         self,
@@ -267,17 +288,10 @@ class _BaseClient:
         language: str | None = None,
         temperature: float = 0.0,
     ) -> TranscriptionResponse:
-        path = Path(file_path)
-        with open(path, "rb") as f:
-            files = {"file": (path.name, f, "audio/mpeg")}
-            data_field = {"model": model, "response_format": response_format}
-            if language:
-                data_field["language"] = language
-            data_field["temperature"] = temperature
-            data = await self._request("POST", "/v1/audio/transcriptions", data=data_field, files=files)
-        if response_format == "json":
-            return TranscriptionResponse(text=data.get("text", ""))
-        return TranscriptionResponse(text=data.get("text", str(data)))
+        raise UnsupportedEndpointError(
+            "transcribe", "/v1/audio/transcriptions",
+            "this server has no audio subsystem",
+        )
 
     def _transcribe_sync(
         self,
@@ -287,17 +301,10 @@ class _BaseClient:
         language: str | None = None,
         temperature: float = 0.0,
     ) -> TranscriptionResponse:
-        path = Path(file_path)
-        with open(path, "rb") as f:
-            files = {"file": (path.name, f, "audio/mpeg")}
-            data_field = {"model": model, "response_format": response_format}
-            if language:
-                data_field["language"] = language
-            data_field["temperature"] = temperature
-            data = self._request("POST", "/v1/audio/transcriptions", data=data_field, files=files)
-        if response_format == "json":
-            return TranscriptionResponse(text=data.get("text", ""))
-        return TranscriptionResponse(text=data.get("text", str(data)))
+        raise UnsupportedEndpointError(
+            "transcribe", "/v1/audio/transcriptions",
+            "this server has no audio subsystem",
+        )
 
     async def _speech_async(
         self,
@@ -307,11 +314,10 @@ class _BaseClient:
         response_format: str = "mp3",
         speed: float = 1.0,
     ) -> SpeechResponse:
-        resp = await self._request_raw(
-            "POST", "/v1/audio/speech",
-            json={"model": model, "input": input, "voice": voice, "response_format": response_format, "speed": speed},
+        raise UnsupportedEndpointError(
+            "speech", "/v1/audio/speech",
+            "this server has no speech-synthesis subsystem",
         )
-        return SpeechResponse(content=resp.content, content_type=resp.headers.get("content-type", "audio/mpeg"))
 
     def _speech_sync(
         self,
@@ -321,11 +327,10 @@ class _BaseClient:
         response_format: str = "mp3",
         speed: float = 1.0,
     ) -> SpeechResponse:
-        resp = self._request_raw(
-            "POST", "/v1/audio/speech",
-            json={"model": model, "input": input, "voice": voice, "response_format": response_format, "speed": speed},
+        raise UnsupportedEndpointError(
+            "speech", "/v1/audio/speech",
+            "this server has no speech-synthesis subsystem",
         )
-        return SpeechResponse(content=resp.content, content_type=resp.headers.get("content-type", "audio/mpeg"))
 
     async def _images_generate_async(
         self,
@@ -337,15 +342,10 @@ class _BaseClient:
         quality: str = "standard",
         style: str | None = None,
     ) -> ImageGenerationResponse:
-        payload = {"model": model, "prompt": prompt, "n": n, "size": size, "response_format": response_format, "quality": quality}
-        if style:
-            payload["style"] = style
-        data = await self._request("POST", "/v1/images/generations", json=payload)
-        images = [
-            ImageObject(url=img.get("url"), b64_json=img.get("b64_json"), revised_prompt=img.get("revised_prompt"))
-            for img in data.get("data", [])
-        ]
-        return ImageGenerationResponse(created=data.get("created", 0), data=images)
+        raise UnsupportedEndpointError(
+            "images", "/v1/images/generations",
+            "this server has no image-generation subsystem",
+        )
 
     def _images_generate_sync(
         self,
@@ -357,15 +357,10 @@ class _BaseClient:
         quality: str = "standard",
         style: str | None = None,
     ) -> ImageGenerationResponse:
-        payload = {"model": model, "prompt": prompt, "n": n, "size": size, "response_format": response_format, "quality": quality}
-        if style:
-            payload["style"] = style
-        data = self._request("POST", "/v1/images/generations", json=payload)
-        images = [
-            ImageObject(url=img.get("url"), b64_json=img.get("b64_json"), revised_prompt=img.get("revised_prompt"))
-            for img in data.get("data", [])
-        ]
-        return ImageGenerationResponse(created=data.get("created", 0), data=images)
+        raise UnsupportedEndpointError(
+            "images", "/v1/images/generations",
+            "this server has no image-generation subsystem",
+        )
 
     async def _files_upload_async(self, file_path: str, purpose: str = "fine-tune") -> FileInfo:
         path = Path(file_path)
@@ -451,11 +446,21 @@ class _BaseClient:
 
     @staticmethod
     def _parse_batch(data: dict) -> BatchJob:
+        """Parse the batch shape `/v1/batch*` actually returns.
+
+        The routes predate the OpenAI batch API and use `batch_id`, with no
+        input/output file ids (items are submitted inline in the request body,
+        not by file). Reading OpenAI's field names turned every response into
+        a KeyError on `id`.
+        """
+        batch_id = data.get("id") or data.get("batch_id")
+        if batch_id is None:
+            raise ValueError(f"batch response has neither 'id' nor 'batch_id': {data!r}")
         return BatchJob(
-            id=data["id"],
+            id=batch_id,
             status=data["status"],
-            input_file_id=data["input_file_id"],
-            created_at=data.get("created_at", 0),
+            input_file_id=data.get("input_file_id", ""),
+            created_at=int(data.get("created_at", 0)),
             completed_at=data.get("completed_at"),
             output_file_id=data.get("output_file_id"),
             error_file_id=data.get("error_file_id"),
@@ -689,12 +694,23 @@ class DistLLMClient(_BaseClient):
 
     async def submit_batch(
         self,
-        input_file_id: str,
-        endpoint: str = "/v1/chat/completions",
-        metadata: dict | None = None,
+        items: list[dict],
+        *,
+        webhook_url: str | None = None,
+        item_timeout: float | None = None,
     ) -> BatchJob:
-        """Submit a batch job."""
-        return await self._batch_submit_async(input_file_id, endpoint, metadata)
+        """Submit a background batch of prompts.
+
+        Each item is ``{"prompt": str, "request_id": str = "",
+        "max_tokens": int = 128, "temperature": float = 0.7}``. Returns a job
+        whose ``id`` can be polled with :meth:`get_batch`.
+
+        This is not OpenAI's file-based batch API: DistLLM takes the prompts
+        inline and does not use uploaded input/output files.
+        """
+        return await self._batch_submit_async(
+            items, webhook_url=webhook_url, item_timeout=item_timeout
+        )
 
     async def get_batch(self, batch_id: str | None = None) -> BatchJob | BatchList:
         """Get a batch job by ID, or list all batches."""
@@ -1044,12 +1060,15 @@ class DistLLMClientSync(_BaseClient):
 
     def submit_batch(
         self,
-        input_file_id: str,
-        endpoint: str = "/v1/chat/completions",
-        metadata: dict | None = None,
+        items: list[dict],
+        *,
+        webhook_url: str | None = None,
+        item_timeout: float | None = None,
     ) -> BatchJob:
-        """Submit a batch job."""
-        return self._batch_submit_sync(input_file_id, endpoint, metadata)
+        """Submit a background batch of prompts. See the async client."""
+        return self._batch_submit_sync(
+            items, webhook_url=webhook_url, item_timeout=item_timeout
+        )
 
     def get_batch(self, batch_id: str | None = None) -> BatchJob | BatchList:
         """Get a batch job by ID, or list all batches."""
@@ -1145,11 +1164,11 @@ class DistLLMClientSync(_BaseClient):
 
     def marketplace_ads(self) -> list[dict]:
         """List active KV cache advertisements."""
-        return self._request("GET", "/v1/marketplace/ads")
+        return self._request("GET", "/v1/marketplace/listings")
 
     def federated_peers(self) -> list[dict]:
         """List federated peer clusters."""
-        return self._request("GET", "/v1/federated/peers")
+        return self._request("GET", "/v1/federated/nodes")
 
     def webrtc_status(self) -> dict:
         """Get WebRTC signaling server status."""

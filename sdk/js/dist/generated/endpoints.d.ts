@@ -19,8 +19,8 @@ export declare const ENDPOINTS: {
         readonly method: "get";
         readonly path: "/health";
     };
-    readonly listBatches: {
+    readonly submitBatch: {
         readonly method: "post";
-        readonly path: "/v1/batches";
+        readonly path: "/v1/batch/submit";
     };
 };

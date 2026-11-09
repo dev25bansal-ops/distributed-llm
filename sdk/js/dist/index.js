@@ -49,24 +49,40 @@ export class DistLLMClient {
         }
         let lastError = null;
         for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+            let timedOut = false;
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-                const response = await fetch(url, {
-                    method,
-                    headers,
-                    body: body ? JSON.stringify(body) : undefined,
-                    signal: controller.signal,
-                });
-                clearTimeout(timeoutId);
-                if (!response.ok) {
-                    const errorBody = await response.json().catch(() => ({}));
-                    const error = errorBody;
-                    throw new DistLLMApiError(error?.error?.message || `HTTP ${response.status}`, response.status, error?.error?.type || 'api_error');
+                const timeoutId = setTimeout(() => {
+                    timedOut = true;
+                    controller.abort();
+                }, this.timeout);
+                try {
+                    const response = await fetch(url, {
+                        method,
+                        headers,
+                        body: body ? JSON.stringify(body) : undefined,
+                        signal: controller.signal,
+                    });
+                    if (!response.ok) {
+                        const errorBody = await response.json().catch(() => ({}));
+                        const error = errorBody;
+                        throw new DistLLMApiError(error?.error?.message || `HTTP ${response.status}`, response.status, error?.error?.type || 'api_error');
+                    }
+                    // The timeout stays armed through the body read. Clearing it as soon
+                    // as headers arrived meant a server that sent headers and then
+                    // stalled hung the caller forever, and a slow body was never bounded.
+                    return (await response.json());
                 }
-                return (await response.json());
+                finally {
+                    clearTimeout(timeoutId);
+                }
             }
             catch (error) {
+                // A timeout is not retryable and must be distinguishable from a
+                // network error, so convert the abort before the retry logic runs.
+                if (timedOut) {
+                    throw new DistLLMTimeoutError(`Request timed out after ${this.timeout}ms`, this.timeout);
+                }
                 lastError = error;
                 if (error instanceof DistLLMApiError && error.statusCode < 500) {
                     throw error;
@@ -88,38 +104,82 @@ export class DistLLMClient {
         if (this.apiKey) {
             headers['Authorization'] = `Bearer ${this.apiKey}`;
         }
-        const response = await fetch(url, {
-            method,
-            headers,
-            body: JSON.stringify(body),
-        });
-        if (!response.ok) {
-            throw new DistLLMApiError(`HTTP ${response.status}`, response.status);
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done)
-                break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-                if (!line.startsWith('data: '))
-                    continue;
-                const data = line.slice(6).trim();
-                if (data === '[DONE]')
-                    return;
-                try {
-                    const parsed = JSON.parse(data);
-                    const content = parsed.choices?.[0]?.delta?.content;
-                    if (content)
-                        yield content;
-                }
-                catch { }
+        // Streaming had no timeout at all: a server that accepted the connection
+        // and then stopped sending hung the caller forever. The timer below covers
+        // both phases -- it aborts if the response headers do not arrive within
+        // `timeout`, and it is re-armed on every chunk so a stream that goes
+        // silent mid-generation is also bounded.
+        const controller = new AbortController();
+        let timedOut = false;
+        let timeoutId;
+        const arm = () => {
+            if (timeoutId !== undefined)
+                clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+            }, this.timeout);
+        };
+        try {
+            arm();
+            let response;
+            try {
+                response = await fetch(url, {
+                    method,
+                    headers,
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                });
             }
+            catch (connectError) {
+                if (timedOut) {
+                    throw new DistLLMTimeoutError(`Request timed out after ${this.timeout}ms waiting for response headers`, this.timeout);
+                }
+                throw connectError;
+            }
+            if (!response.ok) {
+                throw new DistLLMApiError(`HTTP ${response.status}`, response.status);
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                let chunk;
+                try {
+                    arm();
+                    chunk = await reader.read();
+                }
+                catch (readError) {
+                    if (timedOut) {
+                        throw new DistLLMTimeoutError(`Stream idle for ${this.timeout}ms: no data received from the server`, this.timeout);
+                    }
+                    throw readError;
+                }
+                const { done, value } = chunk;
+                if (done)
+                    break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const line of lines) {
+                    if (!line.startsWith('data: '))
+                        continue;
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]')
+                        return;
+                    try {
+                        const parsed = JSON.parse(data);
+                        const content = parsed.choices?.[0]?.delta?.content;
+                        if (content)
+                            yield content;
+                    }
+                    catch { }
+                }
+            }
+        }
+        finally {
+            if (timeoutId !== undefined)
+                clearTimeout(timeoutId);
         }
     }
 }
@@ -170,5 +230,21 @@ export class DistLLMApiError extends Error {
         this.statusCode = statusCode;
         this.errorType = errorType;
         this.name = 'DistLLMApiError';
+    }
+}
+/**
+ * Raised when a request exceeds the configured timeout.
+ *
+ * The client aborts with an AbortController; without this class the abort
+ * surfaced as a bare DOMException, so callers could not tell a slow server
+ * apart from a network failure, and the streaming tests that assert on this
+ * type could never pass.
+ */
+export class DistLLMTimeoutError extends Error {
+    timeoutMs;
+    constructor(message = 'Request timed out', timeoutMs) {
+        super(message);
+        this.timeoutMs = timeoutMs;
+        this.name = 'DistLLMTimeoutError';
     }
 }

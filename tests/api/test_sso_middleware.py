@@ -45,10 +45,9 @@ def test_sso_middleware_is_wired_into_server(monkeypatch):
 
 def test_auth_routes_are_mounted():
     """POST /v1/auth/{token,refresh,revoke} exist on the real server."""
-    mounted = {
-        getattr(r, "path", None) for r in server_module.app.routes
-    }
-    assert AUTH_PATHS.issubset(mounted)
+    from tests.api._route_helpers import route_paths
+
+    assert AUTH_PATHS.issubset(route_paths(server_module.app))
 
 
 def test_token_endpoint_rejects_empty_body():

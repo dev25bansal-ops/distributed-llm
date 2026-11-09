@@ -5,5 +5,7 @@ export const ENDPOINTS = {
   "createEmbedding": { method: "post", path: "/v1/embeddings" },
   "listModels": { method: "get", path: "/v1/models" },
   "getHealth": { method: "get", path: "/health" },
-  "listBatches": { method: "post", path: "/v1/batches" },
+  // Batches take prompts inline and run in the background; there is no
+  // /v1/batches route and no batch-list route on the server.
+  "submitBatch": { method: "post", path: "/v1/batch/submit" },
 } as const;

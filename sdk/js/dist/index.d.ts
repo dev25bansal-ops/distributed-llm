@@ -172,4 +172,16 @@ export declare class DistLLMApiError extends Error {
     errorType: string;
     constructor(message: string, statusCode: number, errorType?: string);
 }
+/**
+ * Raised when a request exceeds the configured timeout.
+ *
+ * The client aborts with an AbortController; without this class the abort
+ * surfaced as a bare DOMException, so callers could not tell a slow server
+ * apart from a network failure, and the streaming tests that assert on this
+ * type could never pass.
+ */
+export declare class DistLLMTimeoutError extends Error {
+    timeoutMs?: number | undefined;
+    constructor(message?: string, timeoutMs?: number | undefined);
+}
 export {};

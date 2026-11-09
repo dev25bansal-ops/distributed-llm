@@ -12,7 +12,7 @@ from distllm.sdk.streaming import parse_sse_stream, parse_sse_stream_sync
 from distllm.sdk.types import (
     ChatMessage, ChatCompletionRequest, ChatChoice, ChatCompletionResponse,
     CompletionRequest, CompletionChoice, CompletionResponse,
-    ModelInfo, ModelList,
+    ModelInfo, ModelList, UnsupportedEndpointError,
 )
 from distllm.sdk.streaming import parse_sse_stream
 
@@ -646,6 +646,8 @@ class TestDistLLMClientHealthCheck:
 
 
 class TestDistLLMClientBatch:
+    """Batch responses use DistLLM's own field names (`batch_id`), not OpenAI's."""
+
     @pytest.mark.asyncio
     async def test_submit_batch(self):
         client = DistLLMClient()
@@ -682,6 +684,15 @@ class TestDistLLMClientBatch:
         assert job.status == "cancelled"
         await client.close()
 
+    @pytest.mark.asyncio
+    async def test_list_batches_unsupported(self):
+        """No list route exists; get_batch() with no id says so."""
+        client = DistLLMClient()
+        with pytest.raises(UnsupportedEndpointError) as exc:
+            await client.get_batch()
+        assert exc.value.endpoint == "/v1/batch"
+        await client.close()
+
 
 # ===========================================================================
 # Moderations
@@ -689,36 +700,27 @@ class TestDistLLMClientBatch:
 
 
 class TestDistLLMClientModerations:
+    """Moderation has no REST route: ContentModerationMiddleware enforces it.
+
+    These methods used to send the request and surface a bare 404, which reads
+    like a transient server fault. They now say what is actually true.
+    """
+
     @pytest.mark.asyncio
     async def test_moderations_single_input(self):
         client = DistLLMClient()
-        client._client = httpx.AsyncClient(transport=_make_handler({
-            "id": "mod-1", "model": "text-moderation",
-            "results": [{
-                "flagged": True,
-                "categories": {"hate": True, "violence": False},
-                "category_scores": {"hate": 0.95, "violence": 0.1},
-            }],
-        }), base_url="http://test")
-        resp = await client.moderations("bad text")
-        assert resp.id == "mod-1"
-        assert resp.results[0].flagged is True
-        assert resp.results[0].categories["hate"] is True
+        with pytest.raises(UnsupportedEndpointError) as exc:
+            await client.moderations("bad text")
+        assert exc.value.status_code == 501
+        assert exc.value.endpoint == "/v1/moderations"
+        assert "ContentModerationMiddleware" in exc.value.message
         await client.close()
 
     @pytest.mark.asyncio
     async def test_moderations_not_flagged(self):
         client = DistLLMClient()
-        client._client = httpx.AsyncClient(transport=_make_handler({
-            "id": "mod-2", "model": "text-moderation",
-            "results": [{
-                "flagged": False,
-                "categories": {},
-                "category_scores": {},
-            }],
-        }), base_url="http://test")
-        resp = await client.moderations("safe text")
-        assert resp.results[0].flagged is False
+        with pytest.raises(UnsupportedEndpointError):
+            await client.moderations("safe text")
         await client.close()
 
 
@@ -728,19 +730,19 @@ class TestDistLLMClientModerations:
 
 
 class TestDistLLMClientAudioTranscribe:
+    """No audio routes exist; these raise instead of sending a doomed request."""
+
     @pytest.mark.asyncio
     async def test_transcribe_returns_text(self):
         client = DistLLMClient()
-        client._client = httpx.AsyncClient(transport=_make_handler({
-            "text": "Hello world",
-        }), base_url="http://test")
         import tempfile, os
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(b"fake audio data")
             path = f.name
         try:
-            resp = await client.transcribe(path)
-            assert resp.text == "Hello world"
+            with pytest.raises(UnsupportedEndpointError) as exc:
+                await client.transcribe(path)
+            assert exc.value.endpoint == "/v1/audio/transcriptions"
         finally:
             os.unlink(path)
         await client.close()
@@ -755,14 +757,9 @@ class TestDistLLMClientAudioSpeech:
     @pytest.mark.asyncio
     async def test_speech_returns_bytes(self):
         client = DistLLMClient()
-        client._client = httpx.AsyncClient(transport=_make_binary_handler(
-            b"fake audio bytes",
-            headers={"content-type": "audio/mpeg"},
-        ), base_url="http://test")
-        resp = await client.speech("Hello", model="tts-1", voice="alloy")
-        assert isinstance(resp.content, bytes)
-        assert len(resp.content) > 0
-        assert resp.content_type == "audio/mpeg"
+        with pytest.raises(UnsupportedEndpointError) as exc:
+            await client.speech("Hello", model="tts-1", voice="alloy")
+        assert exc.value.endpoint == "/v1/audio/speech"
         await client.close()
 
 
@@ -775,30 +772,16 @@ class TestDistLLMClientImages:
     @pytest.mark.asyncio
     async def test_generate_images_returns_urls(self):
         client = DistLLMClient()
-        client._client = httpx.AsyncClient(transport=_make_handler({
-            "created": 12345,
-            "data": [
-                {"url": "http://example.com/img1.png"},
-                {"url": "http://example.com/img2.png"},
-            ],
-        }), base_url="http://test")
-        resp = await client.generate_images("a cat", n=2)
-        assert len(resp.data) == 2
-        assert resp.data[0].url == "http://example.com/img1.png"
-        assert resp.created == 12345
+        with pytest.raises(UnsupportedEndpointError) as exc:
+            await client.generate_images("a cat", n=2)
+        assert exc.value.endpoint == "/v1/images/generations"
         await client.close()
 
     @pytest.mark.asyncio
     async def test_generate_images_b64(self):
         client = DistLLMClient()
-        client._client = httpx.AsyncClient(transport=_make_handler({
-            "created": 12346,
-            "data": [
-                {"b64_json": "aW1hZ2UgZGF0YQ=="},
-            ],
-        }), base_url="http://test")
-        resp = await client.generate_images("a dog", response_format="b64_json")
-        assert resp.data[0].b64_json == "aW1hZ2UgZGF0YQ=="
+        with pytest.raises(UnsupportedEndpointError):
+            await client.generate_images("a dog", response_format="b64_json")
         await client.close()
 
 

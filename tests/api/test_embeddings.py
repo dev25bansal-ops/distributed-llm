@@ -501,3 +501,29 @@ class TestEmbeddingsInputValidation:
             json={"model": "distributed-llm", "input": ["Hello"], "dimensions": -1},
         )
         assert resp.status_code == 422
+
+    def test_bare_string_input_accepted(self):
+        """The OpenAI SDK sends `input` as a plain string when passed one.
+
+        Declaring only list[str] made every such call a 422, which broke the
+        promise that any OpenAI client works after a base_url change.
+        """
+        resp = self.client.post(
+            "/v1/embeddings",
+            json={"model": "distributed-llm", "input": "Hello"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["index"] == 0
+
+    def test_token_id_input_rejected(self):
+        """Pre-tokenized arrays would be tokenized as their own repr.
+
+        Better a clear 422 than a plausible-looking wrong vector.
+        """
+        resp = self.client.post(
+            "/v1/embeddings",
+            json={"model": "distributed-llm", "input": [[1, 2, 3]]},
+        )
+        assert resp.status_code == 422

@@ -243,6 +243,24 @@ class TimeoutError_(ApiError):
         super().__init__(message, status_code=504, error_type="timeout_error", request_id=request_id)
 
 
+class UnsupportedEndpointError(ApiError):
+    """Raised by SDK methods whose endpoint this server does not serve.
+
+    The client mirrors the OpenAI surface, which includes audio, image and
+    moderation routes. A DistLLM cluster does not expose all of them:
+    moderation is enforced inline by ContentModerationMiddleware rather than at
+    /v1/moderations, and there is no audio or image subsystem. Calling those
+    methods used to send the request and surface a bare 404; this makes the
+    reason explicit before the round trip.
+    """
+    def __init__(self, method: str, endpoint: str, reason: str = "", request_id: str | None = None):
+        detail = f"{method}() targets {endpoint}, which this server does not expose"
+        if reason:
+            detail += f": {reason}"
+        super().__init__(detail, status_code=501, error_type="unsupported_endpoint", request_id=request_id)
+        self.endpoint = endpoint
+
+
 # --- Usage tracking ---
 
 @dataclass
