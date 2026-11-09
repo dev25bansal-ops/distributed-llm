@@ -18,6 +18,19 @@ def _resolve_max_tokens(value: Optional[int], default: Optional[int], fallback: 
     return fallback
 
 
+def _stream_chunk_text(chunk: Any) -> str:
+    """Extract the text from one streamed chunk.
+
+    The SDK's ``completions_stream`` yields plain strings. Older SDK builds and
+    hand-rolled mocks yield OpenAI-shaped dicts, so keep accepting those.
+    """
+    if isinstance(chunk, str):
+        return chunk
+    if isinstance(chunk, dict):
+        return chunk.get("choices", [{}])[0].get("text", "") or ""
+    return ""
+
+
 class DistLLM(BaseLLM):
     model: str = "distributed-llm"
     base_url: str = "http://localhost:8000"
@@ -117,8 +130,7 @@ class DistLLM(BaseLLM):
             temperature=kwargs.pop("temperature", self.temperature),
             stop=stop,
         ):
-            delta = chunk if isinstance(chunk, dict) else {}
-            text = delta.get("choices", [{}])[0].get("text", "")
+            text = _stream_chunk_text(chunk)
             if not text:
                 continue
             gen_chunk = GenerationChunk(text=text)
@@ -142,8 +154,7 @@ class DistLLM(BaseLLM):
             temperature=kwargs.pop("temperature", self.temperature),
             stop=stop,
         ):
-            delta = chunk if isinstance(chunk, dict) else {}
-            text = delta.get("choices", [{}])[0].get("text", "")
+            text = _stream_chunk_text(chunk)
             if not text:
                 continue
             gen_chunk = GenerationChunk(text=text)

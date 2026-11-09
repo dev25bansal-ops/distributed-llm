@@ -5,6 +5,7 @@ types work through every adapter stream method."""
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,6 +52,19 @@ class TestLangchainStringChunks:
 # ── LlamaIndex ───────────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(
+    not os.path.isdir(
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "..",
+            "llamaindex",
+            "src",
+            "distllm_llamaindex",
+        )
+    ),
+    reason="distllm_llamaindex source not present next to this suite (cross-framework cases need it)",
+)
 class TestLlamaindexStringChunks:
     def _llm(self):
         from distllm_llamaindex.llms import DistLLM
