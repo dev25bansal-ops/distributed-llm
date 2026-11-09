@@ -80,13 +80,25 @@ If a gate cannot be met, we ship a smaller product that meets all five, not a la
 
 | Gate | State | Evidence |
 |---|---|---|
-| 1. Master green / reds quarantined | **in progress, much closer** | api 1351/0, core 5817/10, dist 6287/8, real-import 240/240. All 18 local reds are environmental (no CUDA). CI still has toolchain reds: terraform, k8s, container, crewai, fuzz, chaos. |
+| 1. Master green / reds quarantined | **local side complete** | api 1351/0, core 5817/10, dist 6287/8, real-import 240/240. Every local red is environmental, classified in `REMAINING_FAILURES.md`. The one REAL defect found was fixed (`c827fc03`). CI-side reds remain: terraform, container, fuzz, chaos. |
 | 2. Release published | **near** | index already serves 0.6.2.2 matching the repo; clean-venv gate script exists and runs |
 | 3. Site tells the truth | **largely done** | fabricated customers/outcomes removed; claims audited |
 | 4. Real end-to-end demo on hardware | **blocked** | no GPU on this machine; needs the user's A10, Nov 16–20 |
-| 5. A stranger can install and use it | **partly** | `[cli]` path verified working; the bare-install traceback is fixed; the `[self-hosted]` server path needs one clean-venv run |
+| 5. A stranger can install and use it | **PASSES** | `pip install "distributed-llm[cli,self-hosted]"` from the real index → import, CLI, module entry point and server import all OK in a clean venv (`scripts/launch_gate_index_install.py`) |
 
-Gate 5 is the one to keep hammering, because it is cheap to test and it is what a launch actually means. Gate 4 is the only one that cannot be moved from here.
+Gate 5 passes as of 2026-11-10 05:00, verified end to end against the live
+index, not a local path. Gate 4 is the only one that cannot be moved from here.
+
+### The defect the quarantining turned up
+
+`test_budget_recovers` was the one failure the runtime director classified
+REAL rather than environmental, and it declined to relax the assertion. It was
+right: a node recognised as *recovering* advanced its batch budget by
+`min(recovery_rate, |grad|/100)`, which at a steady −5.0 ms/sample gradient is
+0.05 — exactly the rate of the branch for a node that is merely quiet. Being
+detected as recovering bought nothing, and a node that had one transient bad
+phase stranded near its 0.1 floor. Full recovery took 30+ samples; it now takes
+9, and the factor still holds the floor while the node is genuinely straggling.
 
 ---
 
