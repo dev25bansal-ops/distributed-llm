@@ -202,20 +202,38 @@ sequence itself.
    was removed by the hygiene sweep and was a backend-comparison runner, not the
    JSON differ the doc described. Now points at `regression_check.py`.
 
-### Measured baseline, 2026-11-10 (after website + SDK + deploy merges)
+### Measured baseline, 2026-11-10 04:30 (after every director merge)
 
-`PYTHONPATH=src pytest tests/api/ tests/core/ -q` → **7091 passed, 48 failed, 366 skipped**, 7m48s.
-
-The 48 cluster into three areas, all inside the runtime director's scope:
-
-| Area | Tests | Files |
+| Suite | Result | Command |
 |---|---|---|
-| Speculative decoding | 9 | `test_async_pipelined_speculative.py` |
-| Radix / cache layer | 15 | `test_radix_tree_cache.py` (8), `test_cache_index.py` (7) |
-| Streaming generator | 3 | `test_streaming_generator.py` |
-| Defrag / scheduler / recovery / backends | 21 | assorted, 1–3 each |
+| `tests/api/` | **1351 passed, 0 failed**, 10 skipped, 12 xfailed, 28 xpassed (4m25s) | `PYTHONPATH=src pytest tests/api/ -q --timeout=180` |
+| Real-import sweep | **240/240 modules import** | `PYTHONPATH=src python tests/scripts/check_real_imports.py` |
+| Ruff ratchet | **437 findings vs 443 baseline** (I001 73/73, W292 0, UP 0) | `python scripts/ci/ruff_ratchet.py`, counted from LF blobs as CI does |
+| Integrations | langchain **34**, llamaindex **29**, 0 failed | `pytest integrations/<name>/tests/` |
+| Tauri crate | `cargo check --all-targets` clean (8 warnings) | `cargo check --all-targets` |
+| Benchmarks/scripts | 14 modules parse, import, or answer `--help` | `compileall` + per-module |
 
-Separately, `tests/deploy` = 45 failed / 126 passed — the chart-completeness and stale-workflow tests, not regressions from the merge (`test_kustomize.py` is 28/28 green after the fix).
+The earlier "7091 passed / 48 failed" was two things: the 48 were almost all in
+`tests/core/`, which the runtime director then worked down, and the api half is
+now fully green on its own. `tests/core/` is being re-measured.
+
+**A measurement trap worth recording.** `ruff --fix` reported W292 clean on this
+worktree while CI kept failing it. The worktree checks out CRLF; ruff saw a
+trailing newline that the LF blob in git did not have. The fix was real bytes in
+the index, and the check that can be trusted is one run against
+`git cat-file blob :<path>` exports, not against the working tree.
+
+### Two defects the launch gates found (both fixed 2026-11-10)
+
+1. **A bare `pip install distributed-llm` shipped a broken CLI** (`ad1d72ec`).
+   The console script is installed for everyone, but `typer` is an extra, so
+   `distllm --help` died with a raw `ModuleNotFoundError` traceback — the first
+   command a new user runs. Core staying CLI-free is deliberate (pyproject:65),
+   so the fix is an import guard that names the extra and prints the install
+   line, not a new dependency.
+2. **`scripts/launch_gate_index_install.py`** now exists to catch exactly this
+   class of thing: fresh venv, install from the real index with `PYTHONPATH`
+   cleared, then import + CLI + module entry point + server import.
 
 ### Fixed from the quality director's report, 2026-11-10
 
