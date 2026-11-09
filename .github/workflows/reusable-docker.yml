@@ -96,7 +96,8 @@ jobs:
             CUDA_VERSION=${{ matrix.cuda }}.0
       - name: Run Trivy vulnerability scan
         if: ${{ inputs.run-trivy }}
-        uses: aquasecurity/trivy-action@0.29.0
+        # Tag is v-prefixed upstream; `0.29.0` does not resolve.
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: ${{ inputs.image-name }}:${{ matrix.cuda }}
           format: sarif
@@ -111,7 +112,7 @@ jobs:
           path: trivy-${{ matrix.cuda }}.sarif
       - name: Generate SBOM
         if: ${{ inputs.run-sbom }}
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: ${{ inputs.image-name }}:${{ matrix.cuda }}
           format: cyclonedx

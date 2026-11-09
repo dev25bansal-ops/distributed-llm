@@ -90,6 +90,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[dev,testing]" 2>/dev/null || pip install pytest pytest-cov httpx
+          # test-path defaults to "tests/", which includes tests/sdk — that
+          # module imports distllm_sdk from the separate sdk/ package.
+          pip install -e sdk/ 2>/dev/null || true
           ${{ inputs.extra-deps && format('pip install {0}', inputs.extra-deps) || '' }}
       - name: Cache pytest
         uses: actions/cache@v4

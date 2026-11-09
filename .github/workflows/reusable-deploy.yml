@@ -92,6 +92,11 @@ jobs:
       - name: Set up Helm
         if: ${{ inputs.use-helm }}
         uses: azure/setup-helm@v3
+        env:
+          # Without a token the action cannot resolve "latest" and silently
+          # falls back to helm v3.9.0 (2022) — the same failure class that
+          # broke validate-k8s in ci.yml.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           version: "latest"
       - name: Configure kubeconfig

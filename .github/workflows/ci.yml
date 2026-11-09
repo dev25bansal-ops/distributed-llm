@@ -54,6 +54,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: [lint]
     strategy:
+      # Without this, the first failing leg (ubuntu 3.10) cancels the other
+      # three before they report anything, hiding their own first failure.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11"]
@@ -63,6 +66,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,testing]"
+      # tests/sdk/test_stream_parity_f036.py imports distllm_sdk, which lives in
+      # its own package (sdk/, distribution name distllm-sdk) and is not part
+      # of the root install; without it whole-tree pytest dies at collection.
+      - name: Install the Python SDK
+        run: pip install -e sdk/
       - uses: ./.github/actions/generate-protobuf
       # No --cov-fail-under here. The real coverage gate is
       # scripts/ci/coverage_ratchet.py in quality-gates.yml, which fails on a
@@ -137,6 +145,9 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,testing]"
+      # Whole-tree collection also imports tests/sdk/test_stream_parity_f036.py.
+      - name: Install the Python SDK
+        run: pip install -e sdk/
       - uses: ./.github/actions/generate-protobuf
       - name: Run chaos tests
         run: pytest -v -m chaos --tb=short
@@ -179,6 +190,9 @@ jobs:
         # says nothing about this repository.
         run: pip-audit --local --skip-editable --format json --output dep-audit.json
       - name: Upload dep audit
+        # Always: pip-audit exits 1 when it finds vulns, so without `always()`
+        # the very run whose report matters most never publishes it.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dep-audit
@@ -299,6 +313,10 @@ jobs:
       - name: Install core + integration
         run: |
           pip install -e ".[dev]"
+          # integrations/langchain/tests/test_chat_advanced.py imports
+          # distllm_sdk (undeclared by the integration's own metadata), so the
+          # SDK has to be present for that leg's tests to run at all.
+          pip install -e sdk/
           pip install -e "integrations/${{ matrix.integration }}[dev]" 2>/dev/null || \
             pip install -e "integrations/${{ matrix.integration }}" 2>/dev/null || \
             echo "No setup.py/pyproject.toml for ${{ matrix.integration }}, skipping install"
@@ -322,7 +340,9 @@ jobs:
       - name: Build image
         run: docker build -f Dockerfile -t distllm:ci .
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.29.0
+        # Tag is v-prefixed upstream; `0.29.0` does not resolve and fails the
+        # job at action download before any scan runs.
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: distllm:ci
           format: sarif
@@ -367,7 +387,7 @@ jobs:
       - name: Build image
         run: docker build -t distllm:cuda${{ matrix.cuda }} -f ${{ steps.dockerfile.outputs.file }} --build-arg CUDA_VERSION=${{ matrix.cuda }}.0 .
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: distllm:cuda${{ matrix.cuda }}
           format: sarif
@@ -380,7 +400,7 @@ jobs:
           name: trivy-cuda${{ matrix.cuda }}
           path: trivy-${{ matrix.cuda }}.sarif
       - name: Generate SBOM
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: distllm:cuda${{ matrix.cuda }}
           format: cyclonedx
@@ -397,12 +417,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v3
+        with:
+          # Pin instead of "latest": with no token the action fails to resolve
+          # "latest" and silently falls back to helm v3.9.0 (2022), whose
+          # bundled kubernetes client is v1.24 — below the chart's
+          # kubeVersion >=1.28.0 — so `helm template` always fails.
+          version: v3.22.1
       - uses: azure/setup-kubectl@v4
       - name: Validate Helm chart
         run: |
           helm lint deploy/helm/distllm-operator
-          helm template distllm deploy/helm/distllm-operator --namespace distllm > /tmp/distllm-helm.yaml
-          helm template distllm deploy/helm/distllm-operator --namespace distllm --set coordinator.ha.enabled=true > /tmp/distllm-helm-ha.yaml
+          helm template distllm deploy/helm/distllm-operator --namespace distllm --kube-version 1.30.0 > /tmp/distllm-helm.yaml
+          helm template distllm deploy/helm/distllm-operator --namespace distllm --kube-version 1.30.0 --set coordinator.ha.enabled=true > /tmp/distllm-helm-ha.yaml
       - name: Validate Kustomize overlays
         run: |
           kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/dev > /tmp/distllm-dev.yaml
@@ -507,11 +533,11 @@ jobs:
         run: make proto
 
       - name: Install dependencies
-        # The harnesses import distllm.cli and the metrics paths, so the cli
-        # and observability extras are required; [dev] alone lacks typer and
-        # prometheus_client and collection failed on ImportError.
+        # The harnesses import distllm.cli and the metrics paths (cli,
+        # observability extras) and torch (only in the testing/self-hosted
+        # extras — [dev] does not pull it in), so name all of them.
         run: |
-          pip install -e ".[dev,cli,observability]"
+          pip install -e ".[dev,testing,cli,observability]"
           pip install atheris
       - name: Run fuzz harnesses (pytest mode, 500 iterations each)
         run: |

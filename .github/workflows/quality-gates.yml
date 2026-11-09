@@ -49,6 +49,9 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,testing]"
+      # The per-directory chunk loop below includes tests/sdk, whose module
+      # imports distllm_sdk from the separate sdk/ package.
+      - run: pip install -e sdk/
       - uses: ./.github/actions/generate-protobuf
       - name: Run tests with coverage
         # Coverage is the signal here, not pass/fail: long-standing stale

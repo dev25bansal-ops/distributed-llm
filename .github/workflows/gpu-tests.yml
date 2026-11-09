@@ -57,6 +57,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[self-hosted,dev,testing]"
+          # This job runs whole-tree `pytest tests/`, whose collection imports
+          # tests/sdk/test_stream_parity_f036.py — needs distllm_sdk from the
+          # separate sdk/ package.
+          pip install -e sdk/
 
       - name: Verify GPU availability
         run: |
