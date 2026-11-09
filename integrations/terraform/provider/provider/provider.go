@@ -645,10 +645,16 @@ func dataSourceModelsRead(ctx context.Context, d *schema.ResourceData, m interfa
 
 	d.SetId(time.Now().Format(time.RFC3339))
 
-	var models []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&models); err != nil {
+	// /v1/models answers OpenAI-style: {"object": "list", "data": [...]}.
+	// Decoding into a bare slice fails against every real server with
+	// "cannot unmarshal object into Go value of type []map[string]interface {}".
+	var listed struct {
+		Data []map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		return diag.FromErr(err)
 	}
+	models := listed.Data
 
 	var result []map[string]interface{}
 	for _, m := range models {

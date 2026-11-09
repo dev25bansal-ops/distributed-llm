@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -115,16 +114,6 @@ func testProviderConfig(server *httptest.Server) *ProviderConfig {
 		Endpoint: server.URL,
 		APIKey:   "",
 		Client:   server.Client(),
-	}
-}
-
-func testAccProviders(server *httptest.Server) map[string]*schema.Provider {
-	p := Provider()
-	p.ConfigureContextFunc = func(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
-		return testProviderConfig(server), nil
-	}
-	return map[string]*schema.Provider{
-		"distllm": p,
 	}
 }
 
