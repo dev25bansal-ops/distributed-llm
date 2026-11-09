@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
-from ..errors import error_openapi_entry
+from ..errors import FeatureDisabledError, error_openapi_entry
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
@@ -63,7 +63,7 @@ async def register_node(req: RegisterNodeRequest):
     """Register a node for federated training."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     state = coordinator.register_node(
         node_id=req.node_id,
@@ -92,7 +92,7 @@ async def unregister_node(node_id: str):
     """Remove a node from federated training."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     coordinator.unregister_node(node_id)
     return {"status": "removed", "node_id": node_id}
@@ -113,7 +113,7 @@ async def start_round():
     """Start a new federated training round."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     round_info = coordinator.start_round()
     if not round_info:
@@ -143,7 +143,7 @@ async def submit_adapter(req: SubmitAdapterRequest):
     """Submit a locally trained adapter for merging."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     accepted = coordinator.submit_node_adapter(
         node_id=req.node_id,
@@ -171,7 +171,7 @@ async def merge_adapters():
     """Merge all submitted adapters."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     merged_path = coordinator.merge_adapters()
     if not merged_path:
@@ -192,7 +192,7 @@ async def get_federated_stats():
     """Get federated training statistics."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     stats = coordinator.get_stats()
     return FederatedStatsResponse(**stats)
@@ -210,7 +210,7 @@ async def list_versions():
     """List adapter versions from federated training."""
     coordinator = g.get("federated_merge")
     if not coordinator:
-        raise HTTPException(status_code=503, detail="Federated training not available")
+        raise FeatureDisabledError("federated-training", "Federated training not available")
 
     versions = coordinator.get_versions()
     return [

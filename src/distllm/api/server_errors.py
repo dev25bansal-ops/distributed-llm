@@ -8,7 +8,11 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from distllm.api.errors import error_response_from_request
+from distllm.api.errors import (
+    FEATURE_DISABLED_HEADER,
+    FeatureDisabledError,
+    error_response_from_request,
+)
 
 
 class ErrorResponse(BaseModel):
@@ -72,8 +76,26 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
+async def feature_disabled_exception_handler(
+    request: Request, exc: FeatureDisabledError
+) -> JSONResponse:
+    """Render a feature-off 503 in the app's standard HTTPException shape.
+
+    The body matches whatever the registered HTTPException handler produces
+    (the structured envelope on the live app, ``{"detail": ...}`` under
+    FastAPI's default), with the marker header the circuit breaker keys on.
+    """
+    response = await http_exception_handler(request, exc)
+    response.headers[FEATURE_DISABLED_HEADER] = "1"
+    return response
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register all exception handlers on a FastAPI application instance."""
     app.exception_handler(RequestValidationError)(validation_exception_handler)
+    # Specific subclass first: FeatureDisabledError is an HTTPException, so
+    # without this entry Starlette's MRO lookup would hand it to the generic
+    # handler and the marker header would never be attached.
+    app.exception_handler(FeatureDisabledError)(feature_disabled_exception_handler)
     app.exception_handler(HTTPException)(http_exception_handler)
     app.exception_handler(Exception)(general_exception_handler)

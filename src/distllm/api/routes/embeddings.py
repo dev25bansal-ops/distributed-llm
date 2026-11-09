@@ -366,7 +366,13 @@ async def create_hybrid_rerank(request: HybridRerankRequest):
 
     embed_loader = getattr(coord, "_embedding_loader", None)
     if embed_loader is None:
-        raise HTTPException(status_code=503, detail="Embedding loader not available")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Hybrid reranking requires an embedding or cross-encoder model. "
+                "Configure embedding.embedding_model and/or embedding.rerank_model."
+            ),
+        )
 
     has_embedding = embed_loader.embedding_model is not None
     has_reranker = embed_loader.rerank_model is not None
@@ -374,7 +380,10 @@ async def create_hybrid_rerank(request: HybridRerankRequest):
     if not has_embedding and not has_reranker:
         raise HTTPException(
             status_code=503,
-            detail="Hybrid reranking requires at least an embedding or reranker model",
+            detail=(
+                "Hybrid reranking requires at least an embedding or reranker model. "
+                "Configure embedding.embedding_model and/or embedding.rerank_model."
+            ),
         )
 
     start_time = time.time()

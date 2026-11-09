@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
-from ..errors import error_openapi_entry
+from ..errors import FeatureDisabledError, error_openapi_entry
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
@@ -107,7 +107,7 @@ async def create_listing(req: GPUListingRequest):
     """Create a new GPU listing in the marketplace."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     listing = marketplace.create_listing(
         provider_id=req.provider_id,
@@ -155,7 +155,7 @@ async def list_listings(
     """List available GPU listings with optional filters."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     listings = marketplace.list_listings(
         min_gpu_memory=min_gpu_memory,
@@ -194,7 +194,7 @@ async def get_listing(listing_id: str):
     """Get a specific GPU listing."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     listing = marketplace.get_listing(listing_id)
     if not listing:
@@ -229,7 +229,7 @@ async def remove_listing(listing_id: str):
     """Remove a GPU listing."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     if not marketplace.remove_listing(listing_id):
         raise HTTPException(status_code=404, detail="Listing not found")
@@ -252,7 +252,7 @@ async def post_job(req: JobPostRequest):
     """Post a compute job to the marketplace."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     job = marketplace.post_job(
         requester_id=req.requester_id,
@@ -301,7 +301,7 @@ async def list_jobs(
     """List marketplace jobs."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     from distllm.dist.marketplace import JobStatus
     job_status = None
@@ -342,7 +342,7 @@ async def complete_job(job_id: str, tokens_generated: int = 0):
     """Mark a job as completed."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     if not marketplace.complete_job(job_id, tokens_generated):
         raise HTTPException(status_code=400, detail="Cannot complete job")
@@ -364,7 +364,7 @@ async def cancel_job(job_id: str):
     """Cancel a job."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     if not marketplace.cancel_job(job_id):
         raise HTTPException(status_code=400, detail="Cannot cancel job")
@@ -384,7 +384,7 @@ async def get_provider_earnings(provider_id: str):
     """Get earnings summary for a GPU provider."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     earnings = marketplace.get_provider_earnings(provider_id)
     if not earnings:
@@ -413,7 +413,7 @@ async def get_marketplace_stats():
     """Get overall marketplace statistics."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     stats = marketplace.get_marketplace_stats()
     return MarketplaceStatsResponse(**stats)

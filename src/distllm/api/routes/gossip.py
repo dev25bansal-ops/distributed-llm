@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..api_state import g
+from ..errors import FeatureDisabledError
 
 router = APIRouter(tags=["gossip"])
 
@@ -29,7 +30,9 @@ def _get_gossip_protocol():
     coord = g.coordinator
     protocol = getattr(coord, "_gossip_protocol", None) if coord is not None else None
     if protocol is None:
-        raise HTTPException(status_code=503, detail="Gossip protocol is not enabled")
+        # Feature off by config: neutral to the circuit breaker, like the
+        # exchange/marketplace/federated/plugins 503s.
+        raise FeatureDisabledError("gossip", "Gossip protocol is not enabled")
     return protocol
 
 

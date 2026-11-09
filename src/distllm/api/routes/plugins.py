@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
-from ..errors import error_openapi_entry
+from ..errors import FeatureDisabledError, error_openapi_entry
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
@@ -40,9 +40,9 @@ def _require_plugin_system() -> Any:
     """Return the coordinator's plugin system or raise 503."""
     plugin_sys = getattr(g, "coordinator", None)
     if plugin_sys is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Coordinator not available — plugins require a loaded model",
+        raise FeatureDisabledError(
+            "plugins",
+            "Coordinator not available — plugins require a loaded model",
         )
     return plugin_sys
 

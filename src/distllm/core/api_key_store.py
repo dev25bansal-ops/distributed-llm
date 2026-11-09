@@ -172,6 +172,18 @@ class StoredKey:
     expires_at: float | None = None
 
 
+# ── Key file location ───────────────────────────────────────────────────────
+#
+# The shared location clients (the CLI) read the auto-generated key from.
+# ``DISTLLM_KEY_FILE`` overrides; the default is ``.distllm/api_key`` relative
+# to the working directory (matching ``api/middleware.py`` and
+# ``cli/http_client.py``).
+
+
+def _api_key_path() -> str:
+    return os.environ.get("DISTLLM_KEY_FILE") or os.path.join(".distllm", "api_key")
+
+
 # ── Key store ───────────────────────────────────────────────────────────────
 
 
@@ -528,11 +540,80 @@ class ApiKeyStore:
             logger.info("Loaded single API_KEY (admin role, backward compatible)")
             return
 
-        # 4. Auto-generate an admin key (legacy behavior)
+        # 4. Auto-generated key (legacy behavior) — adopt, never overwrite.
+        #
+        # The key file is the shared contract between a running server and
+        # its clients (the CLI reads it to authenticate).  A second process
+        # (e.g. another ``distllm cluster start``) used to generate a fresh
+        # key and rewrite the file unconditionally (O_TRUNC), invalidating the
+        # already-running server's in-memory key: the file no longer matched
+        # any running server's key table, so every client 401'd until restart.
+        # Now an existing non-empty file is ADOPTED as-is; only an
+        # absent/empty file is (atomically, exclusively) created.
+        key_path = _api_key_path()
+        existing = self._read_existing_key(key_path)
+        if existing:
+            self._adopt_auto_key(existing)
+            logger.info(
+                f"No API keys configured; reusing the existing auto-generated "
+                f"API key found in {key_path}. Delete that file or set API_KEY "
+                f"in the environment to rotate keys."
+            )
+            return
+
         generated = secrets.token_urlsafe(48)
+        winner, written_path = self._persist_auto_key(generated)
+        if winner:
+            # Another process won the creation race — hash ITS key, not ours.
+            self._adopt_auto_key(winner)
+            logger.info(
+                f"No API keys configured; another process created {key_path} "
+                f"first — reusing that auto-generated API key. Delete that file "
+                f"or set API_KEY in the environment to rotate keys."
+            )
+            return
+
+        self._adopt_auto_key(generated)
+        logger.warning(
+            "No API keys configured. Generated an admin API key"
+            + (f" and wrote it to {written_path}" if written_path else " (in-memory only)")
+            + ". Set API_KEYS, API_KEYS_FILE, or API_KEY in the environment to "
+            "pin keys instead. Clients pick the key up from that file "
+            "automatically."
+        )
+
+    @staticmethod
+    def _read_existing_key(path: str) -> str | None:
+        """Return the trimmed key stored at *path*, or None if absent/empty."""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                key = fh.read().strip()
+        except OSError:
+            return None
+        return key or None
+
+    @classmethod
+    def _read_existing_key_settling(cls, path: str, attempts: int = 5) -> str | None:
+        """Read *path*, tolerating a competing writer that created it but has
+        not finished writing yet (O_EXCL makes the empty file visible first)."""
+        for i in range(attempts):
+            key = cls._read_existing_key(path)
+            if key:
+                return key
+            if i + 1 < attempts:
+                time.sleep(0.02)
+        return None
+
+    def _adopt_auto_key(self, key: str) -> None:
+        """Hash *key* into the store as the auto-generated admin key.
+
+        Used both for a freshly minted key and for adopting one already on
+        disk, so a second process can never invalidate a running server's key.
+        The raw key is kept in process memory so ``get_display_key`` works.
+        """
         salt = self._generate_salt()
         self._keys.append(StoredKey(
-            key=self._hash_key(generated, salt),
+            key=self._hash_key(key, salt),
             role="admin",
             label="auto-generated",
             key_id="auto",
@@ -540,40 +621,78 @@ class ApiKeyStore:
             created_at=time.time(),
         ))
         # Store the raw key so it can be displayed to the user
-        self._auto_generated_key = generated
-        key_path = self._persist_auto_key(generated)
-        logger.warning(
-            "No API keys configured. Generated an admin API key"
-            + (f" and wrote it to {key_path}" if key_path else " (in-memory only)")
-            + ". Set API_KEYS, API_KEYS_FILE, or API_KEY in the environment to "
-            "pin keys instead. Clients pick the key up from that file "
-            "automatically."
-        )
+        self._auto_generated_key = key
 
-    def _persist_auto_key(self, key: str) -> str | None:
-        """Write the auto-generated key where local clients look for it.
+    def _persist_auto_key(self, key: str) -> tuple[str | None, str | None]:
+        """Create the auto-key file exclusively; never truncate a real key file.
 
-        Without this the key existed only in this process, so every
+        Without persistence the key existed only in this process, so every
         ``distllm model …`` command returned 401 against a cluster the user had
         just started with ``distllm cluster start`` -- nothing could read the
-        key the server had minted. Owner-only permissions, and a failure to
-        write is logged and ignored (the key stays valid for this process).
+        key the server had minted.  Owner-only permissions; a failure to write
+        is logged (without the key) and ignored (the key stays valid for this
+        process).
+
+        Returns ``(race_winner_key, written_path)``:
+
+        * ``(None, path)``  — our key was written; clients can read it.
+        * ``(other, None)`` — another process created the file first; the
+          caller must adopt ``other`` instead of the generated key.
+        * ``(None, None)``  — write failed (logged); the generated key stays
+          in memory only.
         """
-        path = os.environ.get("DISTLLM_KEY_FILE") or os.path.join(".distllm", "api_key")
+        path = _api_key_path()
         try:
             directory = os.path.dirname(os.path.abspath(path))
             os.makedirs(directory, exist_ok=True)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                # Exclusive create: two processes can never both believe they
+                # own the file, and an existing non-empty key file is never
+                # truncated.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                winner = self._read_existing_key_settling(path)
+                if winner:
+                    return winner, None
+                # The file exists but is EMPTY — a crashed writer's leftover.
+                # Replacing an empty file is safe; a non-empty key file is not.
+                fd = self._open_existing_empty(path)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(key + "\n")
             try:
                 os.chmod(path, 0o600)
             except OSError:
                 pass  # Windows: only toggles the read-only bit
-            return path
+            return None, path
+        except FileExistsError:
+            # A real key landed between our emptiness check and open — adopt it.
+            return self._read_existing_key(path), None
         except OSError as exc:
             logger.error(f"Could not persist the generated API key to {path}: {exc}")
-            return None
+            return None, None
+
+    @staticmethod
+    def _open_existing_empty(path: str) -> int:
+        """Open *path* for writing only if it contains no key.
+
+        "No key" means zero bytes OR whitespace-only content: a key file that
+        holds no key is a degenerate leftover (e.g. ``echo > .distllm/api_key``)
+        and is safe to refill. Treating it as a real key would make every
+        process mint an ephemeral key that never reaches disk — the same
+        client-401 class this module's adoption logic exists to prevent.
+        Raises ``FileExistsError`` when real content is present so the caller
+        adopts that writer's key instead.
+        """
+        fd = os.open(path, os.O_RDWR)
+        try:
+            if os.fstat(fd).st_size != 0 and os.read(fd, 4096).strip():
+                raise FileExistsError(path)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
 
     def _load_from_dict(self, data: dict[str, Any]) -> None:
         """Parse a dict like ``{"keys": [{"key": "...", "role": "...", ...}]}``."""

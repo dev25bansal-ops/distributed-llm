@@ -146,6 +146,30 @@ def _get_prompt_or_404(prompt_id: str) -> SystemPromptDef:
     return p
 
 
+_SNAPSHOT_CONTENT_FIELDS = ("name", "category", "description", "prompt", "tags")
+
+
+def _snapshot(prompt_id: str, p: SystemPromptDef) -> None:
+    """Record *p* in the version history unless that state is already stored.
+
+    Rule: a snapshot is skipped when any existing entry has the same
+    ``version`` AND equal content fields. Comparing against every entry (not
+    just the last one) matters after ``restore_version``: the history may
+    already contain the state being replaced, and the restored version can
+    legitimately re-appear later in the list. This keeps one snapshot per
+    distinct version state instead of re-appending on every update/restore.
+    """
+    snapshot = asdict(p)
+    history = _version_history.setdefault(prompt_id, [])
+    for existing in history:
+        if existing.get("version") == snapshot["version"] and all(
+            existing.get(field) == snapshot[field]
+            for field in _SNAPSHOT_CONTENT_FIELDS
+        ):
+            return
+    history.append(snapshot)
+
+
 # ── Static-path endpoints (BEFORE /{prompt_id} wildcard) ─────────────────────
 
 
@@ -315,7 +339,7 @@ async def get_prompt_detail(prompt_id: str):
 async def update_prompt(prompt_id: str, body: PromptUpdate):
     """Update a prompt; the prior state is snapshotted as a new version."""
     p = _get_prompt_or_404(prompt_id)
-    _version_history[prompt_id].append(asdict(p))
+    _snapshot(prompt_id, p)
     new_version = p.version + 1
     p.name = body.name
     p.category = body.category
@@ -456,7 +480,9 @@ async def restore_version(prompt_id: str, version: int):
             status_code=404,
             detail=f"Version {version} not found for prompt '{prompt_id}'",
         )
-    _version_history[prompt_id].append(asdict(p))
+    # Keep the state being replaced unless it is already recorded, so
+    # restoring away from the current version never loses it.
+    _snapshot(prompt_id, p)
     p.name = target["name"]
     p.category = target["category"]
     p.description = target["description"]

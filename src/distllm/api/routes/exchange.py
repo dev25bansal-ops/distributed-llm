@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
-from ..errors import error_openapi_entry
+from ..errors import FeatureDisabledError, error_openapi_entry
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
@@ -97,7 +97,7 @@ async def publish_prompt(req: PublishPromptRequest):
     """Publish a prompt to the exchange."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     from distllm.prompts.exchange import PromptLicense
     try:
@@ -142,7 +142,7 @@ async def browse_prompts(
     """Browse published prompts."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     from distllm.prompts.exchange import PromptLicense
     lic = None
@@ -182,7 +182,7 @@ async def search_prompts(
     """Search prompts by name, description, tags, or content."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     prompts = exchange.search(q, limit=limit)
     return [_prompt_to_response(p) for p in prompts]
@@ -202,7 +202,7 @@ async def get_prompt(prompt_id: str):
     """Get a specific prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     prompt = exchange.get_prompt(prompt_id)
     if not prompt:
@@ -225,7 +225,7 @@ async def acquire_prompt(prompt_id: str, request: Request, user_id: str = Query(
     """Acquire a prompt (free or token-gated)."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     # SECURITY: Bind user_id to the authenticated identity so a caller cannot
     # act as another user (IDOR protection). The API-key owner is authoritative
@@ -263,7 +263,7 @@ async def check_access(prompt_id: str, user_id: str = Query(...)):
     """Check if a user has access to a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     has = exchange.has_access(user_id, prompt_id)
     return {"prompt_id": prompt_id, "user_id": user_id, "has_access": has}
@@ -283,7 +283,7 @@ async def add_review(prompt_id: str, req: ReviewRequest):
     """Add a review for a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     review = exchange.add_review(req.user_id, prompt_id, req.rating, req.comment)
     if not review:
@@ -307,7 +307,7 @@ async def get_reviews(prompt_id: str, limit: int = 20):
     """Get reviews for a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     reviews = exchange.get_reviews(prompt_id, limit=limit)
     return [
@@ -336,7 +336,7 @@ async def record_usage(prompt_id: str, req: UsageRecordRequest):
     """Record usage metrics for a prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     exchange.record_usage(
         prompt_id=prompt_id,
@@ -366,7 +366,7 @@ async def fork_prompt(prompt_id: str, user_id: str = Query(...), new_name: str =
     """Fork an existing prompt."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     fork = exchange.fork_prompt(user_id, prompt_id, new_name=new_name)
     if not fork:
@@ -391,7 +391,7 @@ async def get_leaderboard(
     """Get prompt leaderboard."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     return {"leaderboard": exchange.get_leaderboard(category=category, metric=metric, limit=limit)}
 
@@ -409,7 +409,7 @@ async def get_exchange_stats():
     """Get exchange statistics."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     return exchange.get_exchange_stats()
 
@@ -426,7 +426,7 @@ async def get_wallet(user_id: str):
     """Get user's token wallet."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     wallet = exchange.get_wallet(user_id)
     return {
@@ -452,7 +452,7 @@ async def top_up_wallet(user_id: str, amount: int = Query(..., gt=0)):
     """Top up user's token wallet."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     wallet = exchange.top_up(user_id, amount)
     return {
@@ -475,7 +475,7 @@ async def get_user_library(user_id: str):
     """Get all prompts a user has access to."""
     exchange = g.get("prompt_exchange")
     if not exchange:
-        raise HTTPException(status_code=503, detail="Prompt exchange not available")
+        raise FeatureDisabledError("prompt-exchange", "Prompt exchange not available")
 
     prompts = exchange.get_user_library(user_id)
     return [_prompt_to_response(p) for p in prompts]
