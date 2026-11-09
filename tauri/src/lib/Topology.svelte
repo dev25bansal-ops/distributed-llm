@@ -259,13 +259,18 @@
   .topology-layout { display: flex; gap: 16px; }
   .canvas-container {
     flex: 1;
-    min-height: 400px;
+    /* Fixed box: the canvas is absolutely positioned inside it. Previously
+       the canvas was in flow and draw() sized it from this container's
+       bounding rect — which includes the border — so the container grew
+       ~2px every animation frame until the section went blank. */
+    position: relative;
+    height: clamp(400px, calc(100vh - 220px), 800px);
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 12px;
     overflow: hidden;
   }
-  .canvas-container canvas { display: block; }
+  .canvas-container canvas { position: absolute; inset: 0; display: block; }
   .topology-sidebar { width: 260px; flex-shrink: 0; }
   .node-info { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
   .node-info:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }

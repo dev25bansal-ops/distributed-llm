@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, afterUpdate } from "svelte";
+  import { onMount } from "svelte";
   import { chatStore, clusterStore, logStore } from "./stores";
   import { ErrorBanner } from "./ui";
   import InferenceMetrics from "./InferenceMetrics.svelte";
@@ -36,7 +36,11 @@
     chatStore.updateOptions(saved);
   });
 
-  afterUpdate(() => {
+  // afterUpdate() was removed in runes mode. An $effect that reads `messages`
+  // re-runs whenever the message list changes -- the same trigger -- and
+  // scrolls to the bottom after the DOM updates.
+  $effect(() => {
+    messages;  // track the dependency
     if (messagesEl) {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }

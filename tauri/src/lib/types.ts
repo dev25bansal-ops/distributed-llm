@@ -65,6 +65,8 @@ export interface ChatOptions {
   top_p: number;
   max_tokens: number;
   system_prompt: string;
+  /** Optional model override; resolved against GET /v1/models at send time. */
+  model?: string;
 }
 
 export interface InferenceMetrics {

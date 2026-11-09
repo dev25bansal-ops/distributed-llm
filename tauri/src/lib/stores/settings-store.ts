@@ -16,6 +16,7 @@ export interface AppSettings {
   };
   pythonPath: string;
   apiEndpoint: string;
+  apiKey: string;
   updateServerUrl: string;
 }
 
@@ -35,6 +36,7 @@ const defaults: AppSettings = {
   },
   pythonPath: "",
   apiEndpoint: "",
+  apiKey: "",
   updateServerUrl: "https://releases.distributed-llm.dev",
 };
 
