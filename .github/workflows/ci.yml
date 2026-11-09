@@ -426,9 +426,14 @@ jobs:
       - uses: azure/setup-kubectl@v4
       - name: Validate Helm chart
         run: |
-          helm lint deploy/helm
-          helm template distllm deploy/helm --namespace distllm --kube-version 1.30.0 > /tmp/distllm-helm.yaml
-          helm template distllm deploy/helm --namespace distllm --kube-version 1.30.0 --set coordinator.ha.enabled=true > /tmp/distllm-helm-ha.yaml
+          # worker.yaml marks model.name as `required`, which is correct: a
+          # worker with no model has nothing to serve. The render therefore has
+          # to supply one, or `helm template` aborts on a chart that is fine.
+          helm lint deploy/helm --set model.name=ci/render-check
+          helm template distllm deploy/helm --namespace distllm --kube-version 1.30.0 \
+            --set model.name=ci/render-check > /tmp/distllm-helm.yaml
+          helm template distllm deploy/helm --namespace distllm --kube-version 1.30.0 \
+            --set model.name=ci/render-check --set coordinator.ha.enabled=true > /tmp/distllm-helm-ha.yaml
       - name: Validate Kustomize overlays
         run: |
           kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/dev > /tmp/distllm-dev.yaml

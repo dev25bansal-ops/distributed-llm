@@ -101,6 +101,14 @@ worker:
 
 # ── HPA configuration (required by hpa.yaml template) ─────────────────
 
+# Coordinator high availability. With ha.enabled=true the coordinator
+# StatefulSet runs 3 replicas, matching the kustomize staging/production
+# overlays. Declared here so the switch is discoverable from values.yaml and
+# not only reachable through `--set` on the command line.
+coordinator:
+  ha:
+    enabled: false
+
 hpa:
   enabled: false
   minReplicas: 1

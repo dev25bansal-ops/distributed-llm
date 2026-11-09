@@ -6,7 +6,13 @@ metadata:
     app.kubernetes.io/component: coordinator
 spec:
   serviceName: {{ include "distllm-operator.fullname" . }}-coordinator-headless
-  replicas: 1
+  # A single coordinator is the default. coordinator.ha.enabled raises the
+  # count so CI's `--set coordinator.ha.enabled=true` render actually exercises
+  # something -- it previously produced a byte-identical manifest, which meant
+  # the check asserted a capability the chart did not have. The kustomize
+  # overlays already run three coordinators in staging and production, so this
+  # brings the chart in line with them rather than inventing a new default.
+  replicas: {{ if .Values.coordinator.ha.enabled }}3{{ else }}1{{ end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
