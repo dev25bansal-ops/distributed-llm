@@ -142,9 +142,11 @@ def test_100b_model(model_name: str = "meta-llama/Llama-3.1-70B") -> ScalingTest
 
     try:
         from distllm.core.coordinator import Coordinator
+        # `dtype` accepts only float16/float32/bfloat16 (CoordinatorConfig
+        # validator); INT4 is a quantization method, not a dtype.
         coord = Coordinator(
             model_name=model_name,
-            dtype="int4",  # 4-bit quantization for 100B-class fit
+            dtype="float16",
             num_gpus=8,
         )
         coord.load_local_model()
@@ -192,7 +194,7 @@ def test_context_length(model_name: str = "meta-llama/Llama-3.1-70B") -> Scaling
 
     try:
         from distllm.core.coordinator import Coordinator
-        coord = Coordinator(model_name=model_name, dtype="int4", max_batch_size=1)
+        coord = Coordinator(model_name=model_name, dtype="float16", max_batch_size=1)
         coord.load_local_model()
     except (ImportError, Exception) as e:
         logger.warning(f"Real model load failed ({e}); estimating context limit")
@@ -296,7 +298,7 @@ def test_heterogeneous_gpu(model_name: str = "meta-llama/Llama-3.1-70B") -> Scal
         from distllm.core.coordinator import Coordinator
         from distllm.core.auto_partitioner import AutoPartitioner
 
-        coord = Coordinator(model_name=model_name, dtype="int4")
+        coord = Coordinator(model_name=model_name, dtype="float16")
         partitioner = AutoPartitioner()
 
         for name, spec in gpu_types:
@@ -361,7 +363,6 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
 
     try:
         from distllm.core.resource_manager import ResourceManager, CircuitBreakerConfig
-        from distllm.chaos.injector import ChaosInjector
         from distllm.core.coordinator import Coordinator
         _HAS_REAL = True
     except ImportError:
@@ -393,7 +394,6 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
                 self._node_recovery_time[n] = time.time() + 5
 
         rm = SimRM()
-        injector = type('Injector', (), {'kill_node': lambda self, n: rm.simulate_node_failure(n)})()
 
         # Phase 1: All nodes healthy
         for nid in ["node-1", "node-2", "node-3", "node-4"]:
@@ -432,7 +432,7 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
     # Real implementation
     rm = ResourceManager(cb_config=CircuitBreakerConfig(threshold=2, base_delay=1.0))
     try:
-        coord = Coordinator(model_name=model_name, dtype="int4")
+        coord = Coordinator(model_name=model_name, dtype="float16")
     except Exception as e:
         logger.warning(f"Cannot create coordinator ({e}); simulating")
         # Fall back to simulated test using just the ResourceManager
@@ -493,9 +493,11 @@ def test_failure_recovery(model_name: str = "meta-llama/Llama-3.1-70B") -> Scali
         return result
 
     # Phase 2: Kill node-2 mid-generation
+    # `distllm.chaos.injector.ChaosInjector` was removed with the old chaos
+    # module; `ResourceManager.simulate_node_failure` is the current API for
+    # fault injection in these tests.
     kill_target = "node-2"
-    injector = ChaosInjector(rm)
-    injector.kill_node(kill_target)
+    rm.simulate_node_failure(kill_target)
     rm.record_failure(kill_target)
     rm.record_failure(kill_target)
     rm.record_failure(kill_target)  # trigger circuit breaker

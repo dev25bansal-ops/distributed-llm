@@ -221,7 +221,8 @@ class DistLLMBackend:
     def start(self):
         print(f"Starting DistLLM server with model {self.model}...")
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "distllm.api.server", "--model", self.model, "--port", str(self.port)],
+            [sys.executable, "-m", "distllm.api.server", "--model", self.model,
+             "--port", str(self.port), "--local"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

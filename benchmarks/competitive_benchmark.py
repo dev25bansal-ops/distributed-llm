@@ -5,8 +5,7 @@ Produces the YC-ready comparison table with cost, latency, throughput, and conte
 
 Usage:
     python benchmarks/competitive_benchmark.py
-    python benchmarks/competitive_benchmark.py --hw "8x RTX 4090" --gpu-cost 3.50
-    python benchmarks/competitive_benchmark.py --estimate-only
+    python benchmarks/competitive_benchmark.py --hw "8x RTX 4090" --save
 """
 
 import argparse

@@ -6,7 +6,7 @@ a comparison report with latency, throughput, cost, and quality metrics.
 
 Usage:
     python benchmarks/run_competitive.py --engines distllm,vllm,llama.cpp
-    python benchmarks/run_competitive.py --model meta-llama/Llama-3.1-8B --gpus 1
+    python benchmarks/run_competitive.py --model meta-llama/Llama-3.1-8B --hardware "1x A100-80GB"
     python benchmarks/run_competitive.py --output results/report.json
 """
 
@@ -184,10 +184,13 @@ class CompetitiveBenchmark:
 
         return report
 
-    def save_report(self, filename: str = "competitive_benchmark.json") -> Path:
+    def save_report(self, filename: str = "competitive_benchmark.json",
+                    output_dir: Path | None = None) -> Path:
         """Save the benchmark report to disk."""
         report = self.generate_report()
-        path = self.output_dir / filename
+        target_dir = Path(output_dir) if output_dir else self.output_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / filename
         path.write_text(json.dumps(report, indent=2))
         print(f"\nReport saved to: {path}")
         return path
@@ -243,7 +246,11 @@ def main():
     )
 
     benchmark.run_all(workloads)
-    report_path = benchmark.save_report(Path(args.output).name)
+    # Honor the full --output path (its documented form is a path like
+    # "results/report.json"); falling back to the instance's output_dir only
+    # when --output is omitted.
+    out_path = Path(args.output)
+    report_path = benchmark.save_report(out_path.name, output_dir=out_path.parent)
 
     if args.compare:
         regressions = benchmark.compare_with_baseline(args.compare)

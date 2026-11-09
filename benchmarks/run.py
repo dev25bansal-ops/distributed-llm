@@ -38,8 +38,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from loguru import logger
@@ -382,6 +380,7 @@ def benchmark_latency_ttft(model: str, max_tokens: int, num_prompts: int) -> Ben
     Uses SDPA attention but NOT torch.compile (compilation overhead would skew TTFT).
     """
     import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     result = BenchmarkResult(name="latency-ttft", model=model)
 
     try:
@@ -828,35 +827,28 @@ def benchmark_network_util(model: str, max_tokens: int, nodes: int = 1) -> Bench
         print("  Single node: no network traffic, utilization = 0%")
         return result
 
-    # Try real monitoring from AllToAllStats
-    try:
-        from distllm.core.moe_alltoall import AllToAllStats
-        stats = AllToAllStats()
-        total_bytes = (stats.total_bytes_sent + stats.total_bytes_received) or 0
-        total_time = max(stats.total_time_ns / 1e9, 1e-12) if stats.total_time_ns else 1.0
-        avg_bps = total_bytes * 8 / total_time
-        available_bps = _estimate_network_bandwidth(nodes)
-        result.network_util_pct = min(100.0, avg_bps / available_bps * 100)
-        result.samples = stats.num_rounds if hasattr(stats, 'num_rounds') else 1
-        print(f"  Measured: {total_bytes / (1024**3):.2f} GB transferred, {total_time:.1f}s, {result.network_util_pct:.1f}% util")
-    except Exception:
-        # Estimate based on model parallelism
-        model_gb = _estimate_model_size_gb(model)
-        tokens_per_sec = _estimate_dist_throughput(model, nodes)
+    # Estimate based on model parallelism.
+    #
+    # NOTE: this used to try `distllm.core.moe_alltoall.AllToAllStats` for real
+    # measurements, but that module was removed (commit 9ee079c) and no
+    # replacement all-to-all stats collector exists, so there is nothing to
+    # measure from — the estimate is the only path.
+    model_gb = _estimate_model_size_gb(model)
+    tokens_per_sec = _estimate_dist_throughput(model, nodes)
 
-        # In tensor parallelism, each transformer layer sends activations of size:
-        #   hidden_dim * seq_len * bytes_per_param for each all-reduce
-        # Estimate ~2 * hidden_dim * seq_len per layer per token
-        hidden_dim = _estimate_hidden_dim(model_gb)
-        seq_len = min(max_tokens, 2048)
-        layers = _estimate_num_layers(model_gb)
-        bytes_per_layer_per_token = 2 * hidden_dim * 2  # 2 bytes (fp16) * 2 all-reduce ops
-        total_bytes_per_token = bytes_per_layer_per_token * layers
-        bandwidth_bps = tokens_per_sec * total_bytes_per_token * 8
-        available_bps = _estimate_network_bandwidth(nodes)
-        result.network_util_pct = min(100.0, bandwidth_bps / available_bps * 100)
-        result.samples = 0
-        print(f"  Estimated: {model_gb} GB model, {hidden_dim} hidden, {layers} layers, {result.network_util_pct:.1f}% util")
+    # In tensor parallelism, each transformer layer sends activations of size:
+    #   hidden_dim * seq_len * bytes_per_param for each all-reduce
+    # Estimate ~2 * hidden_dim * seq_len per layer per token
+    hidden_dim = _estimate_hidden_dim(model_gb)
+    seq_len = min(max_tokens, 2048)
+    layers = _estimate_num_layers(model_gb)
+    bytes_per_layer_per_token = 2 * hidden_dim * 2  # 2 bytes (fp16) * 2 all-reduce ops
+    total_bytes_per_token = bytes_per_layer_per_token * layers
+    bandwidth_bps = tokens_per_sec * total_bytes_per_token * 8
+    available_bps = _estimate_network_bandwidth(nodes)
+    result.network_util_pct = min(100.0, bandwidth_bps / available_bps * 100)
+    result.samples = 0
+    print(f"  Estimated: {model_gb} GB model, {hidden_dim} hidden, {layers} layers, {result.network_util_pct:.1f}% util")
 
     result.target_value = BENCHMARK_TARGETS["network-util"]["target"]
     result.target_met = result.network_util_pct >= result.target_value

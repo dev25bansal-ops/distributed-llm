@@ -3,8 +3,20 @@ import sys
 
 
 def load_hashes(path: str) -> set[str]:
-    with open(path, encoding="utf-8-sig") as f:
-        data = json.load(f)
+    # detect-secrets baselines are JSON, but the file can land on disk as
+    # UTF-16 (PowerShell `>` redirection writes UTF-16LE with a BOM) rather
+    # than UTF-8. Accept either so the gate does not crash on the baseline's
+    # encoding alone.
+    with open(path, "rb") as f:
+        raw = f.read()
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            data = json.loads(raw.decode(encoding))
+            break
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    else:
+        raise SystemExit(f"ERROR: cannot parse {path} as UTF-8 or UTF-16 JSON")
     return {s["hashed_secret"] for r in data.get("results", {}).values() for s in r}
 
 
