@@ -53,6 +53,14 @@ class CoordinatorConfig(BaseModel):
         ge=1,
         description="Maximum total tokens per batch iteration.",
     )
+    max_context_length: int = Field(
+        default=4096,
+        ge=1,
+        description=(
+            "Model context window in tokens.  The distributed generation path "
+            "clamps prompt + generation to this value."
+        ),
+    )
     pipeline_timeout: float = Field(
         default=30.0,
         gt=0,

@@ -1,0 +1,33 @@
+{
+  "model_name": "llama",
+  "active_version": "v1",
+  "rollback_history": [],
+  "versions": {
+    "v1": {
+      "version_id": "v1",
+      "model_name": "llama",
+      "model_path": "/models/v1",
+      "dtype": "float16",
+      "status": "active",
+      "deployed_at": 1000.0,
+      "promoted_at": 1000.0,
+      "sha256": "",
+      "config_overrides": {},
+      "metrics": {},
+      "tags": []
+    },
+    "v2": {
+      "version_id": "v2",
+      "model_name": "llama",
+      "model_path": "/models/v2",
+      "dtype": "float16",
+      "status": "staged",
+      "deployed_at": 1000.0,
+      "promoted_at": null,
+      "sha256": "",
+      "config_overrides": {},
+      "metrics": {},
+      "tags": []
+    }
+  }
+}

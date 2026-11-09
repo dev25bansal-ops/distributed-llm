@@ -4,6 +4,7 @@ import threading
 import time
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..api_state import g
@@ -225,10 +226,18 @@ async def load_model(body: LoadModelRequest):
             result = coord.hot_swap_load(body.model)
         else:
             return {"error": "no load_model method available"}
+        # ``result is False`` means the coordinator declined (no hot-swap
+        # manager configured, or the model could not be loaded).  Reporting
+        # ``status: ok`` here would be a 200 that loaded nothing.
+        if result is False:
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"model '{body.model}' was not loaded"},
+            )
         _get_registry(force=True)
         return {"status": "ok", "model": body.model, "result": result}
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.post(
@@ -249,7 +258,15 @@ async def unload_model(body: UnloadModelRequest):
             result = coord.hot_swap_unload(body.model)
         else:
             return {"error": "no unload_model method available"}
+        # ``Coordinator.hot_swap_unload`` returns False when no hot-swap
+        # manager is configured and when the model is not loaded.  Both mean
+        # nothing was unloaded, so a 200 ``status: ok`` would be a lie.
+        if result is False:
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"model '{body.model}' was not unloaded"},
+            )
         _get_registry(force=True)
         return {"status": "ok", "model": body.model, "result": result}
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
