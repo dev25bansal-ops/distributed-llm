@@ -5,10 +5,26 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./generated/*": "./dist/generated/*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/distributed-llm/distributed-llm.git",
+    "directory": "sdk/js"
+  },
+  "bugs": {
+    "url": "https://github.com/distributed-llm/distributed-llm/issues"
+  },
+  "homepage": "https://github.com/distributed-llm/distributed-llm/tree/main/sdk/js",
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "lint": "eslint src/"
+    "typecheck": "tsc --noEmit"
   },
   "keywords": ["llm", "inference", "distributed", "openai-compatible"],
   "license": "Apache-2.0",

@@ -74,19 +74,57 @@ export interface HealthResponse {
     nodes?: number;
     uptime?: number;
 }
-export interface BatchRequest {
-    input_file_id: string;
-    endpoint: string;
-    metadata?: Record<string, any>;
+export interface BatchSubmitItem {
+    request_id?: string;
+    prompt: string;
+    max_tokens?: number;
+    temperature?: number;
 }
-export interface BatchJob {
-    id?: string;
-    status?: string;
-    input_file_id?: string;
+export interface BatchSubmitRequest {
+    items: BatchSubmitItem[];
+    webhook_url?: string;
+    webhook_token?: string;
+    item_timeout?: number;
+}
+export interface BatchSubmitResponse {
+    batch_id: string;
+    status: string;
+    total_items?: number;
     created_at?: number;
+    message?: string;
 }
-export interface BatchList {
-    data?: BatchJob[];
+export interface BatchItemResult {
+    request_id: string;
+    prompt?: string;
+    max_tokens?: number;
+    temperature?: number;
+    status?: 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+    result?: Record<string, any>;
+    error?: string;
+    cost: number;
+    started_at?: number;
+    completed_at?: number;
+}
+export interface BatchStatusResponse {
+    batch_id: string;
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'partially_completed' | 'cancelled';
+    total_items: number;
+    pending: number;
+    running: number;
+    completed: number;
+    failed: number;
+    timed_out: number;
+    cancelled: number;
+    total_cost: number;
+    created_at: number;
+    completed_at?: number;
+    items?: BatchItemResult[];
+}
+export interface BatchCancelResponse {
+    batch_id: string;
+    status: string;
+    cancelled_items: number;
+    message: string;
 }
 export interface UsageInfo {
     prompt_tokens?: number;
