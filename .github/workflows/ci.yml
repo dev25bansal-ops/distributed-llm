@@ -193,7 +193,17 @@ jobs:
         run: pip install -e sdk/
       - uses: ./.github/actions/generate-protobuf
       - name: Run chaos tests
-        run: pytest -v -m chaos --tb=short
+        # Scoped to tests/chaos plus the one chaos-marked file outside it.
+        # `pytest -m chaos` over the whole tree collects 12,382 tests and
+        # errors 29 of them at fixture setup with KeyError: 'n0' -- the same
+        # file passes when run alone, so some other suite's collection is
+        # poisoning shared state. tests/chaos/conftest.py injects fake
+        # `distllm` modules into sys.modules at import time, which is the
+        # likely mechanism, but the exact interleaving is not worth chasing
+        # before launch. Scoping runs what the job is named for, reliably.
+        run: |
+          pytest tests/chaos -m chaos -v --tb=short
+          pytest tests/test_routing_chaos.py -m chaos -v --tb=short
       - name: Run integration tests
         run: pytest tests/integration/ -v --tb=short
 
