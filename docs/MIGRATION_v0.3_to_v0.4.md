@@ -365,7 +365,7 @@ probes:
 ```bash
 docker inspect distributed-llm:latest | jq '.[0].Config.Labels'
 # {
-#   "org.opencontainers.image.source": "https://github.com/distributed-llm/distributed-llm",
+#   "org.opencontainers.image.source": "https://github.com/dev25bansal-ops/distributed-llm",
 #   "org.opencontainers.image.version": "0.4.1",
 #   "org.opencontainers.image.title": "Distributed LLM",
 #   "org.opencontainers.image.licenses": "Apache-2.0"
@@ -518,6 +518,6 @@ The data formats are compatible — no migration rollback is needed for persiste
 
 ## Getting Help
 
-- [GitHub Issues](https://github.com/distributed-llm/distributed-llm/issues)
+- [GitHub Issues](https://github.com/dev25bansal-ops/distributed-llm/issues)
 - [Troubleshooting Guide](TROUBLESHOOTING.md)
 - [Architecture Overview](ARCHITECTURE.md)

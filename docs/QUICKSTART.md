@@ -89,7 +89,7 @@ distllm chat
 
 ### Step 1: Download
 
-Download the desktop app from [releases](https://github.com/distributed-llm/distributed-llm/releases).
+Download the desktop app from [releases](https://github.com/dev25bansal-ops/distributed-llm/releases).
 
 ### Step 2: Install and Run
 
@@ -102,33 +102,27 @@ Download the desktop app from [releases](https://github.com/distributed-llm/dist
 
 ## Authentication
 
-### Development (No Auth)
+There is no bypass. `--no-auth`, `DISTLLM_NO_AUTH` and `DISABLE_AUTH` are all no
+longer functional: passing any of them logs a warning and changes nothing.
+Earlier versions of this page told you to use `--no-auth` and said "no API key
+is needed" — both were wrong, and every request after that was rejected.
 
-For local development, disable authentication:
-
-```bash
-distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
-```
-
-No API key needed — anyone on localhost can connect.
-
-### With API Key
-
-Set an API key via environment variable:
+Set a key before starting the server. `API_KEY` seeds a single admin-role key:
 
 ```bash
-# Set your API key
-export API_KEY="your-secret-key"
-
-# Start the server
+export API_KEY="choose-a-secret-value"
 distllm system api --model meta-llama/Llama-3.2-1B --local
 ```
 
-The API key is shown on startup:
+Send it as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/models
 ```
-API Key: your-secret-key
-Use: curl -H 'Authorization: Bearer your-secret-key' http://localhost:8000/health
-```
+
+The key is whatever you set — it is not generated or printed for you. For
+multiple keys with per-key roles, use `API_KEYS` (inline JSON) or `API_KEYS_FILE`
+(path to JSON/YAML).
 
 ### Connecting External Tools
 

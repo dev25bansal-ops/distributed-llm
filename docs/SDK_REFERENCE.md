@@ -137,7 +137,7 @@ for await (const chunk of stream) {
 ### Installation
 
 ```bash
-go get github.com/distributed-llm/distributed-llm/sdk/go
+go get github.com/dev25bansal-ops/distributed-llm/sdk/go
 ```
 
 ### Quick Start

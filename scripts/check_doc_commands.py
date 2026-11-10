@@ -103,6 +103,38 @@ def _check_clone_urls(docs: list[Path]) -> list[str]:
     return problems
 
 
+def _check_repo_links(docs: list[Path]) -> list[str]:
+    """Any github.com/<owner>/<repo> link must name THIS repository.
+
+    The clone URL was wrong for months (the org does not exist), and when that
+    was fixed seven more links to the same dead org survived in five other
+    docs -- release downloads, issue trackers, SDK references. A dead link is
+    the same defect as a dead clone command; nobody clicks it until a user does.
+    """
+    problems = []
+    link = re.compile(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+    remote = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"],
+        capture_output=True, text=True, cwd=ROOT,
+    ).stdout.strip()
+    if not remote:
+        return []
+    m = link.search(remote)
+    if not m:
+        return []
+    expected = (m.group(1).lower(), m.group(2).removesuffix(".git").lower())
+
+    for doc in docs:
+        for owner, repo in link.findall(doc.read_text(encoding="utf-8")):
+            got = (owner.lower(), repo.removesuffix(".git").lower())
+            if got != expected:
+                problems.append(
+                    f"{doc.name}: github.com/{owner}/{repo} is not this repository "
+                    f"({expected[0]}/{expected[1]})"
+                )
+    return problems
+
+
 def _check_referenced_files(docs: list[Path]) -> list[str]:
     """A `cp <a> <b>` in the docs must be coherent with what ships.
 
@@ -196,6 +228,7 @@ def main() -> int:
     doc_paths = [ROOT / d for d in DOCS if (ROOT / d).exists()]
     port_problems = _check_join_ports(doc_paths)
     clone_problems = _check_clone_urls(doc_paths)
+    link_problems = _check_repo_links(doc_paths)
     cp_problems = _check_referenced_files(doc_paths)
 
     ok = True
@@ -218,6 +251,11 @@ def main() -> int:
         ok = False
         print("\nCOPY SOURCE MISSING OR REVERSED:")
         for problem in cp_problems:
+            print(f"  {problem}")
+    if link_problems:
+        ok = False
+        print("\nREPO LINK WRONG:")
+        for problem in link_problems:
             print(f"  {problem}")
     if not ok:
         return 1

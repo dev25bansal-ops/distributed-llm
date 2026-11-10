@@ -35,7 +35,7 @@ distllm-ollama-proxy --distllm-url http://localhost:8000 --port 11434
 ```
 
 The proxy is implemented in
-[integrations/ollama_compat/src/distllm_ollama/server.py](https://github.com/distributed-llm/distributed-llm/blob/main/integrations/ollama_compat/src/distllm_ollama/server.py)
+[integrations/ollama_compat/src/distllm_ollama/server.py](https://github.com/dev25bansal-ops/distributed-llm/blob/main/integrations/ollama_compat/src/distllm_ollama/server.py)
 and translates `/api/generate`, `/api/chat`, `/api/embeddings`, and `/api/tags` to DistLLM's
 `/v1/completions`, `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models`.
 

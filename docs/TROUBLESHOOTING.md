@@ -1738,8 +1738,8 @@ kubectl get nodes -o json | jq '.items[].status.allocatable["nvidia.com/gpu"]'
 ## Getting Help
 
 1. Run `distllm system doctor` for automated diagnostics.
-2. Search [GitHub Issues](https://github.com/distributed-llm/distributed-llm/issues).
-3. Ask in [GitHub Discussions](https://github.com/distributed-llm/distributed-llm/discussions).
+2. Search [GitHub Issues](https://github.com/dev25bansal-ops/distributed-llm/issues).
+3. Ask in [GitHub Discussions](https://github.com/dev25bansal-ops/distributed-llm/discussions).
 4. Join [Discord](https://discord.gg/distllm).
 5. When filing an issue, include:
    - `distllm --version`

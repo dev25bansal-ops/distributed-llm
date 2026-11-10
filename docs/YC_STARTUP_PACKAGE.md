@@ -76,7 +76,7 @@
 | Field | Answer |
 |-------|--------|
 | **Company Name** | DistLLM |
-| **URL** | https://github.com/distributed-llm/distributed-llm |
+| **URL** | https://github.com/dev25bansal-ops/distributed-llm |
 | **Tagline** | Distributed LLM inference — pool GPUs across all your devices |
 | **Stage** | Beta (v0.4.1) — 64K LOC, working product, real users |
 | **Location** | Remote-first |
