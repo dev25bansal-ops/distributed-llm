@@ -269,6 +269,13 @@ jobs:
         env:
           PYTHONPATH: src
         run: python scripts/check_doc_commands.py
+      - name: Documented endpoints exist (docs/api.md must not list a 404)
+        # Same defect one level further down: api.md listed two gossip paths
+        # without their /api prefix and a federation heartbeat route that has
+        # never existed in the app.
+        env:
+          PYTHONPATH: src
+        run: python scripts/check_doc_endpoints.py
       - name: Kustomize overlays build for GitOps
         # Default load restrictor, no --load-restrictor flag -- that is the
         # condition ArgoCD and Flux build under. The validate-k8s job below

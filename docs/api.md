@@ -152,7 +152,16 @@ const response = await client.chat.completions.create({
 
 ### Federation API
 
-- `POST /v1/federation/heartbeat` — Receive heartbeat from federated peers
+The federation API covers **federated fine-tuning rounds**, not peer heartbeats.
+There is no /v1/federation/heartbeat endpoint (or any heartbeat route) in the
+app; an earlier revision of this page listed one that never existed.
+
+- `POST /v1/federated/nodes` — Enrol a participating node
+- `POST /v1/federated/rounds` — Open a federated training round
+- `POST /v1/federated/rounds/submit` — Submit a node's local update
+- `POST /v1/federated/rounds/merge` — Merge submitted updates (FedAvg/FedProx)
+- `GET  /v1/federated/stats` — Aggregation statistics
+- `GET  /v1/federated/versions` — Advertise supported round versions
 
 ### WebRTC API
 
@@ -172,8 +181,8 @@ const response = await client.chat.completions.create({
 
 ### Gossip API
 
-- `POST /v1/gossip/exchange` — Exchange gossip advertisements (HMAC-signed)
-- `POST /v1/gossip/fetch` — Fetch gossip cache entries (HMAC-signed)
+- `POST /api/v1/gossip/exchange` — Exchange gossip advertisements (HMAC-signed)
+- `POST /api/v1/gossip/fetch` — Fetch gossip cache entries (HMAC-signed)
 
 ### Admin API
 
