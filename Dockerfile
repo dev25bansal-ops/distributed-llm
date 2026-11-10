@@ -1,9 +1,9 @@
 # BUILDER stage — compile + install. This is the "dev" stage; the release stage is below.
 ARG CUDA_VERSION=12.8.0
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS builder
 
 ARG CUDA_VERSION
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 
 ENV CUDA_HOME=/usr/local/cuda
@@ -98,10 +98,10 @@ RUN test -x /install/bin/distllm-api \
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
 # ==========================================================================
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04 AS runtime
 
 ARG CUDA_VERSION
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 ARG DISTLLM_VERSION=0.4.1
 
 LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distributed-llm"

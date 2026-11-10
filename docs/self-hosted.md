@@ -5,7 +5,7 @@ Deploy open-source LLMs on your own GPUs with DistLLM's self-hosted inference ba
 ## Prerequisites
 
 - NVIDIA GPU with CUDA 12.1+ (or AMD ROCm / Apple Silicon)
-- Python 3.10+
+- Python 3.11+
 - 16GB+ VRAM recommended for 7B models, 80GB+ for 70B models
 
 ## Installation

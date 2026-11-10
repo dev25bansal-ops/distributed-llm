@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - run: pip install bandit
       # Fails on any NEW HIGH/MEDIUM finding vs bandit-baseline.json.
       - name: Run bandit ratchet (blocking)
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - run: pip install -e ".[dev,testing]"
       # The per-directory chunk loop below includes tests/sdk, whose module
       # imports distllm_sdk from the separate sdk/ package.

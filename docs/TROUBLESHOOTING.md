@@ -121,7 +121,7 @@ error: Microsoft Visual C++ 14.0 or greater is required
 pip install grpcio --only-binary=:all:
 ```
 
-**Prevention:** Use Python 3.10-3.12 on Windows (best wheel coverage). Alternatively, install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+**Prevention:** Use Python 3.11-3.13 on Windows (best wheel coverage). Alternatively, install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ---
 

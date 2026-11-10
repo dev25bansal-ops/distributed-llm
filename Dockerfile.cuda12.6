@@ -1,9 +1,9 @@
 # CUDA 12.6 variant for H100/B200 GPUs
 ARG CUDA_VERSION=12.6.0
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime-base
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04 AS runtime-base
 
 ARG CUDA_VERSION
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 ARG DISTLLM_VERSION=0.4.1
 
 LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distributed-llm"
@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python
 
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
-ARG PYTHON_VERSION=3.10
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS builder
+ARG PYTHON_VERSION=3.12
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}

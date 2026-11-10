@@ -8,7 +8,7 @@ version = "0.4.1"
 description = "Merged W&B integration for DistLLM — experiment tracking, GPU monitoring, latency histograms, partition plans, and quantization reporting"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Distributed LLM Contributors"},
 ]

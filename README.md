@@ -3,7 +3,7 @@
 **Pool GPUs from every device you own to run models no single machine can handle.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 You have a gaming PC with an RTX 4090. Your laptop has an RTX 4060. Your friend has a desktop with an RTX 3080. None of you can run Llama 3.1 70B alone. **Together, you can.**
 
