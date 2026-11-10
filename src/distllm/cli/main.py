@@ -141,6 +141,7 @@ from distllm.cli.quota import quota_app
 from distllm.cli.backup import backup_app
 from distllm.cli.cert import cert_app
 from distllm.cli.notify import notify_app
+from distllm.cli.profile_presets import profile_app
 
 app.add_typer(cluster_app, name="cluster")
 app.add_typer(model_app, name="model")
@@ -159,6 +160,7 @@ benchmark_app.add_typer(verify_app, name="verify")
 config_app.add_typer(webhook_app, name="webhook")
 config_app.add_typer(quota_app, name="quota")
 config_app.add_typer(backup_app, name="backup")
+config_app.add_typer(profile_app, name="profile")
 security_app.add_typer(cert_app, name="cert")
 system_app.add_typer(system_logs_app, name="logs")
 system_app.add_typer(notify_app, name="notify")

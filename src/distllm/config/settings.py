@@ -168,8 +168,9 @@ def _note_validation_context(exc: "ValidationError", config_path: str) -> None:
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
-    Environment variables use DISTLLM__ prefix with __ delimiter.
-    Example: DISTLLM__MODEL__NAME=my-model sets model.name.
+    Environment variables use DISTLLM_ prefix with __ nested delimiter
+    (env_prefix="DISTLLM_", env_nested_delimiter="__").
+    Example: DISTLLM_MODEL__NAME=my-model sets model.name.
     """
     model_config = SettingsConfigDict(
         env_prefix="DISTLLM_",
@@ -394,6 +395,21 @@ class DistLLMSettings(BaseSettings):
         # therefore read the environment-provided values directly and merge
         # YAML underneath them, preserving ``CLI > env > YAML > defaults``.
         from pydantic_settings import EnvSettingsSource
+
+        # Reject unknown top-level keys in the YAML file. The model uses
+        # extra="ignore" so that unrelated DISTLLM_* environment variables do
+        # not break startup; but for a *config file* a misspelled section name
+        # (e.g. ``batchign:``) would otherwise be silently dropped and the
+        # setting would silently fall back to its default. Validate the YAML
+        # keys against the model fields so typos fail loudly.
+        if yaml_data:
+            unknown = sorted(set(yaml_data) - set(cls.model_fields))
+            if unknown:
+                raise ValueError(
+                    f"Unknown configuration key(s) in '{config_path}': "
+                    f"{', '.join(unknown)}. Valid top-level sections: "
+                    f"{', '.join(sorted(cls.model_fields))}"
+                )
 
         env_values: dict[str, Any] = EnvSettingsSource(cls)()
 
