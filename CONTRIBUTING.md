@@ -23,7 +23,7 @@ Thank you for your interest in contributing! This guide covers everything you ne
 
 ### Prerequisites
 
-- **Python 3.10+** (3.11 or 3.12 recommended)
+- **Python 3.11+** (3.11 or 3.12 recommended)
 - **Git**
 - **CUDA 12.x** (for GPU development — optional for API-only work)
 - **Docker** (for container builds — optional)
