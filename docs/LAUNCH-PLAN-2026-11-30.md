@@ -134,9 +134,9 @@ The single objective: **PR #10 mergeable-green or every red explained.**
 
   | Check | Verdict | Evidence |
   |---|---|---|
-  | `test` ×4 | **fixed** | Was exit 137 (OOM) at 84%, not failing tests. Chunked per directory; the underlying reds were GPU tests on CPU-only runners, now skipped or run on CPU. `tests/core` 5823 passed / 0 failed locally. |
+  | `test` ×4 | **fixed** | Was exit 137 (OOM) at 84%, not failing tests. Chunked per directory; the underlying reds were GPU tests on CPU-only runners, now skipped or run on CPU. `tests/core` 5823 passed / 0 failed locally. Then a second round: my `/metrics` "not installed" fallback broke three tests that assert real Prometheus output, and on a minimal install the server's always-wired stub exporter served an *empty* body. The route now keeps its hand-formatted gauges without the extra. `tests/api` 1352 passed / 0 failed. |
   | `real-import-gate` | **fixed, then fixed again** | 240/240 modules import. The check I added to it then failed CI on its own false positive (compared clone URLs as strings; CI's origin has no `.git`). Normalised to owner/repo. |
-  | `chaos-tests` | **environmental, scoped** | `pytest -m chaos` collects 12,382 tests to run 63; 29 error with `KeyError: 'n0'` under that collection while the file passes alone. Cross-suite `sys.modules` pollution from the fake-package injection in `tests/chaos/conftest.py`. Job scoped to what it is for: 55 + 8, green. |
+  | `chaos-tests` | **fixed — a real security regression, not a flaky job** | The job also runs all of `tests/integration/` (205 tests), and five failed there. Three were mine: sharding `_RateLimiter` let an attacking IP evict a peer that had just hit the limit, handing it a clean slate — 21-52 of a 100-IP flood got through depending on the cap. Fixed the per-shard cap to carry hash-collision headroom (4x the mean, not the bare ceil) and stopped eviction from taking a key that is already at `max_attempts`. A 9,000-IP flood against the default is now blocked 9000/9000, pinned by a test that goes red when the old arithmetic is restored. The other two assumed `X-Forwarded-For` identifies the client; it doesn't unless the peer is a trusted proxy (HIGH fix M2), so they keyed every request on `testclient`. Fixed the tests to stand behind a trusted peer. |
   | `docker-compose-integration` | **environmental, not reproduced** | The compose file exists with the right services and its 19 integration tests pass locally. What cannot be exercised here is the container build and startup — no Docker daemon. One `docker build .` from deploy-dir's list would close it. |
   | `security-deps` | **fixed — and it forced dropping Python 3.10** | Was `filelock 4.1.0`, 17 CVEs, pulled in by `pip install pip-audit` itself — not by our package. Pinned at the tool's install step; resolver verified. Then the pin itself failed on the job's Python 3.10: **every** `filelock` release that clears the advisories (4.1.1 onward) requires Python >=3.11, and 3.10's maximum is the vulnerable 4.1.0. There is no secure filelock for 3.10, and 3.10 reached EOL in Oct 2026 — so `requires-python` is now `>=3.11` across pyproject, all 27 workflow pins and the README badge. `filelock 4.2.10` resolves at 3.11 (verified). Note the published 0.6.2.2 carries no such floor and still installs on 3.10; this only affects the unreleased main. |
   | `security-container` | **fixed** | `trivy-action@v0.29.0` resolves a tag that no longer exists, failing before any `with:` input is read. Replaced with a direct `trivy` invocation. |
@@ -264,6 +264,17 @@ worktree while CI kept failing it. The worktree checks out CRLF; ruff saw a
 trailing newline that the LF blob in git did not have. The fix was real bytes in
 the index, and the check that can be trusted is one run against
 `git cat-file blob :<path>` exports, not against the working tree.
+
+**The other measurement trap: a non-editable install shadows `src/`.** This
+worktree's local Python had `distributed-llm 0.6.2.2` installed from its own
+`dist/` wheel — not editable. `from distllm...` therefore resolved to
+`site-packages`, not to `src/`, so `pytest` exercised the *released* package
+while I edited source. Every "verified locally" result in that state was
+measuring the wrong code (one such run passed a fix that does not exist in the
+wheel; another reported a healthy `/metrics` that the current source no longer
+produced). Two defences, both cheap: run with `PYTHONPATH=src` (as the baseline
+table above does), or `pip install -e . --no-deps` once; and when a local result
+disagrees with CI, print `distllm.__file__` before believing either.
 
 ### Two defects the launch gates found (both fixed 2026-11-10)
 
