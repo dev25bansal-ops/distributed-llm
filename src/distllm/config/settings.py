@@ -437,15 +437,15 @@ class DistLLMSettings(BaseSettings):
         # unloadable ("Unknown configuration key(s) ... logging, pipeline,
         # profiles, speculative_decoding"), which is how the load-test job found
         # this: the API server would not start from its own config file.
-        _NON_FIELD_KEYS = {"profiles"}
-        _SECTION_ALIASES = {
+        non_field_keys = {"profiles"}
+        section_aliases = {
             # config.yaml name -> model field it configures
             "pipeline": "network",              # timeout/retries live in network
             "speculative_decoding": "speculative",
             "logging": "monitoring",
         }
         if yaml_data:
-            known = set(cls.model_fields) | _NON_FIELD_KEYS | set(_SECTION_ALIASES)
+            known = set(cls.model_fields) | non_field_keys | set(section_aliases)
             unknown = sorted(set(yaml_data) - known)
             if unknown:
                 raise ValueError(
@@ -455,14 +455,14 @@ class DistLLMSettings(BaseSettings):
                 )
             # Apply the aliases so the values actually take effect rather than
             # being validated and then silently ignored by model_validate.
-            for alias, field in _SECTION_ALIASES.items():
+            for alias, field in section_aliases.items():
                 if alias in yaml_data:
                     merged_alias = _deep_merge(
                         dict(yaml_data.get(field) or {}), dict(yaml_data[alias] or {}),
                     )
                     yaml_data = {k: v for k, v in yaml_data.items() if k != alias}
                     yaml_data[field] = merged_alias
-            yaml_data = {k: v for k, v in yaml_data.items() if k not in _NON_FIELD_KEYS}
+            yaml_data = {k: v for k, v in yaml_data.items() if k not in non_field_keys}
 
         # A flat DISTLLM_MODEL must be normalised before pydantic JSON-parses it.
         flat_model = os.environ.get("DISTLLM_MODEL", "").strip()
