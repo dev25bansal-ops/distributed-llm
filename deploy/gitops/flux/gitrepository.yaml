@@ -11,6 +11,7 @@ spec:
   interval: 1m
   url: https://github.com/dev25bansal-ops/distributed-llm.git
   ref:
-    branch: main
+    # master is the repository's default branch; "main" does not exist.
+    branch: master
   secretRef:
     name: github-credentials

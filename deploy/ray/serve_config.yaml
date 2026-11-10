@@ -1,8 +1,21 @@
 # Ray Serve Configuration for Distributed LLM
 #
+# QUARANTINED — this file cannot run as written.
+#
+# It imports distllm.core.ray_coordinator:deployment. That module has never
+# existed, and no @serve.deployment class exists anywhere under src/, so
+# `serve run deploy/ray/serve_config.yaml` fails at import. The Ray *backend*
+# itself works — it is RayPipeline in src/distllm/dist/backends/ray.py, reached
+# through the normal pipeline path, not through Ray Serve.
+#
+# Kept rather than deleted because the autoscaler.yaml beside it is live and
+# this documents the intended Serve topology. Do not treat its failure as a
+# broken installation. To use it: implement the deployment class, or change
+# import_path to point at one that exists.
+#
 # Production deployment using Ray Serve's built-in HTTP proxy and autoscaling.
 #
-# Usage:
+# Usage (once import_path resolves):
 #   serve run deploy/ray/serve_config.yaml
 #
 # Or via Python:

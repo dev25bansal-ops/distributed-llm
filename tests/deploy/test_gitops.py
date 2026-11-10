@@ -161,7 +161,10 @@ class TestArgoCDApplication:
 
     def test_application_target_revision(self):
         obj = _load(ARGOCD_DIR / "application.yaml")
-        assert obj["spec"]["source"]["targetRevision"] == "main"
+        # Must name a branch that exists. It said "main" while the repository's
+        # default branch is master, so applying this failed with "branch not
+        # found" before creating anything.
+        assert obj["spec"]["source"]["targetRevision"] == "master"
 
     def test_application_dest_namespace(self):
         obj = _load(ARGOCD_DIR / "application.yaml")
@@ -265,7 +268,8 @@ class TestFluxGitRepository:
 
     def test_gitrepository_branch(self):
         obj = _load(FLUX_DIR / "gitrepository.yaml")
-        assert obj["spec"]["ref"]["branch"] == "main"
+        # master is the repository's default branch; "main" does not exist.
+        assert obj["spec"]["ref"]["branch"] == "master"
 
     def test_gitrepository_secret_ref(self):
         obj = _load(FLUX_DIR / "gitrepository.yaml")

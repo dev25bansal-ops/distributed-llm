@@ -5,6 +5,13 @@ namespace: distllm-production
 
 resources:
   - ../base
+  # HPA + Prometheus-adapter ConfigMap + ServiceMonitor. These lived in
+  # deploy/kustomize/autoscaling.yaml, which no overlay included, so the
+  # autoscaling config never deployed. Wired here because production is the
+  # only environment that runs more than one worker replica. It needs the
+  # prometheus-operator CRDs for the ServiceMonitor; dev and staging stay
+  # without it so they do not require them.
+  - ../autoscaling.yaml
 
 patches:
   - path: coordinator-resource-patch.yaml
