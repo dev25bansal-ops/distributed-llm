@@ -3,7 +3,11 @@ kind: StatefulSet
 metadata:
   name: distllm-worker
 spec:
-  replicas: 4
+  # One replica: every worker gets the same --start-layer/--end-layer, so a
+  # second pod would claim an overlapping range (topology_registry.
+  # validate_assignment rejects that). Scale out with one StatefulSet per
+  # pipeline stage, not a bigger replica count.
+  replicas: 1
   template:
     spec:
       containers:
