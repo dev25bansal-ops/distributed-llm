@@ -13,11 +13,19 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 ENV NCCL_ALGO=Ring
 ENV NCCL_PROTO=Simple
 
-# Install system deps for building
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system deps for building. The `dist-upgrade` is not optional: the
+# noble base image ships apt 2.7.14 and openssl 3.0.13-0ubuntu3.4, and trivy
+# reports fixable HIGH advisories against both (CVE-2026-109518 for apt RCE via
+# package download; CVE-2026-45447 heap use-after-free and CVE-2026-84782 DTLS
+# retransmission for openssl). The fixed builds are in noble-updates, so
+# upgrading in-image is the fix -- without it the security-container gate is
+# red on OS packages we do not control the version of any other way.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
     python3-pip python3-setuptools python3-wheel \
     gcc g++ ninja-build git curl \
+    && apt-get dist-upgrade -y \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
