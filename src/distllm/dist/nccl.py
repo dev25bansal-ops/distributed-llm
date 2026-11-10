@@ -173,10 +173,23 @@ class NcclTransport:
             return f"cuda:{self._rank}"
         return "cpu"
 
+    def _check_rank(self, rank: int, op: str) -> None:
+        """Reject an out-of-range peer rank before it reaches NCCL.
+
+        NCCL does not raise for a bad rank -- it aborts the process (SIGSEGV,
+        exit 139), which no try/except can intercept and which on CI took the
+        whole pytest run with it. Validating here keeps a misconfigured peer a
+        catchable error instead of a dead node.
+        """
+        size = dist.get_world_size() if dist.is_initialized() else self._world_size
+        if rank < 0 or rank >= size:
+            raise ValueError(f"rank {rank} outside process group of {size}")
+
     def send(self, tensor: torch.Tensor, dst: int, tag: int = 0, async_op: bool = False) -> dist.Work | None:
         self._ensure_initialized()
         start = time.time_ns()
         try:
+            self._check_rank(dst, "send")
             work = dist.isend(tensor, dst=dst, tag=tag) if async_op else None
             if not async_op:
                 dist.send(tensor, dst=dst, tag=tag)
@@ -202,6 +215,7 @@ class NcclTransport:
         tensor = torch.empty(shape, dtype=dtype, device=default_device)
         start = time.time_ns()
         try:
+            self._check_rank(src, "recv")
             work = dist.irecv(tensor, src=src, tag=tag) if async_op else None
             if not async_op:
                 dist.recv(tensor, src=src, tag=tag)
@@ -222,6 +236,8 @@ class NcclTransport:
         self._ensure_initialized()
         start = time.time_ns()
         try:
+            self._check_rank(dst, "send_recv dst")
+            self._check_rank(src, "send_recv src")
             send_work = dist.isend(send_tensor, dst=dst, tag=tag)
             recv_work = dist.irecv(recv_tensor, src=src, tag=tag)
             send_work.wait()
