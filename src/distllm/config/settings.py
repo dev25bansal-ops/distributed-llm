@@ -427,14 +427,42 @@ class DistLLMSettings(BaseSettings):
         # (e.g. ``batchign:``) would otherwise be silently dropped and the
         # setting would silently fall back to its default. Validate the YAML
         # keys against the model fields so typos fail loudly.
+        #
+        # Some keys are legitimately not model fields:
+        #   profiles  -- read and applied by ProfileConfig.load(), which parses
+        #                the raw YAML itself; the section is an override table,
+        #                not a settings section.
+        # Aliases below are sections this repo's own config.yaml uses that the
+        # model names differently. Rejecting them made the shipped config
+        # unloadable ("Unknown configuration key(s) ... logging, pipeline,
+        # profiles, speculative_decoding"), which is how the load-test job found
+        # this: the API server would not start from its own config file.
+        _NON_FIELD_KEYS = {"profiles"}
+        _SECTION_ALIASES = {
+            # config.yaml name -> model field it configures
+            "pipeline": "network",              # timeout/retries live in network
+            "speculative_decoding": "speculative",
+            "logging": "monitoring",
+        }
         if yaml_data:
-            unknown = sorted(set(yaml_data) - set(cls.model_fields))
+            known = set(cls.model_fields) | _NON_FIELD_KEYS | set(_SECTION_ALIASES)
+            unknown = sorted(set(yaml_data) - known)
             if unknown:
                 raise ValueError(
                     f"Unknown configuration key(s) in '{config_path}': "
                     f"{', '.join(unknown)}. Valid top-level sections: "
                     f"{', '.join(sorted(cls.model_fields))}"
                 )
+            # Apply the aliases so the values actually take effect rather than
+            # being validated and then silently ignored by model_validate.
+            for alias, field in _SECTION_ALIASES.items():
+                if alias in yaml_data:
+                    merged_alias = _deep_merge(
+                        dict(yaml_data.get(field) or {}), dict(yaml_data[alias] or {}),
+                    )
+                    yaml_data = {k: v for k, v in yaml_data.items() if k != alias}
+                    yaml_data[field] = merged_alias
+            yaml_data = {k: v for k, v in yaml_data.items() if k not in _NON_FIELD_KEYS}
 
         # A flat DISTLLM_MODEL must be normalised before pydantic JSON-parses it.
         flat_model = os.environ.get("DISTLLM_MODEL", "").strip()
