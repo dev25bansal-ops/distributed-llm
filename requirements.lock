@@ -6,11 +6,11 @@
 #
 annotated-types==0.7.0
     # via pydantic
-anyio==4.13.0
+anyio==4.16.0
     # via
     #   httpx
     #   starlette
-certifi==2026.4.22
+certifi==2026.10.23
     # via
     #   httpcore
     #   httpx
@@ -74,7 +74,7 @@ prometheus-client==0.25.0
     #   opentelemetry-exporter-prometheus
 psutil==7.2.2
     # via distllm (pyproject.toml)
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via distllm (pyproject.toml)
 pydantic==2.13.4
     # via
@@ -98,7 +98,7 @@ rich==15.0.0
     # via typer
 shellingham==1.5.4
     # via typer
-starlette==1.0.0
+starlette==1.10.0
     # via fastapi
 typer==0.25.1
     # via distllm (pyproject.toml)
