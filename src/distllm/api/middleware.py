@@ -86,6 +86,19 @@ class _RateLimiter:
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
         self.max_ips = max_ips
+        # max_ips bounds the number of tracked KEYS. Eviction is per shard (the
+        # sharding is what removed the global lock), so the enforceable bound is
+        # _NUM_SHARDS * per-shard cap, not max_ips exactly: an exact global cap
+        # would need the global lock this class exists to avoid. Dividing the
+        # budget keeps the total at or just under max_ips for any realistic
+        # value (10000 -> 156/shard -> 9984). It cannot go below one key per
+        # shard, so for max_ips < _NUM_SHARDS the effective bound is
+        # _NUM_SHARDS; that is documented rather than silently multiplied by 64
+        # as it was before, when each shard got the full max_ips and the default
+        # allowed 640,000 keys.
+        self._per_shard_max = max(1, max_ips // self._NUM_SHARDS)
+        # What the limiter can actually hold, for callers and tests.
+        self.effective_max_keys = self._per_shard_max * self._NUM_SHARDS
         self._key_by = key_by if key_by in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH) else "ip"
         # Per-shard buckets: attempts map, LRU order map, and lock.
         self._shard_attempts: list[dict[str, deque[float]]] = [
@@ -163,7 +176,7 @@ class _RateLimiter:
         # Enforce IP cap: evict LRU key when over limit (O(1) with OrderedDict)
         attempts = self._shard_attempts[shard]
         order = self._shard_order[shard]
-        while len(attempts) > self.max_ips:
+        while len(attempts) > self._per_shard_max:
             oldest_key, _ = next(iter(order.items()))
             del attempts[oldest_key]
             del order[oldest_key]
