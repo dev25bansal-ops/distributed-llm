@@ -959,7 +959,14 @@ class TestValidateStartup:
 
 
 class TestHfToken:
-    ENV_VAR = "DISTLLM__MODEL_HUB__HF_TOKEN"
+    # Must be DISTLLM_ + MODEL_HUB__HF_TOKEN, not DISTLLM__MODEL_HUB__HF_TOKEN.
+    # With env_prefix="DISTLLM_" and env_nested_delimiter="__", the prefix is
+    # followed directly by the field name -- a second leading underscore makes
+    # pydantic-settings ignore the variable entirely (it looks for a field named
+    # "_model_hub"), so the secret-rejection guard saw no env token and
+    # correctly refused the config value. The old name made these four tests
+    # fail for a reason that had nothing to do with what they assert.
+    ENV_VAR = "DISTLLM_MODEL_HUB__HF_TOKEN"
 
     def _with_env(self, value: str = "test-token") -> None:
         import os
