@@ -97,7 +97,7 @@ class TestLoadBalancerProperties:
     @settings(max_examples=30, deadline=None)
     def test_all_requests_assigned(self, num_requests, num_workers):
         """Every request must be assigned to some worker."""
-        from distllm.dist.p2p.load_balancer import LoadBalancer
+        from distllm.core.load_balancer import LoadBalancer
         lb = LoadBalancer()
         if not hasattr(lb, "assign"):
             return
@@ -126,10 +126,13 @@ class TestSchedulerProperties:
     @settings(max_examples=30, deadline=None)
     def test_scheduler_respects_priority(self, num_tasks, priorities, arrival_times):
         """Higher priority tasks (lower number) should be scheduled before lower priority."""
-        assume(len(priorities) >= num_tasks)
-        assume(len(arrival_times) >= num_tasks)
+        # Derive the task count from the lists instead of assuming it: drawing
+        # num_tasks independently and then rejecting whenever it exceeded a list
+        # length filtered ~96% of generated cases, which is a Hypothesis
+        # health-check failure and also biases the inputs it does keep.
+        num_tasks = min(num_tasks, len(priorities), len(arrival_times))
 
-        from distllm.dist.scheduling.batcher import Batcher
+        from distllm.dist.scheduling.batcher import LatencyAwareBatcher as Batcher
         b = Batcher()
         if not hasattr(b, "schedule"):
             return
@@ -160,7 +163,7 @@ class TestReputationProperties:
     @settings(max_examples=30, deadline=None)
     def test_reputation_bounded(self, num_updates, successes):
         """Reputation score must stay within [0, 1]."""
-        from distllm.dist.reputation import ReputationTracker
+        from distllm.dist.reputation import ReputationSystem as ReputationTracker
         rt = ReputationTracker()
         if not hasattr(rt, "update") or not hasattr(rt, "get"):
             return
@@ -187,7 +190,8 @@ class TestPrefixCacheProperties:
     @settings(max_examples=20, deadline=None)
     def test_cache_hit_after_put(self, num_entries, key_lengths):
         """Cache must return value after put."""
-        assume(len(key_lengths) >= num_entries)
+        # Same as above: derive, do not filter.
+        num_entries = min(num_entries, len(key_lengths))
 
         from distllm.dist.prefix_cache import PrefixCache
         pc = PrefixCache()
