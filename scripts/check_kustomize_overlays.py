@@ -50,8 +50,16 @@ def main() -> int:
         for doc in p.stdout.split("\n---\n"):
             if "kind: StatefulSet" not in doc:
                 continue
-            n = re.search(r"name:\s*(\S+)", doc)
-            r = re.search(r"replicas:\s*(\d+)", doc)
+            # Parse the object's OWN metadata block, not the first `name:` in
+            # the document -- that is the app.kubernetes.io/name label, so a
+            # naive search yields "distributed-llm" for every StatefulSet and
+            # the worker check below can never match. Verified by injecting
+            # replicas: 3 into the staging patch: the naive version printed
+            # "ok staging: distributed-llm=3  PASS".
+            meta = re.search(r"^metadata:\s*\n((?:[ \t]+.*\n?)+)", doc, re.M)
+            block = meta.group(1) if meta else doc
+            n = re.search(r"^[ \t]+name:\s*(\S+)", block, re.M)
+            r = re.search(r"^\s*replicas:\s*(\d+)", doc, re.M)
             rendered.append((n.group(1) if n else "?", int(r.group(1)) if r else 1))
         print(f"ok   {name}: " + (", ".join(f"{n}={r}" for n, r in rendered) or "no StatefulSets"))
 
