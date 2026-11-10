@@ -17,6 +17,16 @@ from tests._import_helper import bootstrap_fake_packages, load_module
 
 bootstrap_fake_packages()
 
+# These adapters deliberately import their framework lazily, so the module
+# imports fine without openai installed and the failure only appears at call
+# time. The tests below construct a REAL client for the success paths, which
+# needs the package. Skip them rather than fail: the absence path is covered
+# separately, and a test suite should not demand an optional extra to be green.
+pytestmark = pytest.mark.skipif(
+    __import__("importlib").util.find_spec("openai") is None,
+    reason="needs the [examples] extra (openai)",
+)
+
 _fa_mod = load_module("distllm/core/framework_adapters.py")
 get_openai_client = _fa_mod.get_openai_client
 get_async_openai_client = _fa_mod.get_async_openai_client
