@@ -171,6 +171,7 @@ The nine director sessions own their areas; this session owns the gates and the 
 | No GPU on the dev machine | **Certain** | The demo cannot be produced here | The user's A10 is the only path; book it in Days 8–14 |
 | Rust toolchain missing from PATH (it is installed) | Resolved | — | Absolute path `%USERPROFILE%\.cargo\bin\cargo` works; `sdk-rust-check.yml` already runs it in CI |
 | Nine directors produce conflicting or low-quality work | Medium | Merge cost explodes in the last week | Review each on arrival, merge early, never batch to the end |
+| **Layer-overlap invariant is declared but never enforced** | **Certain (by inspection)** | A multi-node install can register two nodes on the same layer range and nothing rejects it; inference then has no meaningful stage split | The orchestrator has `validate_layer_assignment` and never calls it, while `topology_registry.validate_assignment` is the single-place invariant. Chart defaults fixed to one worker per range (`782ef947`), so the shipped path is safe. Enforcing at registration is a behaviour change and is deliberately not done pre-launch — tracked here so it is a known gap, not a surprise |
 | The release slips past Nov 22 | Medium | No rehearsal window | Cut scope (§3), never cut the rehearsal |
 
 ---
