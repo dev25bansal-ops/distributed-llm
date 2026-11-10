@@ -89,3 +89,24 @@ spec:
     - port: {{ .Values.network.coordinatorPort }}
       targetPort: api
       name: api
+---
+# Headless Service backing the coordinator StatefulSet's serviceName. It did
+# not exist, so the StatefulSet never got stable per-pod DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-coordinator-headless
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    app.kubernetes.io/component: coordinator
+  clusterIP: None
+  ports:
+    - port: {{ .Values.network.coordinatorGrpcPort }}
+      targetPort: grpc
+      name: grpc
+    - port: {{ .Values.network.coordinatorPort }}
+      targetPort: api
+      name: api
