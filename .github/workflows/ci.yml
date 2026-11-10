@@ -96,10 +96,13 @@ jobs:
         # single test. Git Bash ships on that runner, so the same script runs.
         shell: bash
         run: |
-          # NOT `set -e`: with it, a failing pytest exits the script at the
-          # pytest line, so `rc=$?` never runs, `failed` stays 0, and the job
-          # reports success over a red chunk. Each chunk's status is collected
-          # explicitly and the script exits on `failed` at the end.
+          # Explicitly off. GitHub runs bash steps as
+          # `bash --noprofile --norc -eo pipefail`: -e is forced by the runner,
+          # so merely omitting `set -e` changes nothing. With it on, the first
+          # chunk pytest exits on (including exit 5, "no tests collected") ends
+          # the whole step before `rc=$?` runs -- the job then reports pytest's
+          # own code, which is exactly the bare "exit code 5" in the log.
+          set +e
           failed=0
           # --cov-fail-under=0 per chunk: pyproject.toml sets fail_under = 80
           # globally, and a single directory run can never reach it (measured
