@@ -22,20 +22,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Keep this upgrade even on 24.04: noble's setuptools is new enough for PEP 621,
-# but pinning it here is what the earlier 22.04 build needed -- no setup.py or
-# setup.cfg exists, so an outdated setuptools silently produces an empty
-# UNKNOWN-0.0.0 wheel (961 bytes, no console scripts) and the runtime image has
-# no `distllm-api` binary. Floors: setuptools 61 understands PEP 621, pip 23
-# understands Metadata-Version 2.4.
+# Pin the build toolchain. On 22.04 this had to *install* a newer
+# pip/setuptools: an old setuptools cannot read PEP 621 [project] metadata, and
+# with no setup.py or setup.cfg the build then silently produced an empty
+# UNKNOWN-0.0.0 wheel (961 bytes, no console scripts) whose runtime image had no
+# `distllm-api` binary at all. Floors: pip 23 (Metadata-Version 2.4),
+# setuptools 61 (PEP 621); the upper bound is the range this project is tested
+# against.
 #
-# --break-system-packages: Ubuntu 24.04 marks its Python externally managed
-# (PEP 668) and refuses plain pip installs with "externally-managed-environment".
-# That guard exists to protect a user's system Python from a project venv; this
-# is a throwaway builder layer whose system Python IS the target interpreter,
-# so the override is correct here and nowhere else.
-RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade \
-    "pip>=23.0" "setuptools>=68.0,<82" wheel
+# On 24.04 (noble) the distro already ships pip 24.0 / setuptools 68.1.2, so
+# this upgrades nothing -- but it still fails unless both overrides are given,
+# and each has a different cause:
+#   --break-system-packages  PEP 668 marks noble's Python externally managed
+#                            and refuses any plain install.
+#   --ignore-installed       Debian's pip has no RECORD file, so pip cannot
+#                            uninstall it: "Cannot uninstall pip 24.0, RECORD
+#                            file not found. Hint: installed by debian."
+# Both are correct in a throwaway builder layer whose system Python IS the
+# target interpreter; neither belongs in a user-facing context.
+RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+    "pip>=23.0,<25" "setuptools>=68.0,<82" wheel
 
 WORKDIR /build
 
@@ -46,7 +52,7 @@ RUN python3 -m venv /install
 ENV PATH=/install/bin:${PATH}
 
 # Install PyTorch with CUDA support (pre-built wheel for speed)
-RUN pip install --no-cache-dir --break-system-packages torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # NCCL: already provided by the nvidia/cuda:*-devel base image (headers + libs).
 # Installing the distro libnccl-dev/libnccl2 changes held packages and makes
@@ -55,7 +61,7 @@ RUN pip install --no-cache-dir --break-system-packages torch torchvision torchau
 
 # Install locked dependencies first (cached layer, pinning all transitive deps)
 COPY requirements.lock .
-RUN pip install --no-cache-dir --break-system-packages -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy project files and install the package itself (without re-resolving deps)
 COPY pyproject.toml .
@@ -70,7 +76,7 @@ COPY proto/ proto/
 # grpcio-tools emits a *flat* `import node_pb2 as node__pb2` in the _grpc file,
 # which only resolves when distllm/dist is on sys.path; imported as a package
 # it raises ModuleNotFoundError. Rewrite it to the package-relative form.
-RUN pip install --no-cache-dir --break-system-packages grpcio-tools==1.85.1 \
+RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
     && python -m grpc_tools.protoc -I proto/ \
         --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
         proto/node.proto \
@@ -88,10 +94,10 @@ RUN pip install --no-cache-dir --break-system-packages grpcio-tools==1.85.1 \
 # `ModuleNotFoundError: No module named 'transformers'` when the coordinator
 # started. torch is already installed from the CUDA index above and satisfies
 # the extra's requirement, so pip will not pull a second copy.
-RUN pip install --no-cache-dir --break-system-packages "transformers>=4.48.0" \
+RUN pip install --no-cache-dir "transformers>=4.48.0" \
     "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
     "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
-RUN pip install --no-cache-dir --break-system-packages . --no-deps
+RUN pip install --no-cache-dir . --no-deps
 
 # Fail the build (not the container at runtime) if the package installed without
 # its console scripts. A metadata-parsing failure yields an empty wheel that
