@@ -64,18 +64,24 @@ func mockServer() *httptest.Server {
 		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 	})
 
-	// Nodes
+	// Nodes. /api/cluster/nodes answers with a ClusterNodesResponse envelope
+	// ({"nodes": [...], "total_layers": N}), not a bare array -- the mock used
+	// to return an array, which is why the data source's bare-slice decode
+	// looked correct here while failing against every real server.
 	mux.HandleFunc("/api/cluster/nodes", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]interface{}{
-			{
-				"node_id":          "node-1",
-				"host":             "10.0.1.10",
-				"gpu_name":         "NVIDIA A100",
-				"gpu_memory_total": 81920,
-				"gpu_memory_free":  40960,
-				"healthy":          true,
-				"status":           "online",
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"nodes": []map[string]interface{}{
+				{
+					"node_id":          "node-1",
+					"host":             "10.0.1.10",
+					"gpu_name":         "NVIDIA A100",
+					"gpu_memory_total": 81920,
+					"gpu_memory_free":  40960,
+					"healthy":          true,
+					"status":           "online",
+				},
 			},
+			"total_layers": 32,
 		})
 	})
 

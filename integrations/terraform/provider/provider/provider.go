@@ -451,10 +451,15 @@ func resourceNodeRead(ctx context.Context, d *schema.ResourceData, m interface{}
 		return nil
 	}
 
-	var nodes []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+	// /admin/v1/nodes answers with a NodeListResponse envelope: nodes plus
+	// aggregate counts. Decoding a bare slice fails against every real server.
+	var listed struct {
+		Nodes []map[string]interface{} `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		return diag.FromErr(err)
 	}
+	nodes := listed.Nodes
 
 	for _, node := range nodes {
 		host, _ := node["host"].(string)
@@ -719,10 +724,13 @@ func dataSourceNodesRead(ctx context.Context, d *schema.ResourceData, m interfac
 
 	d.SetId(time.Now().Format(time.RFC3339))
 
-	var nodes []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+	var listed struct {
+		Nodes []map[string]interface{} `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		return diag.FromErr(err)
 	}
+	nodes := listed.Nodes
 
 	var result []map[string]interface{}
 	for _, n := range nodes {
