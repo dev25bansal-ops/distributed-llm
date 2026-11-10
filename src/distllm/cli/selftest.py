@@ -164,8 +164,15 @@ def _check_api_roundtrip() -> Check:
     try:
         from distllm.api.server import app
 
-        with TestClient(app) as client:
-            response = client.get("/health")
+        # Without `with`, TestClient skips the lifespan startup -- which is
+        # exactly what we want: the lifespan installs SIGTERM/SIGINT handlers
+        # for graceful shutdown, and signal.signal() raises "signal only works
+        # in main thread" anywhere else. The check is about the app answering a
+        # request, not about its shutdown wiring, so it must work off the main
+        # thread too (selftest is called from a worker in the test suite, and a
+        # tool must not die because it was called from a thread).
+        client = TestClient(app)
+        response = client.get("/health")
     except Exception as exc:
         return Check("api roundtrip", FAIL, f"{exc.__class__.__name__}: {exc}")
 

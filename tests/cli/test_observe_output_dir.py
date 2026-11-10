@@ -70,16 +70,20 @@ def test_run_observe_writes_only_under_output_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("DISTLLM_OBSERVE_DIR", str(out))
 
     # Stop run_observe from starting a real HTTP server or blocking forever.
-    monkeypatch.setattr(observe, "_start_metrics_server", lambda *a, **k: None)
+    # The old mechanism patched time.sleep and raised KeyboardInterrupt from
+    # it, but the serve loop waits on a threading.Event, not sleep -- so the
+    # escape never fired, the test hung locally, and on CI it got past the loop
+    # only because _start_metrics_server returned None and .shutdown() then
+    # raised AttributeError. Patch the two seams the code actually uses.
+    class _StubServer:
+        def shutdown(self):
+            pass
 
-    import builtins
+        def server_close(self):
+            pass
 
-    real_sleep = observe.time.sleep
-
-    def _stop_after_first_sleep(_seconds):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(observe.time, "sleep", _stop_after_first_sleep)
+    monkeypatch.setattr(observe, "_start_metrics_server", lambda *a, **k: _StubServer())
+    monkeypatch.setattr(observe, "_serve_until_stopped", lambda *a, **k: None)
 
     observe.run_observe(metrics_only=False, console=_NullConsole())
 

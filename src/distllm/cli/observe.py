@@ -258,8 +258,13 @@ def run_observe(
         console.print("\n[dim]Press Ctrl+C to stop the metrics server.[/dim]")
         _serve_until_stopped(stop_event)
     finally:
-        metrics_server.shutdown()
-        metrics_server.server_close()
+        # _start_metrics_server may return None (the port was busy, or a test
+        # stubs it out); shutting down unconditionally turned that into an
+        # AttributeError raised from a finally block, masking whatever the
+        # body was actually doing.
+        if metrics_server is not None:
+            metrics_server.shutdown()
+            metrics_server.server_close()
 
     console.print("\n[yellow]Observability stack stopped.[/yellow]")
     return 0
