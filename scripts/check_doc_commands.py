@@ -54,6 +54,27 @@ def _is_negation_or_url(text: str, match_start: int) -> bool:
     return bool(NEGATION_BEFORE.search(prefix))
 
 
+def _check_join_ports(docs: list[Path]) -> list[str]:
+    """`cluster join --port` is the COORDINATOR's port, so every worker joining
+    the same coordinator must use the same value.
+
+    A QUICKSTART example had Node 2 on 50050 and Node 3 on 50051 -- 50051 is a
+    worker's own --listen-port, so the second worker could never have connected.
+    A resolution check cannot catch this: both commands are real.
+    """
+    problems = []
+    join = re.compile(r"distllm\s+cluster\s+join[^\n]*--port\s+(\d+)")
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8")
+        ports = set(join.findall(text))
+        if len(ports) > 1:
+            problems.append(
+                f"{doc.name}: cluster join uses differing coordinator ports {sorted(ports)}; "
+                "--port is the coordinator's port and must match across workers"
+            )
+    return problems
+
+
 def main() -> int:
     import typer.main
 
@@ -92,10 +113,20 @@ def main() -> int:
                 )
 
     print(f"checked {len(seen)} documented invocations against the CLI")
+    port_problems = _check_join_ports([ROOT / d for d in DOCS if (ROOT / d).exists()])
+
+    ok = True
     if missing:
+        ok = False
         print("\nDOCUMENTED BUT NOT REAL:")
         for invocation, doc, why in missing:
             print(f"  distllm {invocation}  [{doc}]  {why}")
+    if port_problems:
+        ok = False
+        print("\nDOCUMENTED BUT WRONG:")
+        for problem in port_problems:
+            print(f"  {problem}")
+    if not ok:
         return 1
     print("all documented commands resolve")
     return 0

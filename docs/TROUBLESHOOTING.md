@@ -486,7 +486,7 @@ distllm cluster status
 # There is no `distllm cluster restart`; leave and re-join each worker, or
 # restart the worker processes directly (systemd, k8s, docker compose).
 distllm cluster leave
-distllm cluster join --coordinator <coordinator-host> --port 50051
+distllm cluster join --coordinator <coordinator-host> --port 50050
 
 # Step 3: Clear KV cache on all nodes
 curl -X POST http://coordinator:8000/admin/cache/clear
@@ -1538,7 +1538,7 @@ distllm cluster list-nodes
 # /admin/federation/* endpoint. The /v1/federated/* API that does exist covers
 # federated *fine-tuning rounds* (nodes, rounds, stats, versions), not
 # cross-cluster routing. To re-join an isolated cluster, re-run join on it:
-distllm cluster join --coordinator <seed-host> --port 50051
+distllm cluster join --coordinator <seed-host> --port 50050
 
 # Step 5: Split-brain is resolved by draining the stale side rather than by a
 # federation command:

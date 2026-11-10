@@ -150,8 +150,10 @@ $env:API_KEY = "my-cluster-key"
 distllm cluster join --coordinator 192.168.1.100 --port 50050
 
 # Node 3 (Worker)
+# --port is the COORDINATOR's gRPC port, so it must match Node 2. Each worker's
+# own port is --listen-port (not needed here; it defaults to 50051).
 $env:API_KEY = "my-cluster-key"
-distllm cluster join --coordinator 192.168.1.100 --port 50051
+distllm cluster join --coordinator 192.168.1.100 --port 50050
 ```
 
 **Important**: All nodes must use the same `API_KEY`.
