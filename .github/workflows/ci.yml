@@ -90,8 +90,16 @@ jobs:
       # locally in 0.6 s). quality-gates.yml was chunked for the same reason;
       # this job was not.
       - name: Run tests (chunked per directory)
+        # bash, explicitly. GitHub's default shell on windows-latest is
+        # PowerShell, which cannot parse `run_chunk() {` -- the whole Windows
+        # leg died with "An expression was expected after '('" before running a
+        # single test. Git Bash ships on that runner, so the same script runs.
+        shell: bash
         run: |
-          set -e
+          # NOT `set -e`: with it, a failing pytest exits the script at the
+          # pytest line, so `rc=$?` never runs, `failed` stays 0, and the job
+          # reports success over a red chunk. Each chunk's status is collected
+          # explicitly and the script exits on `failed` at the end.
           failed=0
           # --cov-fail-under=0 per chunk: pyproject.toml sets fail_under = 80
           # globally, and a single directory run can never reach it (measured
