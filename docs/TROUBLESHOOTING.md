@@ -482,8 +482,11 @@ or inference produces garbled/incorrect output after a few tokens.
 distllm cluster status
 # Check that model_name, total_layers, and dtype match on every node
 
-# Step 2: If mismatched, restart all nodes with consistent config
-distllm cluster restart --all
+# Step 2: If mismatched, restart the workers with consistent config.
+# There is no `distllm cluster restart`; leave and re-join each worker, or
+# restart the worker processes directly (systemd, k8s, docker compose).
+distllm cluster leave
+distllm cluster join --coordinator <coordinator-host> --port 50051
 
 # Step 3: Clear KV cache on all nodes
 curl -X POST http://coordinator:8000/admin/cache/clear
@@ -516,11 +519,13 @@ distllm system logs --node node_1 --tail 50
 # Step 2: Check GPU health on that node
 ssh user@node-1 "nvidia-smi"
 
-# Step 3: If the node is healthy now, manually reset the circuit breaker
-distllm cluster reset-circuit-breaker node_1
-# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — no reset-circuit-breaker
-# > subcommand exists in src/distllm/cli/main.py; the real cluster
-# > subcommands are status/scale/drain/rebalance/start/join/leave/list-nodes.
+# Step 3: If the node is healthy now, the breaker clears on its own once its
+# cooldown elapses -- no reset subcommand exists (`distllm cluster --help`
+# lists status/scale/drain/rebalance/start/join/leave/list-nodes/deploy/
+# autopsy). Confirm the state and, if it is still open, restart that worker.
+distllm cluster status
+# The metrics endpoint reports the breaker state per node:
+curl http://coordinator:8000/metrics | grep circuit_breaker
 
 # Step 4: If the node is unhealthy, drain it and redistribute
 distllm cluster drain node_1
@@ -560,7 +565,9 @@ export DISTLLM_MAX_TENSOR_BYTES=8589934592  # 8 GB
 cd proto && python -m grpc_tools.protoc -I. --python_out=../src/distllm/dist/ --grpc_python_out=../src/distllm/dist/ node.proto
 ```
 
-**Prevention:** Always deploy the same DistLLM version across all nodes. Use `distllm cluster version-check` before rolling upgrades.
+**Prevention:** Always deploy the same DistLLM version across all nodes. There
+is no `distllm cluster version-check` subcommand; compare `distllm --version`
+on each host before a rolling upgrade.
 
 ---
 
@@ -730,8 +737,10 @@ export API_KEY="your-secret-key"
 # Or disable auth for development:
 distllm system api --model <model> --local --no-auth
 
-# Step 4: Check the key store for the hash
-distllm config list-keys
+# Step 4: Confirm the key is configured (no `config list-keys` subcommand
+# exists; config subcommands are setup/validate/reference/openapi/webhook/
+# quota/backup). `validate` reports the effective auth settings.
+distllm config validate
 
 # Step 5: If using the cluster key for gRPC auth, ensure it matches on all nodes
 echo $DISTLLM_CLUSTER_KEY
@@ -1521,14 +1530,19 @@ distllm cluster status --federation
 curl http://cluster-a-seed:50060/health
 curl http://cluster-b-seed:50060/health
 
-# Step 3: Check the gossip protocol state
-curl http://coordinator:8000/admin/federation/gossip-state
+# Step 3: Check the cluster's own view of its nodes
+distllm cluster status
+distllm cluster list-nodes
 
-# Step 4: Force re-join if a cluster is isolated
-distllm cluster federation rejoin --seed cluster-a:50060
+# Step 4: There is no `distllm cluster federation` command group, and no
+# /admin/federation/* endpoint. The /v1/federated/* API that does exist covers
+# federated *fine-tuning rounds* (nodes, rounds, stats, versions), not
+# cross-cluster routing. To re-join an isolated cluster, re-run join on it:
+distllm cluster join --coordinator <seed-host> --port 50051
 
-# Step 5: If split-brain occurred, pick a leader and reconcile
-distllm cluster federation resolve --leader cluster-a
+# Step 5: Split-brain is resolved by draining the stale side rather than by a
+# federation command:
+distllm cluster drain <node-id>
 ```
 
 **Prevention:**
@@ -1591,13 +1605,15 @@ distllm system logs --component federation --tail 100
 **Fix:**
 ```bash
 # Step 1: Verify model versions match across clusters
-distllm cluster status --federation | grep model
+distllm cluster status
 
-# Step 2: Check the routing table
-curl http://coordinator:8000/admin/federation/routes
+# Step 2: There is no federation routing table endpoint or --federation flag;
+# `cluster status` reports the models the connected cluster knows about. If two
+# clusters serve different models, that is expected -- route to the right
+# coordinator rather than expecting one to know the other's models.
 
-# Step 3: Force a routing table refresh
-distllm cluster federation refresh-routes
+# Step 3: To confirm a specific worker's model, read it from that node:
+curl http://<worker-host>:<worker-port>/health
 
 # Step 4: If models are intentionally different, use model-specific routing
 # config.yaml
