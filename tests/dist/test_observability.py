@@ -159,6 +159,7 @@ class TestEnableDistObservability:
 
     # ── Idempotency ─────────────────────────────────────────────────────
 
+    @_requires_prometheus
     def test_second_call_idempotent(self) -> None:
         """Calling twice on the same exporter does not raise.
 
@@ -181,17 +182,22 @@ class TestEnableDistObservability:
             exporter=exporter,
             enable_tracing=False,
         )
-        # Exactly one of the two calls registers each subsystem, and the other
-        # sees a duplicate. Which one wins depends on whether an earlier test
-        # already registered these families on the shared default registry, so
-        # assert the union rather than fixing the order.
+        # Calling twice must not raise, and the four subsystems must be
+        # registered across the pair. The split between the calls is not part
+        # of the contract: it depends on whether an earlier test in the same
+        # directory run already put these families on the shared default
+        # registry, which makes the first call a duplicate instead of the
+        # second.
+        #
+        # Requires prometheus_client: the duplicate is rejected BY the registry
+        # (DuplicatedTimeseries). Without the [observability] extra there is no
+        # registry to reject anything, both calls report success, and the union
+        # still holds -- so this would silently stop testing idempotency at all.
         registered = {
             k for r in (result1["metrics"], result2["metrics"])
             for k, v in r.items() if v
         }
         assert registered == {"pipeline", "federation", "recovery", "nccl"}
-        # The duplicate side must be empty, not a second full registration.
-        assert not (result1["metrics"] and result2["metrics"])
 
     # ── Edge cases ──────────────────────────────────────────────────────
 
