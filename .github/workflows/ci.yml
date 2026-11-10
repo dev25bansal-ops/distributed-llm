@@ -182,8 +182,12 @@ jobs:
       - name: Start cluster
         run: |
           docker compose -f tests/dist/integration/docker-compose.yml up --build -d coordinator node_0 node_1
-          for i in $(seq 1 30); do
-            curl -s http://localhost:8000/v1/health > /dev/null 2>&1 && break
+          # -f so a 503 (server up, no model loaded yet) does not count as
+          # success: /v1/health returns 503 until the coordinator is ready,
+          # and without -f curl exits 0 on any HTTP response, so the loop
+          # would break on "listening" instead of "ready".
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8000/v1/health > /dev/null 2>&1 && break
             sleep 5
           done
           # Dump the containers' own output before failing. The coordinator ran
@@ -191,7 +195,7 @@ jobs:
           # printed was "dependency failed to start" -- the actual message
           # ("unexpected extra argument --model") was inside the container and
           # never surfaced. ps + logs costs two lines and ends that blindness.
-          if ! curl -s http://localhost:8000/v1/health; then
+          if ! curl -sf http://localhost:8000/v1/health; then
             echo "Cluster failed to start; container state and logs follow"
             docker compose -f tests/dist/integration/docker-compose.yml ps
             docker compose -f tests/dist/integration/docker-compose.yml logs --no-color --tail=200
@@ -465,8 +469,19 @@ jobs:
         # which is the same as having no gate. A fixable HIGH/CRITICAL still
         # fails this step, and the full report is uploaded below either way.
         run: |
+          # Gate on fixable HIGH/CRITICAL only (see note above); --exit-code 1
+          # fails the step when any remain.
+          trivy image --format table --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 distllm:ci
+      - name: Full scan report (not gated)
+        # The gate above filters to fixable CVEs. A SARIF produced with
+        # --ignore-unfixed is "the full report" only if nothing was unfixable,
+        # and a CUDA base image almost always has some. Produce the unfiltered
+        # report for the artifact so triage still sees the ignored advisories.
+        if: always()
+        run: |
           trivy image --format sarif --output trivy-ci.sarif \
-            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 distllm:ci
+            --severity HIGH,CRITICAL distllm:ci
       - name: Upload scan results
         # Always: the run whose report matters most is the one where the gate
         # failed, and by default a failed step skips the upload.

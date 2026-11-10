@@ -29,15 +29,27 @@ services:
       # published port.
       - DISTLLM_COORDINATOR__API_PORT=8000
       - DISTLLM_COORDINATOR__HOST=0.0.0.0
-    # distllm-coordinator, not `distllm`: the top-level `distllm` is a command
-    # group (status/quickstart/cluster/...), so it rejects --model/--port/
-    # --nodes as unknown options and exits 2 before doing anything. The
-    # container was starting and dying in 300 ms for this reason, which is what
-    # "dependency failed to start: coordinator exited (2)" meant.
+      # Shared cluster key: the gRPC servicers fail closed without one
+      # (node_service._check_auth), so both sides must agree.
+      - DISTLLM_CLUSTER_KEY=integration-test-key
+      # Server-side admin key. Without it the store auto-generates one into
+      # /app/.distllm/api_key inside the container, which the test-runner
+      # cannot read -- every authenticated route would 401. API_KEY (not
+      # DISTLLM_API_KEY) is the name the server's settings read.
+      - API_KEY=integration-test-api-key
+    # distllm-api, not distllm-coordinator: the coordinator CLI parses the
+    # right flags but starts NO HTTP listener -- Coordinator.start() only
+    # starts background threads and mDNS. The healthcheck below and every
+    # test poll http://localhost:8000/v1/health, and workers register over
+    # HTTP at /admin/v1/nodes/register, so the process must serve HTTP.
+    # distllm-api (api/server_coordinator.py) is the only entrypoint that
+    # both serves the REST API on 8000 AND starts the coordinator gRPC
+    # NodeServer on 50050 that the workers connect to.
     command: >
-      distllm-coordinator
+      distllm-api
+        --host 0.0.0.0
+        --port 8000
         --model roneneldan/TinyStories-1M
-        --port 50050
         --nodes node_0:50051:0:3 node_1:50052:4:7
         --total-layers 8
     healthcheck:
@@ -55,6 +67,9 @@ services:
       - "50051:50051"
     environment:
       - DISTLLM_LOG_LEVEL=DEBUG
+      # Shared cluster key: the gRPC servicers fail closed without one
+      # (node_service._check_auth), so both sides must agree.
+      - DISTLLM_CLUSTER_KEY=integration-test-key
     command: >
       distllm-node
         --node-id node_0
@@ -78,6 +93,9 @@ services:
       - "50052:50052"
     environment:
       - DISTLLM_LOG_LEVEL=DEBUG
+      # Shared cluster key: the gRPC servicers fail closed without one
+      # (node_service._check_auth), so both sides must agree.
+      - DISTLLM_CLUSTER_KEY=integration-test-key
     command: >
       distllm-node
         --node-id node_1
@@ -102,6 +120,9 @@ services:
     environment:
       - COORDINATOR_URL=http://coordinator:8000
       - DISTLLM_LOG_LEVEL=WARNING
+      # Tests send this as a Bearer token (TEST_API_KEY in conftest/_url).
+      - TEST_API_KEY=integration-test-api-key
+      - DISTLLM_CLUSTER_KEY=integration-test-key
     volumes:
       - ../../../tests/dist/integration:/app/tests/dist/integration
       - test-results:/results
