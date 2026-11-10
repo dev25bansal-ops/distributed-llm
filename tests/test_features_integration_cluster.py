@@ -29,11 +29,32 @@ def _make_3node_cluster():
     from distllm.core.ha_coordinator import RayFaultTolerance
 
     ids = ["coordinator-1", "coordinator-2", "coordinator-3"]
-    nodes = {i: RayFaultTolerance(coordinator_id=i) for i in ids}
+    nodes = {}
+
+    # In-process heartbeat transport. The default one POSTs to
+    # http://<host>:<port>/api/v1/ha/heartbeat, and the peers below use
+    # illustrative 10.0.0.x addresses, so every election round blocked on real
+    # TCP timeouts to unroutable addresses -- five rounds across three nodes
+    # hung the test until pytest killed it at 60 s. Routing heartbeats between
+    # the in-memory nodes instead exercises the election logic (the point of
+    # these tests) without any I/O.
+    def _transport(peer_id, host, port, payload, timeout=2.0):
+        target = nodes.get(peer_id)
+        if target is None:
+            raise ConnectionError(f"unknown peer {peer_id}")
+        return target.handle_heartbeat_request(
+            sender_id=payload["coordinator_id"],
+            term=payload["term"],
+            state=payload.get("state"),
+        )
+
+    for i in ids:
+        nodes[i] = RayFaultTolerance(coordinator_id=i, heartbeat_transport=_transport)
     for i in ids:
         for j in ids:
             if i != j:
-                # host/port are illustrative; the election uses IDs + heartbeats.
+                # host/port are illustrative now that the transport is
+                # in-process; the election uses IDs + heartbeats.
                 nodes[i].add_peer(j, "10.0.0.%d" % ids.index(j), 50051)
     return nodes
 

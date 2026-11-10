@@ -118,6 +118,8 @@ class RayFaultTolerance:
         # State replication
         self._replicated_state: dict[str, Any] = {}
         self._on_state_change: Callable[[dict], None] | None = None
+        # Optional external quorum authority; see set_split_brain_detector().
+        self._split_brain_detector: Any | None = None
 
         # Heartbeat transport used to actively probe peer liveness. Defaults
         # to an HTTP POST to each peer's ``/api/v1/ha/heartbeat`` endpoint.
@@ -196,13 +198,63 @@ class RayFaultTolerance:
         with self._lock:
             return self._leader_id
 
+    def has_quorum(self) -> bool:
+        """Return True when this node can see a majority of the initial cluster.
+
+        Uses the *fixed* initial membership, not the current peer set, for the
+        same reason the election does: a partitioned minority must not be able
+        to shrink the denominator until it is a majority of itself.
+        """
+        with self._lock:
+            alive = 1 + sum(
+                1 for info in self._peers.values() if info.get("online", True)
+            )
+            quorum = (self._initial_cluster_size // 2) + 1
+        if self._split_brain_detector is not None:
+            try:
+                # An explicit detector (e.g. an external lease/lock authority)
+                # can veto even when our own peer view says we have quorum.
+                if not self._split_brain_detector.quorum_check():
+                    return False
+            except Exception:
+                return False
+        return alive >= quorum
+
+    def set_split_brain_detector(self, detector: Any | None) -> None:
+        """Install an external quorum authority (any object with quorum_check())."""
+        self._split_brain_detector = detector
+
+    def can_accept_writes(self) -> bool:
+        """True when this node may accept writes without risking split-brain."""
+        return self.is_leader() and self.has_quorum()
+
     def replicate_state(self, key: str, value: Any) -> None:
         """Replicate a state value to standby coordinators.
 
-        Called by the leader to replicate state changes.
-        Standbys receive state via handle_heartbeat_request.
+        Called by the leader to replicate state changes. Standbys receive state
+        via handle_heartbeat_request.
+
+        Refuses and steps down when this leader can no longer see a quorum.
+        Without this fence the election path protects against two leaders while
+        the write path does not, so a leader that lost contact with its peers
+        kept accepting writes -- and a healed partition could then hold two
+        divergent state histories, which is the split brain the election logic
+        exists to prevent.
         """
         with self._lock:
+            if self._state == CoordinatorState.LEADER and self._split_brain_detector is not None:
+                try:
+                    quorum_ok = self._split_brain_detector.quorum_check()
+                except Exception:
+                    quorum_ok = False
+                if not quorum_ok:
+                    logger.warning(
+                        f"{self._id}: refusing state write, quorum lost — "
+                        "stepping down to avoid split-brain"
+                    )
+                    self._state = CoordinatorState.FOLLOWER
+                    self._leader_id = None
+                    return
             self._replicated_state[key] = value
 
     def get_replicated_state(self) -> dict[str, Any]:
