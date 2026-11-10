@@ -16,7 +16,7 @@ against DistLLM — you just point it at a different host.
 A running DistLLM API server. With the Python package:
 
 ```bash
-pip install distllm
+pip install "distributed-llm[cli,self-hosted]"
 distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
 ```
 

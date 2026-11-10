@@ -12,10 +12,10 @@ Deploy open-source LLMs on your own GPUs with DistLLM's self-hosted inference ba
 
 ```bash
 # Minimum (routing-only, no self-hosted inference)
-pip install distllm
+pip install distributed-llm
 
 # With self-hosted inference support
-pip install "distllm[self-hosted]"
+pip install "distributed-llm[self-hosted]"
 
 # Full install (development + all backends)
 pip install "distllm[all]"
@@ -25,7 +25,7 @@ pip install "distllm[all]"
 
 ```bash
 # Install with vLLM backend
-pip install "distllm[self-hosted]"
+pip install "distributed-llm[self-hosted]"
 
 # Start with local model (no auth for development)
 distllm system api --model meta-llama/Llama-3.2-1B --local --port 8000 --no-auth
@@ -108,5 +108,5 @@ helm install distllm distllm/distllm \
 | Issue | Fix |
 |-------|-----|
 | `CUDA out of memory` | Reduce `gpu_memory_utilization` or use smaller model |
-| `ModuleNotFoundError: torch` | Install with `pip install distllm[self-hosted]` |
+| `ModuleNotFoundError: torch` | Install with `pip install distributed-llm[self-hosted]` |
 | Model not loading | Add `--trust-remote-code` for architectures that need it |

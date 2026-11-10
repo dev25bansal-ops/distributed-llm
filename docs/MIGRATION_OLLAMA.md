@@ -20,7 +20,7 @@ endpoints to DistLLM — run it on port `11434` and your existing Ollama clients
 A running DistLLM API server with a model loaded:
 
 ```bash
-pip install distllm
+pip install "distributed-llm[cli,self-hosted]"
 distllm system api --model meta-llama/Llama-3-8B-Instruct --local --no-auth
 # or
 docker compose up -d

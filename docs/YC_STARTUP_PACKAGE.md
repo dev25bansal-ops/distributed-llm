@@ -424,7 +424,7 @@ Year 3-4 target. Capturing via:
 | ✅ OpenAI-compatible API | **DONE** | — |
 | ✅ CLI tooling | **DONE** | — |
 | ✅ Observability (metrics, tracing) | **DONE** | — |
-| ⬜ Upload to PyPI with `pip install distllm` | **CRITICAL** | P0 |
+| ⬜ Upload to PyPI with `pip install distributed-llm` | **CRITICAL** | P0 |
 | ⬜ Auto-discovery (mDNS) polish | P0 |
 | ⬜ Ollama integration ("distllm cluster" as plugin) | P0 |
 | ⬜ One-click cloud deploy demo | P1 |

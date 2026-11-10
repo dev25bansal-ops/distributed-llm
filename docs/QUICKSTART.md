@@ -59,7 +59,10 @@ curl http://localhost:8000/v1/chat/completions \
 ### Step 1: Install
 
 ```bash
-pip install distllm
+# The distribution is "distributed-llm". A separate unrelated project owns the
+# name "distllm" on PyPI, so `pip install distllm` installs the wrong thing.
+# The cli extra brings typer/rich; self-hosted brings torch and transformers.
+pip install "distributed-llm[cli,self-hosted]"
 ```
 
 ### Step 2: Start Coordinator

@@ -17,7 +17,7 @@ You need a running DistLLM API server. The fastest local start:
 
 ```bash
 # Python package
-pip install distllm
+pip install "distributed-llm[cli,self-hosted]"
 distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
 
 # Or via Docker Compose (recommended)

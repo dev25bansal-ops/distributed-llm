@@ -95,7 +95,7 @@ ERROR: No matching distribution found for torch
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 # Then install DistLLM
-pip install distllm
+pip install distributed-llm
 ```
 
 **Prevention:** Pin the PyTorch index URL in your `requirements.txt`:
@@ -170,7 +170,7 @@ source .venv-clean/bin/activate  # Linux/macOS
 
 # Install with locked requirements
 pip install -r requirements.lock
-pip install distllm
+pip install distributed-llm
 ```
 
 **Prevention:** Always use `pip install -r requirements.lock` in production. Generate the lock file with `pip freeze > requirements.lock`.
@@ -294,7 +294,7 @@ distllm model load org/model
 > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_TOKENIZER_SUBFOLDER
 > has 0 hits in src/ and config.yaml.
 
-**Prevention:** Install the full dependency set: `pip install distllm[all]`.
+**Prevention:** Install the full dependency set: `pip install distributed-llm[all]`.
 
 ---
 
