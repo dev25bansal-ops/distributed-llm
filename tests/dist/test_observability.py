@@ -11,7 +11,19 @@ is missing, so they are skipped rather than asserting the degraded shape.
 import pytest
 
 from distllm.dist.observability import enable_dist_observability
+from distllm.observability import exporter as _exporter_mod
 from distllm.observability.exporter import DistLLMPrometheusExporter
+
+# The exporter only grows its per-domain attributes (_nccl_bytes_sent,
+# _pipeline_*, ...) when prometheus_client is importable. Without the
+# [observability] extra the exporter is a no-op stub that never defines them,
+# so asserting they exist is asserting the extra is installed -- which this
+# test-dist job does not do. Skip rather than fail, as this file's own
+# docstring says for the OTel-backed tests.
+_requires_prometheus = pytest.mark.skipif(
+    not _exporter_mod._PROMETHEUS_AVAILABLE,
+    reason="needs the [observability] extra (prometheus_client)",
+)
 
 
 class TestEnableDistObservability:
@@ -229,6 +241,7 @@ class TestEnableDistObservability:
 
     # ── Exporter attribute side effects ─────────────────────────────────
 
+    @_requires_prometheus
     def test_exporter_gains_pipeline_attributes(self) -> None:
         """After enabling pipeline metrics the exporter gains pipeline attrs."""
         exporter = DistLLMPrometheusExporter()
@@ -245,6 +258,7 @@ class TestEnableDistObservability:
         assert hasattr(exporter, "_pipeline_micro_batches")
         assert hasattr(exporter, "_pipeline_warmup")
 
+    @_requires_prometheus
     def test_exporter_gains_federation_attributes(self) -> None:
         """After enabling federation metrics the exporter gains federation attrs."""
         exporter = DistLLMPrometheusExporter()
@@ -262,6 +276,7 @@ class TestEnableDistObservability:
         assert hasattr(exporter, "_fed_heartbeat_latency")
         assert hasattr(exporter, "_fed_spillovers_total")
 
+    @_requires_prometheus
     def test_exporter_gains_recovery_attributes(self) -> None:
         """After enabling recovery metrics the exporter gains recovery attrs."""
         exporter = DistLLMPrometheusExporter()
@@ -278,6 +293,7 @@ class TestEnableDistObservability:
         assert hasattr(exporter, "_recovery_drill_total")
         assert hasattr(exporter, "_recovery_drill_duration")
 
+    @_requires_prometheus
     def test_exporter_gains_nccl_attributes(self) -> None:
         """After enabling NCCL metrics the exporter gains NCCL attrs."""
         exporter = DistLLMPrometheusExporter()

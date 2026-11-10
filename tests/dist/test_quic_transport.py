@@ -100,12 +100,12 @@ class TestIsQuicAvailable:
         assert result is False
 
     def test_quic_available_when_installed(self, monkeypatch):
-        """is_quic_available() is True when aioquic imports cleanly.
+        """is_quic_available() is True when aioquic was importable at import.
 
-        A stub module is registered under sys.modules so the probe
-        succeeds deterministically regardless of the machine.
+        Availability is decided once into _AIOQUIC_AVAILABLE, so that flag is
+        patched rather than sys.modules -- which the probe never re-reads.
         """
-        monkeypatch.setitem(sys.modules, "aioquic", object())
+        monkeypatch.setattr(self.mod, "_AIOQUIC_AVAILABLE", True)
         result = self.mod.is_quic_available()
         assert result is True
 
