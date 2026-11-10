@@ -1,7 +1,8 @@
 # ArgoCD ApplicationSet driving one Application per environment (dev/staging/
 # production) via a list generator. Go templates substitute per-element values.
-# dev auto-syncs; staging tracks the release branch; production is pinned to
-# the v0.4.0 release tag and autoSync disabled (manual, audited promotion).
+# All three track master: this repo has no `release` branch and no v0.4.0 tag
+# (only master + a v0.4.1 tag), so those refs would fail to sync. Staging and
+# production keep autoSync disabled (manual, audited promotion).
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -12,15 +13,15 @@ spec:
         elements:
           - environment: dev
             namespace: distllm-dev
-            revision: main
+            revision: master
             autoSync: true
           - environment: staging
             namespace: distllm-staging
-            revision: release
+            revision: master
             autoSync: false
           - environment: production
             namespace: distllm-production
-            revision: v0.4.0
+            revision: master
             autoSync: false
   template:
     metadata:
