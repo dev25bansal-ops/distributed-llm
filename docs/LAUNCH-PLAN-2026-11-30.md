@@ -80,7 +80,7 @@ If a gate cannot be met, we ship a smaller product that meets all five, not a la
 
 | Gate | State | Evidence |
 |---|---|---|
-| 1. Master green / reds quarantined | **local side complete** | api 1351/0, core 5817/10, dist 6287/8, real-import 240/240. Every local red is environmental, classified in `REMAINING_FAILURES.md`. The one REAL defect found was fixed (`c827fc03`). CI-side reds remain: terraform, container, fuzz, chaos. |
+| 1. Master green / reds quarantined | **local side complete** | api 1351/0, core 5819/8, dist 6287/8, deploy 150/0, real-import 240/240. Every local red is environmental, classified in `REMAINING_FAILURES.md`; the REAL defects found were fixed (`c827fc03`, `18bb10c5`). CI-side reds remain: container, fuzz, chaos, two integrations. |
 | 2. Release published | **near** | index already serves 0.6.2.2 matching the repo; clean-venv gate script exists and runs |
 | 3. Site tells the truth | **largely done** | fabricated customers/outcomes removed; claims audited |
 | 4. Real end-to-end demo on hardware | **blocked** | no GPU on this machine; needs the user's A10, Nov 16–20 |
@@ -231,6 +231,7 @@ sequence itself.
 | Suite | Result | Command |
 |---|---|---|
 | `tests/api/` | **1351 passed, 0 failed**, 10 skipped, 12 xfailed, 28 xpassed (4m25s) | `PYTHONPATH=src pytest tests/api/ -q --timeout=180` |
+| `tests/deploy/` | **150 passed, 0 failed** (was 45 failed / 126 passed) | `pytest tests/deploy/` |
 | Real-import sweep | **240/240 modules import** | `PYTHONPATH=src python tests/scripts/check_real_imports.py` |
 | Ruff ratchet | **437 findings vs 443 baseline** (I001 73/73, W292 0, UP 0) | `python scripts/ci/ruff_ratchet.py`, counted from LF blobs as CI does |
 | Integrations | langchain **34**, llamaindex **29**, 0 failed | `pytest integrations/<name>/tests/` |
