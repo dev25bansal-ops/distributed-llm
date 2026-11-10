@@ -325,6 +325,12 @@ class _PriceTracker:
         prices = self._prices.get(key)
         if not prices:
             return None
+        if len(prices) == 1:
+            # statistics.quantiles needs >= 2 data points and raises
+            # StatisticsError otherwise. A tracker that has seen exactly one
+            # price is the normal state right after startup, and describe()
+            # must not crash there -- the lone observation is its own p75.
+            return float(prices[0])
         return float(statistics.quantiles(prices, n=4)[-1])  # upper quartile
 
     # ------------------------------------------------------------------
