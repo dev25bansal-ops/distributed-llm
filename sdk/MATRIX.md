@@ -12,12 +12,19 @@ Read this matrix for what the code *does*, not what it aspires to. Coverage is
 per-language and deliberately uneven: the Python client is the reference
 surface; JS/Go/Rust implement a small common core.
 
+**Test coverage is narrower than "the suite is green" suggests.** Every executed
+test passes, but only five HTTP routes are ever exercised by any client:
+`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`,
+`/health`. Python's batch / moderations / audio / image / file / fine-tuning
+methods are implemented but **no test calls them**. See the coverage table
+below for the per-method truth.
+
 | SDK | Language | Install method | Executed version | Toolchain | Tests actually run | Publish status |
 |-----|----------|----------------|------------------|-----------|--------------------|----------------|
 | `distllm-sdk` (Python, async + sync) | Python >= 3.10 | PyPI `pip install distllm-sdk` · source `pip install -e sdk/` | 1.0.0 | Python 3.14.4, httpx 0.28.1, pytest 9.0.2 | **149 passed, 0 failed** — `PYTHONPATH=src:sdk/src python -m pytest sdk/tests/ -q` (10 hermetic smoke in `test_smoke_live.py` via httpx `MockTransport`; 139 other tests: 55 `test_sdk`, 38 `test_openai_compat`, 23 `test_client_extended`, 15 `test_grpc_client`, 8 `test_completions_stream_parity`) | Ready. Local `sdk/dist/distllm_sdk-0.5.0.tar.gz` is **stale** (0.5.0 vs pyproject 1.0.0) — rebuild before next PyPI upload |
 | `distllm-sdk` (JS/TS) | Node >= 18 | npm `npm i distllm-sdk` (**not yet published**) · git subdir `sdk/js` | 1.0.0 | Node 24.12.0, vitest, tsc (ranges `^1.0.0` / `^5.0.0`, no lockfile) | **11 passed, 0 failed** — `cd sdk/js && npm install && npm run build && npm test` (`smoke.test.ts` 6 + `stream-timeout.test.ts` 5); `tsc --noEmit` clean | **Ready to publish** — `README.md` present, `exports`/`repository`/`bugs`/`homepage` restored; `npm pack --dry-run` = 8 files, 5.8 kB (6 dist + package.json + README). Remaining: actual `npm publish` |
-| `distllm-sdk-go` | Go >= 1.21 | `go get github.com/distributed-llm/distllm-sdk-go` (**needs git tag**) | 1.0.0-dev (go.mod, untagged) | Go 1.26.2 windows/amd64 | **5 passed, 0 failed** — `cd sdk/go && go test ./...` (`TestSmokeListModels`, `TestSmokeChatCompletion`, `TestSmokeChatCompletionRequestBody`, `TestSmokeHealth`, `TestSmokeChatCompletionStream`; `httptest` server). `go vet ./...` clean; `gofmt` clean | Module path correct in `go.mod`; package docs in `doc.go`. Publish = push tag `v1.0.0` |
-| `distllm-sdk` (Rust) | Rust 2021 edition | crates.io `cargo add distllm-sdk` (**not yet published**) · git subdir `sdk/rust` | — **not tested** | ⚠ cargo/rustc **not installed** on this machine | ✗ review-only | **Blocked** until `cargo check` / `cargo test` can run. `Cargo.toml` + `lib.rs` reviewed by hand (structs/serde/thiserror consistent). `src/generated/types.rs` is **not wired into the crate** (no `mod generated;`) — uncompiled, so review-only |
+| `distllm-sdk` (Go) | Go >= 1.21 | `go get github.com/distributed-llm/distllm-sdk-go` (**needs git tag**) | 1.0.0-dev (go.mod, untagged) | Go 1.26.2 windows/amd64 | **5 passed, 0 failed** — `cd sdk/go && go test ./...` (`TestSmokeListModels`, `TestSmokeChatCompletion`, `TestSmokeChatCompletionRequestBody`, `TestSmokeHealth`, `TestSmokeChatCompletionStream`; `httptest` server). `go vet ./...` clean; `gofmt` clean. **Caveat:** `Embedding` and `Completion` are implemented but never called by a test | Module path correct in `go.mod`; package docs in `doc.go`. Publish = push tag `v1.0.0` |
+| `distllm-sdk` (Rust) | Rust 2021 edition | crates.io `cargo add distllm-sdk` (**not yet published**) · git subdir `sdk/rust` | — **not tested** | ⚠ cargo/rustc **not installed** on this machine | ✗ review-only — the crate contains 12 `#[test]` cases, but they are serde/serialization unit tests only (no HTTP, no server) and **have never been executed** | **Blocked** until `cargo check` / `cargo test` can run. `Cargo.toml` + `lib.rs` reviewed by hand. `src/generated/types.rs` is **not wired into the crate** (no `mod generated;`) — uncompiled, so review-only |
 
 ## How to run the suites
 
@@ -38,21 +45,41 @@ The Python client is the reference surface (20 public async methods). The other
 clients implement a **common core only**; this is a capability statement, not a
 bug list. What is absent, is absent.
 
+Legend: **✓ = implemented AND exercised over HTTP by an automated test**;
+**~ = implemented, but only covered by type/unit tests (no request is made)**;
+**✗ = not implemented**.
+
 | Capability | Python | JS | Go | Rust |
 |---|---|---|---|---|
-| `chat_completions` | ✓ | ✓ (`chat.completions.create`) | ✓ (`ChatCompletion`) | ✓ (`chat_completion`) |
-| `chat_completions_stream` (yields `str` deltas) | ✓ | ✓ (`chat.completions.stream`) | ✓ (`ChatCompletionStream`, `<-chan string`) | ✗ |
-| `completions` | ✓ | ✓ (`completions.create`) | ✓ (`Completion`) | ✓ (`completion`) |
+| `chat_completions` | ✓ | ✓ | ✓ | ~ |
+| `chat_completions_stream` (yields `str` deltas) | ✓ | ✓ | ✓ | ✗ |
+| `completions` | ✓ | ✓ | ~ | ~ |
 | `completions_stream` (yields `str` deltas) | ✓ | ✗ | ✗ | ✗ |
-| `list_models` | ✓ | ✓ (`models.list`) | ✓ (`ListModels`) | ✓ (`list_models`) |
-| `health_check` | ✓ | ✗ (`HealthResponse` type declared, no method) | ✓ (`Health`) | ✓ (`health`) |
-| `embeddings` | ✓ | ✓ (`embeddings.create`) | ✓ (`Embedding`) | ✓ (`embedding`) |
-| batch `submit` / `status` / `stream` / `cancel` | ✓ | ✗ | ✗ | ✗ |
-| `moderations` | ✓ | ✗ | ✗ | ✗ |
-| audio `transcribe` / `speech` | ✓ | ✗ | ✗ | ✗ |
-| `generate_images` | ✓ | ✗ | ✗ | ✗ |
-| files `upload` / `list` / `delete` | ✓ | ✗ | ✗ | ✗ |
-| fine-tuning `create` / `list` / `cancel` | ✓ | ✗ | ✗ | ✗ |
+| `list_models` | ✓ | ✓ | ✓ | ~ |
+| `health_check` | ✓ | ✗ (type declared, no method) | ✓ | ~ |
+| `embeddings` | ✓ | ✓ | ~ | ~ |
+| batch `submit` / `status` / `stream` / `cancel` | ~ | ✗ | ✗ | ✗ |
+| `moderations` | ~ | ✗ | ✗ | ✗ |
+| audio `transcribe` / `speech` | ~ | ✗ | ✗ | ✗ |
+| `generate_images` | ~ | ✗ | ✗ | ✗ |
+| files `upload` / `list` / `delete` | ~ | ✗ | ✗ | ✗ |
+| fine-tuning `create` / `list` / `cancel` | ~ | ✗ | ✗ | ✗ |
+
+**What the "~" cells mean, precisely** (verified 2026-11-10 against the merge tip):
+
+- **Python:** every one of the 149 tests passes, but the HTTP mock only ever
+  serves five routes — `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`,
+  `/v1/models`, `/health`. The batch, moderations, audio, image, file and
+  fine-tuning methods have **no test that calls them**; the `TestTypes` cases
+  only construct their dataclasses. Treat those eight rows as *implemented,
+  untested* — the wire format is unverified.
+- **Go:** `Embedding` and `Completion` exist and compile, but `client_test.go`
+  only hits `/v1/chat/completions`, `/v1/models` and `/health`. No test calls
+  `client.Embedding` or `client.Completion`.
+- **Rust:** the crate's 12 in-crate tests are **pure serde/serialization tests**
+  — they build `ChatRequest`, parse canned JSON, and check the `Error` display.
+  None performs an HTTP call (no server is started). All five methods are
+  `~`. `cargo` is not installed here, so even those 12 have not been executed.
 
 Client-side extras present **only in Python**: automatic retry with
 `Retry-After` honouring, circuit breaker, usage/cost stats, sync mirror client,
