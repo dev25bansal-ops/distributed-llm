@@ -203,8 +203,9 @@ curl -H "Authorization: Bearer dev" http://100.68.122.X:8000/v1/chat/completions
 # Install
 pip install distributed-llm
 
-# Start with llama.cpp backend (works on M1/M2/M3)
-distllm system api --model Qwen/Qwen2.5-3B --local --port 8000 --no-auth
+# Start with llama.cpp backend (works on M1/M2/M3). Auth is always required.
+export API_KEY="choose-a-secret-value"
+distllm system api --model Qwen/Qwen2.5-3B --local --port 8000
 
 # Or connect as worker to your laptop's coordinator
 distllm cluster join --coordinator 192.168.1.X --port 50050

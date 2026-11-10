@@ -73,8 +73,10 @@ pip install "distributed-llm[cli,self-hosted]"
 ### Step 2: Start Coordinator
 
 ```bash
-# Start with a small model (no auth required for local development)
-distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
+# Auth is always required (see the Authentication section below) -- set a key
+# first, or every request to this server is rejected.
+export API_KEY="choose-a-secret-value"
+distllm system api --model meta-llama/Llama-3.2-1B --local
 ```
 
 ### Step 3: Chat
@@ -182,7 +184,7 @@ from distllm_sdk import DistLLMClient
 
 client = DistLLMClient(
     base_url="http://localhost:8000/v1",
-    api_key="your-api-key",  # or "not-needed" with --no-auth
+    api_key=os.environ["API_KEY"],  # required -- there is no no-auth mode
 )
 
 # Chat completion
@@ -200,7 +202,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="your-api-key",  # or "not-needed" with --no-auth
+    api_key=os.environ["API_KEY"],  # required -- there is no no-auth mode
 )
 
 response = client.chat.completions.create(
@@ -242,7 +244,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `CUDA out of memory` | Use a smaller model or enable quantization |
 | `Connection refused` | Check firewall, verify coordinator is running |
 | `Model not found` | Run `distllm model load <model-name>` first |
-| `Unauthorized` | Set `API_KEY` env var or use `--no-auth` flag |
+| `Unauthorized` | Set the `API_KEY` env var and send it as a bearer token. `--no-auth` no longer exists. |
 | Slow inference | Check GPU utilization with `nvidia-smi` |
 
 See [Troubleshooting Guide](TROUBLESHOOTING.md) for more.

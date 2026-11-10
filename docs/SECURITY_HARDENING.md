@@ -104,8 +104,9 @@ export API_KEY=your-secure-key-here
 # Start server with API key
 distllm system api --model <model> --local
 
-# Or disable auth for development
-distllm system api --model <model> --local --no-auth
+# There is no bypass: --no-auth was removed. This second form is identical to
+# the first and is kept only to show that no flag changes it.
+distllm system api --model <model> --local
 ```
 
 The API key is displayed on startup. For production, use a strong random key:

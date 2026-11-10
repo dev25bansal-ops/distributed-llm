@@ -20,7 +20,7 @@ Practical, drop-in migration guides for teams moving to DistLLM's OpenAI-compati
 ## Common facts across all three
 
 - **DistLLM base URL:** `http://localhost:8000/v1`
-- **API key:** optional. Use `--no-auth` for local dev (pass any non-empty string such as
+- **API key:** required. Auth is always on; `--no-auth` was removed. Pass any value you set as
   `"not-needed"`), or set `API_KEY` and send `Authorization: Bearer <key>` in production.
 - **Supported OpenAI endpoints:** `POST /v1/chat/completions`, `POST /v1/completions`,
   `POST /v1/embeddings`, `GET /v1/models`.

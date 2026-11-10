@@ -7,7 +7,7 @@ to your request shapes are required — the JSON schemas for requests and respon
 streaming, match OpenAI.
 
 - DistLLM base URL: `http://localhost:8000/v1`
-- `api_key` is **optional**. With `--no-auth` you can pass any non-empty string (e.g. `"not-needed"`).
+- `api_key` is **required**: auth is always on. Set `API_KEY` and pass that value (`--no-auth` no longer exists).
 - Supported endpoints: `POST /v1/chat/completions`, `POST /v1/completions`,
   `POST /v1/embeddings`, `GET /v1/models`.
 
@@ -18,7 +18,8 @@ You need a running DistLLM API server. The fastest local start:
 ```bash
 # Python package
 pip install "distributed-llm[cli,self-hosted]"
-distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
+export API_KEY="choose-a-secret-value"
+distllm system api --model meta-llama/Llama-3.2-1B --local
 
 # Or via Docker Compose (recommended)
 docker compose up -d
@@ -160,7 +161,7 @@ Server-side defaults can be set in `config.yaml` under `generation` (see
   memory, not a fixed OpenAI plan.
 - **Streaming**: Supported via SSE exactly like OpenAI (`stream: true`). The non-streaming path is
   also byte-compatible.
-- **Auth**: No-auth mode (`--no-auth`) is for local dev only. In production set `API_KEY` and send
+- **Auth**: There is no no-auth mode (`--no-auth` was removed). Set `API_KEY` and send
   `Authorization: Bearer <key>`; a missing/invalid key returns `401 auth_error`.
 - **Extensions**: Custom DistLLM features live in `X-DistLLM-*` headers, not in the OpenAI request
   body, to preserve compatibility.
@@ -188,7 +189,7 @@ curl http://localhost:8000/v1/chat/completions \
 ## SUMMARY
 
 DistLLM is a drop-in OpenAI-compatible backend: swap `base_url` to `http://localhost:8000/v1`,
-make `api_key` optional (`--no-auth`) or your DistLLM key, and replace OpenAI model names with
+pass your DistLLM key as `api_key`, and replace OpenAI model names with
 DistLLM model ids (HuggingFace ids you have loaded). All four core OpenAI endpoints
 (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`) share the same request/
 response schemas and SSE streaming. Main caveats: model names must be pre-loaded, limits are

@@ -732,10 +732,9 @@ echo $API_KEY
 # Step 2: Test with curl
 curl -H "Authorization: Bearer $API_KEY" http://coordinator:8000/v1/models
 
-# Step 3: If no key is set, either set one or disable auth
-export API_KEY="your-secret-key"
-# Or disable auth for development:
-distllm system api --model <model> --local --no-auth
+# Step 3: If no key is set, set one -- there is no way to disable auth
+export API_KEY="your-secret-value"
+distllm system api --model <model> --local
 
 # Step 4: Confirm the key is configured (no `config list-keys` subcommand
 # exists; config subcommands are setup/validate/reference/openapi/webhook/

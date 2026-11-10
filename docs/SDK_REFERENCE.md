@@ -58,7 +58,7 @@ client = DistLLMClient(
     pool=PoolConfig(max_connections=100),
 )
 
-# Without API key (development with --no-auth)
+# API key is required -- auth is always on (--no-auth was removed)
 client = DistLLMClient(
     base_url="http://localhost:8000",
     api_key="not-needed",

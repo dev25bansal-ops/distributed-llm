@@ -27,10 +27,7 @@ pip install "distllm[all]"
 # Install with vLLM backend
 pip install "distributed-llm[self-hosted]"
 
-# Start with local model (no auth for development)
-distllm system api --model meta-llama/Llama-3.2-1B --local --port 8000 --no-auth
-
-# Or with API key
+# Auth is always required -- set a key first, then start.
 export API_KEY="your-secret-key"
 distllm system api --model meta-llama/Llama-3.2-1B --local --port 8000
 

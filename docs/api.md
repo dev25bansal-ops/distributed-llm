@@ -12,12 +12,14 @@ http://localhost:8000/v1
 
 All requests require an `Authorization: Bearer <api-key>` header.
 
-### Development (No Auth)
+### Authentication is always required
 
-For local development, disable authentication:
+There is no no-auth mode (`--no-auth` was removed and now logs a warning and
+changes nothing). Set a key before starting:
 
 ```bash
-distllm system api --model <model> --local --no-auth
+export API_KEY="choose-a-secret-value"
+distllm system api --model <model> --local
 ```
 
 No API key needed — anyone on localhost can connect.

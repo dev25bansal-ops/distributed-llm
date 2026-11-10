@@ -13,7 +13,7 @@ endpoints to DistLLM — run it on port `11434` and your existing Ollama clients
 
 - DistLLM OpenAI-compatible base URL: `http://localhost:8000/v1`
 - Ollama proxy base URL (native API): `http://localhost:11434` → forwards to DistLLM
-- `api_key` optional (`--no-auth` for local dev)
+- `api_key` required (auth is always on; `--no-auth` was removed)
 
 ## Prerequisites
 
@@ -21,7 +21,8 @@ A running DistLLM API server with a model loaded:
 
 ```bash
 pip install "distributed-llm[cli,self-hosted]"
-distllm system api --model meta-llama/Llama-3-8B-Instruct --local --no-auth
+export API_KEY="choose-a-secret-value"
+distllm system api --model meta-llama/Llama-3-8B-Instruct --local
 # or
 docker compose up -d
 docker compose exec coordinator distllm model load meta-llama/Llama-3-8B-Instruct
@@ -157,7 +158,7 @@ Load the model into the cluster before requesting it. See
 | Modelfile `PARAMETER num_gpu` | GPU layers | `tensor_parallel.num_gpus` / `llamacpp.n_gpu_layers` |
 | GGUF models | native | `llamacpp.model_path` + `llamacpp.enabled: true` |
 | Quantization | automatic (Q4_K_M etc.) | `quantization.method` (`bnb_4bit`, `gptq`, `awq`, `fp8`) |
-| Auth | none | `API_KEY` env / `--no-auth` |
+| Auth | none | `API_KEY` env (auth always on) |
 | Multi-node | no (single host) | yes — `nodes:` list, pipeline/tensor parallelism |
 | Runtime config | `~/.ollama/...` + env | `config.yaml` or `DISTLLM__SECTION__FIELD` env vars |
 
@@ -175,7 +176,7 @@ See [docs/CONFIG_REFERENCE.md](CONFIG_REFERENCE.md) for the complete DistLLM con
 - **Streaming**: Both Ollama native (NDJSON) and DistLLM (`/v1` SSE) support streaming; the proxy
   converts between them.
 - **Auth**: Ollama has no auth; DistLLM expects `Authorization: Bearer <key>` in production
-  (`--no-auth` for local dev).
+  (auth is always on there is no bypass).
 - **Throughput**: DistLLM adds distributed/consumer-hardware scaling that Ollama (single host) does
   not; latency characteristics will differ.
 
