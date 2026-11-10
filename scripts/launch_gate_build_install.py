@@ -29,7 +29,12 @@ def _run(cmd, env, cwd, timeout=900):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--extras", default="cli", help="extras to install with the tree")
+    ap.add_argument(
+        "--extras",
+        default="cli,self-hosted",
+        help="extras to install with the wheel; the default matches the documented "
+        "install line, so a pass here means the docs work",
+    )
     args = ap.parse_args()
 
     for stream in (sys.stdout, sys.stderr):
