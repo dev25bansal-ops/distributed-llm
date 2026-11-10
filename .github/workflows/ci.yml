@@ -208,12 +208,20 @@ jobs:
           fi
       - name: Run integration tests against cluster
         run: |
-          # pytest-timeout is required, not optional: the command passes
-          # --timeout=120, and without the plugin pytest rejects the flag
-          # outright ("error: unrecognized arguments: --timeout=120", exit 4)
-          # before collecting a single test. The cluster itself was healthy --
-          # the run died on the argument parse.
+          # Two install requirements, each learned from a distinct failure:
+          #
+          # pytest-timeout: the command passes --timeout=120, and without the
+          # plugin pytest rejects the flag outright ("error: unrecognized
+          # arguments: --timeout=120", exit 4) before collecting a single test.
+          #
+          # The project itself: these tests only speak HTTP to the cluster, but
+          # tests/conftest.py (inherited from the repo root) imports
+          # distllm.core.coordinator for fixtures they never use, so collection
+          # dies with ModuleNotFoundError: distllm, then torch. Installing with
+          # the testing extra gives both -- and means the tests exercise the
+          # same code the cluster is running rather than a bare httpx script.
           pip install httpx pytest pytest-timeout
+          pip install -e ".[testing]"
           python -m pytest tests/dist/integration/ -v -k "not chaos" --timeout=120
       - name: Tear down
         if: always()
