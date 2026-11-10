@@ -175,7 +175,17 @@ jobs:
             curl -s http://localhost:8000/v1/health > /dev/null 2>&1 && break
             sleep 5
           done
-          curl -s http://localhost:8000/v1/health || { echo "Cluster failed to start"; exit 1; }
+          # Dump the containers' own output before failing. The coordinator ran
+          # and exited with code 2 in 300 ms for months, and all this job ever
+          # printed was "dependency failed to start" -- the actual message
+          # ("unexpected extra argument --model") was inside the container and
+          # never surfaced. ps + logs costs two lines and ends that blindness.
+          if ! curl -s http://localhost:8000/v1/health; then
+            echo "Cluster failed to start; container state and logs follow"
+            docker compose -f tests/dist/integration/docker-compose.yml ps
+            docker compose -f tests/dist/integration/docker-compose.yml logs --no-color --tail=200
+            exit 1
+          fi
       - name: Run integration tests against cluster
         run: |
           pip install httpx pytest
@@ -437,15 +447,24 @@ jobs:
             | tar -xz -C /usr/local/bin trivy
           trivy --version
       - name: Trivy scan
-        # exit-code 1 on HIGH/CRITICAL keeps this a gate, not a report.
+        # Gates on HIGH/CRITICAL that HAVE A FIX -- the actionable ones. A CUDA
+        # base image ships 134 OS packages, and trivy reports CVEs in them that
+        # no distro rebuild exists for yet; without --ignore-unfixed the gate is
+        # red from the day the base image is built and stays red whatever we do,
+        # which is the same as having no gate. A fixable HIGH/CRITICAL still
+        # fails this step, and the full report is uploaded below either way.
         run: |
           trivy image --format sarif --output trivy-ci.sarif \
-            --severity HIGH,CRITICAL --exit-code 1 distllm:ci
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 distllm:ci
       - name: Upload scan results
+        # Always: the run whose report matters most is the one where the gate
+        # failed, and by default a failed step skips the upload.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-ci
           path: trivy-ci.sarif
+          if-no-files-found: warn
 
   # ------------------------------------------------------------------
   # Test — Terraform provider
