@@ -9,13 +9,19 @@ Complete API reference for the DistLLM SDK in Python, JavaScript/TypeScript, Go,
 ### Installation
 
 ```bash
-pip install distllm-sdk
+pip install distributed-llm
 ```
+
+The Python SDK ships **inside** the main distribution as `distllm.sdk`. There is
+no separately published `distllm-sdk` package on PyPI -- an earlier revision of
+this page told you to install one, and `from distllm.sdk import ...` failed with
+ModuleNotFoundError on a clean install. Verified: in a fresh venv with only
+`distributed-llm` installed, `from distllm.sdk import DistLLMClient` works.
 
 ### Quick Start
 
 ```python
-from distllm_sdk import DistLLMClient
+from distllm.sdk import DistLLMClient
 
 # Async client
 async with DistLLMClient(base_url="http://localhost:8000") as client:
@@ -26,7 +32,7 @@ async with DistLLMClient(base_url="http://localhost:8000") as client:
     print(response.choices[0].message.content)
 
 # Sync client
-from distllm_sdk import DistLLMClientSync
+from distllm.sdk import DistLLMClientSync
 
 with DistLLMClientSync(base_url="http://localhost:8000") as client:
     response = client.chat_completions(
@@ -47,7 +53,7 @@ async for chunk in client.chat_completions_stream(
 ### Configuration
 
 ```python
-from distllm_sdk import DistLLMClient, RetryConfig, PoolConfig
+from distllm.sdk import DistLLMClient, RetryConfig, PoolConfig
 
 # With API key (production)
 client = DistLLMClient(
@@ -68,7 +74,7 @@ client = DistLLMClient(
 ### Error Handling
 
 ```python
-from distllm_sdk.errors import AuthenticationError, RateLimitError, TimeoutError
+from distllm.sdk.types import AuthenticationError, RateLimitError, TimeoutError_
 
 try:
     response = await client.chat_completions(messages=[...])

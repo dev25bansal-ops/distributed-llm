@@ -4,14 +4,21 @@ Python client SDK for the Distributed LLM API.
 
 ## Installation
 
+The Python SDK ships inside the main distribution as `distllm.sdk`, so the
+normal install is enough:
+
 ```bash
-pip install distllm-sdk
+pip install distributed-llm
 ```
+
+`distllm-sdk` is not published to PyPI. This directory is installable from a
+checkout (`pip install -e sdk/`) and provides the standalone `distllm_sdk`
+module, which is what the projects under `integrations/` import.
 
 ## Quick Start
 
 ```python
-from distllm_sdk import DistLLMClient
+from distllm.sdk import DistLLMClient
 
 async with DistLLMClient(base_url="http://localhost:8000") as client:
     response = await client.chat_completions(
