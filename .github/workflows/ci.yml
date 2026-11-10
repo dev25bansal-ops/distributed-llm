@@ -239,6 +239,13 @@ jobs:
         env:
           PYTHONPATH: src
         run: python scripts/check_doc_commands.py
+      - name: Kustomize overlays build for GitOps
+        # Default load restrictor, no --load-restrictor flag -- that is the
+        # condition ArgoCD and Flux build under. The validate-k8s job below
+        # passes the flag, which hid a production overlay that was unbuildable
+        # through GitOps. Also asserts workers do not exceed one replica per
+        # layer range.
+        run: python scripts/check_kustomize_overlays.py
       - name: Core coverage-frontier gate (C7 — fail if zero-coverage grows)
         env:
           PYTHONPATH: src
