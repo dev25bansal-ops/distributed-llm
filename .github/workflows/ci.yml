@@ -65,7 +65,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,testing]"
+      # cli is required, not optional, for this job: the whole-tree run includes
+      # tests/cli/, and those tests import typer/rich/prompt_toolkit. Without
+      # the extra they fail with ModuleNotFoundError (prompt_toolkit) and with
+      # empty --help output (no typer), which reads as seven broken CLI commands
+      # rather than a missing test dependency.
+      - run: pip install -e ".[dev,testing,cli]"
       # tests/sdk/test_stream_parity_f036.py imports distllm_sdk, which lives in
       # its own package (sdk/, distribution name distllm-sdk) and is not part
       # of the root install; without it whole-tree pytest dies at collection.
