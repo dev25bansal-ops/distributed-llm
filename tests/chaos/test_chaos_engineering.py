@@ -213,7 +213,11 @@ class TestNetworkPartition:
         )
         result = node.health_check()
         assert not result
-        assert not node.healthy
+        # PipelineNode's field is `is_healthy`; `.healthy` is not a field (it is
+        # an unconsumed attribute that evaluates truthy), so the old assertion
+        # tested nothing. The repr confirms health_check() had already set
+        # is_healthy=False.
+        assert not node.is_healthy
 
     def test_partition_partial_message_loss(self, chaos_coordinator):
         import grpc

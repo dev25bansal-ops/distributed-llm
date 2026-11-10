@@ -1,5 +1,10 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+# Keep this floor in step with the setuptools pin in [project.dependencies].
+# The build env is isolated and honours THIS line, not that one: with >=68.0
+# here, pip installed setuptools 79.0.1 and pip-audit failed the security-deps
+# job with 17 vulnerabilities in that single package. The dependency floor was
+# raised to 84.1.0 for the same advisories; this one was left behind.
+requires = ["setuptools>=84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]

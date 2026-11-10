@@ -15,6 +15,14 @@ import pytest
 
 SRC_DIR = Path(__file__).resolve().parent.parent.parent / "src"
 
+# tests/chaos/test_all_scenarios.py imports `scenarios.network_latency` etc. as
+# top-level modules, which requires this directory on sys.path. It is a real
+# package (scenarios/__init__.py exists); pytest's rootdir does not add it, so
+# collection failed with ModuleNotFoundError: No module named 'scenarios'.
+_CHAOS_DIR = Path(__file__).resolve().parent
+if str(_CHAOS_DIR) not in sys.path:
+    sys.path.insert(0, str(_CHAOS_DIR))
+
 
 def _make_fake_package(name: str, path: Path):
     mod = types.ModuleType(name)
