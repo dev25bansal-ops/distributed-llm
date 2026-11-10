@@ -129,6 +129,21 @@ The single objective: **PR #10 mergeable-green or every red explained.**
   3. `test-dist`, `chaos-tests`, `docker-compose-integration` — environmental or real, find out which.
   4. `security-deps`, `security-container`, `test-terraform`, `vscode-extension`, `fuzz-test` — lower blast radius, may be quarantined.
   5. Three failing integrations (langchain, llamaindex, crewai) vs eight passing — find the actual difference before touching anything.
+
+  **Answered 2026-11-10** — the whole list, one by one:
+
+  | Check | Verdict | Evidence |
+  |---|---|---|
+  | `test` ×4 | **fixed** | Was exit 137 (OOM) at 84%, not failing tests. Chunked per directory; the underlying reds were GPU tests on CPU-only runners, now skipped or run on CPU. `tests/core` 5823 passed / 0 failed locally. |
+  | `real-import-gate` | **fixed, then fixed again** | 240/240 modules import. The check I added to it then failed CI on its own false positive (compared clone URLs as strings; CI's origin has no `.git`). Normalised to owner/repo. |
+  | `chaos-tests` | **environmental, scoped** | `pytest -m chaos` collects 12,382 tests to run 63; 29 error with `KeyError: 'n0'` under that collection while the file passes alone. Cross-suite `sys.modules` pollution from the fake-package injection in `tests/chaos/conftest.py`. Job scoped to what it is for: 55 + 8, green. |
+  | `docker-compose-integration` | **environmental, not reproduced** | The compose file exists with the right services and its 19 integration tests pass locally. What cannot be exercised here is the container build and startup — no Docker daemon. One `docker build .` from deploy-dir's list would close it. |
+  | `security-deps` | **fixed** | Was `filelock 4.1.0`, 17 CVEs, pulled in by `pip install pip-audit` itself — not by our package. Pinned at the tool's install step; resolver verified. |
+  | `security-container` | **fixed** | `trivy-action@v0.29.0` resolves a tag that no longer exists, failing before any `with:` input is read. Replaced with a direct `trivy` invocation. |
+  | `test-terraform` | **fixed** | The provider's tests did not compile (unused `fmt`, undefined `diag`), and once compiling, two data sources decoded bare arrays while the API returns envelopes. |
+  | `vscode-extension` | **fixed** | `package.json` and `package-lock.json` were out of sync, so `npm ci` failed on the first step. |
+  | `fuzz-test` | **fixed** | `fuzz_cli_args` had no `pytest_fuzz`, aborting the sweep; and 81 tests in four other modules ran nowhere at all. |
+  | integrations ×3 | **fixed** | langchain: a skipif tested for a directory instead of importability. crewai: a real `NameError` in the tool factory, then a response-shape assertion. llamaindex passes. |
 - **Merge PR #10 to master only when `test` and `real-import-gate` are green.** Merging with a red import gate ships a broken install.
 - The nine director sessions from tonight land their work into this same window. Their branches merge into the release branch, not into master directly.
 
