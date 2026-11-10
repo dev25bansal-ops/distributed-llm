@@ -359,7 +359,7 @@ class TestCliIntegration:
     def test_cli_doctor_help(self):
         result = runner.invoke(app, ["cli-doctor", "--help"])
         assert result.exit_code == 0
-        assert "--fix" in result.stdout
+        assert "--fix" in result.stdout, result.stdout
         assert "--json" in result.stdout
 
     def test_cli_doctor_runs(self):

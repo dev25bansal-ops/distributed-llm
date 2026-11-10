@@ -177,6 +177,14 @@ def collect_autopsy(
         }
     except ImportError:
         data["system"] = {"error": "psutil not installed"}
+    except Exception as e:
+        # psutil is a diagnostic probe, not a dependency of the thing being
+        # diagnosed. On some kernels cpu_percent raises (observed on CI:
+        # "TypeError: scputimes.__new__() missing 10 required positional
+        # arguments"), and letting that escape killed the whole autopsy command
+        # -- the report a user runs precisely when something is already wrong.
+        # Record the probe's failure and carry on.
+        data["system"] = {"error": f"psutil probe failed: {e}"}
 
     # 9. GPU info
     try:

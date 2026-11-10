@@ -138,7 +138,7 @@ class TestArgumentParsing:
     def test_status_accepts_host_and_port_options(self):
         result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
-        assert "--host" in result.output
+        assert "--host" in result.output, result.output
         assert "--port" in result.output
         assert "--json" in result.output
 

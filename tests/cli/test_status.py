@@ -212,7 +212,10 @@ class TestCliInvocation:
     def test_status_help(self):
         result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
-        assert "--host" in result.stdout
+        # Message carries the full help text: without it a failure here says
+        # only that --host is missing, and the cause (wrong sub-command, an
+        # empty options table, a truncated render) is invisible.
+        assert "--host" in result.stdout, result.stdout
 
     def test_status_runs_and_exits_unreachable(self):
         with patch("distllm.cli.status.httpx.Client") as mock_client:
