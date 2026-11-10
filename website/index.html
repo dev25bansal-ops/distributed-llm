@@ -479,7 +479,7 @@ table.vs .no{color:var(--dim)}
 <main id="main">
 <section class="wrap" id="features">
   <h2 class="section__title reveal">Four capabilities, one engine</h2>
-  <p class="section__lead reveal">A single open-source runtime for pooling, training, benchmarking and deploying distributed inference.</p>
+  <p class="section__lead reveal">A single open-source runtime for pooling GPUs, accelerating inference, benchmarking and deploying a distributed cluster.</p>
   <div class="features__list">
 
     <article class="card card--1">
@@ -515,24 +515,24 @@ table.vs .no{color:var(--dim)}
 
     <article class="card card--2">
       <div class="card__painting" aria-hidden="true">
-        <svg viewBox="58 58 450 244" role="img" aria-label="Diagram: gradient sync across workers">
-          <title>Gradient synchronization</title>
-          <rect x="70" y="70" width="110" height="60" rx="6" fill="#2f2f2f" stroke="#4a4a4a"/>
-          <rect x="290" y="70" width="110" height="60" rx="6" fill="#2f2f2f" stroke="#4a4a4a"/>
-          <rect x="180" y="230" width="210" height="60" rx="6" fill="#2f2f2f" stroke="#8fa68e"/>
-          <text x="125" y="106" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="15" font-weight="600" fill="#f1f1ef">worker A</text>
-          <text x="345" y="106" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="15" font-weight="600" fill="#f1f1ef">worker B</text>
-          <text x="285" y="266" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="15" font-weight="600" fill="#f1f1ef">coordinator · all-reduce</text>
-          <line x1="140" y1="130" x2="240" y2="230" stroke="#6f6f6a" stroke-width="1.5" stroke-dasharray="5 4"/>
-          <line x1="330" y1="130" x2="315" y2="230" stroke="#6f6f6a" stroke-width="1.5" stroke-dasharray="5 4"/>
-          <text x="70" y="180" font-family="JetBrains Mono,monospace" font-size="14" fill="#9a9b96">gradients accumulated locally</text>
-          <text x="70" y="206" font-family="JetBrains Mono,monospace" font-size="14" fill="#9a9b96">checkpoints synced across cluster · AMP enabled</text>
+        <svg viewBox="58 58 450 244" role="img" aria-label="Diagram: draft model proposes tokens, full model verifies in one pass">
+          <title>Speculative decoding</title>
+          <rect x="70" y="70" width="130" height="60" rx="6" fill="#2f2f2f" stroke="#4a4a4a"/>
+          <rect x="290" y="70" width="130" height="60" rx="6" fill="#2f2f2f" stroke="#4a4a4a"/>
+          <rect x="160" y="230" width="210" height="60" rx="6" fill="#2f2f2f" stroke="#8fa68e"/>
+          <text x="135" y="106" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="15" font-weight="600" fill="#f1f1ef">draft</text>
+          <text x="355" y="106" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="15" font-weight="600" fill="#f1f1ef">verify</text>
+          <text x="265" y="266" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="15" font-weight="600" fill="#f1f1ef">accepted · rejected</text>
+          <line x1="200" y1="100" x2="288" y2="100" stroke="#6f6f6a" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <line x1="355" y1="130" x2="330" y2="230" stroke="#6f6f6a" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <text x="70" y="180" font-family="JetBrains Mono,monospace" font-size="14" fill="#9a9b96">draft proposes k tokens</text>
+          <text x="70" y="206" font-family="JetBrains Mono,monospace" font-size="14" fill="#9a9b96">full model verifies in one pass</text>
         </svg>
       </div>
       <div class="card__text">
-        <h3>Distributed Training</h3>
-        <p>Train or fine-tune across the same pool you infer on — multi-device gradient accumulation and checkpoint sync built in.</p>
-        <div class="chiprow"><span class="chip">End-to-end encryption</span><span class="chip">Gradient accumulation</span><span class="chip">Automatic mixed precision</span><span class="chip">Checkpoint sync</span></div>
+        <h3>Speculative Decoding</h3>
+        <p>Four draft strategies — self-speculative, multi-draft, tree-draft and prompt-lookup — cut the number of full-model passes per token. FP8 KV-cache quantization keeps long contexts inside VRAM.</p>
+        <div class="chiprow"><span class="chip">Self-speculative</span><span class="chip">Tree draft</span><span class="chip">Prompt lookup</span><span class="chip">FP8 KV cache</span></div>
       </div>
     </article>
 
