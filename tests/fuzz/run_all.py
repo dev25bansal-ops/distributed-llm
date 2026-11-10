@@ -21,6 +21,7 @@ HARNESSES = [
     ("config_loader", "fuzz_config_loader"),
     ("plugin_installer", "fuzz_plugin_installer"),
     ("api_endpoints", "fuzz_api_endpoints"),
+    ("api_payload", "fuzz_api_payload"),
     ("cli_args", "fuzz_cli_args"),
 ]
 

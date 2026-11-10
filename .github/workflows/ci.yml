@@ -624,6 +624,19 @@ jobs:
       - name: Run fuzz harnesses (pytest mode, 500 iterations each)
         run: |
           python tests/fuzz/run_all.py --iterations 500
+      - name: Run pytest-style fuzz suites
+        # Four fuzz modules define pytest test classes rather than the
+        # pytest_fuzz(n) contract run_all.py calls, so the sweep skipped them --
+        # and pytest skips them too, because the files are not named test_*.py.
+        # 81 tests that ran nowhere: gossip_protocol (42), gossip_v2 (24),
+        # auth_middleware_extended (15), node_service_grpc (1). Naming them here
+        # is what makes them execute at all.
+        run: |
+          pytest -q -p no:cacheprovider \
+            tests/fuzz/fuzz_gossip_protocol.py \
+            tests/fuzz/fuzz_gossip_v2.py \
+            tests/fuzz/fuzz_auth_middleware_extended.py \
+            tests/fuzz/fuzz_node_service_grpc.py
       - name: Upload fuzz logs
         if: always()
         uses: actions/upload-artifact@v4
