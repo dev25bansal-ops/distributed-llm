@@ -354,26 +354,21 @@ jobs:
       - name: Build image
         run: docker build -f Dockerfile -t distllm:ci .
       - name: Install Trivy
-        # trivy-action@v0.29.0 calls aquasecurity/setup-trivy@v0.2.2 internally,
-        # and that tag does not exist -- the job failed at action download
-        # before any scan ran ("unable to find version v0.2.2"). Install the
-        # binary ourselves from a release that does exist and tell the action
-        # to skip its own setup, rather than chase a working action tag.
+        # trivy-action@v0.29.0 references aquasecurity/setup-trivy@v0.2.2, which
+        # no longer resolves. That fails while GitHub is still resolving the
+        # action, before any `with:` input is read -- so `skip-setup-trivy:
+        # true` could not help. Invoke the binary directly instead of using the
+        # action at all.
         run: |
           TRIVY_VERSION=0.76.2
           curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
             | tar -xz -C /usr/local/bin trivy
           trivy --version
       - name: Trivy scan
-        # Tag is v-prefixed upstream; `0.29.0` does not resolve.
-        uses: aquasecurity/trivy-action@v0.29.0
-        with:
-          image-ref: distllm:ci
-          format: sarif
-          output: trivy-ci.sarif
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          skip-setup-trivy: true
+        # exit-code 1 on HIGH/CRITICAL keeps this a gate, not a report.
+        run: |
+          trivy image --format sarif --output trivy-ci.sarif \
+            --severity HIGH,CRITICAL --exit-code 1 distllm:ci
       - name: Upload scan results
         uses: actions/upload-artifact@v4
         with:
