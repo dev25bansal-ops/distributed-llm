@@ -29,17 +29,29 @@ DOCS = [
 
 # `distllm <group> [<subcommand>]` -- two lowercase words at most.
 CMD = re.compile(r"\bdistllm\s+((?:[a-z][a-z-]*)(?:\s+[a-z][a-z-]*)?)")
-NEGATION = re.compile(r"\b(no|not|isn't|without)\b", re.IGNORECASE)
+# "there is no `distllm X`" / "no such `distllm X`" -- a negation IMMEDIATELY
+# before the command. A looser test (any negation word earlier on the line)
+# silently skipped real instructions: a table row
+#   | `Model not found` | Run `distllm model load <model-name>` first |
+# was skipped because "not" appears in "not found", so a broken command there
+# would never have been reported. Verified by auditing every skipped line.
+NEGATION_BEFORE = re.compile(
+    r"\b(?:there\s+is\s+no|no\s+such|is\s+no|not\s+a|never\s+a)\s+[`\"']?\s*$",
+    re.IGNORECASE,
+)
 SKIP_WORDS = {"https", "distllm", "docs", "pip"}
 
 
 def _is_negation_or_url(text: str, match_start: int) -> bool:
+    """True only when a negation phrase sits immediately before the command.
+
+    Deliberately narrow: the previous version skipped any line containing
+    "no"/"not" anywhere, which suppressed real instructions such as
+    "| `Model not found` | Run `distllm model load ...` |".
+    """
     line_start = text.rfind("\n", 0, match_start) + 1
-    line_end = text.find("\n", match_start)
-    if line_end == -1:
-        line_end = len(text)
     prefix = text[line_start:match_start]
-    return bool(NEGATION.search(prefix))
+    return bool(NEGATION_BEFORE.search(prefix))
 
 
 def main() -> int:
