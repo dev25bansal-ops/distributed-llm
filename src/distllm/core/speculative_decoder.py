@@ -82,6 +82,12 @@ class SpeculativeDecoder(SpecDecoderBase):
         method: str | None = None,
         # C14: end-of-text token id; generation stops once produced.
         eos_token_id: int | None = None,
+        # Grammar-constrained drafting (optional).  When a grammar is given,
+        # draft logits are masked before sampling so only allowed tokens can
+        # be proposed.  Unwired before this parameter existed:
+        # GrammarConstrainedDraftPolicy already implemented the masking.
+        grammar: object | None = None,
+        tokenizer: object | None = None,
     ):
         self._target = target_forward
         self._draft = draft_forward
@@ -97,6 +103,28 @@ class SpeculativeDecoder(SpecDecoderBase):
         self._device = torch.device(device)
         self._warmup_steps = warmup_steps
         self._min_acceptance_rate = min_acceptance_rate
+
+        # Grammar-constrained drafting.  Building the policy here (rather than
+        # lazily on first draft) keeps construction cheap and means a bad
+        # grammar fails fast instead of mid-generation.
+        self._grammar_policy = None
+        self._grammar_mask_fn = None
+        if grammar is not None:
+            from distllm.core.grammar_constrained_draft import (
+                GrammarConstrainedDraftPolicy,
+            )
+            self._grammar_policy = GrammarConstrainedDraftPolicy(
+                grammar, tokenizer, device,
+            )
+            self._grammar_mask_fn = self._grammar_policy.mask_fn
+
+        # Auto-method selection state (populated by set_workload_type /
+        # record_method_performance).  Kept on every decoder, not just the
+        # distributed one: the request pipeline calls set_workload_type when
+        # ``method == "auto"``, and a plain decoder built with that method
+        # previously had no such attribute.
+        self._workload_type: str = "unknown"
+        self._profiler = None
         self.is_enabled = num_assistant_tokens is not None or target_forward is not None
         self._batch_metrics = {
             "total_draft_tokens": 0,
@@ -356,6 +384,10 @@ class SpeculativeDecoder(SpecDecoderBase):
                     logits = out
                 next_logits = logits[:, -1, :] if logits.dim() > 2 else logits
                 token_logits = next_logits[0]
+                # Grammar-constrained drafting: forbid disallowed tokens before
+                # the draft pick, so the proposer never suggests them.
+                if self._grammar_mask_fn is not None:
+                    token_logits = self._grammar_mask_fn(token_logits)
                 step_logits.append(token_logits.clone())
                 token = token_logits.argmax().item()
                 tokens.append(token)
@@ -455,7 +487,12 @@ class SpeculativeDecoder(SpecDecoderBase):
         return results
 
     def get_metrics(self) -> dict[str, Any]:
-        """Return batch speculative progress metrics."""
+        """Return batch speculative progress metrics.
+
+        Includes profiler state when auto method selection has been used, so
+        ``method_ranking`` and ``workload_type`` are present for callers that
+        drive selection through this decoder.
+        """
         m = dict(self._batch_metrics)
         if m["total_draft_tokens"] > 0:
             m["acceptance_rate"] = round(
@@ -463,6 +500,11 @@ class SpeculativeDecoder(SpecDecoderBase):
             )
         else:
             m["acceptance_rate"] = 0.0
+        m["workload_type"] = self._workload_type
+        if self._profiler is not None:
+            m["method_ranking"] = self._profiler.get_method_ranking(
+                self._workload_type
+            )
         return m
 
     # ── Single-sequence convenience wrappers ─────────────────────────────
@@ -502,12 +544,49 @@ class SpeculativeDecoder(SpecDecoderBase):
         )
         return results[0]
 
-    def get_active_method(self, draft_model: Any) -> str | None:
+    # ── Auto method selection (mirrors DistributedSpeculativeDecoder) ─────
+
+    def set_workload_type(self, text_or_type: str) -> None:
+        """Set or detect the workload type used for auto method selection.
+
+        If ``text_or_type`` names a ``WorkloadType`` value it is used
+        directly; otherwise it is treated as prompt text and classified.
+        """
+        from distllm.core.workload_classifier import WorkloadType, classify
+
+        try:
+            self._workload_type = WorkloadType(text_or_type).value
+        except ValueError:
+            self._workload_type = classify(text_or_type).value
+
+    def record_method_performance(
+        self,
+        method: str,
+        drafted: int,
+        accepted: int,
+        latency_ms: float = 0.0,
+    ) -> None:
+        """Record acceptance data for *method* under the current workload."""
+        if self._profiler is None:
+            from distllm.core.speculative_profiler import SpeculativeProfiler
+            self._profiler = SpeculativeProfiler(warmup_samples=1)
+        self._profiler.record_acceptance(
+            method, self._workload_type, drafted, accepted, latency_ms,
+        )
+
+    def get_active_method(self, draft_model: Any = None,
+                          workload_type: str | None = None) -> str | None:
         """Name of the speculation mechanism in use (None when disabled).
 
-        ``draft_model`` requires an actual draft model; other declared
-        methods (e.g. ``"ngram"``) are self-contained.
+        With ``method == "auto"`` the profiler's best method for the current
+        (or supplied) workload type wins; otherwise the declared ``method``
+        is returned, requiring an actual draft model for ``"draft_model"``.
         """
+        if self.method == "auto":
+            wt = workload_type or self._workload_type
+            if self._profiler is not None:
+                return self._profiler.get_best_method(wt)
+            return None
         if self.method and self.method != "draft_model":
             return self.method
         if draft_model is not None:

@@ -66,8 +66,16 @@ def classify(text: str) -> WorkloadType:
     if features["instruction_score"] > 0.3:
         return WorkloadType.INSTRUCTION
 
-    # Repetitive detection: low entropy
-    if features["entropy_3gram"] < 2.0 and features["repetition_ratio"] > 0.3:
+    # Repetitive detection.  ``repetition_ratio`` is the discriminating
+    # feature: it measured 1.00 on repeated phrases and 0.06 / 0.04 on prose
+    # and code in the samples above.  The old check also demanded
+    # ``entropy_3gram < 2.0``, which no realistic repeated English phrase can
+    # satisfy — character 3-gram entropy is bounded by the character alphabet,
+    # not by repetition, so "the cat sat on the mat" repeated any number of
+    # times scores ~4.05, alongside ordinary prose.  The entropy guard is kept
+    # only as an upper bound to exclude pathological high-variety text that
+    # happens to repeat a few 3-grams.
+    if features["repetition_ratio"] > 0.5 and features["entropy_3gram"] < 4.2:
         return WorkloadType.REPETITIVE
 
     # Diverse detection: high entropy

@@ -221,9 +221,16 @@ class RequestPipeline:
 
         prompt_len = len(c.tokenizer.encode(prompt)) if c.tokenizer else 0
 
-        # Classify workload for auto-speculative method selection
+        # Classify workload for auto-speculative method selection.
+        # ``set_workload_type`` lived only on DistributedSpeculativeDecoder;
+        # guarding the call means a decoder that lacks it (or a third-party
+        # one) degrades to no auto-selection instead of crashing the request.
         spec_decoder = c._model_svc.get_spec_decoder() if hasattr(c, '_model_svc') else c._spec_decoder
-        if spec_decoder is not None and spec_decoder.method == "auto":
+        if (
+            spec_decoder is not None
+            and getattr(spec_decoder, "method", None) == "auto"
+            and hasattr(spec_decoder, "set_workload_type")
+        ):
             spec_decoder.set_workload_type(prompt)
 
         try:
