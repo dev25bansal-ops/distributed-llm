@@ -93,19 +93,32 @@ jobs:
           # 7.66% for tests/utils). The floor belongs on a whole-tree run; here
           # it would fail every chunk on coverage while the tests inside passed.
           # The real gate is coverage_ratchet.py in quality-gates.yml.
+          # A chunk with no test_*.py exits 5 ("no tests collected"), which
+          # `set -e`/|| would count as failure. tests/profiling, tests/fixtures,
+          # tests/scripts and friends are exactly that. Exit 5 is "nothing to
+          # run here", not "a test failed"; anything else is a real failure.
+          run_chunk() {
+            pytest "$@" -q -p no:cacheprovider \
+              -m "not e2e and not slow and not chaos and not benchmark" \
+              --cov=distllm --cov-append --cov-report= --cov-fail-under=0 \
+              --continue-on-collection-errors
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then
+              failed=1
+            fi
+            return 0
+          }
           for g in $(ls -d tests/*/ | sort); do
             [ -d "$g" ] || continue
             echo "=== $g ==="
-            pytest "$g" -q -p no:cacheprovider \
-              -m "not e2e and not slow and not chaos and not benchmark" \
-              --cov=distllm --cov-append --cov-report= --cov-fail-under=0 \
-              --continue-on-collection-errors || failed=1
+            run_chunk "$g"
           done
-          # Tests directly under tests/ (not in a subdirectory).
-          pytest tests/ -q -p no:cacheprovider --ignore-glob='tests/*/' \
-            -m "not e2e and not slow and not chaos and not benchmark" \
-            --cov=distllm --cov-append --cov-report= --cov-fail-under=0 \
-            --continue-on-collection-errors || failed=1
+          # Tests directly under tests/ (not in a subdirectory). Naming them
+          # explicitly: `pytest tests/ --ignore-glob='tests/*/'` collects ZERO
+          # tests, because the glob matches tests/ itself -- verified, and that
+          # silent zero would have dropped 610 tests from the matrix while the
+          # job still reported success.
+          run_chunk tests/*.py
           coverage xml || true
           exit $failed
       - name: Test distributed speculative decoder
