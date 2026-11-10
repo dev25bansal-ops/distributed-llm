@@ -169,7 +169,7 @@ def _note_validation_context(exc: "ValidationError", config_path: str) -> None:
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
-Environment variables use DISTLLM_ prefix with __ nested delimiter
+    Environment variables use DISTLLM_ prefix with __ nested delimiter
     (env_prefix="DISTLLM_", env_nested_delimiter="__").
     Example: DISTLLM_MODEL__NAME=my-model sets model.name.
     """
@@ -450,10 +450,6 @@ Environment variables use DISTLLM_ prefix with __ nested delimiter
             if not nested_model:
                 os.environ["DISTLLM_MODEL__NAME"] = flat_model
                 injected_nested = True
-
-        env_values: dict[str, Any] = EnvSettingsSource(cls)()
-
-        merged = _deep_merge(dict(yaml_data), dict(env_values))
 
         try:
             env_values: dict[str, Any] = EnvSettingsSource(cls)()
