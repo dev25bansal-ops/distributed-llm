@@ -318,4 +318,8 @@ def test_tool_provider_builds_crew_tools():
         result = tools[0]._run(foo="bar")
 
     assert isinstance(result, str)
-    assert '"result": "ok"' in result
+    # call_tool unwraps `result` when the server returns {"result": ...} and
+    # JSON-encodes it: {"result": "ok"} -> '"ok"'. The old assertion expected
+    # the raw envelope, which the code has never returned -- it was masked until
+    # the mock was fixed, because the test failed one line earlier.
+    assert result == '"ok"'
