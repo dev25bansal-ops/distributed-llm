@@ -279,4 +279,5 @@ Three defects, each verified before and after:
 
 1. **A10 access, booked for Nov 16–20.** Without it there is no recorded demo and gate 4 cannot pass. This is the single hardest dependency.
 2. ~~A decision on the Rust SDK~~ — **decided: make it real.** It compiles (`cargo check` clean from `%USERPROFILE%\.cargo\bin`), clippy is clean, and it now has 13 tests after two defects were found and fixed. The vscode-extension CI job is still red and is a separate question.
-3. **Nothing else.** The rest is ours to execute.
+3. **One `docker build .` before launch — any machine with a working daemon.** Every Dockerfile step has been executed here short of the daemon: requirements.lock installs, protobuf generation and both of its assertions pass, `pip install .` produces all five console scripts, and the module-scope imports that would kill a container at startup (`transformers` at `coordinator.py:25`, `node_pb2`) both succeed. What could not be exercised is the container filesystem, the python3.10 ABI, the CUDA base image, and wheel selection for the target platform. This is the only remaining install path with an unverified step, and it is the first one a self-hoster hits.
+4. **Nothing else.** The rest is ours to execute.
