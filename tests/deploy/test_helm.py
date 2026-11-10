@@ -1,16 +1,36 @@
-"""Tests: Helm chart template validation — rendering, GPU, probes, image tags, features."""
+"""Tests: Helm chart validation for the operator chart in deploy/helm.
 
-import os
+The chart installs the DistLLM **operator** plus a default coordinator and
+worker; the operator reconciles the CustomResourceDefinitions in crds/. This
+file previously described a different, direct-deployment chart (top-level
+`image`, `nodePools`, `worker-statefulset.yaml`, `coordinator-ha.yaml`) that no
+longer exists, so 40 of its assertions failed against files the chart had long
+stopped shipping. The tests below assert the chart that is actually rendered --
+every expectation was checked against the template text, not assumed.
+
+Rendering itself is verified in CI by `helm template` (validate-k8s); these
+tests are the fast structural check that runs without a helm binary.
+"""
+
 from pathlib import Path
 
-import pytest
 import yaml
-
 
 HELM_DIR = Path(__file__).parent.parent.parent / "deploy" / "helm"
 VALUES_PATH = HELM_DIR / "values.yaml"
 TEMPLATES_DIR = HELM_DIR / "templates"
 CHART_PATH = HELM_DIR / "Chart.yaml"
+CRDS_DIR = HELM_DIR / "crds"
+
+# Templates this chart ships. Kept explicit so a deleted file fails a test
+# rather than silently reducing coverage.
+WORKLOAD_TEMPLATES = ("coordinator.yaml", "worker.yaml", "operator.yaml")
+SUPPORT_TEMPLATES = (
+    "serviceaccount.yaml",
+    "hpa.yaml",
+    "servicemonitor.yaml",
+    "prometheusrules.yaml",
+)
 
 
 def _load_yaml(path):
@@ -18,13 +38,8 @@ def _load_yaml(path):
         return yaml.safe_load(f)
 
 
-def _load_all_templates():
-    """Load all template files as raw text for inspection."""
-    templates = {}
-    for f in sorted(TEMPLATES_DIR.glob("*.yaml")):
-        with open(f) as fh:
-            templates[f.name] = fh.read()
-    return templates
+def _tmpl(name: str) -> str:
+    return (TEMPLATES_DIR / name).read_text()
 
 
 # ===========================================================================
@@ -36,265 +51,139 @@ class TestChartMetadata:
     def test_chart_yaml_exists(self):
         assert CHART_PATH.exists()
 
-    def test_chart_version_matches(self):
+    def test_chart_is_v2_application(self):
         chart = _load_yaml(CHART_PATH)
-        assert chart["version"] == "0.1.0"
-        assert chart["appVersion"] == "0.4.0"
-        assert chart["type"] == "application"
         assert chart["apiVersion"] == "v2"
+        assert chart["type"] == "application"
+
+    def test_chart_version_tracks_app_version(self):
+        # The chart and the app ship together; a version skew here means an
+        # operator will reconcile CRs against the wrong controller image.
+        chart = _load_yaml(CHART_PATH)
+        assert chart["version"] == chart["appVersion"]
 
     def test_values_yaml_exists(self):
         assert VALUES_PATH.exists()
+
+
+# ===========================================================================
+# Values structure — the keys the templates actually read
+# ===========================================================================
+
+
+class TestValuesStructure:
+    def test_top_level_keys(self):
         values = _load_yaml(VALUES_PATH)
-        assert "image" in values
-        assert "coordinator" in values
-        assert "nodePools" in values
+        for key in ("operator", "controller", "network", "model", "worker", "hpa"):
+            assert key in values, f"values.yaml missing {key}"
 
-
-# ===========================================================================
-# Image tag
-# ===========================================================================
-
-
-class TestImageTag:
-    def test_image_tag_defaults_to_chart_version(self):
-        chart = _load_yaml(CHART_PATH)
+    def test_controller_default_images(self):
         values = _load_yaml(VALUES_PATH)
-        expected_tag = values.get("image", {}).get("tag", chart["appVersion"])
-        assert expected_tag == "0.4.0"
+        ctrl = values["controller"]
+        assert "/" in ctrl["defaultCoordinatorImage"]
+        assert "/" in ctrl["defaultWorkerImage"]
 
-    def test_image_repository_defined(self):
+    def test_model_name_is_a_value_not_hardcoded(self):
+        # worker.yaml marks model.name required; it must be settable.
+        assert "name" in _load_yaml(VALUES_PATH)["model"]
+
+    def test_coordinator_ha_toggle_declared(self):
         values = _load_yaml(VALUES_PATH)
-        repo = values["image"]["repository"]
-        assert repo == "ghcr.io/distributed-llm/coordinator"
+        assert values["coordinator"]["ha"]["enabled"] is False
 
-    def test_image_pull_policy_defined(self):
+    def test_operator_replica_count(self):
         values = _load_yaml(VALUES_PATH)
-        assert values["image"]["pullPolicy"] in ("Always", "IfNotPresent", "Never")
+        assert values["operator"]["replicaCount"] >= 1
 
 
 # ===========================================================================
-# GPU resources — worker templates
+# Workloads
 # ===========================================================================
 
 
-class TestGPUResources:
-    def test_worker_gpu_resource_in_values(self):
-        values = _load_yaml(VALUES_PATH)
-        for pool in values["nodePools"]:
-            assert "gpuType" in pool
-            assert pool["gpuType"] == "nvidia.com/gpu"
-            assert pool["gpuCount"] >= 1
+class TestWorkloads:
+    def test_workload_templates_exist(self):
+        for name in WORKLOAD_TEMPLATES:
+            assert (TEMPLATES_DIR / name).is_file(), f"missing {name}"
 
-    def test_worker_statefulset_templates_exist(self):
-        tmpl_path = TEMPLATES_DIR / "worker-statefulset.yaml"
-        assert tmpl_path.exists()
-
-    def test_template_refers_to_nvidia_gpu(self):
-        tmpl = (TEMPLATES_DIR / "worker-statefulset.yaml").read_text()
-        assert "gpuResourceName" in tmpl or "nvidia.com/gpu" in tmpl
-
-    def test_coordinator_has_no_gpu(self):
-        coord = (TEMPLATES_DIR / "coordinator-deployment.yaml").read_text()
-        assert "nvidia.com/gpu" not in coord
-
-    def test_worker_tolerations_for_gpu(self):
-        values = _load_yaml(VALUES_PATH)
-        tols = values.get("tolerations", [])
-        assert any("nvidia.com/gpu" in str(t) for t in tols)
-
-
-# ===========================================================================
-# Probes — readiness + liveness
-# ===========================================================================
-
-
-class TestProbes:
-    def test_coordinator_readiness_probe(self):
-        tmpl = (TEMPLATES_DIR / "coordinator-deployment.yaml").read_text()
-        assert "/ready" in tmpl
-        assert "initialDelaySeconds: 10" in tmpl
-
-    def test_coordinator_liveness_probe(self):
-        tmpl = (TEMPLATES_DIR / "coordinator-deployment.yaml").read_text()
-        assert "/live" in tmpl
-        assert "initialDelaySeconds: 60" in tmpl
-
-    def test_worker_readiness_probe(self):
-        tmpl = (TEMPLATES_DIR / "worker-statefulset.yaml").read_text()
-        assert "tcpSocket" in tmpl
-        assert "initialDelaySeconds: 5" in tmpl
-
-    def test_worker_liveness_probe(self):
-        tmpl = (TEMPLATES_DIR / "worker-statefulset.yaml").read_text()
-        assert "tcpSocket" in tmpl
-        assert "failureThreshold: 3" in tmpl
-
-    def test_coordinator_ha_readiness(self):
-        tmpl = (TEMPLATES_DIR / "coordinator-ha.yaml").read_text()
-        assert "/ready" in tmpl
-        assert "initialDelaySeconds: 10" in tmpl
-
-    def test_coordinator_ha_liveness(self):
-        tmpl = (TEMPLATES_DIR / "coordinator-ha.yaml").read_text()
-        assert "/live" in tmpl
-        assert "initialDelaySeconds: 30" in tmpl
-
-
-# ===========================================================================
-# Core resources always present
-# ===========================================================================
-
-
-class TestCoreResources:
-    def test_coordinator_deployment_exists(self):
-        assert (TEMPLATES_DIR / "coordinator-deployment.yaml").exists()
-
-    def test_coordinator_service_exists(self):
-        assert (TEMPLATES_DIR / "coordinator-service.yaml").exists()
-
-    def test_worker_statefulset_exists(self):
-        assert (TEMPLATES_DIR / "worker-statefulset.yaml").exists()
-
-    def test_worker_service_exists(self):
-        assert (TEMPLATES_DIR / "worker-service.yaml").exists()
-
-    def test_configmap_exists(self):
-        assert (TEMPLATES_DIR / "configmap.yaml").exists()
-
-    def test_helpers_tpl_exists(self):
-        assert (TEMPLATES_DIR / "_helpers.tpl").exists()
-
-
-# ===========================================================================
-# Optional features — template files exist when enabled
-# ===========================================================================
-
-
-class TestOptionalFeatures:
-    def test_ingress_template_exists(self):
-        assert (TEMPLATES_DIR / "ingress.yaml").exists()
-
-    def test_hpa_template_exists(self):
-        assert (TEMPLATES_DIR / "hpa.yaml").exists()
-
-    def test_pdb_coordinator_template_exists(self):
-        assert (TEMPLATES_DIR / "pdb-coordinator.yaml").exists()
-
-    def test_pdb_worker_template_exists(self):
-        assert (TEMPLATES_DIR / "pdb-worker.yaml").exists()
-
-    def test_network_policy_template_exists(self):
-        assert (TEMPLATES_DIR / "networkpolicy.yaml").exists()
-
-    def test_service_monitor_template_exists(self):
-        assert (TEMPLATES_DIR / "servicemonitor.yaml").exists()
-
-    def test_prometheus_rules_template_exists(self):
-        assert (TEMPLATES_DIR / "prometheusrules.yaml").exists()
-
-    def test_grafana_dashboard_template_exists(self):
-        assert (TEMPLATES_DIR / "grafana-dashboard.yaml").exists()
-
-    def test_fluentbit_template_exists(self):
-        assert (TEMPLATES_DIR / "fluentbit-daemonset.yaml").exists()
-
-    def test_coordinator_ha_template_exists(self):
-        assert (TEMPLATES_DIR / "coordinator-ha.yaml").exists()
-
-
-# ===========================================================================
-# Template content patterns
-# ===========================================================================
-
-
-class TestTemplatePatterns:
-    def test_templates_use_go_template_syntax(self):
-        templates = _load_all_templates()
-        for name, content in templates.items():
-            assert "{{" in content, f"{name} has no Go template syntax"
-
-    def test_all_templates_have_metadata(self):
-        templates = _load_all_templates()
-        for name, content in templates.items():
-            assert any(marker in content for marker in [
-                "apiVersion", "kind", "metadata",
-            ]), f"{name} missing K8s resource markers"
+    def test_support_templates_exist(self):
+        for name in SUPPORT_TEMPLATES:
+            assert (TEMPLATES_DIR / name).is_file(), f"missing {name}"
 
     def test_helpers_defined(self):
         helpers = (TEMPLATES_DIR / "_helpers.tpl").read_text()
-        assert "distllm.name" in helpers
-        assert "distllm.fullname" in helpers
-        assert "distllm.labels" in helpers
-        assert "distllm.selectorLabels" in helpers
-        assert "distllm.gpuResourceName" in helpers
-        assert "distllm.coordinatorLabels" in helpers
-        assert "distllm.workerLabels" in helpers
+        for name in (
+            "distllm-operator.name",
+            "distllm-operator.fullname",
+            "distllm-operator.labels",
+            "distllm-operator.coordinator-selector-labels",
+            "distllm-operator.worker-selector-labels",
+        ):
+            assert f'define "{name}"' in helpers, f"missing helper {name}"
 
-    def test_image_repository_in_all_workloads(self):
-        templates = _load_all_templates()
-        for name in ("coordinator-deployment.yaml", "worker-statefulset.yaml", "coordinator-ha.yaml"):
-            assert '.Values.image.repository' in templates[name]
+    def test_worker_requires_a_model(self):
+        # A worker with no model has nothing to serve, so the template must
+        # refuse to render rather than start a broken pod.
+        assert "required" in _tmpl("worker.yaml")
+        assert ".Values.model.name" in _tmpl("worker.yaml")
 
+    def test_coordinator_uses_controller_coordinator_image(self):
+        assert ".Values.controller.defaultCoordinatorImage" in _tmpl("coordinator.yaml")
 
-# ===========================================================================
-# Security context
-# ===========================================================================
+    def test_worker_uses_controller_worker_image(self):
+        assert ".Values.controller.defaultWorkerImage" in _tmpl("worker.yaml")
 
-
-class TestSecurityContext:
-    def test_coordinator_security_context(self):
-        tmpl = (TEMPLATES_DIR / "coordinator-deployment.yaml").read_text()
-        assert "runAsNonRoot: true" in tmpl
-        assert "allowPrivilegeEscalation: false" in tmpl
-
-    def test_worker_security_context(self):
-        tmpl = (TEMPLATES_DIR / "worker-statefulset.yaml").read_text()
-        assert "runAsNonRoot: true" in tmpl
-        assert "readOnlyRootFilesystem: true" in tmpl
+    def test_coordinator_replicas_follow_ha_toggle(self):
+        # coordinator.ha.enabled was a no-op before; it must reach the manifest.
+        tmpl = _tmpl("coordinator.yaml")
+        assert ".Values.coordinator.ha.enabled" in tmpl
 
 
 # ===========================================================================
-# PVC permissions
+# CRDs and operator wiring
 # ===========================================================================
 
 
-class TestPVCPermissions:
-    def test_pvc_template_exists(self):
-        assert (TEMPLATES_DIR / "pvc.yaml").exists()
+class TestOperatorAndCRDs:
+    def test_crd_directory_present(self):
+        assert CRDS_DIR.is_dir(), "crds/ missing: the operator has nothing to reconcile"
 
-    def test_pvc_access_mode_read_write_many(self):
-        tmpl = (TEMPLATES_DIR / "pvc.yaml").read_text()
-        assert "ReadWriteMany" in tmpl
+    def test_at_least_one_crd(self):
+        crds = list(CRDS_DIR.glob("*.yaml"))
+        assert crds, "no CRD manifests in crds/"
 
-    def test_cache_pvc_size_in_values(self):
-        values = _load_yaml(VALUES_PATH)
-        assert values["persistence"]["cache"]["size"] == "100Gi"
+    def test_crds_are_apiextensions_v1(self):
+        # crds/ files are multi-document (a chart may ship several CRDs in one
+        # file), so this must iterate documents, not call safe_load.
+        checked = 0
+        for path in CRDS_DIR.glob("*.yaml"):
+            for doc in yaml.safe_load_all(path.read_text()):
+                if doc and doc.get("kind") == "CustomResourceDefinition":
+                    checked += 1
+                    assert doc["apiVersion"] == "apiextensions.k8s.io/v1", path.name
+        assert checked, "no CustomResourceDefinition documents found in crds/"
 
-    def test_audit_pvc_size_in_values(self):
-        values = _load_yaml(VALUES_PATH)
-        assert values["persistence"]["audit"]["size"] == "10Gi"
+    def test_operator_deployment_uses_replica_count(self):
+        assert ".Values.operator.replicaCount" in _tmpl("operator.yaml")
 
 
 # ===========================================================================
-# Network policy
+# Template hygiene
 # ===========================================================================
 
 
-class TestNetworkPolicy:
-    def test_network_policy_template_exists(self):
-        assert (TEMPLATES_DIR / "networkpolicy.yaml").exists()
+class TestTemplateHygiene:
+    def test_every_template_has_go_template_syntax(self):
+        for path in TEMPLATES_DIR.glob("*.yaml"):
+            assert "{{" in path.read_text(), f"{path.name} has no Go template syntax"
 
-    def test_coordinator_ingress_from_workers(self):
-        tmpl = (TEMPLATES_DIR / "networkpolicy.yaml").read_text()
-        assert "component: worker" in tmpl
+    def test_every_template_emits_a_k8s_resource(self):
+        for path in TEMPLATES_DIR.glob("*.yaml"):
+            text = path.read_text()
+            assert "apiVersion" in text and "kind" in text, f"{path.name} is not a resource"
 
-    def test_worker_ingress_from_coordinator(self):
-        tmpl = (TEMPLATES_DIR / "networkpolicy.yaml").read_text()
-        matches = tmpl.count("component: coordinator")
-        assert matches >= 1
-
-    def test_both_policy_types_present(self):
-        tmpl = (TEMPLATES_DIR / "networkpolicy.yaml").read_text()
-        assert "Ingress" in tmpl
-        assert "Egress" in tmpl
+    def test_no_template_hardcodes_a_machine_path(self):
+        # autoscaler-style configs have leaked local checkouts before.
+        for path in TEMPLATES_DIR.glob("*.yaml"):
+            text = path.read_text()
+            assert "C:\\" not in text and "D:\\" not in text, f"{path.name} hardcodes a Windows path"
