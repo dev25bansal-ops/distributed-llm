@@ -161,7 +161,7 @@ class ProviderHealthProber:
 
         try:
             import httpx
-            resp = httpx.get(endpoint, timeout=self._timeout, follow_redirects=True)
+            resp = httpx.get(endpoint, timeout=self._timeout, follow_redirects=False)
             latency = (time.time() - start) * 1000
             status_code = resp.status_code
             healthy = 200 <= resp.status_code < 500
@@ -226,10 +226,15 @@ class ProviderHealthProber:
             return results
 
     def is_healthy(self, provider: str, region: str) -> bool:
-        """Check if a specific region is healthy."""
+        """Check if a specific region is healthy.
+
+        Fail-closed: a region that has never been successfully probed reports
+        unhealthy. Returning True for an unknown region would let traffic be
+        routed to a provider endpoint we have no evidence is up.
+        """
         with self._lock:
             health = self._health.get(f"{provider}:{region}")
-            return health.healthy if health else True
+            return health.healthy if health else False
 
     def get_unhealthy_regions(self) -> list[dict[str, Any]]:
         """Get all unhealthy regions."""

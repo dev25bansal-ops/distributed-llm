@@ -169,7 +169,8 @@ def _note_validation_context(exc: "ValidationError", config_path: str) -> None:
 class DistLLMSettings(BaseSettings):
     """Root configuration for distributed LLM inference.
 
-    Environment variables use DISTLLM_ prefix with __ delimiter.
+Environment variables use DISTLLM_ prefix with __ nested delimiter
+    (env_prefix="DISTLLM_", env_nested_delimiter="__").
     Example: DISTLLM_MODEL__NAME=my-model sets model.name.
     """
     model_config = SettingsConfigDict(
@@ -420,15 +421,22 @@ class DistLLMSettings(BaseSettings):
         # YAML underneath them, preserving ``CLI > env > YAML > defaults``.
         from pydantic_settings import EnvSettingsSource
 
-        # A flat DISTLLM_MODEL=<id> is what the Dockerfile, the Helm chart, the
-        # kustomize base and the inference deployment all set, but `model` is a
-        # nested ModelSettings, so pydantic tries to JSON-parse the value and
-        # dies with
-        #   SettingsError: error parsing value for field "model"
-        # before the server can start. Normalise the flat form into the nested
-        # one for the whole load (model_validate on a BaseSettings subclass
-        # re-runs the sources, so restoring it earlier is not enough);
-        # DISTLLM_MODEL__NAME still wins.
+        # Reject unknown top-level keys in the YAML file. The model uses
+        # extra="ignore" so that unrelated DISTLLM_* environment variables do
+        # not break startup; but for a *config file* a misspelled section name
+        # (e.g. ``batchign:``) would otherwise be silently dropped and the
+        # setting would silently fall back to its default. Validate the YAML
+        # keys against the model fields so typos fail loudly.
+        if yaml_data:
+            unknown = sorted(set(yaml_data) - set(cls.model_fields))
+            if unknown:
+                raise ValueError(
+                    f"Unknown configuration key(s) in '{config_path}': "
+                    f"{', '.join(unknown)}. Valid top-level sections: "
+                    f"{', '.join(sorted(cls.model_fields))}"
+                )
+
+        # A flat DISTLLM_MODEL must be normalised before pydantic JSON-parses it.
         flat_model = os.environ.get("DISTLLM_MODEL", "").strip()
         nested_model = os.environ.get("DISTLLM_MODEL__NAME", "").strip()
         restore: list[tuple[str, str]] = []
@@ -442,6 +450,10 @@ class DistLLMSettings(BaseSettings):
             if not nested_model:
                 os.environ["DISTLLM_MODEL__NAME"] = flat_model
                 injected_nested = True
+
+        env_values: dict[str, Any] = EnvSettingsSource(cls)()
+
+        merged = _deep_merge(dict(yaml_data), dict(env_values))
 
         try:
             env_values: dict[str, Any] = EnvSettingsSource(cls)()
