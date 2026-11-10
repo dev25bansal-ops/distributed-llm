@@ -126,7 +126,12 @@ sdk = [
     "httpx>=0.27.0",
 ]
 cli = [
-    "typer[all]>=0.9.0",
+    # Plain "typer", not "typer[all]": the [all] extra was removed upstream and
+    # every install through this extra printed
+    #   WARNING: typer 0.29.0 does not provide the extra 'all'
+    # Modern typer bundles what that extra used to pull in, and `rich` is named
+    # explicitly below anyway -- verified the CLI runs on 3.11 without it.
+    "typer>=0.9.0",
     "rich>=13.7.0",
     "prompt_toolkit>=3.0.0",
 
