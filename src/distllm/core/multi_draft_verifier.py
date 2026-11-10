@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from loguru import logger
 
-from distllm.core.spec_verify import accept_token, eos_cutoff
+from distllm.core.spec_verify import accept_token, eos_cutoff, prefix_len
 
 
 class MultiDraftVerifier:
