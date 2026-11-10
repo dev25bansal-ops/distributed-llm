@@ -54,8 +54,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: [lint]
     strategy:
-      # Without this, the first failing leg (ubuntu 3.10) cancels the other
-      # three before they report anything, hiding their own first failure.
+      # Without this, the first failing leg cancels the others before they
+      # report anything, hiding their own first failure.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
