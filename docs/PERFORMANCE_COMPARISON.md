@@ -1,11 +1,15 @@
 # DistLLM Performance Comparison
 
-> Last updated: 2026-07-09. All numbers below are drawn from the project's own
-> sources: `docs/BENCHMARKS.md` (measured DistLLM results),
-> `docs/competitive-analysis.md` (market & pricing data), and
-> `website/comparisons.html` (published marketing figures). Where a figure is a
-> measured result it is marked accordingly; qualitative ranges from the website
-> are labeled as such.
+> Last updated: 2026-11-10. Numbers here come from three places, and the
+> distinction matters more than the number: `docs/BENCHMARKS.md` (measured on
+> named hardware, with the command recorded), `docs/competitive-analysis.md`
+> (third-party market and pricing data, not verified by us), and
+> `website/comparisons.html` (published pricing only — its throughput claims
+> were removed on 2026-11-10 because they were never measurements).
+>
+> Anything measured is marked "measured". Anything from a competitor is marked
+> "third-party, not verified by us". Anything we have not measured says so
+> instead of quoting a number.
 
 ---
 
@@ -20,19 +24,23 @@ figures for competitors.
 |---|---|---:|---|
 | **DistLLM — 1× RTX 4090** (Llama 3.1 8B, FP16) | Throughput | 92.0 tok/s | BENCHMARKS.md (measured) |
 | **DistLLM — 2 nodes @ 1 GbE** (Llama 3.1 8B) | Throughput | 153.1 tok/s (1.66×, 83.2% eff.) | BENCHMARKS.md (measured) |
-| **DistLLM — consumer GPUs** (qualitative) | Throughput | 30–90 tok/s, low LAN latency | comparisons.html (vs Petals) |
-| **DistLLM + vLLM — 3 nodes** (Llama 3.1 70B) | Throughput | 52 tok/s (2.9×) | comparisons.html |
-| **DistLLM + vLLM — 4 nodes** (Llama 3.1 70B) | Throughput | 68 tok/s (3.8×) | comparisons.html |
-| **vLLM — 1× A100** (Llama 3.1 70B) | Throughput | 18 tok/s | comparisons.html |
+| **DistLLM — consumer GPUs** (qualitative) | Throughput | not published | — (the 30–90 tok/s range was removed from comparisons.html as unmeasured) |
+| **DistLLM + vLLM — 3 nodes** (Llama 3.1 70B) | Throughput | not measured | — (was sourced to a comparisons.html figure that was never measurement) |
+| **DistLLM + vLLM — 4 nodes** (Llama 3.1 70B) | Throughput | not measured | — (same) |
+| **vLLM — 1× A100** (Llama 3.1 70B) | Throughput | 18 tok/s | competitive-analysis.md (third-party, not verified by us) |
 | **Groq** (Llama 70B, LPU) | Throughput / TTFT | 300–800 tok/s, <10 ms TTFT | competitive-analysis.md |
 | **Fireworks.ai** (Llama 70B) | TTFT | sub-100 ms TTFT | competitive-analysis.md |
 | **Petals** (distributed P2P) | Latency | Variable; high (each hop adds network RTT) | competitive-analysis.md |
 
 **Takeaway:** DistLLM's measured speed on consumer hardware (92 tok/s single GPU,
-153 tok/s across two 1 GbE nodes) is in the same ballpark as the 30–90 tok/s
-qualitative range published on the site. It does **not** compete with Groq's
-custom-LPU speeds (300–800 tok/s) — a gap DistLLM's own positioning explicitly
-avoids competing on (competitive-analysis.md, "Avoid competing on raw throughput").
+153 tok/s across two 1 GbE nodes) is what this project can defend. Earlier
+revisions of this document compared it against "30–90 tok/s on consumer GPUs",
+52 tok/s at 3 nodes and 68 tok/s at 4 nodes — all three sourced to
+website/comparisons.html and none of them a measurement. Those pages have been
+corrected to say so, and the figures are removed here rather than repeated.
+DistLLM does **not** compete with Groq's custom-LPU speeds (300–800 tok/s), a gap
+its own positioning explicitly avoids competing on (competitive-analysis.md,
+"Avoid competing on raw throughput").
 
 ---
 
@@ -42,9 +50,9 @@ avoids competing on (competitive-analysis.md, "Avoid competing on raw throughput
 |---|---:|---:|---|
 | DistLLM 1× RTX 4090 (Llama 3.1 8B) | 92.0 | 1.00× | BENCHMARKS.md (measured) |
 | DistLLM 2 nodes @ 1 GbE (Llama 3.1 8B) | 153.1 | 1.66× (83.2% eff.) | BENCHMARKS.md (measured) |
-| DistLLM + vLLM 3 nodes (Llama 3.1 70B) | 52 | 2.9× | comparisons.html |
-| DistLLM + vLLM 4 nodes (Llama 3.1 70B) | 68 | 3.8× | comparisons.html |
-| vLLM 1× A100 (Llama 3.1 70B) | 18 | 1.0× | comparisons.html |
+| DistLLM + vLLM 3 nodes (Llama 3.1 70B) | not measured | — | removed: sourced to comparisons.html, never a measurement |
+| DistLLM + vLLM 4 nodes (Llama 3.1 70B) | not measured | — | removed: same |
+| vLLM 1× A100 (Llama 3.1 70B) | 18 | 1.0× | competitive-analysis.md (third-party, not verified by us) |
 
 > Note: DistLLM's 4-node and InfiniBand results, and the 70B FP16 single/2-/4-node
 > results, are marked "pending" in BENCHMARKS.md. The scaling numbers above for
@@ -122,8 +130,9 @@ competition (competitive-analysis.md, "Unique Position"). Choose DistLLM when:
 - You have no GPUs and want to borrow others' — Petals' public swarm fits that.
 
 **Recommended complement, not competitor:** Run DistLLM + vLLM — vLLM per-node,
-DistLLM cross-node (comparisons.html). This reaches 52–68 tok/s on 70B across
-3–4 machines while keeping data local and cost at electricity rates.
+DistLLM cross-node. The throughput this reaches on 70B across 3–4 machines is
+not measured; earlier revisions quoted 52–68 tok/s from comparisons.html, which
+was never a measurement and has been removed from both places.
 
 ---
 
@@ -131,4 +140,4 @@ DistLLM cross-node (comparisons.html). This reaches 52–68 tok/s on 70B across
 
 - `docs/BENCHMARKS.md` — measured DistLLM throughput (92.0 / 153.1 tok/s), pending TTFT/ITL.
 - `docs/competitive-analysis.md` — market positioning, pricing tables, per-token cloud rates (Groq, Together, Fireworks, Cerebras), break-even analysis.
-- `website/comparisons.html` — published DistLLM vs Petals/Modal/RunPod/vLLM figures (30–90 tok/s range, cost-per-1M-token, $50/mo self-host, 18/52/68 tok/s vLLM scaling).
+- `website/comparisons.html` — published **pricing** only (cost-per-1M-token, $50/mo self-host). Its throughput figures (30–90, 18/52/68 tok/s) were removed on 2026-11-10 as unmeasured and must not be cited from here.
