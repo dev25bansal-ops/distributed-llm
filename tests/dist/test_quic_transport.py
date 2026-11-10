@@ -89,14 +89,13 @@ class TestIsQuicAvailable:
         cls.mod = _get_module()
 
     def test_quic_not_available_by_default(self, monkeypatch):
-        """is_quic_available() is False when aioquic cannot be imported.
+        """is_quic_available() is False when aioquic is not importable.
 
-        aioquic may be installed on this machine, so its absence is
-        simulated by nulling ``sys.modules["aioquic"]`` — an
-        ``import aioquic`` then raises ImportError and the probe
-        reports False.
+        Availability is decided once at import (``_AIOQUIC_AVAILABLE``), and
+        is_quic_available() just returns that flag. Nulling sys.modules after
+        import therefore changes nothing; the flag is what to patch.
         """
-        monkeypatch.setitem(sys.modules, "aioquic", None)
+        monkeypatch.setattr(self.mod, "_AIOQUIC_AVAILABLE", False)
         result = self.mod.is_quic_available()
         assert result is False
 

@@ -6,6 +6,7 @@ CPU-only for most tests; CUDA for device-specific operations.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from distllm.dist.attention import BlockPool, PagedAttentionManager
