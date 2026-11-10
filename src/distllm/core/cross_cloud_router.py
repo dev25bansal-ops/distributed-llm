@@ -580,10 +580,18 @@ class CrossCloudRouter:
         updated = 0
         for p in live_prices:
             for provider in self._providers:
+                # An empty provider region means "not region-expanded": with
+                # expand_regions=False _init_default_providers creates one
+                # provider per instance type and leaves region="". Requiring an
+                # exact match then made this loop unreachable in that mode --
+                # live pricing always carries a real region, so it never
+                # applied. Treat "" as region-agnostic instead.
                 if (provider.name == p.provider
                         and provider.instance_type == p.instance_type
-                        and provider.region == p.region):
+                        and (not provider.region or provider.region == p.region)):
                     provider.price_per_hour = p.on_demand_price
+                    if not provider.region:
+                        provider.region = p.region
                     provider.spot_price = p.spot_price if p.spot_price > 0 else p.on_demand_price * _SPOT_DISCOUNT.get(p.provider, 0.3)
                     provider.gpu_type = p.gpu_type or provider.gpu_type
                     provider.gpu_count = p.gpu_count or provider.gpu_count
