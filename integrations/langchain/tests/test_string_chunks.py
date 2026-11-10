@@ -52,18 +52,33 @@ class TestLangchainStringChunks:
 # ── LlamaIndex ───────────────────────────────────────────────────────────────
 
 
+def _llamaindex_usable() -> bool:
+    """Whether these cross-framework cases can actually run here.
+
+    Two preconditions, and the old guard checked neither: the upstream
+    `llama_index` package must be importable, and so must our adapter. The
+    previous version tested for the sibling source *directory*, which always
+    exists in the repo, so it never skipped -- and in CI, where only the
+    langchain integration is installed, the cases died with
+    ModuleNotFoundError: No module named 'llama_index'.
+    """
+    import importlib.util
+
+    # find_spec on a dotted name imports the parent package, so a package that
+    # exists but fails at import would raise rather than return None. A guard
+    # that crashes is worse than no guard: treat any failure as "not usable".
+    for mod in ("llama_index.core", "distllm_llamaindex"):
+        try:
+            if importlib.util.find_spec(mod) is None:
+                return False
+        except (ImportError, ValueError, AttributeError):
+            return False
+    return True
+
+
 @pytest.mark.skipif(
-    not os.path.isdir(
-        os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..",
-            "..",
-            "llamaindex",
-            "src",
-            "distllm_llamaindex",
-        )
-    ),
-    reason="distllm_llamaindex source not present next to this suite (cross-framework cases need it)",
+    not _llamaindex_usable(),
+    reason="llama_index / distllm_llamaindex not installed; cross-framework cases need both",
 )
 class TestLlamaindexStringChunks:
     def _llm(self):
