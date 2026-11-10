@@ -81,6 +81,12 @@ class SpeculativeDecoder(SpecDecoderBase):
         method: str | None = None,
         # C14: end-of-text token id; generation stops once produced.
         eos_token_id: int | None = None,
+        # Grammar-constrained drafting (optional).  When a grammar is given,
+        # draft logits are masked before sampling so only allowed tokens can
+        # be proposed.  Unwired before this parameter existed:
+        # GrammarConstrainedDraftPolicy already implemented the masking.
+        grammar: object | None = None,
+        tokenizer: object | None = None,
     ):
         self._target = target_forward
         self._draft = draft_forward
@@ -96,6 +102,20 @@ class SpeculativeDecoder(SpecDecoderBase):
         self._device = torch.device(device)
         self._warmup_steps = warmup_steps
         self._min_acceptance_rate = min_acceptance_rate
+
+        # Grammar-constrained drafting.  Building the policy here (rather than
+        # lazily on first draft) keeps construction cheap and means a bad
+        # grammar fails fast instead of mid-generation.
+        self._grammar_policy = None
+        self._grammar_mask_fn = None
+        if grammar is not None:
+            from distllm.core.grammar_constrained_draft import (
+                GrammarConstrainedDraftPolicy,
+            )
+            self._grammar_policy = GrammarConstrainedDraftPolicy(
+                grammar, tokenizer, device,
+            )
+            self._grammar_mask_fn = self._grammar_policy.mask_fn
 
         # Auto-method selection state (populated by set_workload_type /
         # record_method_performance).  Kept on every decoder, not just the
@@ -363,6 +383,10 @@ class SpeculativeDecoder(SpecDecoderBase):
                     logits = out
                 next_logits = logits[:, -1, :] if logits.dim() > 2 else logits
                 token_logits = next_logits[0]
+                # Grammar-constrained drafting: forbid disallowed tokens before
+                # the draft pick, so the proposer never suggests them.
+                if self._grammar_mask_fn is not None:
+                    token_logits = self._grammar_mask_fn(token_logits)
                 step_logits.append(token_logits.clone())
                 token = token_logits.argmax().item()
                 tokens.append(token)
