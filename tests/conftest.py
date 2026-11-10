@@ -75,6 +75,25 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "observability: marks tests for observability modules")
     config.addinivalue_line("markers", "fuzz: marks fuzz tests")
 
+
+def pytest_collection_modifyitems(config, items):
+    """Skip @pytest.mark.gpu tests when CUDA is unavailable.
+
+    The marker was registered but nothing acted on it -- it was a label, not a
+    gate. Every GitHub runner has CPU-only torch, so GPU tests hardcoding
+    device="cuda" failed on all four matrix jobs: 3 in test_defrag_integration,
+    4 in test_backends, plus the CUDA path in the defrag stress suite. A test
+    that needs hardware the machine does not have should skip, not fail; a red
+    there hides the real failures beside it.
+    """
+    if torch is not None and torch.cuda.is_available():
+        return
+    skip = pytest.mark.skip(reason="requires CUDA; no GPU available on this runner")
+    for item in items:
+        if "gpu" in item.keywords:
+            item.add_marker(skip)
+
+
 import pytest
 
 try:
