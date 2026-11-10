@@ -87,6 +87,11 @@ self-hosted = [
     "huggingface-hub>=0.20.0",
     "sentencepiece>=0.1.99",
     "nvidia-ml-py>=12.0",
+    # Transitive via huggingface-hub, which allows >=3.10.0 with no upper bound,
+    # so pip was free to pick 4.1.0 -- and the security-deps audit failed on 17
+    # advisories in it. 4.2.1 is the fix version for all of them; floored here
+    # because nothing else in the tree constrains it.
+    "filelock>=4.2.1",
 ]
 ray = [
     "ray[default]>=2.30.0",
