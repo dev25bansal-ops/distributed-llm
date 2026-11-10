@@ -476,7 +476,20 @@ async def warmup_model(model_id: str, request: Request):
 )
 async def metrics():
     """Prometheus-compatible metrics endpoint."""
-    from prometheus_client import generate_latest
+    try:
+        from prometheus_client import generate_latest
+    except ImportError:
+        # prometheus_client is the [observability] extra. The rest of the server
+        # degrades without it (observed: 143 routes import fine), so this route
+        # should explain the gap rather than raise a 500 -- and a test that hits
+        # /metrics on a minimal install should see why, not a traceback.
+        return PlainTextResponse(
+            "# metrics unavailable: prometheus_client is not installed.\n"
+            "# Install the observability extra: pip install "
+            "'distributed-llm[observability]'\n",
+            status_code=200,
+            media_type="text/plain; version=0.0.4",
+        )
 
     coord = g.coordinator
     mon = g.monitor

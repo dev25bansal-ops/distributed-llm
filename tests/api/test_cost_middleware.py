@@ -32,7 +32,10 @@ class TestEstimateTokens:
 
     def test_empty_string_real_encoder(self):
         """With tiktoken, empty string encodes to zero tokens."""
-        import tiktoken
+        # tiktoken is the [tokenize] extra and is absent on a [dev,testing]
+        # install, which is what CI uses. Skipping is right: the fallback
+        # heuristic is covered by a different test.
+        tiktoken = pytest.importorskip("tiktoken", reason="needs the [tokenize] extra")
         tiktoken.get_encoding("cl100k_base")
         assert _estimate_tokens("") == 0
 
