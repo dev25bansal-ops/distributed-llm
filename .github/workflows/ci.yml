@@ -77,7 +77,37 @@ jobs:
       # regression against the recorded baseline; this job only needs the tests
       # to pass. The old 80% floor was unreachable (measured total is 43.4%)
       # and contradicted the ratchet's own docstring.
-      - run: pytest -v --cov=distllm --cov-report=xml -m "not e2e and not slow and not chaos"
+      #
+      # CHUNKED per top-level test directory. A single whole-tree process is
+      # OOM-killed on the 7 GB runner: this job died at 84% with exit code 137,
+      # and the ~10 individual failures in its log were symptoms of memory
+      # pressure, not real defects (test_api.py::TestMetricsEndpoint passes
+      # locally in 0.6 s). quality-gates.yml was chunked for the same reason;
+      # this job was not.
+      - name: Run tests (chunked per directory)
+        run: |
+          set -e
+          failed=0
+          # --cov-fail-under=0 per chunk: pyproject.toml sets fail_under = 80
+          # globally, and a single directory run can never reach it (measured
+          # 7.66% for tests/utils). The floor belongs on a whole-tree run; here
+          # it would fail every chunk on coverage while the tests inside passed.
+          # The real gate is coverage_ratchet.py in quality-gates.yml.
+          for g in $(ls -d tests/*/ | sort); do
+            [ -d "$g" ] || continue
+            echo "=== $g ==="
+            pytest "$g" -q -p no:cacheprovider \
+              -m "not e2e and not slow and not chaos and not benchmark" \
+              --cov=distllm --cov-append --cov-report= --cov-fail-under=0 \
+              --continue-on-collection-errors || failed=1
+          done
+          # Tests directly under tests/ (not in a subdirectory).
+          pytest tests/ -q -p no:cacheprovider --ignore-glob='tests/*/' \
+            -m "not e2e and not slow and not chaos and not benchmark" \
+            --cov=distllm --cov-append --cov-report= --cov-fail-under=0 \
+            --continue-on-collection-errors || failed=1
+          coverage xml || true
+          exit $failed
       - name: Test distributed speculative decoder
         run: |
           pytest tests/core/test_remote_draft_model.py -v
