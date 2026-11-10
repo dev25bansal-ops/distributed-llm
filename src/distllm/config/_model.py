@@ -247,11 +247,11 @@ class ModelHubSettings(BaseModel):
         """
         if v is not None:
             import os
-            env_token = os.environ.get("DISTLLM__MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
+            env_token = os.environ.get("DISTLLM_MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
             if env_token is None:
                 raise ValueError(
                     "hf_token cannot be set in config file. "
-                    "Use DISTLLM__MODEL_HUB__HF_TOKEN or HF_TOKEN environment variable instead. "
+                    "Use DISTLLM_MODEL_HUB__HF_TOKEN or HF_TOKEN environment variable instead. "
                     "This prevents accidental commits of secrets to config files."
                 )
         return v
@@ -260,7 +260,7 @@ class ModelHubSettings(BaseModel):
     def hf_token_value(self) -> str | None:
         """Get the actual token value. Prefer env var over config value."""
         import os
-        env_token = os.environ.get("DISTLLM__MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
+        env_token = os.environ.get("DISTLLM_MODEL_HUB__HF_TOKEN") or os.environ.get("HF_TOKEN")
         if env_token:
             return env_token
         return self.hf_token.get_secret_value() if self.hf_token else None

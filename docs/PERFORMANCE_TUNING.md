@@ -112,7 +112,7 @@ Splits layers across GPUs within a node via NVLink.
 ### QUIC Transport for WAN (3-5x WAN throughput)
 > ⚠️ UNVERIFIED (hygiene pass 2026-11-06)
 ```bash
-export DISTLLM_WAN_TRANSPORT=quic
+export WIDE_AREA_TRANSPORT=quic
 ```
 Requires `aioquic` package (not `aioquip`). Provides 0-RTT, no head-of-line blocking.
 

@@ -163,8 +163,8 @@ distllm cluster join --coordinator 192.168.1.100 --port 50050
 
 ```bash
 # Enable WAN mode
-export DISTLLM_WAN_ENABLED=true
-export DISTLLM_WAN_TRANSPORT=quic
+export WIDE_AREA_ENABLED=true
+export WIDE_AREA_TRANSPORT=quic
 
 # Start coordinator
 distllm system coordinator --model meta-llama/Llama-3.2-70B

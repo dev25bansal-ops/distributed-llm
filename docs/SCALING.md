@@ -247,14 +247,11 @@ export DISTLLM_FEDERATION_PEERS="coord-2:50050,coord-3:50050"
 # (auto-selected via get_optimal_transport when aioquic is installed).
 # There is no DISTLLM_WAN_TRANSPORT / DISTLLM_GRPC_COMPRESSION env var.
 ```
-> ⚠️ UNVERIFIED (hygiene pass 2026-11-06)
-```bash
-# Enable QUIC for WAN
-export DISTLLM_WAN_TRANSPORT=quic
-
-# Enable compression
-export DISTLLM_GRPC_COMPRESSION=gzip
-```
+Neither variable exists. QUIC is selected automatically by
+`get_optimal_transport()` when `aioquic` is installed; there is no
+`DISTLLM_GRPC_COMPRESSION` setting and no compression env var. The WAN settings
+that do exist use the `WIDE_AREA_` prefix (e.g. `WIDE_AREA_ENABLED`,
+`WIDE_AREA_TRANSPORT`), defined in `distllm/dist/config.py`.
 
 ### Memory Pressure
 

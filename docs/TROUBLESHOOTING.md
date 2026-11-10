@@ -452,11 +452,10 @@ iperf3 -c 192.168.1.12 -t 10
 # > has 0 hits in src/ and config.yaml; no such mechanism exists.
 export DISTLLM_ACTIVATION_QUANT_BITS=8
 
-# Step 6: For WAN links, switch to QUIC transport
-# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_WAN_TRANSPORT has
-# > 0 hits; the real QUIC transport is src/distllm/dist/p2p/quic_transport.py
-# > (auto-selected via get_optimal_transport when aioquic is installed).
-export DISTLLM_WAN_TRANSPORT=quic
+# Step 6: For WAN links, QUIC is selected automatically by
+# get_optimal_transport() when aioquic is installed (dist/p2p/quic_transport.py).
+# There is no DISTLLM_WAN_TRANSPORT variable; the WAN settings that do exist use
+# the WIDE_AREA_ prefix, e.g. WIDE_AREA_ENABLED / WIDE_AREA_TRANSPORT.
 ```
 
 **Prevention:**
@@ -802,13 +801,12 @@ curl http://coordinator:8000/metrics
 
 # Step 4: Enable overlap pipeline (2-4x throughput)
 # pipeline overlap is hybrid_parallel.pp_overlap (default true):
-# Env var: DISTLLM__HYBRID_PARALLEL__PP_OVERLAP=true
+# Env var: DISTLLM_HYBRID_PARALLEL__PP_OVERLAP=true
 export DISTLLM_ENABLE_PIPELINE_OVERLAP=true
 
-# Step 5: For WAN links, use QUIC transport
-# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_WAN_TRANSPORT has
-# > 0 hits; real QUIC transport is src/distllm/dist/p2p/quic_transport.py.
-export DISTLLM_WAN_TRANSPORT=quic
+# Step 5: For WAN links, QUIC is auto-selected by get_optimal_transport() when
+# aioquic is installed (dist/p2p/quic_transport.py). There is no
+# DISTLLM_WAN_TRANSPORT variable; WAN settings use the WIDE_AREA_ prefix.
 
 # Step 6: Enable Flash Attention
 # Flash attention is applied programmatically (apply_flash_attention_to_model,
