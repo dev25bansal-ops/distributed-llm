@@ -87,16 +87,27 @@ class _RateLimiter:
         self.window_seconds = window_seconds
         self.max_ips = max_ips
         # max_ips bounds the number of tracked KEYS. Eviction is per shard (the
-        # sharding is what removed the global lock), so the enforceable bound is
-        # _NUM_SHARDS * per-shard cap, not max_ips exactly: an exact global cap
-        # would need the global lock this class exists to avoid. Dividing the
-        # budget keeps the total at or just under max_ips for any realistic
-        # value (10000 -> 156/shard -> 9984). It cannot go below one key per
-        # shard, so for max_ips < _NUM_SHARDS the effective bound is
-        # _NUM_SHARDS; that is documented rather than silently multiplied by 64
-        # as it was before, when each shard got the full max_ips and the default
-        # allowed 640,000 keys.
-        self._per_shard_max = max(1, max_ips // self._NUM_SHARDS)
+        # sharding is what removed the global lock), so there is no exact global
+        # cap -- but the per-shard cap must still let max_ips keys coexist.
+        #
+        # Uniform hashing is NOT enough here. With max_ips == shard count, the
+        # average is 1 key/shard and a plain ceil() gives 2, yet 100 keys over
+        # 64 shards still collide: measured occupancy was 14 empty / 20 with one
+        # / 30 with two, so a bare cap of 2 holds only 80 and evicts 20 live
+        # keys. For an attack-pinned key an eviction is a clean slate, and 21 of
+        # 100 flood IPs escaped the limit that way.
+        #
+        # Cap at 4x the mean so ordinary collisions fit (100 -> 7/shard -> 448).
+        # The 4x also bounds memory: at most 4*max_ips keys plus the slack in
+        # _per_shard_hard_max.
+        self._per_shard_max = max(4, -(-max_ips // self._NUM_SHARDS) * 4)
+        # Hard ceiling, per shard. _prune will not evict a key that is at
+        # max_attempts (that would reset an attacker's count), so a flood of
+        # distinct attacking keys can push a shard past _per_shard_max. This
+        # ceiling bounds that: past it, eviction resumes and takes the LRU
+        # attack-pinned key too. Four times the soft cap so a working set never
+        # reaches it -- a shard has to be almost entirely active attackers.
+        self._per_shard_hard_max = self._per_shard_max * 4
         # What the limiter can actually hold, for callers and tests.
         self.effective_max_keys = self._per_shard_max * self._NUM_SHARDS
         self._key_by = key_by if key_by in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH) else "ip"
@@ -110,6 +121,10 @@ class _RateLimiter:
         self._shard_locks: list[threading.Lock] = [
             threading.Lock() for _ in range(self._NUM_SHARDS)
         ]
+
+    def tracked_keys(self) -> int:
+        """Number of keys currently tracked, across all shards."""
+        return sum(len(s) for s in self._shard_attempts)
 
     @staticmethod
     def _shard_id(key: str) -> int:
@@ -173,13 +188,27 @@ class _RateLimiter:
         self._shard_order[shard].pop(key, None)
         self._shard_order[shard][key] = None
 
-        # Enforce IP cap: evict LRU key when over limit (O(1) with OrderedDict)
+        # Enforce IP cap: evict LRU key when over limit (O(1) with OrderedDict).
+        # A key already at max_attempts is mid-attack, and evicting it resets
+        # its count to zero. Prefer evicting an idle key; see the hard ceiling
+        # below for why this cannot be absolute.
         attempts = self._shard_attempts[shard]
         order = self._shard_order[shard]
         while len(attempts) > self._per_shard_max:
-            oldest_key, _ = next(iter(order.items()))
-            del attempts[oldest_key]
-            del order[oldest_key]
+            victim = next(
+                (k for k in order if len(attempts.get(k, ())) < self.max_attempts),
+                None,
+            )
+            if victim is None:
+                if len(attempts) <= self._per_shard_hard_max:
+                    # Every tracked key is at the limit and the shard is still
+                    # inside its hard ceiling: keep the attackers blocked.
+                    break
+                # Ceiling reached. Memory bound wins from here; evict the LRU
+                # regardless, which may hand one attacker a fresh count.
+                victim = next(iter(order))
+            del attempts[victim]
+            del order[victim]
 
     def is_rate_limited(self, ip: str, api_key: str | None = None) -> bool:
         """Return True if the key has exceeded the rate limit.
