@@ -254,3 +254,31 @@ class TestMetrics:
             assert "distllm_coordinator_loaded 0" in resp.text
         finally:
             g.coordinator = original
+
+    def test_metrics_serves_gauges_without_observability_extra(self):
+        """A wired-but-stub exporter must not blank the response.
+
+        The server always sets state.metrics_exporter, so a minimal install
+        (no prometheus_client) reaches the exporter branch with an object
+        whose generate_metrics() returns b"". Choosing that branch on the
+        object alone would serve an empty body and drop every gauge that
+        /metrics formats by hand -- the exact regression this pins.
+        """
+        from distllm.observability import exporter as exporter_mod
+
+        stub = MagicMock()
+        stub.generate_metrics.return_value = b""
+        original_coord = g.coordinator
+        original_flag = exporter_mod._PROMETHEUS_AVAILABLE
+        g.coordinator.metrics_exporter = stub
+        exporter_mod._PROMETHEUS_AVAILABLE = False
+        try:
+            resp = TestClient(app).get("/metrics")
+            assert resp.status_code == 200
+            assert "distllm_service_up 1" in resp.text
+            assert "distllm_coordinator_loaded 1" in resp.text
+        finally:
+            exporter_mod._PROMETHEUS_AVAILABLE = original_flag
+            g.coordinator = original_coord
+            g.coordinator.metrics_exporter = None
+

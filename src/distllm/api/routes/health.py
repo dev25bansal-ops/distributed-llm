@@ -3,7 +3,7 @@
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from distllm.api import server as _server_state
@@ -479,17 +479,11 @@ async def metrics():
     try:
         from prometheus_client import generate_latest
     except ImportError:
-        # prometheus_client is the [observability] extra. The rest of the server
-        # degrades without it (observed: 143 routes import fine), so this route
-        # should explain the gap rather than raise a 500 -- and a test that hits
-        # /metrics on a minimal install should see why, not a traceback.
-        return PlainTextResponse(
-            "# metrics unavailable: prometheus_client is not installed.\n"
-            "# Install the observability extra: pip install "
-            "'distributed-llm[observability]'\n",
-            status_code=200,
-            media_type="text/plain; version=0.0.4",
-        )
+        # prometheus_client is the [observability] extra. Only the API-registry
+        # exposition below needs it -- every coordinator gauge on this route is
+        # formatted by hand -- so the route still serves, just without the
+        # request-layer RED families.
+        generate_latest = None
 
     coord = g.coordinator
     mon = g.monitor
@@ -501,6 +495,8 @@ async def metrics():
         # coordinator gauges. NOTE: production wiring gives the coordinator
         # this *same* exporter instance; _merge_expositions guarantees the
         # combined response exposes each family exactly once regardless.
+        if generate_latest is None:
+            return ""
         api_exporter = getattr(g, "metrics_exporter", None)
         api_registry = getattr(api_exporter, "registry", None)
         return generate_latest(api_registry).decode("utf-8") if api_registry is not None else ""
@@ -518,8 +514,14 @@ async def metrics():
         # JSON-encode the text and send application/json.
         return Response(content=body, media_type=PROMETHEUS_MEDIA_TYPE)
 
-    # Use Prometheus exporter if available
-    if coord.metrics_exporter:
+    # Use Prometheus exporter if available. The server always wires an
+    # exporter into the coordinator (server.py sets state.metrics_exporter),
+    # but without the [observability] extra it is a stub whose
+    # generate_metrics() returns b"" -- so gating on the object alone would
+    # serve an empty body instead of the hand-formatted gauges below.
+    from distllm.observability import exporter as _exporter_mod
+
+    if coord.metrics_exporter and _exporter_mod._PROMETHEUS_AVAILABLE:
         coord.metrics_exporter.populate_gauges(coordinator=coord)
         # Render the API registry AFTER populate_gauges: the shared-instance
         # wiring means this render already includes the refreshed coordinator
