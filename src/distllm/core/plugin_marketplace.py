@@ -93,9 +93,18 @@ class PluginMarketplace:
         self,
         plugin_dirs: list[str] | None = None,
         enable_pypi: bool = True,
+        public_key_pem: bytes | None = None,
+        sandbox_policy: Any | None = None,
     ):
         self._plugin_dirs = plugin_dirs or []
         self._enable_pypi = enable_pypi
+        # Opt-in signed-manifest + capability sandbox gate (see
+        # distllm.core.plugin_sandbox). When public_key_pem is None the gate is
+        # disabled and install/enable behave as before; when it is set, install
+        # and enable verify the manifest signature + requested capabilities
+        # before trusting a plugin (fail-closed otherwise).
+        self._public_key_pem = public_key_pem
+        self._sandbox_policy = sandbox_policy
         self._registry: dict[str, PluginEntry] = {}
         self._sampling_strategies: dict[str, SamplingStrategy] = {}
         self._routing_strategies: dict[str, RoutingStrategy] = {}
@@ -104,6 +113,68 @@ class PluginMarketplace:
 
         # Register built-in strategies
         self._register_builtin_strategies()
+
+    def _verify_plugin_manifest(self, plugin_name: str) -> tuple[bool, str]:
+        """Verify *plugin_name*'s signed manifest against the configured key.
+
+        Returns ``(ok, reason)``. When no ``public_key_pem`` was configured the
+        gate is disabled and this returns ``(True, "manifest gate disabled")``.
+        When configured, the check is fail-closed: a missing manifest, an
+        invalid signature, or a requested capability the sandbox policy does not
+        grant all yield ``(False, reason)`` and the caller must refuse.
+        """
+        if self._public_key_pem is None:
+            return True, "manifest gate disabled (no public key configured)"
+
+        from distllm.core.plugin_sandbox import (
+            PluginCapability,
+            PluginManifest,
+            public_key_from_pem,
+        )
+
+        manifest_path = None
+        for d in self._plugin_dirs:
+            candidate = Path(d) / f"{plugin_name}.manifest.json"
+            if candidate.is_file():
+                manifest_path = candidate
+                break
+        if manifest_path is None:
+            return False, f"no signed manifest found for plugin '{plugin_name}'"
+
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = PluginManifest.from_dict(data)
+        except Exception as exc:  # malformed manifest
+            return False, f"manifest for '{plugin_name}' is unreadable: {exc}"
+
+        try:
+            pub = public_key_from_pem(self._public_key_pem)
+        except Exception as exc:
+            return False, f"configured public key is invalid: {exc}"
+
+        if not manifest.verify(pub):
+            return False, f"manifest signature for '{plugin_name}' is invalid"
+
+        # Capability scoping: every capability the plugin requests must be
+        # granted by the sandbox policy (deny-by-default).
+        policy = self._sandbox_policy
+        if policy is not None:
+            requested = []
+            for cap in manifest.capabilities:
+                try:
+                    requested.append(PluginCapability(cap))
+                except ValueError:
+                    return False, (
+                        f"manifest requests unknown capability '{cap}'"
+                    )
+            ungranted = [c.value for c in requested if not policy.allows(c)]
+            if ungranted:
+                return False, (
+                    f"requested capabilities not granted by sandbox policy: "
+                    f"{sorted(ungranted)}"
+                )
+
+        return True, "manifest verified"
 
     # ── Discovery ─────────────────────────────────────────────────────────
 
