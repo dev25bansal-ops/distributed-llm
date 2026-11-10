@@ -32,19 +32,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
-# Ubuntu 22.04 ships setuptools 59.6.0, which cannot read PEP 621 [project]
+# Pinned because an outdated setuptools cannot read PEP 621 [project]
 # metadata; with no setup.py/setup.cfg the build then yields an empty
 # UNKNOWN-0.0.0 wheel and the image has no distllm-api binary at runtime.
-RUN python3 -m pip install --no-cache-dir --upgrade \
+# --break-system-packages: Ubuntu 24.04 is PEP 668 externally managed; this
+# builder layer's system Python is the target interpreter, so the guard that
+# protects a developer's Python does not apply here.
+RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade \
     "pip>=23.0" "setuptools>=68.0,<82" wheel
 # Interpreter for the whole image: a venv keeps one consistent layout (Debian
 # Python searches .../dist-packages while `pip --prefix` writes site-packages)
 # and we copy it wholesale to the runtime at this same absolute path.
 RUN python3 -m venv /install
 ENV PATH=/install/bin:${PATH}
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+RUN pip install --no-cache-dir --break-system-packages torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 COPY requirements.lock .
-RUN pip install --no-cache-dir -r requirements.lock
+RUN pip install --no-cache-dir --break-system-packages -r requirements.lock
 COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
@@ -53,7 +56,7 @@ COPY proto/ proto/
 # generate them as `make proto` does, before the package install below. The
 # generated _grpc file imports node_pb2 flatly, which only resolves when
 # distllm/dist is on sys.path; rewrite it to the package-relative form.
-RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
+RUN pip install --no-cache-dir --break-system-packages grpcio-tools==1.85.1 \
     && python -m grpc_tools.protoc -I proto/ \
         --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
         proto/node.proto \
@@ -63,10 +66,10 @@ RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
     && grep -q '^from distllm.dist import node_pb2 as node__pb2$' src/distllm/dist/node_pb2_grpc.py
 # self-hosted extra: core.coordinator imports transformers at module scope and
 # requirements.lock does not carry it (torch is already installed above).
-RUN pip install --no-cache-dir "transformers>=4.48.0" \
+RUN pip install --no-cache-dir --break-system-packages "transformers>=4.48.0" \
     "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
     "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
-RUN pip install --no-cache-dir . --no-deps
+RUN pip install --no-cache-dir --break-system-packages . --no-deps
 RUN test -x /install/bin/distllm-api \
     && test -x /install/bin/distllm-coordinator \
     && test -x /install/bin/distllm-node \
