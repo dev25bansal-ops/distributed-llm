@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from distllm.dist.partition.cost_model import PartitionCostModel
 from distllm.dist.partition.optimizer import PartitionOptimizer, PartitionSolution
 
 

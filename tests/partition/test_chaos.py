@@ -7,7 +7,8 @@ import pytest
 from distllm.dist.partition.cost_model import PartitionCostModel
 from distllm.dist.partition.optimizer import PartitionOptimizer, PartitionSolution
 from distllm.dist.partition.profiles import GPUProfile
-from distllm.dist.partition.topology import LinkProfile, TopologyGraph
+from distllm.dist.partition.topology import LinkProfile, TopologyGraph, TopologyProber
+from distllm.dist.partition.profiles import GPUProfiler
 
 
 class TestZeroTflops:
