@@ -136,11 +136,17 @@ class TestArgumentParsing:
         assert result.exit_code != 0
 
     def test_status_accepts_host_and_port_options(self):
+        import re
+
         result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
-        assert "--host" in result.output, result.output
-        assert "--port" in result.output
-        assert "--json" in result.output
+        # Strip ANSI first: rich styles each token separately ("-" then
+        # "-host"), so a raw "--host" substring test fails on any renderer
+        # that colours the dashes even though the option is present.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--host" in plain, plain
+        assert "--port" in plain
+        assert "--json" in plain
 
     def test_cluster_start_requires_a_command(self):
         """A group invoked bare shows help/usage rather than crashing."""

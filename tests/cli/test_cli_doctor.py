@@ -357,10 +357,15 @@ class TestJsonOutput:
 
 class TestCliIntegration:
     def test_cli_doctor_help(self):
+        import re
+
         result = runner.invoke(app, ["cli-doctor", "--help"])
         assert result.exit_code == 0
-        assert "--fix" in result.stdout, result.stdout
-        assert "--json" in result.stdout
+        # Strip ANSI: rich colours each token separately ("-" then "-fix"), so
+        # a raw "--fix" substring test misses it on a styled render.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        assert "--fix" in plain, plain
+        assert "--json" in plain
 
     def test_cli_doctor_runs(self):
         result = runner.invoke(app, ["cli-doctor"], catch_exceptions=False)
