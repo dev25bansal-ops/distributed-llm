@@ -164,9 +164,14 @@ jobs:
       - run: pip install -e ".[dev,testing]"
       - uses: ./.github/actions/generate-protobuf
       - name: Run distributed-layer unit tests
-        # Coverage floor removed for the same reason as above: coverage_ratchet.py
-        # is the single gate. Kept as a test-only run.
-        run: pytest tests/dist/ -v --cov=distllm.dist --cov-report=xml -m "not benchmark and not chaos" --ignore=tests/dist/integration
+        # --cov-fail-under=0 is required, not optional. The comment here used to
+        # claim the coverage floor was "removed", but pyproject.toml sets
+        # fail_under = 80 globally and this single-directory run measures
+        # distllm.dist against the whole package -- 6247 tests pass and the job
+        # still failed at "total of 53 is less than fail-under=80". The real
+        # gate is scripts/ci/coverage_ratchet.py, which compares against a
+        # recorded baseline; this job only needs the tests to pass.
+        run: pytest tests/dist/ -v --cov=distllm.dist --cov-report=xml --cov-fail-under=0 -m "not benchmark and not chaos" --ignore=tests/dist/integration
       - name: Upload dist coverage
         uses: codecov/codecov-action@v4
         with:
