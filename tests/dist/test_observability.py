@@ -162,9 +162,15 @@ class TestEnableDistObservability:
     def test_second_call_idempotent(self) -> None:
         """Calling twice on the same exporter does not raise.
 
-        The second call gracefully fails to re-register metrics
-        (prometheus_client rejects duplicates) so the metrics dict
-        is empty, while the first call succeeded.
+        The second call fails to re-register (prometheus_client rejects
+        duplicate timeseries), so its metrics dict is empty while the first
+        call's is full.
+
+        The assertion is on *relative* behaviour, not on a virgin registry:
+        an earlier file in a whole-directory run can leave families registered
+        on the shared default registry, which flips which call is the
+        "duplicate". Asserting result1 == the full dict and result2 == {}
+        made this test depend on what ran before it.
         """
         exporter = DistLLMPrometheusExporter()
         result1 = enable_dist_observability(
@@ -175,15 +181,17 @@ class TestEnableDistObservability:
             exporter=exporter,
             enable_tracing=False,
         )
-        # First call registered all 4 subsystems.
-        assert result1["metrics"] == {
-            "pipeline": True,
-            "federation": True,
-            "recovery": True,
-            "nccl": True,
+        # Exactly one of the two calls registers each subsystem, and the other
+        # sees a duplicate. Which one wins depends on whether an earlier test
+        # already registered these families on the shared default registry, so
+        # assert the union rather than fixing the order.
+        registered = {
+            k for r in (result1["metrics"], result2["metrics"])
+            for k, v in r.items() if v
         }
-        # Second call catches DuplicatedTimeseries — metrics stay empty.
-        assert result2["metrics"] == {}
+        assert registered == {"pipeline", "federation", "recovery", "nccl"}
+        # The duplicate side must be empty, not a second full registration.
+        assert not (result1["metrics"] and result2["metrics"])
 
     # ── Edge cases ──────────────────────────────────────────────────────
 
