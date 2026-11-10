@@ -82,7 +82,7 @@ If a gate cannot be met, we ship a smaller product that meets all five, not a la
 |---|---|---|
 | 1. Master green / reds quarantined | **local side complete** | api 1351/0, core 5819/8, dist 6287/8, deploy 150/0, real-import 240/240. Every local red is environmental, classified in `REMAINING_FAILURES.md`; the REAL defects found were fixed (`c827fc03`, `18bb10c5`). CI-side reds remain: container, fuzz, chaos, two integrations. |
 | 2. Release published | **near** | index already serves 0.6.2.2 matching the repo; clean-venv gate script exists and runs |
-| 3. Site tells the truth | **largely done** | fabricated customers/outcomes removed; claims audited |
+| 3. Site tells the truth | **largely done — one item now labelled** | fabricated customers/outcomes removed; claims audited. The K8s operator is a logging stub, not a reconciler; its docstring now says so and the CRD path is marked alpha rather than advertised. |
 | 4. Real end-to-end demo on hardware | **blocked** | no GPU on this machine; needs the user's A10, Nov 16–20 |
 | 5. A stranger can install and use it | **PASSES** | `pip install "distributed-llm[cli,self-hosted]"` from the real index → import, CLI, module entry point and server import all OK in a clean venv (`scripts/launch_gate_index_install.py`) |
 
