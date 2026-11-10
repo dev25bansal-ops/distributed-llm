@@ -21,7 +21,7 @@
 
 ### Decisions taken 2026-11-09
 
-- **Publish late.** 0.7.0 goes to PyPI on **Nov 28**, after the hardening pass and with the demo recorded. Users stay on 0.4.1 until then; that is accepted.
+- **Publish late.** 0.7.0 goes to PyPI on **Nov 28**, after the hardening pass and with the demo recorded. The index already carries 0.6.2.2 (corrected above), so users are on a working build meanwhile — 0.7.0 is the hardening, not a rescue.
 - **Rust SDK ships for real.** It compiles (`cargo check` clean), clippy is clean, and it now has 13 tests that pin its wire contract. Two of those tests found defects that made it non-functional (see below), which is the argument for having done it.
 
 ### Rust SDK: what was actually wrong (fixed 2026-11-09)
