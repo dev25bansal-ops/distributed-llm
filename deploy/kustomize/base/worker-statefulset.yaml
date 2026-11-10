@@ -7,7 +7,12 @@ metadata:
     app.kubernetes.io/component: worker
 spec:
   serviceName: distllm-worker-headless
-  replicas: 2
+  # One replica: pods below all receive --start-layer 0 --end-layer 31, and two
+  # nodes claiming the same range violate the no-overlap invariant declared in
+  # core/topology_registry.validate_assignment. A multi-node pipeline needs a
+  # distinct range per replica, which a single StatefulSet template cannot
+  # express -- use one StatefulSet per stage instead of raising this number.
+  replicas: 1
   podManagementPolicy: Parallel
   selector:
     matchLabels:

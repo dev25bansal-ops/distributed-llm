@@ -133,6 +133,22 @@ class TestWorkloads:
     def test_worker_uses_controller_worker_image(self):
         assert ".Values.controller.defaultWorkerImage" in _tmpl("worker.yaml")
 
+    def test_worker_replicas_match_a_single_layer_range(self):
+        """Worker pods must not claim overlapping layer ranges.
+
+        worker.yaml feeds .Values.worker.startLayer/endLayer to every pod, so a
+        replica count above 1 means N nodes all serving layers 0-31. That
+        violates core/topology_registry.validate_assignment's no-overlap
+        invariant, and coordinator.py's failure path resumes a failed node's
+        layers on a survivor -- which presumes disjoint stages. Scaling out
+        needs distinct ranges, not more identical pods.
+        """
+        tmpl = _tmpl("worker.yaml")
+        assert "replicas: 1" in tmpl
+        # And the range really is a single shared pair, which is why.
+        assert ".Values.worker.startLayer" in tmpl
+        assert ".Values.worker.endLayer" in tmpl
+
     def test_coordinator_replicas_follow_ha_toggle(self):
         # coordinator.ha.enabled was a no-op before; it must reach the manifest.
         tmpl = _tmpl("coordinator.yaml")

@@ -6,7 +6,14 @@ metadata:
     app.kubernetes.io/component: worker
 spec:
   serviceName: {{ include "distllm-operator.fullname" . }}-worker-headless
-  replicas: 2
+  # One replica, because every worker gets the same --start-layer/--end-layer
+  # from .Values.worker below (0-31 by default). Two pods claiming the same
+  # range violates the no-overlap invariant the code declares
+  # (core/topology_registry.validate_assignment, "the overlap invariant lives
+  # in exactly one place"), and coordinator.py's failure path only makes sense
+  # when nodes hold disjoint stages. Scale out by giving each replica a
+  # distinct range, not by raising this number.
+  replicas: 1
   podManagementPolicy: Parallel
   selector:
     matchLabels:
