@@ -350,7 +350,7 @@ Successfully installed distributed-llm-0.6.2.2
                                 <li><strong>Stage 3 (GPU 2)</strong>: Processes layers 16-23</li>
                                 <li><strong>Stage 4 (GPU 3)</strong>: Processes layers 24-31, produces output token</li>
                             </ol>
-                            <p><strong>Advantage</strong>: Near-linear scaling. 4 GPUs ≈ 3.5-3.8× speedup.</p>
+                            <p><strong>Trade-off</strong>: scaling is real but sub-linear. Our own measurement is 1.66× throughput at 2 nodes (83.2% efficiency) over 1&nbsp;GbE; we have not measured 4 GPUs. Expect gains to depend heavily on interconnect.</p>
                         </div>
                     </div>
 

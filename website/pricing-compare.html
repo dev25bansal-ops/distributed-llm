@@ -110,8 +110,8 @@
                         <tr><th scope="row">70B Price / 1M tokens</th><td class="highlight-col best">$0.00*</td><td class="num">$3.00</td><td class="num">$0.90</td><td class="num">$0.90</td><td class="num">$1.00</td></tr>
                         <tr><th scope="row">70B Input Price / 1M tokens</th><td class="highlight-col best">$0.00*</td><td class="num">$2.50</td><td class="num">$0.90</td><td class="num">$0.90</td><td class="num">$1.00</td></tr>
                         <tr><th scope="row">70B Output Price / 1M tokens</th><td class="highlight-col best">$0.00*</td><td class="num">$10.00</td><td class="num">$0.90</td><td class="num">$0.90</td><td class="num">$1.00</td></tr>
-                        <tr><th scope="row">Typical Latency (P50)</th><td class="highlight-col">29ms</td><td>45ms</td><td>38ms</td><td>35ms</td><td>40ms</td></tr>
-                        <tr><th scope="row">Typical Latency (P95)</th><td class="highlight-col">44ms</td><td>120ms</td><td>85ms</td><td>78ms</td><td>90ms</td></tr>
+                        <tr><th scope="row">Typical Latency (P50)</th><td class="highlight-col">Not published<sup>1</sup></td><td colspan="4">Not verified by us</td></tr>
+                        <tr><th scope="row">Typical Latency (P95)</th><td class="highlight-col">Not published<sup>1</sup></td><td colspan="4">Not verified by us</td></tr>
                         <tr><th scope="row">Self-Hosted</th><td class="highlight-col yes">&#10004; Free</td><td class="no">&#10008;</td><td class="no">&#10008;</td><td class="no">&#10008;</td><td class="no">&#10008;</td></tr>
                         <tr><th scope="row">Data Privacy</th><td class="highlight-col yes">&#10004; Full control</td><td>API only</td><td>API only</td><td>API only</td><td>API only</td></tr>
                         <tr><th scope="row">Custom Models</th><td class="highlight-col yes">&#10004; Any HF model</td><td class="no">&#10008;</td><td>&#10004; Fine-tune</td><td>&#10004; Fine-tune</td><td>&#10004; Fine-tune</td></tr>
@@ -126,6 +126,8 @@
             </div>
 
             <div class="note">* DistLLM is free open-source software. Cost is your hardware + electricity. Typical electricity cost: $0.0003–$0.003/1K tokens depending on GPU and local rates. Hardware amortization not included.</div>
+
+            <div class="note"><sup>1</sup> We publish no latency figures because we have not measured a 70B model on a multi-GPU cluster. The one latency number this project has actually measured is a 24.4&nbsp;ms P50 time-to-first-token on a 1.1B model running on a single laptop GPU — not comparable to the 70B services in this table. The competitors' latencies shown previously were also unverified by us and have been removed rather than presented as fact.</div>
 
             <h2>Monthly Cost Estimate</h2>
             <p>For a typical workload of 10M tokens/month with a 70B model:</p>
