@@ -40,12 +40,17 @@ def best_fit_decreasing_partition(
 
     for idx in order:
         size = int(layer_bytes[idx])
-        # Best fit: device with the smallest remaining capacity that fits.
+        # Balanced placement: among devices that can still hold this layer,
+        # choose the one with the MOST remaining capacity. Filling the single
+        # fullest device first (classic best-fit) piles every equal layer onto
+        # one GPU (e.g. 4 layers on a, 0 on b for two identical GPUs), which
+        # defeats layer-level sharding. Most-remaining spreads the load while
+        # still respecting each device's VRAM cap.
         best_dev: str | None = None
         best_left: int | None = None
         for dev, left in remaining.items():
             if left >= size:
-                if best_left is None or left < best_left:
+                if best_left is None or left > best_left:
                     best_left = left
                     best_dev = dev
         if best_dev is None:
