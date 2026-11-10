@@ -14,6 +14,7 @@ Run from the repo root:  python scripts/check_doc_commands.py
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -52,6 +53,61 @@ def _is_negation_or_url(text: str, match_start: int) -> bool:
     line_start = text.rfind("\n", 0, match_start) + 1
     prefix = text[line_start:match_start]
     return bool(NEGATION_BEFORE.search(prefix))
+
+
+def _check_clone_urls(docs: list[Path]) -> list[str]:
+    """A `git clone` in the docs must name THIS repository.
+
+    QUICKSTART cloned github.com/distributed-llm/distributed-llm, which does not
+    exist ("Repository not found"), so the recommended install path failed at
+    step one. The org that does not exist cannot be derived from git, so this
+    compares against the configured origin instead.
+    """
+    problems = []
+    clone = re.compile(r"git\s+clone\s+(\S+)")
+    remote = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"],
+        capture_output=True, text=True, cwd=ROOT,
+    ).stdout.strip()
+    allowed = {remote}
+    if remote.endswith(".git"):
+        allowed.add(remote[:-4])
+    for doc in docs:
+        for url in clone.findall(doc.read_text(encoding="utf-8")):
+            if allowed and url not in allowed and url.rstrip("/") not in {a.rstrip("/") for a in allowed}:
+                problems.append(f"{doc.name}: git clone {url} is not this repository ({remote})")
+    return problems
+
+
+def _check_referenced_files(docs: list[Path]) -> list[str]:
+    """A `cp <a> <b>` in the docs must be coherent with what ships.
+
+    Two failure modes, both seen in QUICKSTART on the same line:
+      - the source does not exist (a path that was never created)
+      - the destination looks like a template (`*.example`, `*.sample`) and does
+        not exist while the source does -- i.e. the arguments are reversed.
+    `cp config.yaml config.yaml.example` hit the second: config.yaml ships and
+    config.yaml.example has never existed, so it copied a real config over
+    nothing.
+    """
+    problems = []
+    cp = re.compile(r"\bcp\s+(\S+)\s+(\S+)")
+    for doc in docs:
+        for src, dst in cp.findall(doc.read_text(encoding="utf-8")):
+            if any(ch in src + dst for ch in "$<>{}*"):
+                continue  # templated example, not a literal path
+            if src.startswith("/") or dst.startswith("/"):
+                continue  # system path, expected to be absent on a dev checkout
+            src_exists = (ROOT / src).exists()
+            dst_exists = (ROOT / dst).exists()
+            if not src_exists:
+                problems.append(f"{doc.name}: `cp {src} {dst}` copies from a path that does not exist")
+            elif not dst_exists and re.search(r"\.(example|sample|template|dist)$", dst):
+                problems.append(
+                    f"{doc.name}: `cp {src} {dst}` writes to a template name that does not "
+                    f"exist -- the arguments may be reversed"
+                )
+    return problems
 
 
 def _check_join_ports(docs: list[Path]) -> list[str]:
@@ -113,7 +169,10 @@ def main() -> int:
                 )
 
     print(f"checked {len(seen)} documented invocations against the CLI")
-    port_problems = _check_join_ports([ROOT / d for d in DOCS if (ROOT / d).exists()])
+    doc_paths = [ROOT / d for d in DOCS if (ROOT / d).exists()]
+    port_problems = _check_join_ports(doc_paths)
+    clone_problems = _check_clone_urls(doc_paths)
+    cp_problems = _check_referenced_files(doc_paths)
 
     ok = True
     if missing:
@@ -125,6 +184,16 @@ def main() -> int:
         ok = False
         print("\nDOCUMENTED BUT WRONG:")
         for problem in port_problems:
+            print(f"  {problem}")
+    if clone_problems:
+        ok = False
+        print("\nCLONE URL WRONG:")
+        for problem in clone_problems:
+            print(f"  {problem}")
+    if cp_problems:
+        ok = False
+        print("\nCOPY SOURCE MISSING OR REVERSED:")
+        for problem in cp_problems:
             print(f"  {problem}")
     if not ok:
         return 1

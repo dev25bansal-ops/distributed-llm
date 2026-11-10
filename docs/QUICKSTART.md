@@ -13,21 +13,26 @@
 ### Step 1: Clone and Configure
 
 ```bash
-git clone https://github.com/distributed-llm/distributed-llm.git
+git clone https://github.com/dev25bansal-ops/distributed-llm.git
 cd distributed-llm
+```
 
-# Copy example config
-cp config.yaml config.yaml.example
+That is all the configuration you need: `config.yaml` ships with working local
+defaults (a small model, coordinator on 127.0.0.1:50050, API on :8000). To
+customise it, edit that file or run the interactive wizard:
+
+```bash
+distllm config setup
 ```
 
 ### Step 2: Start the Cluster
 
 ```bash
 # Start coordinator + 2 workers
-docker-compose up -d
+docker compose up -d
 
 # Check status
-docker-compose ps
+docker compose ps
 ```
 
 ### Step 3: Download a Model
