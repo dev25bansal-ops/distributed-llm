@@ -18,6 +18,7 @@ Provides 10-20% throughput improvement over synchronous pipeline execution.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
@@ -39,6 +40,11 @@ class _GpuTiming:
     """
     start: torch.cuda.Event | None = None
     end: torch.cuda.Event | None = None
+    # CPU fallback timestamp. Without this, stop() returned 0.0 on every
+    # non-CUDA run -- the docstring promised a monotonic_ns fallback that the
+    # code never took, so all pipeline stats (compute/comm/overlap/idle) read
+    # as 0 ms on CPU, i.e. for every CPU deployment and benchmark.
+    start_ns: int | None = None
 
     @staticmethod
     def record(stream: torch.cuda.Stream | None = None) -> _GpuTiming:
@@ -47,14 +53,16 @@ class _GpuTiming:
             end = torch.cuda.Event(enable_timing=True)
             start.record(stream)
             return _GpuTiming(start=start, end=end)
-        return _GpuTiming()
+        return _GpuTiming(start_ns=time.monotonic_ns())
 
     def stop(self, stream: torch.cuda.Stream | None = None) -> float:
-        """Record the end event and return elapsed milliseconds on the GPU."""
+        """Elapsed milliseconds: CUDA event time, or CPU wall time."""
         if self.start is not None and self.end is not None:
             self.end.record(stream)
             self.end.synchronize()
             return self.start.elapsed_time(self.end)
+        if self.start_ns is not None:
+            return self.elapsed_ms(self.start_ns, time.monotonic_ns())
         return 0.0
 
     @staticmethod
