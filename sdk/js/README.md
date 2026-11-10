@@ -5,8 +5,11 @@ and browsers (uses the global `fetch`).
 
 ## Install
 
+Not published to npm yet — `npm view distllm-sdk` returns 404. Install this
+directory directly, or `npm pack` it and install the tarball:
+
 ```bash
-npm install distllm-sdk
+npm install /path/to/distributed-llm/sdk/js
 ```
 
 ## Quick start

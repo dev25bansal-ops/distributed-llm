@@ -101,9 +101,14 @@ print(client.stats.estimate_cost())
 
 ### Installation
 
+Not published to npm yet — `npm view distllm-sdk` returns 404. Until it is,
+install from a checkout; the package builds and its 11 tests pass:
+
 ```bash
-npm install distllm-sdk
+npm install /path/to/distributed-llm/sdk/js
 ```
+
+or build a tarball there with `npm pack` and install that.
 
 ### Quick Start
 

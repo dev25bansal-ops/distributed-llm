@@ -437,8 +437,8 @@ def cmd_eval(args: argparse.Namespace) -> None:
     except ImportError:
         _stderr(_red(
             "ERROR: 'eval_harness' package is not installed.\n"
-            "  Install with: pip install distllm-sdk[eval]  "
-            "(or pip install eval-harness)"
+            "  Install with: pip install eval-harness  "
+            "(the distllm-sdk distribution is not published to PyPI)"
         ))
         sys.exit(1)
 

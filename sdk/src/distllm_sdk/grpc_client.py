@@ -210,7 +210,7 @@ def decode_tensor(
     except ImportError as e:  # pragma: no cover - numpy ships with the gRPC extra
         raise RuntimeError(
             "numpy is required to decode gRPC tensor payloads. "
-            "Install with: pip install distllm-sdk[grpc]"
+            "Install it with: pip install numpy"
         ) from e
 
     if not raw_data:
