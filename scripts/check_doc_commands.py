@@ -69,12 +69,36 @@ def _check_clone_urls(docs: list[Path]) -> list[str]:
         ["git", "config", "--get", "remote.origin.url"],
         capture_output=True, text=True, cwd=ROOT,
     ).stdout.strip()
-    allowed = {remote}
-    if remote.endswith(".git"):
-        allowed.add(remote[:-4])
+
+    def normalise(url: str) -> str:
+        """Reduce a clone URL to owner/repo so string form cannot matter.
+
+        Three forms all mean this repository and must compare equal:
+          https://github.com/owner/repo.git   (docs)
+          https://github.com/owner/repo       (CI's origin.url)
+          git@github.com:owner/repo.git       (SSH remotes)
+        Comparing raw strings flagged the correct URL in CI; comparing full
+        hosts still split the SSH form, because `git@host:` drops the host while
+        `https://host/` keeps it. The last two path segments are the identity.
+        """
+        u = url.strip().rstrip("/")
+        # Order matters: split the scp-style prefix BEFORE stripping .git,
+        # because `git@host:owner/repo.git` has its .git at the very end of the
+        # colon-split result, not of the original string.
+        if u.startswith("git@"):
+            u = u.split(":", 1)[-1]          # git@host:owner/repo -> owner/repo
+        if u.endswith(".git"):
+            u = u[:-4]
+        u = re.sub(r"^[a-z]+://", "", u, flags=re.IGNORECASE)
+        u = re.sub(r"^[^/]+/", "", u, count=1) if "/" in u else u  # drop host
+        return u.lower()
+
+    allowed = normalise(remote) if remote else ""
+    if not allowed:
+        return []  # no origin to compare against (e.g. a tarball checkout)
     for doc in docs:
         for url in clone.findall(doc.read_text(encoding="utf-8")):
-            if allowed and url not in allowed and url.rstrip("/") not in {a.rstrip("/") for a in allowed}:
+            if normalise(url) != allowed:
                 problems.append(f"{doc.name}: git clone {url} is not this repository ({remote})")
     return problems
 
