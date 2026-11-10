@@ -273,9 +273,14 @@ class TestSemanticCacheEnvFlag:
         env["PYTHONPATH"] = os.pathsep.join(
             [str(SRC_DIR), env.get("PYTHONPATH", "")]
         )
+        # timeout= is mandatory here. Without it, a slow child (this import takes
+        # 12 s on a loaded machine, 3 s idle) blocks in subprocess.run's
+        # communicate() forever, and pytest-timeout cannot interrupt a blocked
+        # pipe read -- the whole suite hangs at 87%. It reproduced intermittently
+        # early today: the same file passed standalone, then hung standalone.
         proc = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True, text=True, env=env,
+            capture_output=True, text=True, env=env, timeout=120,
         )
         assert proc.returncode == 0, proc.stderr
         assert "MOUNTED" in proc.stdout
