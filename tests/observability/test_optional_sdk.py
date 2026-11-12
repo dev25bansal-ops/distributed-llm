@@ -101,8 +101,18 @@ class TestServerStartsWithNoSDK:
 
             from distllm.api.server import app
 
-            with TestClient(app) as client:
-                response = client.get("/health")
+            # No `with`: the lifespan executes app startup, which spawns
+            # background threads. Those threads can still be importing when
+            # this block exits and monkeypatch restores the real __import__,
+            # and anything that imports during the window sees the broken
+            # one -- which is why an unrelated test in this directory failed
+            # whenever the suite ran after another chunk, but never alone.
+            #
+            # The subject here is that the APP answers a request without the
+            # tracing SDK, not that its startup hooks complete, so skipping
+            # the lifespan removes the race without weakening the assertion.
+            client = TestClient(app)
+            response = client.get("/health")
             # 200 with a model loaded, 503 without: either proves the app
             # answered, which is what "the server starts" means here.
             assert response.status_code in (200, 503)
