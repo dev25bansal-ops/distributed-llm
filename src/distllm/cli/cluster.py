@@ -452,6 +452,10 @@ def _cluster_leave(node_id: str, coordinator_host: str, coordinator_port: int):
     try:
         # Admin router, addressed by node id, and authenticated -- the old
         # bare httpx.Client sent no key, so this was always a 401.
+        #
+        # Drain first so in-flight requests finish, then deregister: drain on
+        # its own is not "leave". It only sets a flag, and the node stayed in
+        # GET /admin/v1/nodes as `draining` forever.
         with _get_client(coordinator_host, coordinator_port) as client:
             resp = client.post(f"/admin/v1/nodes/{node_id}/drain", headers=_admin_headers())
             if resp.status_code == 200:
@@ -461,8 +465,22 @@ def _cluster_leave(node_id: str, coordinator_host: str, coordinator_port: int):
                     "[red]Unauthorized:[/red] draining a node requires an admin API key. "
                     "Set the [bold]DISTLLM_API_KEY[/bold] environment variable and retry."
                 )
+                return
+            elif resp.status_code == 404:
+                console.print(f"[yellow]Node {node_id} is not registered[/yellow]")
+                return
             else:
                 console.print(f"[yellow]Drain returned: {resp.status_code}[/yellow]")
+                return
+
+            removed = client.delete(f"/admin/v1/nodes/{node_id}", headers=_admin_headers())
+            if removed.status_code == 200:
+                console.print(f"[green]Node {node_id} left the cluster[/green]")
+            else:
+                console.print(
+                    f"[yellow]Deregister returned {removed.status_code}; the node is "
+                    f"still listed as draining and will need manual removal[/yellow]"
+                )
     except httpx.ConnectError:
         console.print(f"[red]Could not connect to {coordinator_host}:{coordinator_port}[/red]")
 

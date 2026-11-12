@@ -359,6 +359,56 @@ async def recover_node(node_id: str):
     return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' recovered and restored to service")
 
 
+@router.delete(
+    "/nodes/{node_id}",
+    summary="Deregister a departed node",
+    description=(
+        "Remove a node from the cluster entirely. Use for a node that has "
+        "left for good; drain and offline only change how a node is treated "
+        "and leave it in the pool."
+    ),
+    response_model=NodeActionResponse,
+    responses={404: {"description": "Node not found"}},
+)
+async def deregister_node(node_id: str):
+    """Remove a node from the pool.
+
+    Drain and offline were the only ways to retire a node, and neither takes
+    it out of ``coord.nodes``, so ``GET /admin/v1/nodes`` kept reporting a
+    node that had already left -- as ``draining``, forever, because
+    ``_draining_nodes`` is a set with no removal path. ``cluster leave`` could
+    therefore never make a node actually leave.
+
+    Draining is applied to the resource manager's bookkeeping too, so a stale
+    entry cannot resurface through the scheduling path.
+    """
+    coord = _resolve_coordinator()
+    if node_id not in coord.nodes:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+
+    resource_mgr = getattr(coord, '_resource_mgr', None)
+    if resource_mgr is not None and hasattr(resource_mgr, 'mark_node_draining'):
+        resource_mgr.mark_node_draining(node_id)
+
+    node = coord.nodes.pop(node_id, None)
+
+    # The orchestrator keeps its own view of the nodes; remove it there too so
+    # a request cannot be routed to a node that has gone.
+    pipeline = getattr(coord, '_pipeline', None)
+    if pipeline is not None and hasattr(pipeline, 'remove_node'):
+        try:
+            pipeline.remove_node(node_id)
+        except Exception:
+            logger.opt(exception=True).warning(
+                f"Admin: could not remove node {node_id} from the pipeline")
+
+    logger.info(f"Admin: deregistered node {node_id} ({type(node).__name__ if node else 'unknown'})")
+    return NodeActionResponse(
+        status="ok", node_id=node_id,
+        message=f"Node '{node_id}' deregistered from the cluster",
+    )
+
+
 @router.patch(
     "/config",
     summary="Update runtime configuration",
