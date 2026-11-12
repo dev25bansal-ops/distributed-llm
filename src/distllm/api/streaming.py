@@ -25,6 +25,15 @@ from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer
 
+# Imported at module scope, not inside _stream_response. Starlette has already
+# sent the 200 status and headers by the time the generator body runs, so an
+# import that fails there cannot be reported: it aborts the stream and the
+# client receives a well-formed 200 with an empty body. That is exactly what
+# happened when this was a lazy import and the [observability] extra was
+# absent -- every streamed completion came back empty. Failing at import time
+# instead surfaces as a normal 500 with a traceback.
+from distllm.observability.spans import async_span_generation, record_ttft
+
 
 def _get_client_id(request: Any) -> str:
     """Extract a client identifier from a FastAPI Request.
@@ -418,8 +427,6 @@ async def _stream_response(
             cost_helper.start_request(request_id, prompt_len, model_name)
         except ImportError:
             pass
-
-    from distllm.observability.spans import async_span_generation, record_ttft
 
     stream_start = time.monotonic()
     ttft_recorded = None
