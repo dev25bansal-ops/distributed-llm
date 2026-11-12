@@ -283,6 +283,12 @@ Issues = "https://github.com/distributed-llm/distributed-llm/issues"
 where = ["src"]
 include = ["distllm*", "distllm.integrations*"]
 
+# The generated node_pb2*.py ship as modules; the .proto ships as package data
+# so a source install can regenerate them if the gencode and the installed
+# protobuf runtime ever disagree.
+[tool.setuptools.package-data]
+"distllm.dist" = ["*.proto"]
+
 # ── PEP 735 dependency groups ──────────────────────────────────────────────
 #
 # Install with `pip install --group dev distllm` (requires pip 25.1+).
