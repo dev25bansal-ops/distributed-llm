@@ -297,15 +297,27 @@ class TestPeerManagement:
         assert gp.state.known_peers == {"p1", "p2", "p3"}
 
     def test_add_peer_evicts_when_exceeds_max(self, gp):
-        """When known_peers exceeds max_peers, random eviction occurs."""
+        """Eviction keeps the newest peer and drops the longest-unseen one.
+
+        This used to mock random.sample so that the newest peer survived -- it
+        was pinning the workaround for a real bug. Eviction drew its victim
+        from ALL peers including the one just added, so add_peer("p4") could
+        discard p4 itself, and which peers survived differed run to run. The
+        rule is now deterministic (longest-unseen first, never the new peer),
+        so the test asserts that directly and no longer needs the mock.
+        """
         gp.max_peers = 3
-        # Mock random.sample so the newest peer ("p4") survives
-        with patch("distllm.dist.p2p.gossip.random.sample", return_value=["p1", "p2", "p4"]):
-            gp.add_peer("p1")
-            gp.add_peer("p2")
-            gp.add_peer("p3")
-            gp.add_peer("p4")  # len becomes 4 > max_peers=3 → eviction
-        assert gp.state.known_peers == {"p1", "p2", "p4"}
+        gp.add_peer("p1")
+        gp.add_peer("p2")
+        gp.add_peer("p3")
+        gp.add_peer("p4")  # len becomes 4 > max_peers=3 -> eviction
+
+        assert len(gp.state.known_peers) == 3
+        # The peer just added is never the casualty.
+        assert "p4" in gp.state.known_peers
+        # The oldest (never seen successfully) goes first.
+        assert "p1" not in gp.state.known_peers
+        assert gp.state.known_peers == {"p2", "p3", "p4"}
 
     def test_remove_peer_removes_existing(self, gp):
         gp.add_peer("peer-1")
