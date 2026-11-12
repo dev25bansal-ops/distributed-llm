@@ -44,7 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Both are correct only in this throwaway builder layer; every later pip call
 # runs inside /install, where neither flag belongs.
 RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
-    "pip>=23.0,<25" "setuptools>=68.0,<82" wheel
+    "pip>=23.0,<25" "setuptools>=84.1.0" "wheel>=0.48.0"
 # Interpreter for the whole image: a venv keeps one consistent layout (Debian
 # Python searches .../dist-packages while `pip --prefix` writes site-packages)
 # and we copy it wholesale to the runtime at this same absolute path.

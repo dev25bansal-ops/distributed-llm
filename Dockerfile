@@ -40,8 +40,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #                            file not found. Hint: installed by debian."
 # Both are correct in a throwaway builder layer whose system Python IS the
 # target interpreter; neither belongs in a user-facing context.
+# The <82 upper bound was for Python 3.10 builds and is now the wrong shape:
+# it caps setuptools at a version whose vendored jaraco.context 5.3.0 and
+# wheel 0.45.1 carry HIGH advisories (CVE-2026-23949, CVE-2026-24049), and
+# CVE-2025-47273 against setuptools itself. trivy sees them because this venv
+# inherits the system interpreter's setuptools. pyproject already floors
+# setuptools at >=84.1.0, so honour that here instead of overriding it down.
 RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
-    "pip>=23.0,<25" "setuptools>=68.0,<82" wheel
+    "pip>=23.0,<25" "setuptools>=84.1.0" "wheel>=0.48.0"
 
 WORKDIR /build
 
