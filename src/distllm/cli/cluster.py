@@ -389,7 +389,24 @@ def _cluster_join(
 
             import httpx
             reg_headers = {}
+            # The coordinator mints an admin key into its key file when none is
+            # configured, and every other CLI command picks it up from there.
+            # This registration path only looked at the environment, so it sent
+            # no Authorization header at all and the coordinator answered 401 —
+            # the node was told nothing, `cluster list-nodes` showed 0, and the
+            # worker sat there looking connected. Read the same file the rest
+            # of the CLI reads before falling back to empty.
             api_key = os.environ.get("API_KEY") or os.environ.get("DISTLLM_API_KEY")
+            if not api_key:
+                try:
+                    from distllm.core.api_key_store import _api_key_path
+
+                    key_path = _api_key_path()
+                    if os.path.isfile(key_path):
+                        with open(key_path, encoding="utf-8") as kf:
+                            api_key = kf.read().strip() or None
+                except Exception:
+                    api_key = None
             if api_key:
                 reg_headers["Authorization"] = f"Bearer {api_key}"
             resp = httpx.post(
