@@ -335,6 +335,38 @@ class SpeculativeDecoder(SpecDecoderBase):
             s["acceptance_rate"] = round(s["accepted"] / max(s["total_proposed"], 1), 3)
         return s
 
+    # Public read-only accessors for values the constructor takes. Without
+    # them a caller inspecting a decoder had to reach into _-prefixed
+    # attributes -- which is what tests/correctness was doing to check that
+    # min_acceptance_rate was honoured.
+    @property
+    def acceptance_rate(self) -> float:
+        """Fraction of proposed draft tokens the target has accepted.
+
+        Two counters track acceptance because there are two entry points:
+        ``_stats`` is fed by the single-sequence ``generate()`` loop, and
+        ``_batch_metrics`` by ``verify_batch``/``verify_and_accept``. Reporting
+        only the first made a decoder that had verified thousands of tokens
+        through the batch path report 0.0 -- which is what tests/correctness
+        was seeing when it called verify_and_accept directly.
+
+        Always in [0, 1]; an empty history reports 0.0 rather than dividing by
+        zero.
+        """
+        proposed = self._stats["total_proposed"] + self._batch_metrics["total_draft_tokens"]
+        if proposed <= 0:
+            return 0.0
+        accepted = self._stats["accepted"] + self._batch_metrics["total_accepted"]
+        return min(1.0, accepted / proposed)
+
+    @property
+    def warmup_steps(self) -> int:
+        return self._warmup_steps
+
+    @property
+    def min_acceptance_rate(self) -> float:
+        return self._min_acceptance_rate
+
     # ── Batch draft generation ─────────────────────────────────────────
     #
     # ``generate_batch_draft_tokens`` / ``verify_batch`` power the
@@ -431,6 +463,15 @@ class SpeculativeDecoder(SpecDecoderBase):
             draft_ids = (
                 draft.tolist() if hasattr(draft, "tolist") else list(draft)
             )
+            # A (1, N) tensor flattens to [[t1..tN]], whose len() is 1: the
+            # verifier then checked one token and abandoned the rest, so a
+            # batched draft was silently under-accepted and total_draft_tokens
+            # counted sequences instead of tokens. Flatten one level so both a
+            # 1-D list (what generate_draft_tokens returns) and a (1, N)
+            # tensor (what a direct caller naturally passes) mean the same
+            # thing.
+            if len(draft_ids) == 1 and isinstance(draft_ids[0], (list, tuple)):
+                draft_ids = list(draft_ids[0])
             logits2d = logits[0] if logits.dim() == 3 else logits
             if logits2d.dim() != 2:
                 # Cannot verify without a (seq, vocab) view.

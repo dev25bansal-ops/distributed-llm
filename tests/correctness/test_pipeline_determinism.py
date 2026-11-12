@@ -62,9 +62,13 @@ class TestPipelineDeterminism:
             value = torch.randn(1, 8, 10, 64)
             cache.cache.append((key, value))
 
-        # Serialize and deserialize
-        serialized = cache.serialize()
-        restored = KVCache.deserialize(serialized)
+        # Serialize and deserialize. These are module-level functions in
+        # kv_cache, not methods on KVCache -- the methods this test used to
+        # call have never existed.
+        from distllm.core.kv_cache import deserialize_kv_cache, serialize_kv_cache
+
+        serialized = serialize_kv_cache(cache)
+        restored = deserialize_kv_cache(serialized)
 
         # Verify exact match
         for layer in range(4):
