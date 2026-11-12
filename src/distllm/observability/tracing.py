@@ -95,7 +95,7 @@ def setup_tracing(
     exporters: list[SpanExporter] | None = None,
     sampling_strategy: str = "head",
     sampling_ratio: float = 1.0,
-) -> trace.TracerProvider:
+) -> "trace.TracerProvider":
     """Initialize OpenTelemetry tracing with gRPC instrumentation.
 
     Args:
