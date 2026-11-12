@@ -354,9 +354,19 @@ class GossipProtocol:
                 # run to run, which is why test_gossip_peer_management failed
                 # only in whole-directory runs.
                 candidates = [p for p in self.state.known_peers if p != peer_id]
+                # Sort by staleness, then by peer id. The id tiebreak is not
+                # cosmetic: time.time() has coarse resolution (measured: 4
+                # successive calls produced 2 distinct values), so peers added
+                # in the same tick share joined_at. Without a secondary key the
+                # victim then depends on set-iteration order, which varies with
+                # hash randomisation -- eviction would differ run to run, which
+                # is the property this change exists to remove.
                 candidates.sort(
-                    key=lambda p: getattr(self._peer_metrics.get(p), "last_success_time", 0.0)
-                    or getattr(self._peer_metrics.get(p), "joined_at", 0.0)
+                    key=lambda p: (
+                        getattr(self._peer_metrics.get(p), "last_success_time", 0.0)
+                        or getattr(self._peer_metrics.get(p), "joined_at", 0.0),
+                        p,
+                    )
                 )
                 drop = len(self.state.known_peers) - self.max_peers
                 for victim in candidates[:drop]:
