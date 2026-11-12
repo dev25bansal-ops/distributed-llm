@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-12
+
+The hardening release. Everything below was found by running the software rather
+than reading it: on a clean install, on a real NVIDIA A10, and against a live
+coordinator. Four of these made a documented feature unusable on a default
+install, which is why they had survived every earlier audit.
+
+### Fixed
+
+- **`distllm-api` could not start without the `[observability]` extra.**
+  `observability/tracing.py` annotated `setup_tracing()` with
+  `-> trace.TracerProvider`. Annotations are evaluated when the function is
+  defined, and without the SDK `trace` is `None`, so the annotation itself
+  raised `AttributeError: 'NoneType' object has no attribute 'TracerProvider'`
+  at import. That took down `distllm.observability.tracing`, then
+  `distllm.api.server` — no server, no `/health`, and `distllm selftest` failed
+  two checks on every default install. The same shape existed in `metrics.py`
+  and `spans.py`; all three now defer the annotation.
+
+- **Streamed completions returned an empty 200 without the tracing extra.**
+  The SSE generator imported `observability.spans` *inside* the iterator, and
+  by then Starlette had already sent the status line and headers. The failed
+  import aborted the stream, so the client kept a `200 text/event-stream` with
+  a zero-byte body and no error. `spans.py` now falls back to a no-op tracer
+  that yields a real stand-in span, and the import moved to module scope so a
+  future failure is a loud 500 rather than a silent empty stream.
+
+- **`distllm cluster join` never registered the node.** It built its
+  `Authorization` header from `API_KEY`/`DISTLLM_API_KEY` only, while the
+  coordinator mints its admin key into `.distllm/api_key` — the file every
+  other CLI command reads. Registration went out unauthenticated, the
+  coordinator answered 401, and the failure was swallowed into a console line:
+  `list-nodes` reported nothing while the worker said it had connected.
+
+- **There was no way for a node to leave a cluster.** `drain` sets a flag and
+  `offline` marks a node unhealthy, but neither removes it from `coord.nodes`,
+  and `_draining_nodes` had no removal path. A node that had gone stayed in
+  `GET /admin/v1/nodes` as `draining` for the life of the coordinator — a
+  freshly started coordinator still listed a worker from a previous run.
+  Added `DELETE /admin/v1/nodes/{node_id}`, and `cluster leave` now calls it
+  after draining so in-flight requests still finish first.
+
+- `node_pb2_grpc.py` is generated with a flat `import node_pb2`, which cannot
+  resolve inside a package. Regenerated output is now rewritten to a relative
+  import.
+
+### Packaging
+
+- `requires-python` is now `>=3.11`. No `filelock` release that clears the
+  known advisories supports 3.10, and 3.10 reached end of life in October 2026.
+- `pyjwt>=2.15.1`, `setuptools>=84.1.0`, `wheel>=0.48.0` floors raised to clear
+  vendored-dependency advisories.
+- Container images build on Ubuntu 24.04 with Python 3.12, and the runtime
+  stage now runs `apt-get dist-upgrade` — the previous upgrade landed in the
+  builder stage, so the image that was actually scanned and shipped never
+  received it.
+
 ## [Unreleased]
 
 ### Added

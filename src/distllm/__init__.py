@@ -9,7 +9,7 @@ try:  # Read the installed metadata so this cannot drift from pyproject.toml.
 
     __version__ = _pkg_version("distributed-llm")
 except Exception:  # not installed (source checkout): fall back to the source value
-    __version__ = "0.4.0"
+    __version__ = "0.7.0"
 
 # Map public names to their module paths for lazy loading.
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
