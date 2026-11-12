@@ -69,6 +69,12 @@ class PrefixCache:
         self._misses = 0
 
         self._memory_budget = memory_budget_bytes
+        # Only the default budget adapts to system memory pressure. A budget
+        # the caller chose explicitly is a contract: growing it to the default
+        # when the machine happens to be idle silently disables the limit, so a
+        # cache configured for 500 bytes would hold an entry of 400 bytes and
+        # any number of them.
+        self._budget_is_adaptive = memory_budget_bytes == _DEFAULT_MEMORY_BUDGET_BYTES
         self._total_memory_bytes = 0
         self._max_entries_soft = max_entries or 0
 
@@ -117,8 +123,13 @@ class PrefixCache:
                 if mem.percent > 90:
                     # Under memory pressure, reduce budget by 25%
                     self._memory_budget = int(self._memory_budget * 0.75)
-                elif mem.percent < 70 and self._memory_budget < _DEFAULT_MEMORY_BUDGET_BYTES:
-                    # Recover budget gradually
+                elif (
+                    mem.percent < 70
+                    and self._budget_is_adaptive
+                    and self._memory_budget < _DEFAULT_MEMORY_BUDGET_BYTES
+                ):
+                    # Recover budget gradually, but never past what the caller
+                    # asked for: this branch only applies to the default budget.
                     self._memory_budget = min(int(self._memory_budget * 1.1), _DEFAULT_MEMORY_BUDGET_BYTES)
             except ImportError:
                 pass
