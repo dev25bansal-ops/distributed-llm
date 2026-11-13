@@ -26,8 +26,11 @@ runs:
         # grpcio-tools emits a flat `import node_pb2` in the _grpc module, which
         # only resolves when distllm/dist is on sys.path. Callers import it as
         # a package, so rewrite to the package-relative form.
-        sed -i 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+        # -i.bak (with the suffix), not bare -i: BSD sed on macOS runners
+        # requires an argument to -i and fails the step without one.
+        sed -i.bak 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
           src/distllm/dist/node_pb2_grpc.py
+        rm -f src/distllm/dist/node_pb2_grpc.py.bak
         test -f src/distllm/dist/node_pb2.py
         grep -q '^from distllm.dist import node_pb2 as node__pb2$' \
           src/distllm/dist/node_pb2_grpc.py

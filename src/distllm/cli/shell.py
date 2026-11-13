@@ -165,8 +165,8 @@ def read_file_for_context(path_str: str) -> dict[str, str] | None:
     if truncated:
         text += f"\n\n[... truncated at {MAX_FILE_BYTES} bytes of {len(raw)} ...]"
         console.print(
-            f"[yellow]{path.name} is {len(raw) // 1024} KB — attaching the first "
-            f"{MAX_FILE_BYTES // 1024} KB[/yellow]"
+            f"[yellow]{path.name} is {len(raw) // 1024} KB — truncated, attaching "
+            f"the first {MAX_FILE_BYTES // 1024} KB[/yellow]"
         )
     return {"path": str(path), "content": text}
 

@@ -153,6 +153,60 @@ jobs:
           file: ./coverage.xml
           fail_ci_if_error: false
 
+  # macOS was never exercised before this job, and two user-facing defects
+  # shipped because of it: `distllm devices` printed Memory n/a (both memory
+  # probes were Linux/Windows only) and `distllm doctor` exited 1 with
+  # "CUDA available: False" errors on a perfectly healthy Mac. A full matrix
+  # leg would triple CI cost for little extra signal, so this runs only the
+  # platform-sensitive CLI surface plus a live invocation of both commands.
+  test-macos:
+    runs-on: macos-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev,cli]" torch
+      - uses: ./.github/actions/generate-protobuf
+      - name: Platform-sensitive CLI tests
+        run: |
+          pytest tests/cli/test_macos_support.py tests/cli/test_devices.py tests/cli/test_doctor.py tests/cli/test_cli_doctor.py -v
+      - name: distllm devices and doctor run on a real Mac
+        # The regression itself, end to end: devices must report this host's
+        # memory (not n/a), and the GPU checks must produce no error rows —
+        # with torch installed but no CUDA (a Mac's normal state) the CUDA
+        # check used to be two errors and exited 1. Scoped to --gpu so this
+        # cannot flake on the disk-space check the full run also performs.
+        # PYTHONUTF8=1: rich's JSON output carries the check text verbatim,
+        # and on a non-UTF-8 locale (cp1252 here) the em-dash in "SM 12.0 —
+        # supports BF16" is emitted as a bare 0x97 byte that json.load then
+        # rejects. macOS runners default to UTF-8, but pinning this makes the
+        # assertion locale-independent.
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          distllm devices --json > devices.json
+          python -c "
+          import json
+          d = json.load(open('devices.json'))
+          total = d['memory']['total_bytes']
+          assert total > 0, f'macOS memory probe returned {total}'
+          print('memory ok:', total)
+          "
+          python -m distllm.cli.doctor --gpu --json > doctor.json
+          python -c "
+          import json
+          d = json.load(open('doctor.json'))
+          errors = [
+              (cat, r['check'], r['value'])
+              for cat, body in d['categories'].items()
+              for r in body['checks'] if r['status'] == 'error'
+          ]
+          assert not errors, f'macOS GPU checks reported errors: {errors}'
+          print('gpu checks ok:', d['summary'])
+          "
+
   test-dist:
     runs-on: ubuntu-latest
     needs: [lint]
