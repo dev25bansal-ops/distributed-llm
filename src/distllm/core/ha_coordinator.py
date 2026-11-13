@@ -158,13 +158,24 @@ class RayFaultTolerance:
             self._leader_id = None
 
     def add_peer(self, peer_id: str, host: str, port: int) -> None:
-        """Register a peer coordinator."""
+        """Register a peer coordinator.
+
+        The peer starts *unconfirmed* (``online=False``, ``last_seen=0``):
+        seeding it alive meant a freshly started coordinator counted every
+        configured peer as reachable for a full election window without a
+        single heartbeat, so a node restarting inside a partition could see
+        a phantom majority, self-elect, and accept writes while the real
+        leader was still serving — two leaders, both taking writes. The
+        election round probes peers *before* counting quorum, so a genuinely
+        reachable peer is confirmed in the first round; a never-contacted
+        one no longer counts.
+        """
         with self._lock:
             self._peers[peer_id] = {
                 "host": host,
                 "port": port,
-                "last_seen": time.monotonic(),
-                "online": True,
+                "last_seen": 0.0,
+                "online": False,
             }
             # Track initial cluster size for quorum computation
             self._initial_cluster_size = max(self._initial_cluster_size, len(self._peers) + 1)
@@ -206,10 +217,14 @@ class RayFaultTolerance:
         to shrink the denominator until it is a majority of itself.
         """
         with self._lock:
-            alive = 1 + sum(
-                1 for info in self._peers.values() if info.get("online", True)
-            )
-            quorum = (self._initial_cluster_size // 2) + 1
+            return self._has_quorum_unlocked()
+
+    def _has_quorum_unlocked(self) -> bool:
+        """Quorum check for callers already holding ``self._lock``."""
+        alive = 1 + sum(
+            1 for info in self._peers.values() if info.get("online", False)
+        )
+        quorum = (self._initial_cluster_size // 2) + 1
         if self._split_brain_detector is not None:
             try:
                 # An explicit detector (e.g. an external lease/lock authority)
@@ -242,19 +257,20 @@ class RayFaultTolerance:
         exists to prevent.
         """
         with self._lock:
-            if self._state == CoordinatorState.LEADER and self._split_brain_detector is not None:
-                try:
-                    quorum_ok = self._split_brain_detector.quorum_check()
-                except Exception:
-                    quorum_ok = False
-                if not quorum_ok:
-                    logger.warning(
-                        f"{self._id}: refusing state write, quorum lost — "
-                        "stepping down to avoid split-brain"
-                    )
-                    self._state = CoordinatorState.FOLLOWER
-                    self._leader_id = None
-                    return
+            # The fence applies to every leader, not only deployments that
+            # installed an external detector: it used to run only when
+            # _split_brain_detector was set, and nothing in the production
+            # wiring ever set one — so the documented fence never executed.
+            # The built-in peer view is now always consulted; a detector, when
+            # present, still gets its veto inside _has_quorum_unlocked().
+            if self._state == CoordinatorState.LEADER and not self._has_quorum_unlocked():
+                logger.warning(
+                    f"{self._id}: refusing state write, quorum lost — "
+                    "stepping down to avoid split-brain"
+                )
+                self._state = CoordinatorState.FOLLOWER
+                self._leader_id = None
+                return
             self._replicated_state[key] = value
 
     def get_replicated_state(self) -> dict[str, Any]:
@@ -302,8 +318,13 @@ class RayFaultTolerance:
                     logger.info(f"{self._id}: Stepping down, {sender_id} has higher term {term}")
                 self._state = CoordinatorState.FOLLOWER
 
-            # If sender claims to be leader and has lower ID, follow
-            if sender_id < self._id:
+            # If sender claims to be leader and has lower ID, follow — but
+            # only at an equal-or-higher term. Without the term check, any
+            # heartbeat from a lower-ID peer deposed the current leader
+            # regardless of term, so a stale old leader (partitioned, then
+            # rejoining at its old term) could unseat the valid one on its
+            # first heartbeat. The higher-term case was already handled above.
+            if sender_id < self._id and term >= self._current_term:
                 if self._state == CoordinatorState.LEADER:
                     logger.info(
                         f"{self._id}: Stepping down, {sender_id} has lower ID"
@@ -446,7 +467,7 @@ class RayFaultTolerance:
             # from the quorum.
             for pid, info in self._peers.items():
                 if now - info["last_seen"] > self._election_timeout_s:
-                    if info.get("online", True):
+                    if info.get("online", False):
                         logger.info(f"{self._id}: Peer {pid} timed out, marking offline")
                     info["online"] = False
 
@@ -457,7 +478,7 @@ class RayFaultTolerance:
                 + [
                     pid
                     for pid, info in self._peers.items()
-                    if info.get("online", True)
+                    if info.get("online", False)
                 ]
             )
             total_alive = len(alive_ids)

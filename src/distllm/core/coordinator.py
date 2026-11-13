@@ -126,6 +126,14 @@ class Coordinator:
                 discovery_mode=kwargs.get("discovery_mode"),
                 wide_area_config=kwargs.get("wide_area_config"),
                 plugin_system=kwargs.get("plugin_system"),
+                # HA surface: without these the constructor's ha_enabled
+                # branch never ran for kwargs-based construction, so the
+                # whole election/replication path was dead in production.
+                ha_enabled=kwargs.get("ha_enabled", False),
+                ha_peer_coordinators=kwargs.get("ha_peer_coordinators"),
+                ha_replication_peers=kwargs.get("ha_replication_peers"),
+                ha_heartbeat_interval_s=kwargs.get("ha_heartbeat_interval_s", 2.0),
+                ha_election_timeout_s=kwargs.get("ha_election_timeout_s", 10.0),
             )
         self.config = config or CoordinatorConfig(model_name="")
         self.model_name = self.config.model_name
@@ -244,6 +252,14 @@ class Coordinator:
         # High-availability election (delegated to CoordinatorElection)
         self._election = CoordinatorElection(self)
 
+        # Created BEFORE the HA block below: set_replication_peers reads
+        # self._coordinator._running to decide whether to start the
+        # replication task now or defer it, and this Event used to be created
+        # eight lines later — so enabling both ha_enabled and
+        # ha_replication_peers crashed the constructor with AttributeError.
+        self._running = threading.Event()
+        self._async_shutdown = asyncio.Event()
+
         # HA leader election + state replication — enabled from config so the
         # previously-unreachable enable_ha()/set_replication_peers() surface
         # actually runs in production.
@@ -261,8 +277,6 @@ class Coordinator:
         # Subsystem lifecycle manager is created at the top of __init__
         # (before the StragglerDetector callback is wired); it is available
         # here for the HA/replication paths below.
-        self._running = threading.Event()
-        self._async_shutdown = asyncio.Event()
         self._request_results: dict[str, str] = {}
         self._request_events: dict[str, threading.Event] = {}
         self._request_lock = threading.Lock()  # Protects _request_results and _request_events
