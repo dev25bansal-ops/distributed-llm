@@ -106,7 +106,7 @@ distributed-llm/
 │   ├── cli/                      # Typer CLI commands
 │   │   ├── main.py               # CLI app entry point
 │   │   ├── chat.py               # `distllm chat` command
-│   │   ├── run.py                # `distllm run` command
+│   │   ├── run.py                # `distllm system run` command
 │   │   └── ...                   # Other commands (deploy, status, cert, etc.)
 │   ├── config/                   # Pydantic settings
 │   │   ├── settings.py           # DistLLMSettings root config

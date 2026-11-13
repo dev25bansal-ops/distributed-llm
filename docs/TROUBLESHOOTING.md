@@ -513,7 +513,7 @@ CircuitBreakerError: Circuit breaker open for node node_1 after 5 failures, reco
 **Fix:**
 ```bash
 # Step 1: Check why the node is failing
-distllm system logs --node node_1 --tail 50
+distllm system logs stream --component node_1 --lines 50
 
 # Step 2: Check GPU health on that node
 ssh user@node-1 "nvidia-smi"
@@ -1644,10 +1644,10 @@ distllm config validate
 
 ```bash
 # Recent logs
-distllm system logs --tail 100
+distllm system logs stream --lines 100
 
 # Logs for a specific node
-distllm system logs --node node_1 --tail 100
+distllm system logs stream --component node_1 --lines 100
 
 # Logs for a specific component
 distllm system logs --component coordinator --tail 100

@@ -126,8 +126,11 @@ behaviour a team running this on hardware in an office actually needs, because
 that hardware gets rebooted, unplugged and lent to a colleague. The figures are
 recorded in the repository with their measurement date and hardware, and an
 earlier set of marketing numbers was deliberately deleted from the comparison
-document because it could not be reproduced — the numbers that remain are ones
-we can defend and re-run. Taken together, what the system offers is not a faster
+document because it could not be reproduced. The two figures above are reported
+measurements whose raw logs live outside the repository rather than CI
+artifacts, and the Benchmarks document says so at the table itself — the
+first thing published when the Cloud credits land is the Cloud-measured
+scaling curve that re-earns these numbers on a platform anyone can rent. Taken together, what the system offers is not a faster
 way to run a single GPU, but a way to make a decision that was previously
 impossible: whether a given model runs at all on hardware a team already owns,
 and if so how fast, measured before they commit to buying anything.
@@ -313,5 +316,8 @@ pool, in under an hour and without reading source code.
 
 Confirm the PyPI version live that day (0.6.2.2 today; 0.7.0 is built but not
 yet tagged). The 92.0 and 153.1 tok/s figures are recorded in
-`docs/BENCHMARKS.md`, measured 2026-06-26 on an RTX 4090 over 1 GbE. Everything
-about Google Cloud above is stated as plan, not measurement — keep it that way.
+`docs/BENCHMARKS.md` as measurements dated 2026-06-26 on an RTX 4090 over
+1 GbE, with an explicit provenance note at the table: the raw logs live
+outside the repository, and the 92.0 value is also the estimator's input
+constant, so it is reported, not independently reproduced. Everything about
+Google Cloud above is stated as plan, not measurement — keep it that way.

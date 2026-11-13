@@ -170,7 +170,7 @@ export WIDE_AREA_TRANSPORT=quic
 distllm system coordinator --model meta-llama/Llama-3.2-70B
 
 # Workers connect from anywhere
-distllm system run --coordinator-host your-server.com --port 50050
+distllm-node --coordinator-host your-server.com --port 50050
 ```
 
 ---

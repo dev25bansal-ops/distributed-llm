@@ -38,8 +38,8 @@ distllm benchmark run --num-prompts 3 --max-tokens 10
 **Steps**:
 ```bash
 # 1. Restore from backup
-distllm backup list
-distllm backup restore <backup-id>
+distllm config backup list
+distllm config backup restore <backup-id>
 
 # 2. Or manually revert config.yaml
 git checkout HEAD~1 -- config.yaml
@@ -166,7 +166,7 @@ kill $(pgrep -f "distllm-node.*{node_id}")
 
 ```bash
 # 1. Create backup
-distllm backup create --type full
+distllm config backup create
 
 # 2. Drain all nodes
 for node in $(curl -s http://localhost:8000/admin/v1/nodes | jq -r '.nodes[].node_id'); do

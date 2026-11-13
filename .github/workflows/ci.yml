@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev,cli]"
       - uses: ./.github/actions/generate-protobuf
       # No-new-violation ratchet, not a bare `ruff check`: the tree carries a
       # known backlog (see scripts/ci/ruff-baseline.json) that cannot be fixed
@@ -49,6 +49,13 @@ jobs:
       #   mypy src/ && sed -i 's/|| true$//' .github/workflows/ci.yml
       - name: Run mypy (report only)
         run: mypy src/ || true
+      # Fails when a documented `distllm <command>` names a path the Typer
+      # app does not register. The audit fleet found four such commands
+      # (backup, system run --coordinator-host, system logs --node/--tail)
+      # that a reader could copy-paste into a shell and watch fail; this
+      # gate keeps that class of drift from returning.
+      - name: Docs commands resolve
+        run: python scripts/ci/check_docs_commands.py
 
   test:
     runs-on: ${{ matrix.os }}

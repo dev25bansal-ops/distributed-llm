@@ -171,7 +171,7 @@ GPT-2, GPT-Neo, Llama 2/3, Mistral, Mixtral, Qwen2.5, Phi, DeepSeek, StableLM, P
 
 ## Roadmap
 
-- **v0.4.x** (current): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache (opt-in), RBAC auth, 12 backends, speculative decoding, mDNS auto-discovery, and NAT traversal (STUN/TURN/ICE in `dist/nat.py` + `dist/ice_transport.py`)
+- **v0.7.x** (current — 0.7.0 in-tree, 0.6.2.2 on PyPI): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache (opt-in), RBAC auth, 12 backends, speculative decoding, mDNS auto-discovery, and NAT traversal (STUN/TURN/ICE in `dist/nat.py` + `dist/ice_transport.py`)
 - **Planned**:
   - **GPU marketplace reputation system**
   - **Privacy-preserving split inference with differential privacy**

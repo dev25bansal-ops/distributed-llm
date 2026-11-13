@@ -121,6 +121,21 @@ python -m benchmarks.regression_check --current results.json --baseline baseline
 
 ### Llama 3.1 8B (FP16)
 
+> **Provenance — read before quoting these numbers.** The 92.0 and 153.1
+> figures below were measured in June 2026 on hardware not in this
+> repository, and **no raw measurement artifact was committed**; the run
+> log lives outside the tree. The 92.0 value is *also* the input constant
+> of the analytical estimator in
+> `benchmarks/cluster_benchmark.py` (`ModelSpec.single_gpu_tok_s`), so the
+> estimator does **not** independently reproduce it — it starts from it.
+> Treat both rows as reported measurements awaiting re-confirmation, not as
+> reproducible CI output. To re-measure on your own hardware, run the
+> estimator's live mode against a running cluster:
+> `python -m benchmarks.cluster_benchmark --models llama8b --live --api-url http://localhost:8000`
+> (the default, non-live mode prints analytical estimates and is not a
+> measurement). The Buildathon application cites these figures; this note
+> is the honest caveat attached to them.
+
 | Configuration | tok/s | Speedup | Efficiency |
 |:---|---:|---:|---:|
 | 1 GPU (RTX 4090) | 92.0 | 1.00× | — |
