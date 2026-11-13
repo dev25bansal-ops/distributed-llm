@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import torch
-import torch.nn as nn
-import torch.distributed as dist
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
+nn = optional_import("torch.nn")
+dist = optional_import("torch.distributed")
 from loguru import logger
 
 from distllm.dist.tp_launcher import launch_tp_workers, tp_forward
@@ -248,10 +250,12 @@ class ParallelAutoTuner:
         self,
         hidden_size: int = 4096,
         num_layers: int = 1,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         batch_size: int = 1,
         seq_len: int = 128,
     ) -> ProfileResult:
+        if dtype is None:
+            dtype = torch.float16
         start_time = time.monotonic()
         result = ProfileResult()
 

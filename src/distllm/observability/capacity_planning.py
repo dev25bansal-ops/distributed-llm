@@ -39,10 +39,10 @@ import math
 import threading
 import warnings
 from collections import deque
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import IO, Any, Dict, List, Optional, Tuple
-from collections.abc import Callable, Sequence
 
 # ---------------------------------------------------------------------------
 # Optional yaml — no-op fallback when not installed

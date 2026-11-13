@@ -8,9 +8,9 @@ import asyncio
 import inspect
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional, Type, TypeVar
-from collections.abc import Callable
 
 from loguru import logger
 

@@ -37,7 +37,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.errors.types import NodeUnreachableError, DistLLMError

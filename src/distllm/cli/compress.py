@@ -7,9 +7,13 @@ front instead of silently saving an unquantized copy under a path that
 claims the model was compressed.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from transformers import AutoModelForCausalLM, AutoTokenizer

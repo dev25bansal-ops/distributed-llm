@@ -9,8 +9,8 @@ import asyncio
 import json
 import time
 from collections import defaultdict, deque
-from typing import Any
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import WebSocket
 from fastapi.responses import StreamingResponse

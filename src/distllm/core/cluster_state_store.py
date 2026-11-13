@@ -12,10 +12,10 @@ import os
 import socket
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-from collections.abc import Callable
 
 from loguru import logger
 

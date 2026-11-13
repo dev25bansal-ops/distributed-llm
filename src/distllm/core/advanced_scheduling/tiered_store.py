@@ -39,7 +39,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 # Magic prefix distinguishing serialized torch.Tensor payloads (with

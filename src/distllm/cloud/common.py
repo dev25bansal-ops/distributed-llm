@@ -9,10 +9,10 @@ from __future__ import annotations
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Generator
 
 from loguru import logger
 

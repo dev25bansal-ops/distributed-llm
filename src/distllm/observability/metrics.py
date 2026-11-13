@@ -46,7 +46,7 @@ def setup_metrics(
     service_name: str = "distllm",
     endpoint: str | None = None,
     exporter: MetricExporter = None,
-) -> "metrics.MeterProvider":
+) -> metrics.MeterProvider:
     """Initialize OpenTelemetry metrics.
 
     Args:

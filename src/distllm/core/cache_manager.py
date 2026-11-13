@@ -4,14 +4,32 @@ Manages prefix cache, KV cache lifecycle, and chunked prefill.
 Extracted from the Coordinator class.
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import threading
 import time
 from typing import Any
 
-import torch
 from loguru import logger
+
+
+# torch is an [self-hosted]-extra dependency; this module is imported by
+# core/coordinator.py on the coordinator startup path. Uses are isinstance
+# checks and cache clearing inside methods, so the import is deferred.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for KV cache tensor handling. Install the ML "
+            "stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 from distllm.core.kv_cache import KVCache
 

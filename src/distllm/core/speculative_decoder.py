@@ -12,12 +12,14 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any
 from collections.abc import Callable
+from typing import Any
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
+nn = optional_import("torch.nn")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
@@ -152,7 +154,7 @@ class SpeculativeDecoder(SpecDecoderBase):
         else:
             self._spec_ctrl = None
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,
@@ -694,7 +696,7 @@ class SelfSpeculativeDecoder(SpecDecoderBase):
             "total_proposed": 0,
         }
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,
@@ -934,7 +936,7 @@ class MultiDraftSpeculativeDecoder(SpecDecoderBase):
             "consensus_lengths": [],
         }
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,
@@ -1167,7 +1169,7 @@ class TreeDraftSpeculativeDecoder(SpecDecoderBase):
             "tree_sizes": [],
         }
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,

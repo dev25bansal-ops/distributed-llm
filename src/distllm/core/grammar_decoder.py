@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 class GBNFParser:
     """Parses GBNF grammar strings into rule definitions.
 

@@ -23,10 +23,10 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 def compute_logit_cosine(
     draft_logits: torch.Tensor | None,
     target_logits: torch.Tensor | None,

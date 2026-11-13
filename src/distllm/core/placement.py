@@ -54,8 +54,8 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, field
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 # ── Default reference points (normalisation constants) ─────────────────────
 # Chosen so a "typical" WAN edge node (10 ms, 100 Gbps, 400 gCO₂/kWh) scores ~1.0.

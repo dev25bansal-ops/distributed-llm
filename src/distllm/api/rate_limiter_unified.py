@@ -43,9 +43,9 @@ import enum
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
-from collections.abc import Callable
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse

@@ -5,9 +5,9 @@ Extracted from client.py to share retry-loop logic between sync and async client
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from collections.abc import Callable
 
 import httpx
 

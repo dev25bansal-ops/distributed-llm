@@ -8,14 +8,16 @@ Walks through:
   5. Adding worker nodes
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import time
 from typing import NoReturn
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 def _print_step(num: int, title: str) -> None:
     print(f"\n{'='*60}")
     print(f"  Step {num}: {title}")

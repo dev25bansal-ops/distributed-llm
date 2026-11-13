@@ -25,10 +25,12 @@ import asyncio
 import json
 import os
 import time
-from typing import Any
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.backends.model_validation import validate_model_name

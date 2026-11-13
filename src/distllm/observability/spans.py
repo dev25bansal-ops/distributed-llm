@@ -98,7 +98,7 @@ def span_decode_step(request_id: str, step: int, model: str = "distributed-llm")
         yield span
 
 
-def record_ttft(span: "trace.Span", ttft_seconds: float):
+def record_ttft(span: trace.Span, ttft_seconds: float):
     """Record time-to-first-token as a span event."""
     span.add_event("time_to_first_token", {"ttft_seconds": ttft_seconds})
 
@@ -281,7 +281,7 @@ def create_linked_span(
         return _tracer.start_span(name, attributes=attributes or {})
 
 
-def link_to_parent_node(span: "trace.Span", parent_node_id: str, request_id: str) -> None:
+def link_to_parent_node(span: trace.Span, parent_node_id: str, request_id: str) -> None:
     """Add a link attribute to connect this span to its parent node's span.
 
     Used when the parent trace context is not available but we know

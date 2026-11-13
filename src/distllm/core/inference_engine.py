@@ -1,5 +1,7 @@
 """Generation engine — local and distributed inference."""
 
+from __future__ import annotations
+
 import concurrent.futures
 import os
 import time
@@ -7,7 +9,9 @@ import uuid
 from collections.abc import Generator
 from typing import Any, Protocol
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.core.request_replay import DeterministicMode, RequestReplayBuffer, get_replay_buffer

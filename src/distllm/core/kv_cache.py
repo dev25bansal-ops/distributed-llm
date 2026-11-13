@@ -1,13 +1,32 @@
 """KV cache management for distributed LLM inference."""
 
+from __future__ import annotations
+
 import asyncio
 import threading
 import time
 from collections import defaultdict
 
 import numpy as np
-import torch
 from loguru import logger
+
+
+# torch is an [self-hosted]-extra dependency; this module is imported by
+# dist/node_service.py and core/cache_manager.py on startup paths (the node
+# server and the coordinator). Without this guard those guards upstream were
+# decorative: importing them pulled this module's hard import straight in.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for KV cache operations. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 # Quantization range constants
 FP8_E4M3_MAX: float = 448.0   # Max representable value in FP8 E4M3 format
@@ -215,7 +234,7 @@ class KVCache:
             self.cache = list(cache)
             self.num_layers = len(cache)
 
-    def slice(self, layer_start: int, layer_end: int) -> "KVCache":
+    def slice(self, layer_start: int, layer_end: int) -> KVCache:
         """E13: Create a new KVCache with a slice of layers for partial reuse.
 
         Args:
@@ -234,7 +253,7 @@ class KVCache:
             new_cache._quant_fp8 = self._quant_fp8
         return new_cache
 
-    def to(self, device: str) -> "KVCache":
+    def to(self, device: str) -> KVCache:
         """Move cache to device, preserving quantization state."""
         new_cache = KVCache()
         with self._lock:

@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 __all__ = [

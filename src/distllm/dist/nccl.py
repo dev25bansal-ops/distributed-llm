@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import torch
-import torch.distributed as dist
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
+dist = optional_import("torch.distributed")
 from loguru import logger
 
 from distllm.errors import NodeUnreachableError
@@ -248,7 +250,9 @@ class NcclTransport:
             self._record_error(CommType.P2P)
             raise RuntimeError(f"NCCL send_recv dst={dst} src={src} failed: {e}") from e
 
-    def all_reduce(self, tensor: torch.Tensor, op: dist.ReduceOp = dist.ReduceOp.SUM) -> torch.Tensor:
+    def all_reduce(self, tensor: torch.Tensor, op: dist.ReduceOp | None = None) -> torch.Tensor:
+        if op is None:
+            op = dist.ReduceOp.SUM
         self._ensure_initialized()
         start = time.time_ns()
         try:
@@ -282,7 +286,9 @@ class NcclTransport:
             self._record_error(CommType.ALL_GATHER)
             raise RuntimeError(f"NCCL all_gather failed: {e}") from e
 
-    def reduce_scatter(self, input_list: list[torch.Tensor], output: torch.Tensor, op: dist.ReduceOp = dist.ReduceOp.SUM) -> torch.Tensor:
+    def reduce_scatter(self, input_list: list[torch.Tensor], output: torch.Tensor, op: dist.ReduceOp | None = None) -> torch.Tensor:
+        if op is None:
+            op = dist.ReduceOp.SUM
         self._ensure_initialized()
         start = time.time_ns()
         try:

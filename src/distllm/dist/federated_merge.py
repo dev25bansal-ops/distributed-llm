@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.dist.byzantine import _decode_public_key, _verify_bytes

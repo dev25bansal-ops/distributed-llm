@@ -32,9 +32,9 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 from loguru import logger
 

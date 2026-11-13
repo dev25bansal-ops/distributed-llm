@@ -14,9 +14,11 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-import torch
-import torch.distributed as dist
-import torch.nn as nn
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
+dist = optional_import("torch.distributed")
+nn = optional_import("torch.nn")
 from loguru import logger
 
 

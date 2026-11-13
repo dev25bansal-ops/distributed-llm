@@ -5,26 +5,33 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-import torch
-import torch.distributed as dist
+from distllm._optional_deps import optional_import, resolve_class
+
+torch = optional_import("torch")
+dist = optional_import("torch.distributed")
 from loguru import logger
 
 from distllm.security import hf_revision
-from torch.distributed._tensor import DeviceMesh
-try:
-    from torch.distributed.tensor.parallel import (
-        ColwiseParallel,
-        PairwiseParallel,
-        RowwiseParallel,
-        parallelize_module,
-    )
-except ImportError:
-    from torch.distributed.tensor.parallel import (
-        ColwiseParallel,
-        RowwiseParallel,
-        parallelize_module,
-    )
-    PairwiseParallel = None
+
+DeviceMesh = resolve_class("torch.distributed._tensor", "DeviceMesh")
+
+# The old try/except imported the same names in both branches, so its
+# "fallback" could never succeed and the module was unimportable whenever
+# torch was absent. Resolve each name optionally instead: real when torch is
+# installed, None when not — and None is checked before use below.
+# NB: getattr(proxy, name, default) is unsafe here — the missing-dependency
+# proxy raises on ANY attribute access, default or not.
+from distllm._optional_deps import MissingOptionalDependency
+
+_tp_parallel = optional_import("torch.distributed.tensor.parallel")
+if isinstance(_tp_parallel, MissingOptionalDependency):
+    ColwiseParallel = PairwiseParallel = RowwiseParallel = None
+    parallelize_module = None
+else:
+    ColwiseParallel = getattr(_tp_parallel, "ColwiseParallel", None)
+    PairwiseParallel = getattr(_tp_parallel, "PairwiseParallel", None)
+    RowwiseParallel = getattr(_tp_parallel, "RowwiseParallel", None)
+    parallelize_module = getattr(_tp_parallel, "parallelize_module", None)
 
 
 @dataclass

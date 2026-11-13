@@ -15,10 +15,10 @@ import os
 import socket
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
-from collections.abc import Callable
 from urllib.parse import urlparse
 
 # Type alias for a formatter: (event, payload) -> (body_dict, extra_headers_dict)

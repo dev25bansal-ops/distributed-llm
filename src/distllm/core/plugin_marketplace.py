@@ -22,11 +22,11 @@ import inspect
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 from loguru import logger
 

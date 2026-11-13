@@ -10,6 +10,8 @@ S-LoRA style: shared base model + per-request adapter weights in one batch.
 - Adapter quantization (int8) for higher density
 """
 
+from __future__ import annotations
+
 import queue
 import threading
 import time
@@ -18,7 +20,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.security import hf_revision
@@ -55,7 +59,7 @@ class SwappingScheduler:
     and orchestrates async swap-in/swap-out to hide latency.
     """
 
-    def __init__(self, pool: "AdapterPool", max_gpu_adapters: int = 4):
+    def __init__(self, pool: AdapterPool, max_gpu_adapters: int = 4):
         self._pool = pool
         self._max_gpu_adapters = max_gpu_adapters
         self._gpu_slots: OrderedDict[str, float] = OrderedDict()  # adapter_id -> last_used

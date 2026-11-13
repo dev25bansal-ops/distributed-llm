@@ -10,8 +10,8 @@ import json
 import threading
 import time
 from collections import deque
-from typing import Any
 from collections.abc import Callable
+from typing import Any
 
 from loguru import logger
 

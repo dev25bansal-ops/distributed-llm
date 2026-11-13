@@ -8,11 +8,13 @@ hidden states, token IDs), and compares them.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from collections.abc import Sequence
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 if TYPE_CHECKING:

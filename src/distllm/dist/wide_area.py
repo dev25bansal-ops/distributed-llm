@@ -15,7 +15,9 @@ import statistics
 import threading
 from typing import TYPE_CHECKING, Any, Callable
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.config.loader import NodeRole

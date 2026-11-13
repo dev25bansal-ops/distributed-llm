@@ -24,7 +24,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict

@@ -1,13 +1,33 @@
 """Embedding and reranking routes: POST /v1/embeddings, POST /v1/rerank."""
 
+from __future__ import annotations
+
 import base64
 import struct
 import time
 import uuid
 
-import torch
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+# torch is an [self-hosted]-extra dependency; this route module is imported
+# by the api package on the server startup path. The future import above
+# keeps annotations lazy and the guard below defers the import: the server
+# starts without the ML stack and a request that needs tensors gets a clear
+# error instead of a module-load crash.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for embeddings. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 from ..api_state import g
 from ..errors import error_openapi_entry

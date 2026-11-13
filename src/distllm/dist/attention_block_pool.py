@@ -16,7 +16,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -142,7 +144,7 @@ class BlockPool:
         num_layers: int,
         num_heads: int,
         head_dim: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         device: str = "cuda",
         swap_to_cpu: bool = False,
         max_swap_blocks: int = 0,
@@ -150,6 +152,8 @@ class BlockPool:
         eviction_watermark: float = 0.85,
         restore_watermark: float = 0.70,
     ):
+        if dtype is None:
+            dtype = torch.float16
         if num_blocks <= 0:
             raise ValueError(f"num_blocks must be positive, got {num_blocks}")
         if block_size <= 0 or (block_size & (block_size - 1)) != 0:

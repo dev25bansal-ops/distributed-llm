@@ -14,10 +14,10 @@ Fully rewritten with:
 import json
 import os
 import time
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from collections.abc import AsyncIterator, Iterator
 
 import httpx
 

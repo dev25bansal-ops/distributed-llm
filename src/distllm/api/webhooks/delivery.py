@@ -14,12 +14,12 @@ import hmac
 import json
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
-from collections.abc import Callable
 
 import httpx
 from loguru import logger

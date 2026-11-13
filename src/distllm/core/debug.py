@@ -1,7 +1,28 @@
 """Debug mode for tensor shape logging and diagnostics."""
 
-import torch
+from __future__ import annotations
+
 from loguru import logger
+
+
+# torch is an [self-hosted]-extra dependency. The public API here —
+# set_debug_mode / is_debug_mode — needs no torch at all, but this module is
+# imported by dist/worker.py and dist/node_service.py on the node startup
+# path, so an unguarded import made a torch-free node impossible. The future
+# import above keeps annotations lazy; the guard defers the real import to
+# the tensor-parsing helpers that use it.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for tensor debug logging. Install the ML "
+            "stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 from distllm.errors import InputValidationError
 

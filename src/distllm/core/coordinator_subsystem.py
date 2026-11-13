@@ -15,7 +15,9 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 from transformers import AutoTokenizer
 

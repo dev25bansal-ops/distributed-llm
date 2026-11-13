@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 class BackendState(Enum):
     """Lifecycle state of a backend adapter.
 

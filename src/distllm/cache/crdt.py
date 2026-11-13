@@ -40,9 +40,9 @@ gossip wire is a transport concern and is out of scope for this task; the
 from __future__ import annotations
 
 import time
+from collections.abc import Hashable
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
-from collections.abc import Hashable
 
 # ---------------------------------------------------------------------------
 # Timestamp (HLC value)

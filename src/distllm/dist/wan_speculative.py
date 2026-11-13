@@ -25,8 +25,10 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 
@@ -93,7 +95,7 @@ class WANSpeculativeDecoder:
         )
         return s
 
-    @torch.no_grad()
+    @no_grad()
     async def generate(
         self,
         input_ids: torch.Tensor,

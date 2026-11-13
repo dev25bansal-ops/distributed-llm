@@ -54,7 +54,22 @@ def _get_client_id(request: Any) -> str:
 
 import threading
 
-import torch
+
+# torch is an [self-hosted]-extra dependency; this module is imported by
+# routes/chat.py on the API startup path. Both torch uses below are inside
+# methods, so the import is deferred rather than fatal at module scope.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for streaming generation. Install the ML "
+            "stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 from distllm.core.token_generator import TokenGenerator
 

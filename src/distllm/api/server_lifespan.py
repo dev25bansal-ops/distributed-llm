@@ -58,7 +58,14 @@ def _init_observability() -> None:
         # old unconditional call made the server fail to start at all.
         logger.info(f"Tracing disabled: {exc}")
 
-    state.metrics_exporter = DistLLMPrometheusExporter()
+    # Reuse the exporter the module already built (server.py:409) and handed
+    # to ObservabilityMiddleware. Creating a second DistLLMPrometheusExporter
+    # here — which this line used to do — left the middleware recording every
+    # request-layer RED metric into an orphaned registry: /metrics renders
+    # state.metrics_exporter (the new one), so requests_total,
+    # request_latency_seconds and errors_total were all invisible.
+    if state.metrics_exporter is None:
+        state.metrics_exporter = DistLLMPrometheusExporter()
 
 
 def _init_plugins(ps: PluginSystem) -> None:

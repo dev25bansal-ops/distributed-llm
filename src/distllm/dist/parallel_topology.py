@@ -15,9 +15,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 # ---------------------------------------------------------------------------
 # TopologyInfo  —  hardware topology dataclass
 # ---------------------------------------------------------------------------

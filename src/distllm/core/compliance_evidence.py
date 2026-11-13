@@ -31,10 +31,10 @@ itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-from collections.abc import Mapping
 
 # --- Control mapping (reuses compliance/soc2_control_mapping.md) -------------
 # Each evidence domain maps to SOC 2 TSC control IDs and ISO 27001:2022 Annex A

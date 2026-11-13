@@ -12,8 +12,9 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Protocol
 
-import torch
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
 if TYPE_CHECKING:
     from distllm.core.inference_engine import InferenceEngine
 

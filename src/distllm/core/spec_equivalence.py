@@ -26,8 +26,8 @@ Usage::
 from __future__ import annotations
 
 import threading
-from typing import Any
 from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 from loguru import logger
 

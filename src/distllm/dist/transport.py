@@ -24,8 +24,9 @@ from __future__ import annotations
 import abc
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
 from distllm.dist import node_client
 from distllm.dist import node_service
 

@@ -17,12 +17,37 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import torch
 from loguru import logger
 
 if TYPE_CHECKING:
     from distllm.core.autoscaler import IntelligentAutoscaler
-from transformers import AutoTokenizer
+
+# torch and transformers are ML-stack dependencies ([self-hosted] extra), but
+# this module sits on the coordinator startup path and both were imported
+# unconditionally, so a torch-free install could not start a coordinator at
+# all. All uses are inside methods; the deferral below keeps `import
+# distllm.core.coordinator` working and raises a message that names the fix
+# the moment torch is actually touched.
+class _MlStackNotInstalled:
+    def __init__(self, package: str) -> None:
+        self._package = package
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            f"{self._package} is required for local model loading. Install the "
+            "ML stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _MlStackNotInstalled("torch")  # type: ignore[assignment]
+
+try:
+    from transformers import AutoTokenizer
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    AutoTokenizer = _MlStackNotInstalled("transformers")  # type: ignore[assignment,misc]
 
 from distllm.config.settings import NodeRole
 from distllm.core.batch_scheduler import BatchScheduler
@@ -322,7 +347,12 @@ class Coordinator:
         self.draft_model = None
         # Optional metrics exporter (set by the API server when wired);
         # the pipeline guards with `if c.metrics_exporter`.
-        self.metrics_exporter = None
+        # Take it from the config: the constructor used to hard-set None
+        # here after storing the kwarg in CoordinatorConfig, which discarded
+        # the exporter the API server passed in — making every
+        # `if c.metrics_exporter:` write in request_pipeline.py dead code and
+        # leaving distllm_tokens_generated_total and friends frozen at zero.
+        self.metrics_exporter = self.config.metrics_exporter
         # SelfOptimizingEngine hook is wired later; the pipeline guards
         # with `if c._self_optimizing`.
         self._self_optimizing = None

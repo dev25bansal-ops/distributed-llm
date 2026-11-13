@@ -33,11 +33,11 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Any
-from collections.abc import Callable
 
 from loguru import logger
 

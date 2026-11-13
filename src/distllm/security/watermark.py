@@ -40,7 +40,28 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-import torch
+
+# torch is an optional dependency ([self-hosted] extra), and this module is
+# imported eagerly by security/__init__.py, which api/ imports on its startup
+# path. An unguarded import here therefore made the whole API package — and
+# the distllm-api console script — fail to import on any install without the
+# ML stack. Every use of torch in this file is inside a method body (and
+# `from __future__ import annotations` keeps the annotations lazy), so the
+# import is deferred: module load succeeds, and touching torch at runtime
+# raises a message that names the fix instead of an AttributeError.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for model watermarking. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
+
 from loguru import logger
 
 # cryptography is required for signing/verification

@@ -27,9 +27,9 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable, Coroutine
 
 from loguru import logger
 

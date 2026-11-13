@@ -37,9 +37,9 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol, runtime_checkable
-from collections.abc import Sequence
 
 from loguru import logger
 

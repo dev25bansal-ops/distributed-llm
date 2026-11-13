@@ -35,10 +35,10 @@ import sys
 import tempfile
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
-from collections.abc import Callable
 
 from loguru import logger
 

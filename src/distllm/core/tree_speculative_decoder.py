@@ -40,12 +40,14 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
@@ -152,7 +154,7 @@ class TreeSpeculativeDecoder:
             "branch_count": self._stats.branch_count,
         }
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,

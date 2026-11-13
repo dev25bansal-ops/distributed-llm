@@ -41,9 +41,9 @@ import platform
 import socket
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable
 
 try:  # loguru is used throughout the repo; degrade gracefully if absent.
     from loguru import logger

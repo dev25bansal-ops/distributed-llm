@@ -43,12 +43,14 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable
 
-import torch
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
@@ -240,7 +242,7 @@ class PipelinedSpeculativeDecoder:
 
     # ── Public API ──────────────────────────────────────────────────────
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,

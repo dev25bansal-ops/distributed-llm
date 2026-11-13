@@ -14,9 +14,9 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from collections.abc import Callable
 
 if TYPE_CHECKING:
     from distllm.config.settings import ChatRouterSettings

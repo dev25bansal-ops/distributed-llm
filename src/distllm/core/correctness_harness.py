@@ -34,13 +34,14 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Iterable
 
-import torch
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
 from distllm.core.spec_verify import accept_token
 from distllm.dashboard.verification_history import compute_logit_cosine
 

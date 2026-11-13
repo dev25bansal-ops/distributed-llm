@@ -22,7 +22,9 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -35,9 +37,14 @@ class ContiguousKVBuffer:
         num_heads: int,
         head_dim: int,
         max_tokens: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         device: str = "cuda",
     ):
+        # Default-argument values evaluate at def time, so `torch.float16`
+        # used to make this class — and the whole module — unbuildable
+        # without torch. Resolve it here, where the error belongs.
+        if dtype is None:
+            dtype = torch.float16
         self.max_tokens = max_tokens
         self.num_tokens = 0
         self.keys = torch.zeros(

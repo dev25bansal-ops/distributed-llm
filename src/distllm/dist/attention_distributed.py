@@ -15,8 +15,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import torch
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
 from distllm.dist.attention_block_pool import BlockPool
 
 if TYPE_CHECKING:

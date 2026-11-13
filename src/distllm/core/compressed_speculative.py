@@ -27,19 +27,24 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any
 from collections.abc import Callable
+from typing import Any
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import, resolve_class
+
+torch = optional_import("torch")
+nn = optional_import("torch.nn")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
 
 # ── Lightweight Verifier ─────────────────────────────────────────────────
 
-class LightweightVerifier(nn.Module):
+_NnModule = resolve_class("torch.nn", "Module")
+
+
+class LightweightVerifier(_NnModule):
     """A single transformer layer that verifies compressed-model outputs.
 
     Loaded on CPU with INT8 quantization for fast inference.  Takes the
@@ -110,7 +115,7 @@ class LightweightVerifier(nn.Module):
         logits = self.acceptance_head(h)  # (batch, seq_len, 1)
         return logits
 
-    @torch.no_grad()
+    @no_grad()
     def acceptance_probability(
         self,
         hidden_states: torch.Tensor,
@@ -125,7 +130,7 @@ class LightweightVerifier(nn.Module):
         logits = self.forward(hidden_states, compressed_logits)
         return torch.sigmoid(logits.squeeze(-1))
 
-    @torch.no_grad()
+    @no_grad()
     def verify(
         self,
         hidden_states: torch.Tensor,
@@ -294,7 +299,7 @@ class CompressedSpeculativeDecoder:
                 return bool(value)
         return True
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,
