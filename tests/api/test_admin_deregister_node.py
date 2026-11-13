@@ -136,15 +136,65 @@ class TestDeregisterNode:
         assert "w1" not in ids
         assert "w2" in ids
 
-    def test_pipeline_failure_does_not_block_removal(self, auth_header, make_client):
-        """A broken orchestrator must not make a departed node permanent."""
+    def test_deregister_clears_the_drain_entry(self, auth_header, make_client):
+        """Deregister must not leave the id draining forever.
+
+        It used to call mark_node_draining but never mark_node_alive, so a
+        node that left and rejoined with the same id reported as draining
+        again and the drain gauge never returned to zero."""
         client, coord = make_client({"w1": object()})
-        coord._pipeline.remove_node.side_effect = RuntimeError("boom")
+
+        client.delete("/admin/v1/nodes/w1", headers=auth_header)
+
+        coord._resource_mgr.mark_node_alive.assert_called_once_with("w1")
+
+    def test_deregister_survives_a_broken_drain_cleanup(self, auth_header, make_client):
+        client, coord = make_client({"w1": object()})
+        coord._resource_mgr.mark_node_alive.side_effect = RuntimeError("boom")
 
         resp = client.delete("/admin/v1/nodes/w1", headers=auth_header)
 
         assert resp.status_code == 200
         assert "w1" not in coord.nodes
+
+
+class TestOfflineAndRecoverUseTheRealAttribute:
+    """offline/recover branched on attributes real nodes do not have.
+
+    Live pipeline nodes carry ``is_healthy`` (PipelineNode); the old code
+    checked ``isinstance(node, dict)`` / ``hasattr(node, 'healthy')``, so on a
+    real deployment offline was a silent no-op and recover could not clear
+    is_healthy — a recovered node stayed unroutable.
+    """
+
+    def test_offline_marks_pipeline_node_unhealthy(self, auth_header, make_client):
+        from distllm.dist.pipeline.orchestrator import PipelineNode
+
+        node = PipelineNode(node_id="w1", host="h", port=1, start_layer=0, end_layer=1)
+        node.is_healthy = True
+        client, coord = make_client({"w1": node})
+        # Real pipeline method must do the work, not a MagicMock side effect.
+        coord._pipeline.mark_node_unhealthy.side_effect = None
+        coord._pipeline.mark_node_unhealthy = lambda nid: setattr(node, "is_healthy", False)
+
+        resp = client.post("/admin/v1/nodes/w1/offline", headers=auth_header)
+
+        assert resp.status_code == 200
+        assert node.is_healthy is False, "offline must reach the real attribute"
+
+    def test_recover_marks_pipeline_node_healthy(self, auth_header, make_client):
+        from distllm.dist.pipeline.orchestrator import PipelineNode
+
+        node = PipelineNode(node_id="w1", host="h", port=1, start_layer=0, end_layer=1)
+        node.is_healthy = False
+        client, coord = make_client({"w1": node})
+        coord._pipeline.mark_node_healthy.side_effect = None
+        coord._pipeline.mark_node_healthy = lambda nid: setattr(node, "is_healthy", True)
+
+        resp = client.post("/admin/v1/nodes/w1/recover", headers=auth_header)
+
+        assert resp.status_code == 200
+        assert node.is_healthy is True, "recover must clear the real attribute"
 
     def test_delete_requires_auth(self, make_client):
         """Removing a node is an admin action and must not be anonymous."""

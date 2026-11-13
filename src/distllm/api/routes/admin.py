@@ -316,12 +316,17 @@ async def offline_node(node_id: str):
 
     node = coord.nodes.get(node_id)
     if node is not None:
-        if isinstance(node, dict):
-            # Dict from PipelineOrchestrator — update via pipeline
-            pass
-        elif isinstance(node, object) and hasattr(node, 'healthy'):
-            # M-13: Thread-safe write via attribute with instance lock
-            node.healthy = False
+        # Route through the pipeline, whose node objects carry is_healthy
+        # (PipelineNode) — the previous dict/`healthy` attribute branching
+        # matched neither real node shape, so offline was a silent no-op on
+        # every live deployment and the node kept serving.
+        pipeline = getattr(coord, "_pipeline", None)
+        if pipeline is not None and hasattr(pipeline, "mark_node_unhealthy"):
+            pipeline.mark_node_unhealthy(node_id)
+        elif isinstance(node, dict):
+            node["is_healthy"] = False
+        elif hasattr(node, "is_healthy"):
+            node.is_healthy = False
         else:
             logger.warning(f"Admin: cannot mark node {node_id} offline (unknown type: {type(node).__name__})")
     return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' marked offline")
@@ -342,11 +347,16 @@ async def recover_node(node_id: str):
 
     node = coord.nodes.get(node_id)
     if node is not None:
-        if isinstance(node, dict):
-            # Dict from PipelineOrchestrator — mark healthy via pipeline
-            coord._pipeline.mark_node_healthy(node_id)
-        else:
-            node.healthy = True
+        # Same asymmetry as offline: recover used to write `node.healthy`,
+        # which no live node object has, so a recovered node stayed
+        # is_healthy=False and could not be routed to.
+        pipeline = getattr(coord, "_pipeline", None)
+        if pipeline is not None and hasattr(pipeline, "mark_node_healthy"):
+            pipeline.mark_node_healthy(node_id)
+        elif isinstance(node, dict):
+            node["is_healthy"] = True
+        elif hasattr(node, "is_healthy"):
+            node.is_healthy = True
 
     resource_mgr = getattr(coord, '_resource_mgr', None)
     if resource_mgr is not None:
@@ -391,6 +401,17 @@ async def deregister_node(node_id: str):
         resource_mgr.mark_node_draining(node_id)
 
     node = coord.nodes.pop(node_id, None)
+
+    # Clear the draining entry too. Deregister used to leave the id in
+    # _draining_nodes forever (it is a plain set with no removal here), so a
+    # node that left and rejoined with the same id reported as draining
+    # again — and the drain metric never returned to zero.
+    if resource_mgr is not None and hasattr(resource_mgr, 'mark_node_alive'):
+        try:
+            resource_mgr.mark_node_alive(node_id)
+        except Exception:
+            logger.opt(exception=True).warning(
+                f"Admin: could not clear drain state for {node_id}")
 
     # The orchestrator keeps its own view of the nodes; remove it there too so
     # a request cannot be routed to a node that has gone.

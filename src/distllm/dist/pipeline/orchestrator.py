@@ -418,10 +418,23 @@ class PipelineOrchestrator:
         start_time = time.time()
         self._stats["pipeline_runs"] += 1
 
+        # A draining node keeps finishing in-flight requests but must not
+        # receive NEW work. The serving path used to filter on is_healthy
+        # only, so `admin drain` marked the node in the ResourceManager and
+        # nothing consulted it — drained nodes kept taking fresh requests
+        # and drain could never actually quiesce a node for removal.
+        draining: set[str] = set()
+        if self._resource_mgr is not None and hasattr(self._resource_mgr, "get_draining_nodes"):
+            try:
+                draining = set(self._resource_mgr.get_draining_nodes())
+            except Exception:
+                draining = set()
+
         with self._lock:
             ordered_nodes = [
                 self._nodes[nid] for nid in self._node_order
                 if nid in self._nodes and self._nodes[nid].is_healthy
+                and nid not in draining
             ]
 
         if not ordered_nodes:

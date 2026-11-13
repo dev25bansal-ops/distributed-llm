@@ -376,12 +376,14 @@ def _cluster_join(
             import time
             # Poll until the worker's gRPC port is open (model loading takes ~30s)
             console.print("[dim]Waiting for worker to finish loading model...[/dim]")
+            worker_ready = False
             for attempt in range(60):
                 s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
                 s.settimeout(2)
                 result = s.connect_ex((worker_host, listen_port))
                 s.close()
                 if result == 0:
+                    worker_ready = True
                     break
                 time.sleep(1)
             else:
@@ -419,6 +421,12 @@ def _cluster_join(
                     "end_layer": end_layer or 0,
                     "total_layers": total_layers or 1,
                     "device": device,
+                    # The coordinator defaults `ready` to False and marks the
+                    # node unhealthy when it is missing — so every `cluster
+                    # join` produced a node the serving path filtered out
+                    # (is_healthy=False) until a later health probe happened
+                    # to restore it. Send what the port poll actually found.
+                    "ready": worker_ready,
                 },
                 headers=reg_headers or None,
                 timeout=60.0,
