@@ -1,8 +1,0 @@
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: {{ include "distllm.fullname" . }}-pdb
-spec:
-  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | default 1 }}
-  selector:
-    matchLabels: {{- include "distllm.selectorLabels" . | nindent 6 }}

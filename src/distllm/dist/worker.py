@@ -6,8 +6,10 @@ all workers in pipeline order.
 """
 
 from __future__ import annotations
+
 import argparse
 import hashlib
+import os
 import sys
 from dataclasses import dataclass
 
@@ -566,7 +568,18 @@ def main():
             if not args.tls_ca and settings.tls.ca_cert_file:
                 tls_ca = str(settings.tls.ca_cert_file)
         if not args.cluster_key:
-            cluster_key = settings.network.cluster_key or None
+            # NetworkSettings has no cluster_key field, so this attribute
+            # access raised AttributeError on every startup that loaded a
+            # config.yaml — the worker died before registering and `cluster
+            # join` then waited out its 60s poll and misreported success.
+            # Read it defensively and fall back to the env var the rest of
+            # the stack uses.
+            cluster_key = (
+                getattr(settings.network, "cluster_key", None)
+                or os.environ.get("DISTLLM_CLUSTER_KEY")
+                or os.environ.get("CLUSTER_KEY")
+                or None
+            )
         if not args.model_cache_dir:
             model_cache_dir = settings.model_hub.cache_dir or None
 
