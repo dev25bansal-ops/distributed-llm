@@ -1,0 +1,27 @@
+{
+  "completed_agents": {
+    "sso": "7/7 findings FIXED with tests; residual auth_plugin gate closed by coordinator",
+    "redundancy": "7/7 FIXED with tests; the 2 dist reds it proved came from the HA agent's then-in-flight work, now resolved",
+    "packaging": "9/9 FIXED or VERIFIED-FIXED with evidence commands",
+    "keys": "8/8 FIXED or VERIFIED-FIXED with tests",
+    "hafence": "7/7 VERIFIED-FIXED or NEWLY-FIXED; 2 routed findings (cluster_state_store two-leaders, coordinator_election non-leader snapshots) closed by coordinator",
+    "lifecycle": "5/5 findings FIXED (incl. newly-found microbatch/overlap drain-filter residual + listing health + cluster leave port 8000 + drain-intent persistence); routed items closed by coordinator: HA snapshot health re-application (coordinator_election.apply_state_snapshot), breaker-state persistence wiring (coordinator.stop step 9b + init load; ResourceManager.save_state had zero callers)"
+  },
+  "running_agents": {
+    "caches": "20 findings in flight",
+    "streaming": "7 findings in flight",
+    "metrics": "5 findings in flight",
+    "specdecode": "6 findings in flight"
+  },
+  "fixed_by_coordinator_commits": ["481f8236", "7f89b8bd", "e78796c0", "aafa56d4", "fef0756f"],
+  "coordinator_inline_fixes_uncommitted": [
+    "plugins/auth_plugin.py: exempt /v1/auth/* from RBAC (residual SSO gate)",
+    "tests/api/test_auth_middleware.py: restore OTel global tracer provider after full-app lifespan test",
+    "core/cluster_state_store.py: is_leader verifies the live leader key",
+    "core/coordinator_election.py: full snapshots sent only by the leader; apply_state_snapshot re-applies per-node health",
+    "tests/security/test_idor_exchange.py: restore coordinator global after each test",
+    "core/coordinator.py: breaker-state persistence wired into stop() and __init__ (closes the zero-callers finding)"
+  ],
+  "known_ratchet_delta": "1 net-new SIM105 in observability/exporter.py:262 (fix-metrics agent's in-flight file; fix in consolidation pass)",
+  "incidents": "stash push/pop cycle at ~03:56 UTC swept 83 files; restored via git stash apply (stash@{0} kept as safety net until final commit), HA file reconciled with its live version, fix-keys agent notified; no work lost"
+}
