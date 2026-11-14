@@ -220,16 +220,21 @@ class TieredMemoryPool:
 
             # Check L3 (COLD)
             if key in self._l3_cache:
+                # Load from NVMe BEFORE counting the hit: a lost/corrupt
+                # file is a miss, not a hit, and its entry must leave the
+                # tier with its bytes subtracted from the ledger.
+                data = self._load_from_nvme(key)
+                if data is None:
+                    entry = self._l3_cache.pop(key, None)
+                    if entry is not None:
+                        self._l3_used -= entry.size_bytes
+                    self._stats[StorageTier.COLD]["misses"] += 1
+                    return None
+
                 entry = self._l3_cache[key]
                 entry.last_access = time.time()
                 entry.access_count += 1
                 self._stats[StorageTier.COLD]["hits"] += 1
-
-                # Load from NVMe
-                data = self._load_from_nvme(key)
-                if data is None:
-                    self._l3_cache.pop(key, None)
-                    return None
 
                 # Promote to L2
                 self._promote(key, StorageTier.COLD, StorageTier.WARM, data=data)
@@ -351,11 +356,26 @@ class TieredMemoryPool:
         """Store in L3 (NVMe SSD)."""
         if self._nvme_path is None:
             return False
+        # A single entry larger than the whole tier can never fit.
+        if size_bytes > self._l3_capacity:
+            logger.warning(
+                f"L3 cache entry {key} ({size_bytes} bytes) exceeds capacity "
+                f"({self._l3_capacity} bytes); not stored"
+            )
+            return False
 
-        # Evict if needed
+        # Evict if needed.  The evicted entry's bytes MUST be subtracted from
+        # _l3_used — the old loop popped entries without decrementing, so the
+        # counter grew without bound and every put wiped the whole tier.
         while self._l3_used + size_bytes > self._l3_capacity and self._l3_cache:
-            evict_key, _ = self._l3_cache.popitem(last=False)
+            evict_key, evict_entry = self._l3_cache.popitem(last=False)
+            self._l3_used -= evict_entry.size_bytes
             self._delete_from_nvme(evict_key)
+
+        # Replacing an existing key must not double-count its bytes.
+        existing = self._l3_cache.get(key)
+        if existing is not None:
+            self._l3_used -= existing.size_bytes
 
         # Write to NVMe
         if not self._save_to_nvme(key, data):
@@ -416,11 +436,40 @@ class TieredMemoryPool:
         self._stats[StorageTier.WARM]["demotions"] += 1
 
     def _demote_to_l3(self, key: str, entry: TieredEntry) -> None:
-        """Demote an entry from L2 to L3 (NVMe)."""
+        """Demote an entry from L2 to L3 (NVMe).
+
+        Enforces the L3 capacity: demotion evicts the coldest L3 entries
+        (exactly like :meth:`_put_l3`) rather than writing past the
+        configured NVMe quota.  An entry that still cannot fit after
+        eviction is dropped — L2 pressure must not silently grow L3 without
+        bound.
+        """
         if self._nvme_path is None:
             # No L3 — just drop the entry
             self._stats[StorageTier.COLD]["demotions"] += 1
             return
+
+        size_bytes = entry.size_bytes
+        if size_bytes > self._l3_capacity:
+            # Can never fit; drop rather than exceed the quota.
+            logger.debug(
+                f"L3 demotion skipped for {key}: {size_bytes} bytes exceeds "
+                f"capacity {self._l3_capacity}"
+            )
+            return
+
+        while self._l3_used + size_bytes > self._l3_capacity and self._l3_cache:
+            evict_key, evict_entry = self._l3_cache.popitem(last=False)
+            self._l3_used -= evict_entry.size_bytes
+            self._delete_from_nvme(evict_key)
+
+        if self._l3_used + size_bytes > self._l3_capacity:
+            return
+
+        # Replacing an existing key must not double-count its bytes.
+        existing = self._l3_cache.get(key)
+        if existing is not None:
+            self._l3_used -= existing.size_bytes
 
         # Save to NVMe (torch.Tensors persist with dtype/shape metadata so the
         # L3 round-trip returns a real tensor, not opaque bytes).

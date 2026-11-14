@@ -29,8 +29,8 @@ import torch
 
 from distllm.core.batch_scheduler import BatchScheduler, Sequence
 from distllm.core.cache_manager import CacheManager
-from distllm.core.request_pipeline import RequestPipeline, PREFIX_CACHE_KV_REUSE_WIRED
-
+from distllm.core.request_pipeline import PREFIX_CACHE_KV_REUSE_WIRED, RequestPipeline
+from distllm.core.speculative_decoder import SpeculativeDecoder
 
 # ---------------------------------------------------------------------------
 # Deterministic stubs
@@ -273,3 +273,90 @@ def test_distributed_partial_hit_second_output_equals_first(coord):
     )
     assert seq2.prefix_match_len == 0
     assert coord.model.seen_widths == [24, 1, 24, 1]
+
+
+# ---------------------------------------------------------------------------
+# Speculative path (findings 609/492): _generate_local_batch used to crash
+# unpacking generate_batch_draft_tokens() into 2 values, and verify_batch
+# read prompt-interior logits rows for the first draft — so the spec-enabled
+# path either raised ValueError or emitted a token from the wrong position.
+# ---------------------------------------------------------------------------
+
+
+class _RowPatternModel(torch.nn.Module):
+    """Rows 0..W-2 favour token 9; the last row favours token 5.
+
+    With full-prompt logits the row that predicts the first generated
+    token is the LAST row, so the first emitted token must be 5.  The
+    pre-fix verifier consulted row 0 (the first prompt position) and
+    emitted 9 instead.
+    """
+
+    VOCAB = 16
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._param = torch.nn.Parameter(torch.zeros(1))
+
+    def logits_for(self, width: int) -> torch.Tensor:
+        logits = torch.zeros(1, max(width, 0), self.VOCAB)
+        if width > 0:
+            logits[0, :, 9] = 10.0
+            logits[0, -1, 9] = 0.0
+            logits[0, -1, 5] = 10.0
+        return logits
+
+    def forward(self, input_ids, attention_mask=None, use_cache=False,
+                past_key_values=None, return_dict=False, **kw):
+        out = type("Out", (), {})()
+        out.logits = self.logits_for(int(input_ids.shape[-1]))
+        out.past_key_values = None
+        return out
+
+
+class _SpecStubCoordinator(_StubCoordinator):
+    """Stub coordinator with the speculative decoder wired on."""
+
+    def __init__(self, cache_mgr: CacheManager, spec_enabled: bool) -> None:
+        super().__init__(cache_mgr)
+        self.local_partitioner = _FakePartitioner(_RowPatternModel())
+        self.draft_model = _RowPatternModel()
+        self._continuous_trainer = None
+        if spec_enabled:
+            self._spec_decoder = SpeculativeDecoder(
+                num_assistant_tokens=2, device="cpu",
+            )
+        else:
+            self._spec_decoder = None
+
+    def record_metric(self, name: str, value: float) -> None:
+        pass
+
+
+def _run_spec(spec_enabled: bool) -> list[int]:
+    cache_mgr = CacheManager(prefix_cache_enabled=True, prefix_cache_min_prefix_len=8)
+    coord = _SpecStubCoordinator(cache_mgr, spec_enabled=spec_enabled)
+    coord.pipeline = RequestPipeline(coord)  # type: ignore[attr-defined]
+    seq = Sequence(request_id="spec-req", prompt_tokens=list(PROMPT), max_new_tokens=1)
+    coord.scheduler.add(seq)
+    for _ in range(10):
+        if seq.is_complete:
+            break
+        batch = coord.scheduler.schedule()
+        assert batch is not None, "scheduler starved while sequence active"
+        coord.pipeline._generate_local_batch(batch)
+    assert seq.is_complete
+    return list(seq.generated_tokens)
+
+
+def test_spec_enabled_batch_emits_the_same_first_token():
+    """Spec-enabled _generate_local_batch must not crash or desync rows."""
+    no_spec = _run_spec(spec_enabled=False)
+    with_spec = _run_spec(spec_enabled=True)
+
+    # Pre-fix: ValueError from the 2-vs-3 tuple unpack, or token 9 (row 0)
+    # instead of 5 (the last row that actually predicts the first token).
+    assert with_spec == no_spec == [5], (
+        f"spec-enabled batch emitted {with_spec}, no-spec emitted {no_spec} "
+        f"(expected [5] from the final prompt row)"
+    )

@@ -406,7 +406,12 @@ from distllm.api.server_state import _ServerState, state  # noqa: E402
 
 # Created at module load so middleware mounted below (ObservabilityMiddleware)
 # can hold a direct reference; _init_observability reuses it at startup.
-state.metrics_exporter = DistLLMPrometheusExporter()
+# The module-level binding survives reset_app_state_for_testing() (which
+# re-inits the state object and would otherwise strand the middleware's
+# reference on an orphaned registry), and the lifespan restores this exact
+# instance when it finds state.metrics_exporter wiped.
+_METRICS_EXPORTER = DistLLMPrometheusExporter()
+state.metrics_exporter = _METRICS_EXPORTER
 
 
 class PluginHookMiddleware(BaseHTTPMiddleware):

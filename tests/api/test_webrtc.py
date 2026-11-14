@@ -31,12 +31,23 @@ _TEST_ADMIN_KEY = "webrtc-test-admin-key-2026"
 
 @pytest.fixture(autouse=True)
 def _reset_store():
-    """Seed the key store with a known admin key for auth."""
+    """Seed the key store with a known admin key for auth.
+
+    ``API_KEYS`` is snapshotted and restored: leaving it set after this
+    module ran made ``ApiKeyStore._load`` prefer this test key over the
+    per-test ``API_KEY`` other modules install, and every later request
+    401'd when files ran in the same session.
+    """
+    saved = os.environ.get("API_KEYS")
     os.environ["API_KEYS"] = (
         '{"keys": [{"key": "' + _TEST_ADMIN_KEY + '", "role": "admin", "label": "test-admin"}]}'
     )
     reset_api_key_store()
     yield
+    if saved is None:
+        os.environ.pop("API_KEYS", None)
+    else:
+        os.environ["API_KEYS"] = saved
     reset_api_key_store()
 
 
@@ -133,6 +144,80 @@ class TestOffer:
         )
         assert resp.status_code in (401, 503)
 
+    def test_offer_invalid_sdp_is_422_not_generic_500(
+        self, client: TestClient, auth_header: dict[str, str]
+    ) -> None:
+        """A malformed SDP is the client's fault: 422 that names the SDP.
+
+        Regression (sibling of the ICE 200-error shape): the constructor
+        failure used to fall through to the transport phase's generic
+        HTTP 500 "WebRTC setup failed", which never said whether the SDP,
+        aiortc, or connectivity was at fault.
+        """
+        pytest.importorskip("aiortc")
+        resp = client.post(
+            self.ENDPOINT,
+            json={
+                # ``type`` outside aiortc's allowed set fails in the
+                # RTCSessionDescription constructor, before any transport.
+                "sdp": "v=0\r\n",
+                "type": "bogus",
+                "session_id": "offer-bad-sdp",
+            },
+            headers=auth_header,
+        )
+        assert resp.status_code == 422, resp.text
+        message = resp.json()["error"]["message"]
+        assert "Invalid SDP offer" in message
+        assert "type" in message
+
+        # The failed session must not linger in the session manager.
+        from distllm.api.routes.webrtc import _session_mgr
+
+        assert _session_mgr.get_session("offer-bad-sdp") is None
+
+    def test_offer_transport_failure_is_500_that_names_the_cause(
+        self,
+        client: TestClient,
+        auth_header: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A transport-phase failure must not collapse to a cause-free 500.
+
+        Regression: every setup failure returned the same
+        "WebRTC setup failed" detail with no indication of which stage
+        failed. The detail must now carry the underlying error.
+        """
+        pytest.importorskip("aiortc")
+        import distllm.dist.webrtc as dist_webrtc
+
+        class _ExplodingTransport:
+            def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+                pass
+
+            async def accept_offer(self, offer):  # noqa: ANN001
+                raise RuntimeError("peer connection exploded")
+
+        # The route imports WebRTCTransport from this module per request.
+        monkeypatch.setattr(dist_webrtc, "WebRTCTransport", _ExplodingTransport)
+        resp = client.post(
+            self.ENDPOINT,
+            json={
+                "sdp": "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\n",
+                "type": "offer",
+                "session_id": "offer-transport-fail",
+            },
+            headers=auth_header,
+        )
+        assert resp.status_code == 500, resp.text
+        message = resp.json()["error"]["message"]
+        assert "WebRTC setup failed" in message
+        assert "peer connection exploded" in message
+
+        from distllm.api.routes.webrtc import _session_mgr
+
+        assert _session_mgr.get_session("offer-transport-fail") is None
+
 
 # ── POST /v1/webrtc/ice ─────────────────────────────────────────────────────────
 
@@ -160,13 +245,11 @@ class TestICE:
     def test_ice_with_session_no_transport(
         self, client: TestClient, auth_header: dict[str, str]
     ) -> None:
-        """Return 200 when session exists but has no transport.
+        """Return 409 when the session exists but has no transport.
 
-        Because ``aiortc`` is not installed, the ``RTCIceCandidate`` import
-        inside the handler raises ``ImportError``, which is caught by the
-        endpoint's own ``except`` clause and returned as a 200 with
-        ``{"status": "error", "detail": "..."}`` -- the endpoint never
-        bubbles a 500 for ICE handling failures.
+        Regression: this used to be HTTP 200 ``{"status": "error", ...}`` —
+        a signaling client keying on the status code believed the candidate
+        was registered while ICE connectivity silently failed.
         """
         _seed_session("ice-session-no-transport")
         resp = client.post(
@@ -179,16 +262,13 @@ class TestICE:
             },
             headers=auth_header,
         )
-        # The endpoint catches any exception (including ImportError for
-        # missing aiortc) and returns 200 with an error body.
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "status" in data
+        assert resp.status_code == 409
+        assert "transport" in resp.json()["error"]["message"]
 
-    def test_ice_empty_candidate(
+    def test_ice_empty_candidate_is_422(
         self, client: TestClient, auth_header: dict[str, str]
     ) -> None:
-        """Return 200 even when the candidate string is empty."""
+        """An empty candidate string is a malformed payload, not a 200."""
         _seed_session("ice-session-empty-candidate")
         resp = client.post(
             self.ENDPOINT,
@@ -200,8 +280,74 @@ class TestICE:
             },
             headers=auth_header,
         )
-        assert resp.status_code == 200
-        assert "status" in resp.json()
+        assert resp.status_code == 422
+        assert "candidate" in resp.json()["error"]["message"].lower()
+
+    def test_ice_apply_failure_is_not_200(
+        self, client: TestClient, auth_header: dict[str, str]
+    ) -> None:
+        """A candidate the transport rejects must not look accepted.
+
+        Regression: any failure (malformed candidate, transport missing,
+        aiortc unavailable) used to collapse to HTTP 200
+        ``{"status": "error"}``.
+        """
+        sid = _seed_session("ice-session-apply-failure")
+
+        class _RaisingTransport:
+            async def add_ice_candidate(self, candidate):  # noqa: ANN001
+                raise ValueError("Candidate must have either sdpMid or sdpMLineIndex")
+
+        from distllm.api.routes.webrtc import _session_mgr
+
+        _session_mgr.get_session(sid)["transport"] = _RaisingTransport()
+        resp = client.post(
+            self.ENDPOINT,
+            json={
+                "session_id": sid,
+                "candidate": "candidate 1 1 UDP 0 0.0.0.0 0 typ host",
+                "sdp_mid": "0",
+                "sdp_mline_index": 0,
+            },
+            headers=auth_header,
+        )
+        assert resp.status_code >= 400, (resp.status_code, resp.text)
+        assert resp.json()["error"]["message"]
+
+    def test_ice_valid_candidate_applies_and_reports_ok(
+        self, client: TestClient, auth_header: dict[str, str]
+    ) -> None:
+        """The success path stays a 200 {"status": "ok"}."""
+        sid = _seed_session("ice-session-ok")
+
+        class _RecordingTransport:
+            def __init__(self) -> None:
+                self.added: list = []
+
+            async def add_ice_candidate(self, candidate):  # noqa: ANN001
+                self.added.append(candidate)
+
+        from distllm.api.routes.webrtc import _session_mgr
+
+        transport = _RecordingTransport()
+        _session_mgr.get_session(sid)["transport"] = transport
+        resp = client.post(
+            self.ENDPOINT,
+            json={
+                "session_id": sid,
+                "candidate": "candidate 1 1 UDP 0 0.0.0.0 0 typ host",
+                "sdp_mid": "0",
+                "sdp_mline_index": 0,
+            },
+            headers=auth_header,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "ok"}
+        assert len(transport.added) == 1
+        # The candidate carries the identity the request supplied; aiortc's
+        # addIceCandidate requires sdpMid or sdpMLineIndex.
+        cand = transport.added[0]
+        assert cand.sdpMid == "0" or cand.sdpMLineIndex == 0
 
 
 # ── GET /v1/webrtc/status ──────────────────────────────────────────────────────

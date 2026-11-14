@@ -418,3 +418,126 @@ class TestSemanticCacheHitPath:
                          headers={"X-Semantic-Cache": "1"})
         assert r1.headers.get("X-Cache") != "HIT"
         assert len(cache._response_store) == 0  # nothing stored
+
+
+# ---------------------------------------------------------------------------
+# SECURITY: the cache key must be scoped by request identity and generation
+# config (audit 2026-11-13, semantic_cache.py findings).
+# ---------------------------------------------------------------------------
+
+
+class _AuthedChatApp:
+    """Minimal chat app whose route echoes who called it.
+
+    A tiny middleware stands in for AuthMiddleware: it copies an
+    ``X-Test-Key-Id`` header onto ``request.state.api_key_id`` — the exact
+    attribute AuthMiddleware sets and the semantic cache scopes by.
+    """
+
+    @staticmethod
+    def build():
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+
+        class _FakeAuth:
+            def __init__(self, inner):
+                self.app = inner
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] == "http":
+                    from starlette.datastructures import Headers
+                    headers = Headers(scope=scope)
+                    scope.setdefault("state", {})
+                    scope["state"]["api_key_id"] = headers.get("x-test-key-id", "")
+                await self.app(scope, receive, send)
+
+        @app.post("/v1/chat/completions")
+        async def chat(request: Request):
+            return {
+                "model": request.state.parsed_body.get("model")
+                if hasattr(request.state, "parsed_body") else None,
+                "marker": f"completion-for-{getattr(request.state, 'api_key_id', '')}",
+            }
+
+        app.add_middleware(_mod.SemanticCacheMiddleware)
+        app.add_middleware(_FakeAuth)  # registered last => outermost => runs first
+        return TestClient(app)
+
+
+class TestSemanticCacheScoping:
+    """A cached completion must never cross credentials or model/params."""
+
+    def _fresh_cache(self, monkeypatch):
+        cache = _FaissIndex()
+        cache._index = None
+        cache._dim = 64
+        monkeypatch.setattr(_mod, "_cache", cache)
+        monkeypatch.setenv("DISTLLM_SEMANTIC_CACHE", "1")
+        return cache
+
+    def test_no_cross_credential_disclosure(self, monkeypatch):
+        """key-b must NOT be served key-a's cached completion.
+
+        Before the fix the cache key was the prompt text alone, so any
+        authenticated key was served another key's cached output and the
+        route (plus its RBAC/quota path) never ran.
+        """
+        self._fresh_cache(monkeypatch)
+        client = _AuthedChatApp.build()
+        body = {"model": "m", "messages": [{"role": "user", "content": "secret prompt"}]}
+        # 0.99 (not 1.0): with the 64-d hash embeddings, re-embedding the
+        # same text can land a hair below 1.0 (float rounding), which is a
+        # threshold-precision quirk unrelated to scoping.
+        hdr_a = {"X-Semantic-Cache": "0.99", "X-Test-Key-Id": "key-a"}
+
+        a1 = client.post("/v1/chat/completions", json=body, headers=hdr_a)
+        assert a1.status_code == 200
+        assert a1.json()["marker"] == "completion-for-key-a"
+
+        # Same-key repeat is allowed to hit.
+        a2 = client.post("/v1/chat/completions", json=body, headers=hdr_a)
+        assert a2.headers["X-Cache"] == "HIT"
+        assert a2.json()["marker"] == "completion-for-key-a"
+
+        # A DIFFERENT credential must miss and get its own completion.
+        b1 = client.post("/v1/chat/completions", json=body,
+                         headers={"X-Semantic-Cache": "0.99", "X-Test-Key-Id": "key-b"})
+        assert b1.headers.get("X-Cache") != "HIT", (
+            "key-b was served a completion cached for key-a"
+        )
+        assert b1.json()["marker"] == "completion-for-key-b"
+
+    def test_no_cross_model_or_param_disclosure(self, monkeypatch):
+        """A request for a different model / generation params must not be
+        served the completion cached for another model/param set."""
+        self._fresh_cache(monkeypatch)
+        client = _AuthedChatApp.build()
+        base = {"messages": [{"role": "user", "content": "shared prompt"}]}
+        hdr = {"X-Semantic-Cache": "1", "X-Test-Key-Id": "key-a"}
+
+        client.post("/v1/chat/completions",
+                    json={**base, "model": "model-cheap", "temperature": 1.0},
+                    headers=hdr)
+        r = client.post("/v1/chat/completions",
+                        json={**base, "model": "model-expensive", "temperature": 0.0},
+                        headers={**hdr, "X-Semantic-Cache": "0.99"})
+        assert r.headers.get("X-Cache") != "HIT", (
+            "expensive-model request was served the cheap model's output"
+        )
+
+        # Different temperature on the SAME model is also a different scope.
+        r2 = client.post("/v1/chat/completions",
+                         json={**base, "model": "model-cheap", "temperature": 0.0},
+                         headers={**hdr, "X-Semantic-Cache": "0.99"})
+        assert r2.headers.get("X-Cache") != "HIT"
+
+    def test_scope_includes_identity_model_and_params(self):
+        """make_scope is injective over (identity, model, params)."""
+        mk = _FaissIndex.make_scope
+        s1 = mk("key-a", {"model": "m", "temperature": 0.0})
+        s2 = mk("key-b", {"model": "m", "temperature": 0.0})
+        s3 = mk("key-a", {"model": "m", "temperature": 1.0})
+        s4 = mk("key-a", {"model": "other", "temperature": 0.0})
+        assert len({s1, s2, s3, s4}) == 4

@@ -26,13 +26,21 @@ from distllm.api.api_state import _state
 
 @pytest.fixture(autouse=True)
 def reset_state():
-    """Clean shared state before each test."""
+    """Clean shared state before each test.
+
+    The bare ``object()`` placeholder satisfies the require_coordinator
+    dependency, but leaving it installed after the test poisons every later
+    test in the same process: ``/metrics`` reads ``state.coordinator.scheduler``
+    and crashes with AttributeError on a bare object. Save and restore.
+    """
     reset_app_state_for_testing()
     reset_api_key_store()
     os.environ.pop("API_KEYS", None)
     os.environ.pop("API_KEY", None)
+    previous = _state.coordinator
     _state.coordinator = object()  # satisfy require_coordinator dep
     yield
+    _state.coordinator = previous
 
 
 def _make_client(api_key_owner: str | None = None) -> TestClient:

@@ -98,9 +98,20 @@ class BatchScheduler:
             adapt_prefill_budget=True,
         )
 
+        # The configured budget is the ceiling: compute_dynamic_budget may
+        # shrink it under real PagedAttention pool pressure, but the old
+        # hard-coded 131072 clamp silently replaced an explicit larger value
+        # (e.g. 200000) with a number the operator never set.
         self.max_tokens_per_batch = self._budget_computer.compute_dynamic_budget(
             max_tokens_per_batch, self._paged_attention_mgr,
+            max_budget=max_tokens_per_batch,
         )
+        if self.max_tokens_per_batch != max_tokens_per_batch:
+            logger.info(
+                f"BatchScheduler: token budget auto-scaled from "
+                f"{max_tokens_per_batch} to {self.max_tokens_per_batch} "
+                f"(PagedAttention pool pressure)"
+            )
         self._pending_heap: list = []  # Min-heap of (priority, counter, Sequence)
         self._overflow_buffer: list = []  # Overflow from split_overflow
         self._counter: int = 0  # Tiebreaker for FIFO within same priority
@@ -616,6 +627,7 @@ class BatchScheduler:
         with self._lock:
             self.max_tokens_per_batch = self._budget_computer.compute_dynamic_budget(
                 self._base_tokens_per_batch, self._paged_attention_mgr,
+                max_budget=self._base_tokens_per_batch,
             )
 
     def paged_kv_block_count(self, tokens: int) -> int:

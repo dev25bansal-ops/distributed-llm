@@ -96,12 +96,13 @@ class RedundantExecutor:
     def _run_redundant(self, input_ids, node_kv_caches, request_id, draft_tokens):
         """Redundant path — send each stage to multiple peers, use first response.
 
-        Mirrors ``PipelineOrchestrator.run_pipeline`` but fans out each stage to
-        the redundant peers covering the same layer range and uses the first
-        successful response.
+        Groups nodes by identical layer range: each distinct range is ONE
+        logical stage, and replicas covering that range are its candidates.
+        The range is applied exactly once — to whichever replica answers
+        first — so redundant fan-out never pushes the hidden state through
+        the same layers twice.  Fan-out is concurrent and bounded by
+        ``timeout_s``.
         """
-        from distllm.dist.node_client import forward_request
-
         with self._pipeline._lock:
             node_order = list(self._pipeline._node_order)
             nodes = dict(self._pipeline._nodes)
@@ -109,51 +110,161 @@ class RedundantExecutor:
         if not node_order:
             raise RuntimeError("No healthy nodes in pipeline")
 
+        # Eligible nodes for NEW work (healthy, not draining).  Reuse the
+        # orchestrator's serving filter — the single source of truth shared
+        # by the sequential and micro-batched paths — so `admin drain`
+        # means the same thing on the redundant path.  Doubles lacking the
+        # helper get the inline equivalent.
+        serving_fn = getattr(self._pipeline, "serving_node_ids", None)
+        if callable(serving_fn):
+            serving_ids = set(serving_fn())
+        else:
+            draining: set[str] = set()
+            resource_mgr = getattr(self._pipeline, "_resource_mgr", None)
+            if resource_mgr is not None and hasattr(
+                resource_mgr, "get_draining_nodes"
+            ):
+                try:
+                    draining = set(resource_mgr.get_draining_nodes())
+                except Exception:
+                    draining = set()
+            serving_ids = {
+                nid for nid in node_order
+                if nid in nodes
+                and getattr(nodes[nid], "is_healthy", True)
+                and nid not in draining
+            }
+
+        # Collapse replicas: one logical stage per distinct layer range
+        # (preserving layer order). A same-range sibling is a stage
+        # candidate, never a stage of its own — running it as its own
+        # stage would apply the same layers again and corrupt the output.
+        stages: list[str] = []
+        seen_ranges: set[tuple[int, int]] = set()
+        for nid in node_order:
+            if nid not in serving_ids:
+                continue
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            key = (node.start_layer, node.end_layer)
+            if key in seen_ranges:
+                continue
+            seen_ranges.add(key)
+            stages.append(nid)
+
+        if not stages:
+            raise RuntimeError("No healthy nodes in pipeline")
+
         current_hidden = input_ids
 
-        for i, primary_id in enumerate(node_order):
-            candidates = self._find_redundant_nodes(primary_id)
+        for i, primary_id in enumerate(stages):
+            candidates = [
+                (rid, rnode)
+                for rid, rnode in self._find_redundant_nodes(primary_id)
+                if rnode is not None and rid in serving_ids
+            ]
 
-            results = []
-            for rid, rnode in candidates:
-                if rnode is None or not getattr(rnode, "is_healthy", True):
-                    continue
-                t0 = time.monotonic()
-                try:
-                    out = forward_request(
-                        host=rnode.host,
-                        port=rnode.port,
-                        hidden_states=current_hidden,
-                        kv_cache=node_kv_caches.get(rid),
-                        request_id=request_id,
-                        use_tls=getattr(self._pipeline, "_use_tls", False),
-                        ca_cert=getattr(self._pipeline, "_ca_cert", None),
-                    )
-                    if out is None:
-                        continue
-                    results.append(((time.monotonic() - t0) * 1000, rid, out))
-                except Exception as e:
-                    logger.debug(f"Redundant node {rid} failed: {e}")
-                    continue
+            winner = self._fan_out(
+                current_hidden, candidates, node_kv_caches, request_id,
+            )
 
-                if len(results) >= self._redundancy:
-                    break
-
-            if not results:
+            if winner is None:
+                primary = nodes[primary_id]
                 raise NodeUnreachableError(
-                    node_id=primary_id, host='unknown', port=0,
-                    original_error=Exception("no redundant node succeeded"),
+                    node_id=primary_id,
+                    host=primary.host,
+                    port=primary.port,
+                    original_error=Exception(
+                        f"no redundant node succeeded within {self._timeout}s"
+                    ),
                 )
 
-            results.sort(key=lambda x: x[0])
-            _, best_id, current_hidden = results[0]
-
-            slow_count = len(results) - 1
-            if slow_count > 0:
-                logger.debug(f"Stage {i}: {slow_count} redundant response(s) discarded "
-                             f"(best: {results[0][0]:.1f}ms)")
+            best_id, current_hidden = winner
+            if len(candidates) > 1:
+                logger.debug(
+                    f"Stage {i}: used replica {best_id} of {len(candidates)} "
+                    f"candidates covering layers "
+                    f"{nodes[primary_id].start_layer}-{nodes[primary_id].end_layer}"
+                )
 
         return current_hidden
+
+    def _fan_out(self, hidden_states, candidates, node_kv_caches, request_id):
+        """Dispatch one stage to all *candidates* concurrently.
+
+        Returns ``(replica_id, output)`` for the first replica that
+        completes with a non-None result, or ``None`` when every candidate
+        failed (or the per-stage deadline from ``timeout_s`` expired with
+        no success).  Losing requests are discarded.
+        """
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+        if not candidates:
+            return None
+
+        deadline = time.monotonic() + self._timeout
+        pool = ThreadPoolExecutor(max_workers=len(candidates))
+        try:
+            futures = {
+                pool.submit(
+                    self._forward_once,
+                    rnode,
+                    hidden_states,
+                    node_kv_caches.get(rid),
+                    request_id,
+                ): rid
+                for rid, rnode in candidates
+            }
+            pending = set(futures)
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                done, pending = wait(
+                    pending, return_when=FIRST_COMPLETED, timeout=remaining,
+                )
+                for fut in done:
+                    rid = futures[fut]
+                    try:
+                        out = fut.result()
+                    except Exception as e:
+                        logger.debug(f"Redundant node {rid} failed: {e}")
+                        continue
+                    if out is None:
+                        continue
+                    return rid, out
+            return None
+        finally:
+            pool.shutdown(wait=False)
+
+    def _forward_once(self, node, hidden_states, kv_cache, request_id):
+        """Send one forward request to *node*.
+
+        Mirrors PipelineOrchestrator.run_pipeline's transport selection so
+        redundant fan-out uses the same injected/pooled clients and the
+        same cluster auth secret as the standard path.
+        """
+        client = getattr(node, "client", None)
+        if client is not None and hasattr(client, "forward"):
+            return client.forward(
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                request_id=request_id,
+            )
+
+        from distllm.dist.node_client import forward_request
+
+        return forward_request(
+            host=node.host,
+            port=node.port,
+            hidden_states=hidden_states,
+            kv_cache=kv_cache,
+            request_id=request_id,
+            cluster_key=getattr(self._pipeline, "_cluster_key", None),
+            use_tls=getattr(self._pipeline, "_use_tls", False),
+            ca_cert=getattr(self._pipeline, "_ca_cert", None),
+        )
 
     def get_node_groups(self) -> list[list[str]]:
         """Return node groups where each group covers a layer range."""

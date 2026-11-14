@@ -109,6 +109,41 @@ class TestModelWatermark:
         assert mw._gumbel_wm._config is cfg
 
 
+class TestWatermarkTorchFreeImport:
+    """security.watermark is imported eagerly by security/__init__ (api path).
+
+    A module-scope `import torch` there made every distllm.api import — and
+    the distllm-api console script — fail on a lean `pip install
+    distributed-llm[cli]` (torch lives in [self-hosted]). The import must be
+    deferred; touching torch at runtime should raise a message naming the fix.
+    """
+
+    def test_module_imports_and_defers_torch(self) -> None:
+        import subprocess
+        import sys as _sys
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[2] / "src"
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(src)!r})\n"
+            "sys.modules['torch'] = None  # exact torch-free-install semantics\n"
+            "import distllm.security.watermark as wm\n"
+            "assert type(wm.torch).__name__ == '_TorchNotInstalled', type(wm.torch)\n"
+            "try:\n"
+            "    wm.torch.zeros(1)\n"
+            "except RuntimeError as e:\n"
+            "    assert 'self-hosted' in str(e), e\n"
+            "else:\n"
+            "    raise SystemExit('torch access did not raise')\n"
+            "print('OK')\n"
+        )
+        proc = subprocess.run(
+            [_sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        )
+        assert proc.returncode == 0, proc.stderr[-1500:]
+
+
 # ===================================================================
 # validate_http_url TESTS
 # ===================================================================

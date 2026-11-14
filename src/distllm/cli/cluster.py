@@ -13,7 +13,7 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
-from distllm.cli.http_client import client_for, format_http_error
+from distllm.cli.http_client import client_for, format_http_error, resolve_api_key
 
 console = Console()
 
@@ -25,10 +25,12 @@ def _get_client(host: str, port: int) -> httpx.Client:
 def _admin_headers() -> dict[str, str]:
     """Authorization headers for admin-only endpoints.
 
-    The ``/admin/v1/*`` routes require an admin-role API key; operators set
-    it via ``DISTLLM_API_KEY`` (or the legacy ``API_KEY`` env var).
+    The ``/admin/v1/*`` routes require an admin-role API key; resolution goes
+    through the one shared precedence every CLI command uses
+    (``API_KEY`` > ``DISTLLM_API_KEY`` > key file), so the key sent here is
+    always the same key ``cluster list-nodes``, ``model list``, etc. send.
     """
-    api_key = os.environ.get("DISTLLM_API_KEY") or os.environ.get("API_KEY")
+    api_key = resolve_api_key()
     if api_key:
         return {"Authorization": f"Bearer {api_key}"}
     return {}
@@ -393,22 +395,13 @@ def _cluster_join(
             reg_headers = {}
             # The coordinator mints an admin key into its key file when none is
             # configured, and every other CLI command picks it up from there.
-            # This registration path only looked at the environment, so it sent
-            # no Authorization header at all and the coordinator answered 401 —
-            # the node was told nothing, `cluster list-nodes` showed 0, and the
-            # worker sat there looking connected. Read the same file the rest
-            # of the CLI reads before falling back to empty.
-            api_key = os.environ.get("API_KEY") or os.environ.get("DISTLLM_API_KEY")
-            if not api_key:
-                try:
-                    from distllm.core.api_key_store import _api_key_path
-
-                    key_path = _api_key_path()
-                    if os.path.isfile(key_path):
-                        with open(key_path, encoding="utf-8") as kf:
-                            api_key = kf.read().strip() or None
-                except Exception:
-                    api_key = None
+            # This registration path only looked at the environment (and in the
+            # opposite order from every other command), so it could send no
+            # Authorization header at all — the coordinator answered 401 and
+            # the node was told nothing. Resolve through the one shared
+            # precedence (API_KEY > DISTLLM_API_KEY > key file) that the rest
+            # of the CLI uses.
+            api_key = resolve_api_key()
             if api_key:
                 reg_headers["Authorization"] = f"Bearer {api_key}"
             resp = httpx.post(
@@ -434,7 +427,12 @@ def _cluster_join(
             if resp.status_code in (200, 201):
                 console.print(f"[green]Node registered with coordinator at {coordinator_host}:{api_port}[/green]")
             elif resp.status_code == 401:
-                console.print("[yellow]Registration requires API key. Set API_KEY env var.[/yellow]")
+                console.print(
+                    "[yellow]Registration requires API key. Set the "
+                    "[bold]API_KEY[/bold] or [bold]DISTLLM_API_KEY[/bold] "
+                    "environment variable, or run from the directory holding "
+                    "the coordinator's .distllm/api_key file.[/yellow]"
+                )
             elif resp.status_code == 409:
                 console.print("[green]Node already registered[/green]")
             else:

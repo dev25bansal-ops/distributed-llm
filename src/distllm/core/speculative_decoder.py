@@ -48,6 +48,31 @@ class SpecDecoderBase:
         probs = F.softmax(logits / self._temperature, dim=-1)
         return torch.multinomial(probs, num_samples=1)
 
+    def _proposal_probs(self, logits: torch.Tensor) -> torch.Tensor:
+        """The exact distribution ``_sample`` draws from, as probabilities.
+
+        ``_sample`` masks logits to the top-k support before the softmax, so
+        the true proposal probability of the sampled token is its mass in the
+        *masked* (renormalized) distribution. Recording the unmasked softmax
+        instead made rejection sampling run ``min(1, p/q)`` against the wrong
+        ``q`` and over-accept (a top-k=1 draft always proposes with q=1, but
+        the unmasked mass of its token can be far below 1, clamping acceptance
+        to 1.0). This helper returns that masked distribution so the recorded
+        draft probability matches the actual sampler.
+
+        Greedy (``temperature == 0``) returns the one-hot of the argmax: the
+        proposal is deterministic, so ``q = 1`` for the proposed token.
+        """
+        if self._temperature == 0:
+            probs = torch.zeros_like(logits)
+            return probs.scatter_(-1, logits.argmax(dim=-1, keepdim=True), 1.0)
+        masked = logits
+        if self._top_k > 0:
+            k = min(self._top_k, logits.shape[-1])
+            values, indices = torch.topk(logits, k, dim=-1)
+            masked = torch.full_like(logits, float("-inf")).scatter_(-1, indices, values)
+        return F.softmax(masked / self._temperature, dim=-1)
+
 
 class SpeculativeDecoder(SpecDecoderBase):
     """Speculative decoding engine.
@@ -237,10 +262,12 @@ class SpeculativeDecoder(SpecDecoderBase):
         is sampled at each step.
 
         Returns:
-            (draft_tokens, draft_logprobs) — token IDs and their softmax
-            probabilities from the draft model.  The logprobs are used
-            by ``_verify_tokens`` for proper rejection sampling, avoiding
-            a redundant draft model forward pass during verification.
+            (draft_tokens, draft_logprobs) — token IDs and the probability
+            each token actually had of being proposed (i.e. of the sampler's
+            top-k masked distribution, not the unmasked softmax).  The
+            logprobs are used by ``_verify_tokens`` for proper rejection
+            sampling, avoiding a redundant draft model forward pass during
+            verification.
         """
         batch = prefix.shape[0]
         if num_tokens <= 0:
@@ -252,7 +279,10 @@ class SpeculativeDecoder(SpecDecoderBase):
         for _ in range(num_tokens):
             logits = self._draft(current, **kwargs)
             next_logits = logits[:, -1, :] if logits.dim() > 2 else logits
-            probs = F.softmax(next_logits / self._temperature, dim=-1)
+            # Record q from the SAME masked distribution _sample draws from
+            # (finding: top-k masking made the recorded unmasked-softmax q
+            # wrong, so min(1, p/q) was clamped to 1 and over-accepted).
+            probs = self._proposal_probs(next_logits)
             token = self._sample(next_logits)  # (batch, 1)
             for b in range(batch):
                 token_id = token[b].item()
@@ -442,14 +472,46 @@ class SpeculativeDecoder(SpecDecoderBase):
         tokenizer: Any | None = None,
         draft_logits_list: list[torch.Tensor] | None = None,
         temperature: float | None = None,
+        span_lengths: list[int] | None = None,
     ) -> list[tuple[int, list[int], int]]:
         """Verify per-sequence draft tokens against target logits.
 
-        For each sequence: greedily accept draft tokens while the target
-        distribution's argmax matches the draft token; truncate at the
-        first mismatch and pick the target's argmax as the next token.
-        If no draft tokens were proposed (or the sequence is empty), the
-        next token is the target's argmax at the last position.
+        Row geometry (causal-LM shift).  ``target_logits_list[i]`` is the
+        ``(1, rows, vocab)`` (or ``(rows, vocab)``) logits span for sequence
+        *i*; row ``r`` predicts the token at the position after span row
+        ``r``.  Draft token *j* is verified against the row that predicts
+        it:
+
+        * ``span_lengths`` given — the row verifying draft token 0 is slice
+          row ``span_lengths[i] - 1`` (e.g. the last row of a prompt span
+          the drafts continue from, or ``1`` for an EAGLE-style slice that
+          already starts at that row and additionally contains the draft /
+          successor rows).  This is the authoritative full-span convention
+          and the one all request_pipeline callers use.
+        * ``span_lengths`` omitted — fallback for pre-shifted slices: the
+          drafts are assumed to occupy the *final* ``num`` rows of the
+          span (row ``rows - num + j``), which reproduces the historical
+          "row j verifies draft j" behaviour when ``rows <= num`` and
+          anchors draft 0 on the last row when the span is longer (e.g. a
+          full prompt followed by one draft: draft 0 ↔ row rows-1).
+
+        Acceptance: greedy argmax-match when ``temperature`` is ``None`` or
+        ``0``; for ``temperature > 0`` proper rejection sampling via the
+        shared kernel — ``q`` comes from ``draft_logits_list[i]`` (row *j*
+        is the logits that produced draft *j*; ``q = softmax(row)[token]``)
+        and falls back to the uniform-draft approximation when absent.  The
+        correction / next token is sampled (not argmaxed) in sampled mode.
+        A ``q <= 0`` proposal is always rejected.
+
+        EOS: a sequence whose draft hits ``tokenizer.eos_token_id`` ends its
+        verification there — its result is still appended (with the EOS as
+        the next token so the caller completes the sequence), so the
+        returned list always has one entry per input sequence.
+
+        Greedy-mode token contract (pinned by tests): on a mismatch the
+        accepted-token list is the accepted prefix plus the target's
+        correction token at the mismatch position; on full acceptance it is
+        the accepted drafts only.
 
         Returns a list of ``(accepted_count, accepted_tokens, next_token)``.
         """
@@ -475,10 +537,35 @@ class SpeculativeDecoder(SpecDecoderBase):
             if len(draft_ids) == 1 and isinstance(draft_ids[0], (list, tuple)):
                 draft_ids = list(draft_ids[0])
             logits2d = logits[0] if logits.dim() == 3 else logits
-            if logits2d.dim() != 2:
-                # Cannot verify without a (seq, vocab) view.
+            if logits2d.dim() != 2 or logits2d.shape[0] == 0:
+                # Cannot verify without a non-empty (seq, vocab) view.
                 results.append((0, [], 0))
                 continue
+
+            num = len(draft_ids)
+            rows = logits2d.shape[0]
+
+            # Real tokenizer EOS only — a MagicMock attribute is not a token
+            # id and comparing ints against it would raise TypeError.
+            eos_id = (
+                getattr(tokenizer, "eos_token_id", None)
+                if tokenizer is not None
+                else None
+            )
+            if not isinstance(eos_id, int):
+                eos_id = None
+
+            # Per-sequence temperature (callers may pass a scalar or a list
+            # parallel to the batch, e.g. one entry per ScheduledBatch seq).
+            if isinstance(temperature, (list, tuple)):
+                t_seq = (
+                    float(temperature[seq_idx])
+                    if seq_idx < len(temperature)
+                    else None
+                )
+            else:
+                t_seq = temperature
+            sampled_seq = t_seq is not None and t_seq > 0
 
             if not draft_ids:
                 last = logits2d[-1]
@@ -486,42 +573,121 @@ class SpeculativeDecoder(SpecDecoderBase):
                 results.append((0, [], nxt))
                 continue
 
+            # Row that verifies draft token 0 (see docstring).
+            if span_lengths is not None and seq_idx < len(span_lengths):
+                shift = max(0, int(span_lengths[seq_idx]) - 1)
+            else:
+                shift = max(0, rows - num)
+            # Defensive: a pipeline that returns only the last row's logits
+            # makes any shift land on row rows-1.
+            shift = min(shift, rows - 1)
+            # Rows available for verification: every row from ``shift`` up.
+            max_acc = min(num, max(0, rows - shift))
+
+            seq_draft_logits = None
+            if (
+                sampled_seq
+                and draft_logits_list is not None
+                and seq_idx < len(draft_logits_list)
+            ):
+                seq_draft_logits = draft_logits_list[seq_idx]
+                if isinstance(seq_draft_logits, (list, tuple)):
+                    seq_draft_logits = torch.tensor(
+                        seq_draft_logits, dtype=torch.float32
+                    )
+                if seq_draft_logits is not None and seq_draft_logits.dim() == 3:
+                    seq_draft_logits = seq_draft_logits[0]
+                if seq_draft_logits is None or seq_draft_logits.dim() != 2:
+                    # Not a (num, vocab) logits row-set — fall back to the
+                    # uniform-draft approximation in the kernel.
+                    seq_draft_logits = None
+
             accepted_count = 0
             accepted: list[int] = []
-            max_acc = min(len(draft_ids), logits2d.shape[0])
+            mismatch = False
+            hit_eos = False
+            eos_token = -1
+            next_row = shift
             for i in range(max_acc):
                 tok = draft_ids[i]
-                target_argmax = logits2d[i].argmax().item()
-                if target_argmax != tok:
-                    if accepted_count == 0:
-                        # The target disagrees immediately: fall back to the
-                        # target's token at that position (test contract).
-                        nxt = logits2d[i].argmax().item()
-                        results.append((0, [nxt], nxt))
-                    else:
-                        # Partial acceptance: the accepted prefix plus the
-                        # target's token at the first mismatch position.
-                        nxt = logits2d[i].argmax().item()
-                        results.append((accepted_count, accepted + [nxt], nxt))
-                    total_draft += len(draft_ids)
-                    total_accepted += accepted_count
+                pos = shift + i
+                if sampled_seq:
+                    q = None
+                    if seq_draft_logits is not None and i < seq_draft_logits.shape[0]:
+                        # Pinned contract (correctness tests): draft_logits is
+                        # the sampling distribution q; a perfect draft with
+                        # q == p is always accepted.  q <= 0 (zero softmax
+                        # mass for the drafted token) must reject.
+                        q = float(
+                            F.softmax(seq_draft_logits[i] / t_seq, dim=-1)[
+                                int(tok)
+                            ].item()
+                        )
+                    # Shared kernel: min(1, p/q) rejection sampling (q <= 0
+                    # rejects); uniform-draft fallback when q is unknown.
+                    ok = accept_token(
+                        logits2d.unsqueeze(0),
+                        pos,
+                        int(tok),
+                        draft_prob=q,
+                        temperature=t_seq,
+                        vocab_size=logits2d.shape[-1],
+                    )
+                else:
+                    ok = int(logits2d[pos].argmax().item()) == int(tok)
+                if not ok:
+                    mismatch = True
+                    next_row = pos
+                    break
+                if eos_id is not None and int(tok) == eos_id:
+                    # C14: never verify past EOS, but still emit a result for
+                    # this sequence (a bare `break` here used to drop the
+                    # result entirely, leaving the results list shorter than
+                    # the batch). The EOS is reported as the next token — not
+                    # inside accepted_tokens — so callers that append
+                    # accepted_tokens + next_token emit it exactly once.
+                    hit_eos = True
+                    eos_token = int(tok)
+                    next_row = pos
                     break
                 accepted_count += 1
                 accepted.append(tok)
-                if (
-                    tokenizer is not None
-                    and getattr(tokenizer, "eos_token_id", None) is not None
-                    and tok == tokenizer.eos_token_id
-                ):
-                    break
             else:
-                # All draft tokens match: the next token comes from the last
-                # target position (which predicts after the final draft).
-                pos = min(len(draft_ids), logits2d.shape[0] - 1)
-                nxt = logits2d[pos].argmax().item()
-                results.append((accepted_count, accepted, nxt))
-                total_draft += len(draft_ids)
-                total_accepted += accepted_count
+                # Every verifiable draft matched: the next token comes from
+                # the row after the last verified draft (clamped to the span
+                # — e.g. drafts beyond a prompt-only span are unverifiable).
+                next_row = min(shift + accepted_count, rows - 1)
+
+            if hit_eos:
+                # End the sequence cleanly: the next token IS the EOS so the
+                # caller's stop-token check fires (batch callers only append
+                # r[2] — the EOS arrives exactly once).
+                nxt = eos_token
+            elif accepted_count > 0 and shift + accepted_count >= rows:
+                # No successor row inside the span (e.g. the span held only
+                # the row that predicted the accepted draft). There is no
+                # verifiable token after the accepted prefix: report -1
+                # (consumers guard next_token >= 0) so neither the batch
+                # consumer (which appends r[2] once) nor the single-seq
+                # consumer (accepted_tokens + next_token) double-emits the
+                # last accepted token.
+                nxt = -1
+            else:
+                nxt_logits = logits2d[min(next_row, rows - 1)]
+                if sampled_seq:
+                    probs = F.softmax(nxt_logits / t_seq, dim=-1)
+                    nxt = int(torch.multinomial(probs, num_samples=1).item())
+                else:
+                    nxt = int(nxt_logits.argmax().item())
+
+            tokens = list(accepted)
+            if mismatch:
+                # Test contract: the correction token at the mismatch
+                # position is included in the accepted-token list.
+                tokens.append(nxt)
+            results.append((accepted_count, tokens, nxt))
+            total_draft += num
+            total_accepted += accepted_count
 
         self._batch_metrics["total_draft_tokens"] += total_draft
         self._batch_metrics["total_accepted"] += total_accepted
@@ -573,8 +739,15 @@ class SpeculativeDecoder(SpecDecoderBase):
         tokenizer: Any | None = None,
         draft_logits: torch.Tensor | None = None,
         temperature: float | None = None,
+        span_length: int | None = None,
     ) -> tuple[int, list[int], int]:
         """Verify ONE sequence's draft tokens against target logits.
+
+        ``span_length`` describes ``target_logits``: the number of rows in
+        the span the drafts continue from (the row verifying draft token 0
+        is ``span_length - 1``).  Callers that hand over full-sequence
+        logits (prompt rows included) must pass it; omitting it keeps the
+        historical "drafts occupy the final rows" fallback.
 
         Returns ``(accepted_count, accepted_token_ids, next_token)``.
         """
@@ -584,6 +757,7 @@ class SpeculativeDecoder(SpecDecoderBase):
             tokenizer=tokenizer,
             draft_logits_list=[draft_logits] if draft_logits is not None else None,
             temperature=temperature,
+            span_lengths=[span_length] if span_length is not None else None,
         )
         return results[0]
 
@@ -806,12 +980,15 @@ class SelfSpeculativeDecoder(SpecDecoderBase):
         head_logits = head_logits[:, :, :needed]
         head_logits = head_logits.view(1, num_tokens, -1)
 
-        # Sample one token per candidate slot, recording logprobs
+        # Sample one token per candidate slot, recording the proposal
+        # probability from the SAME top-k masked distribution _sample draws
+        # from (the unmasked softmax overstated/understated q and skewed
+        # rejection sampling — same defect as SpeculativeDecoder._draft_forward).
         draft_tokens = []
         draft_logprobs: list[float] = []
         for i in range(num_tokens):
             token_logits = head_logits[:, i, :]
-            probs = F.softmax(token_logits / self._temperature, dim=-1)
+            probs = self._proposal_probs(token_logits)
             token = self._sample(token_logits)
             token_id = token.item()
             draft_tokens.append(token)
@@ -1002,6 +1179,16 @@ class MultiDraftSpeculativeDecoder(SpecDecoderBase):
             accepted_count = self._verify_tokens(
                 generated, full_input, consensus_tokens, target_logits, **kwargs,
             )
+            # Acceptance statistics must count the draft tokens the target
+            # actually accepted against the consensus tokens actually
+            # proposed.  Accumulating ``generated.shape[1] - prompt_len``
+            # after the loop counted every emitted token — including
+            # target-fallback tokens from zero-consensus rounds and
+            # correction tokens from full-rejection rounds — as an accepted
+            # draft, inflating acceptance_rate to 1.0 with zero real
+            # acceptances and misleading adaptive speculation / auto-disable.
+            self._stats["total_proposed"] += consensus_len
+            self._stats["accepted"] += accepted_count
 
             generated = torch.cat([generated, consensus_tokens[:, :accepted_count]], dim=1)
 
@@ -1013,9 +1200,6 @@ class MultiDraftSpeculativeDecoder(SpecDecoderBase):
             cut = _maybe_cut()
             if cut is not None:
                 return cut
-
-        self._stats["total_proposed"] = sum(self._stats["consensus_lengths"])
-        self._stats["accepted"] = generated.shape[1] - prompt_len
 
         return generated
 

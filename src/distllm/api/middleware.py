@@ -19,6 +19,13 @@ from starlette.responses import Response
 
 from distllm.api.errors import error_response
 from distllm.api.ip_utils import get_client_ip
+
+# Single source of truth for the SSO auth endpoints (also skipped by
+# SsoMiddleware).  They must be reachable WITHOUT a pre-existing API key:
+# users authenticate *here* (login redirect, code exchange, refresh, and
+# revoke-by-token-possession), so requiring an API key would make the
+# documented SSO flow unusable for the users who need it.
+from distllm.api.sso_middleware import AUTH_ROUTES as _SSO_AUTH_ROUTES
 from distllm.core.api_key_store import get_api_key_store, role_satisfies
 
 
@@ -475,6 +482,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/metrics",
             "/api/v1/ha/heartbeat",
         ):
+            return await call_next(request)
+
+        # SSO auth endpoints (/v1/auth/login, token, refresh, revoke) are
+        # exempt: they are the entry points of the SSO flow and must be
+        # reachable without an API key (SsoMiddleware skips them too; each
+        # route performs its own state/token validation).
+        if request.url.path in _SSO_AUTH_ROUTES:
             return await call_next(request)
 
         # OPTIONS (CORS preflight) is intentionally allowed without auth.

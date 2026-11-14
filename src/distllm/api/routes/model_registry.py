@@ -3,12 +3,13 @@
 import threading
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
+from ..errors import error_response
 
 router = APIRouter(tags=["models"])
 
@@ -194,7 +195,10 @@ async def get_model_registry_detail(model_id: str):
     for m in registry["models"]:
         if m["id"] == model_id:
             return m
-    return {"error": "model not found", "id": model_id}
+    # A missing model is a failed lookup, not a successful fetch that happens
+    # to contain an error object: clients keying on the HTTP status
+    # (curl --fail, response.ok) used to treat this as success.
+    raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
 
 
 @router.post(
@@ -218,14 +222,29 @@ async def load_model(body: LoadModelRequest):
     """Load a model via the coordinator."""
     coord = g.coordinator
     if coord is None:
-        return {"error": "coordinator not available"}
+        # A 200 {"error": ...} body was invisible to status-code-only clients
+        # (the repo's own `distllm model load` prints "Model loaded" after
+        # raise_for_status() passes). Unavailable is a 503.
+        return error_response(
+            status_code=503,
+            error="Service Unavailable",
+            message="coordinator not available",
+            type="service_unavailable",
+            code="503",
+        )
     try:
         if hasattr(coord, "load_model"):
             result = coord.load_model(body.model, body.dtype)
         elif hasattr(coord, "hot_swap_load"):
             result = coord.hot_swap_load(body.model)
         else:
-            return {"error": "no load_model method available"}
+            return error_response(
+                status_code=501,
+                error="Not Implemented",
+                message="no load_model method available",
+                type="server_error",
+                code="501",
+            )
         # ``result is False`` means the coordinator declined (no hot-swap
         # manager configured, or the model could not be loaded).  Reporting
         # ``status: ok`` here would be a 200 that loaded nothing.
@@ -250,14 +269,28 @@ async def unload_model(body: UnloadModelRequest):
     """Unload a model via the coordinator."""
     coord = g.coordinator
     if coord is None:
-        return {"error": "coordinator not available"}
+        # Same defect class as load_model above: a 200 {"error": ...} body
+        # let `distllm model unload` report success when nothing happened.
+        return error_response(
+            status_code=503,
+            error="Service Unavailable",
+            message="coordinator not available",
+            type="service_unavailable",
+            code="503",
+        )
     try:
         if hasattr(coord, "unload_model"):
             result = coord.unload_model(body.model)
         elif hasattr(coord, "hot_swap_unload"):
             result = coord.hot_swap_unload(body.model)
         else:
-            return {"error": "no unload_model method available"}
+            return error_response(
+                status_code=501,
+                error="Not Implemented",
+                message="no unload_model method available",
+                type="server_error",
+                code="501",
+            )
         # ``Coordinator.hot_swap_unload`` returns False when no hot-swap
         # manager is configured and when the model is not loaded.  Both mean
         # nothing was unloaded, so a 200 ``status: ok`` would be a lie.

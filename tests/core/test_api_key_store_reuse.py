@@ -53,7 +53,7 @@ class _FakeLogger:
 @pytest.fixture(autouse=True)
 def _isolated_key_env(monkeypatch, tmp_path):
     """Clear every key-source env var and point DISTLLM_KEY_FILE at tmp_path."""
-    for var in ("API_KEYS", "API_KEYS_FILE", "API_KEY", "DISTLLM_KEY_FILE"):
+    for var in ("API_KEYS", "API_KEYS_FILE", "API_KEY", "DISTLLM_API_KEY", "DISTLLM_KEY_FILE"):
         monkeypatch.delenv(var, raising=False)
     key_file = tmp_path / "api_key"
     monkeypatch.setenv("DISTLLM_KEY_FILE", str(key_file))

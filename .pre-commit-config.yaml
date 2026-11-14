@@ -76,7 +76,11 @@ repos:
     hooks:
       - id: helm-lint
         name: helm-lint
-        entry: bash -c 'helm lint integrations/kubernetes/helm/distllm/ --quiet 2>/dev/null || echo "Helm lint skipped (not installed)"'
+        # The old one-liner (`helm lint ... || echo "skipped"`) exited 0 even
+        # when helm WAS installed and lint failed, silently masking a chart
+        # that could not render at all. Only a genuinely absent helm binary
+        # skips; a failing lint now fails the hook.
+        entry: bash -c 'if ! command -v helm >/dev/null 2>&1; then echo "Helm lint skipped (helm not installed)"; exit 0; fi; helm lint integrations/kubernetes/helm/distllm/'
         language: system
         files: ^integrations/kubernetes/helm/.*\.(yaml|yml|tpl)$
         pass_filenames: false

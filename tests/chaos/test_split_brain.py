@@ -11,6 +11,19 @@ import pytest
 from distllm.core.split_brain import SplitBrainDetector, PeerState
 
 
+@pytest.fixture(autouse=True)
+def _isolated_fence_state(tmp_path, monkeypatch):
+    """Keep the durable fence-token files inside the test.
+
+    SplitBrainDetector persists its fencing token per cluster id (by design:
+    a restart must not reset the counter). Without isolation, token state
+    would leak between tests that reuse cluster ids like ``cluster-a`` and
+    between separate pytest runs.
+    """
+    monkeypatch.setenv("DISTLLM_FENCE_STATE_DIR", str(tmp_path))
+    yield
+
+
 class TestSplitBrainDetection:
     """Test split-brain detection scenarios."""
 

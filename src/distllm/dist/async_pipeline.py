@@ -352,6 +352,18 @@ class AsyncPipelineEngine:
         stage.initialize()
         return stage_id
 
+    def _resolve_warmup(self, num_stages: int, num_micro_b: int) -> int:
+        """Effective warmup micro-batch count for this forward pass.
+
+        Explicitly configured ``num_warmup_micro_batches`` (> 0) wins,
+        capped at the micro-batches actually present; otherwise derive the
+        pipeline-depth default (``num_stages - 1``).
+        """
+        configured = self._config.num_warmup_micro_batches
+        if configured > 0:
+            return min(configured, num_micro_b)
+        return min(num_stages - 1, num_micro_b)
+
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         num_micro = self._config.num_micro_batches
         batch_size = input_tensor.shape[0]
@@ -378,14 +390,18 @@ class AsyncPipelineEngine:
         if self._config.schedule == ScheduleType.ONE_F_ONE_B and num_stages > 1:
             num_micro_b = len(micro_batches)
             total_steps = num_micro_b + num_stages - 1
-            num_warmup = min(num_stages - 1, num_micro_b)
+            # An explicitly configured warmup (num_warmup_micro_batches > 0)
+            # is honored, capped at the micro-batches actually available; the
+            # old unconditional num_stages-1 derivation silently discarded the
+            # setting, making the knob (and its env var) a no-op.
+            num_warmup = self._resolve_warmup(num_stages, num_micro_b)
             self._warmup = num_warmup
 
             result_outputs = self._run_1f1b(micro_batches, num_micro_b, num_stages, outputs, total_steps)
         elif self._config.schedule == ScheduleType.INTERLEAVED and num_stages > 1:
             num_micro_b = len(micro_batches)
             total_steps = num_micro_b + num_stages - 1
-            self._warmup = min(num_stages - 1, num_micro_b)
+            self._warmup = self._resolve_warmup(num_stages, num_micro_b)
             result_outputs = self._run_interleaved(micro_batches, num_micro_b, num_stages, outputs, total_steps)
         else:
             for mb_id, mb in enumerate(micro_batches):

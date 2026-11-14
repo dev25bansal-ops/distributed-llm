@@ -7,6 +7,12 @@ first boot and persists it (``core.api_key_store`` writes it to
 ``$DISTLLM_KEY_FILE`` or ``.distllm/api_key``); this module is the single place
 that reads it back.
 
+The key-precedence rule itself now lives in
+:func:`distllm.core.api_key_store.resolve_api_key` (``API_KEY`` >
+``DISTLLM_API_KEY`` > key file) and is re-exported here for the CLI; the
+distributed worker and framework adapters resolve through the same function so
+every client of one server sends the same credential.
+
 Use :func:`client_for` instead of constructing ``httpx.Client`` directly, and
 :func:`auth_headers` for the rare call site that needs a bare ``httpx.get``.
 """
@@ -17,28 +23,10 @@ import os
 
 import httpx
 
+from distllm.core.api_key_store import resolve_api_key
+
+# Back-compat alias; the canonical location lives in core.api_key_store.
 DEFAULT_KEY_FILE = os.path.join(".distllm", "api_key")
-
-
-def resolve_api_key() -> str | None:
-    """Return the API key the local server expects, if one is available.
-
-    Precedence: ``DISTLLM_API_KEY``, then ``API_KEY`` (the server's own env
-    var), then the persisted key file. Environment wins so an explicit key
-    always overrides a stale file.
-    """
-    for name in ("DISTLLM_API_KEY", "API_KEY"):
-        value = os.environ.get(name)
-        if value and value.strip():
-            return value.strip()
-
-    path = os.environ.get("DISTLLM_KEY_FILE") or DEFAULT_KEY_FILE
-    try:
-        with open(path, encoding="utf-8") as fh:
-            key = fh.read().strip()
-    except OSError:
-        return None
-    return key or None
 
 
 def auth_headers() -> dict[str, str]:

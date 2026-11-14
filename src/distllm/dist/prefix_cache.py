@@ -120,8 +120,10 @@ class PrefixCache:
             try:
                 import psutil
                 mem = psutil.virtual_memory()
-                if mem.percent > 90:
-                    # Under memory pressure, reduce budget by 25%
+                if mem.percent > 90 and self._budget_is_adaptive:
+                    # Under memory pressure, reduce the budget by 25%.  Only
+                    # the default budget adapts: an explicit budget is a
+                    # contract (see __init__) and must not be shrunk either.
                     self._memory_budget = int(self._memory_budget * 0.75)
                 elif (
                     mem.percent < 70
@@ -239,15 +241,30 @@ class PrefixCache:
             key = (h, tenant_id)
 
             if key in self._cache:
+                # Overwrite: replace the payload AND fix the byte ledger —
+                # leaving the old size counted under-reported memory and
+                # silently exceeded the configured budget as payloads grew.
+                old_entry = self._cache[key]
+                old_bytes = self._estimate_entry_memory(old_entry.get("kv_data", {}))
+                self._total_memory_bytes = max(0, self._total_memory_bytes - old_bytes)
+                old_entry["kv_data"] = kv_data
+                old_entry["access_count"] = old_entry.get("access_count", 0) + 1
+                self._total_memory_bytes += entry_bytes
                 self._cache.move_to_end(key)
-                self._cache[key]["kv_data"] = kv_data
-                self._cache[key]["access_count"] = self._cache[key].get("access_count", 0) + 1
                 if self._ttl_policy:
                     self._ttl_policy.record_access(key)
+                self._evict_until_fit(0)
                 return
 
             while len(self._cache) >= self.max_entries:
-                self._cache.popitem(last=False)
+                _evicted_key, evicted = self._cache.popitem(last=False)
+                # Subtract the evicted entry's bytes — the old loop dropped
+                # the entry but kept its size in _total_memory_bytes, so
+                # phantom usage evicted live entries that fit the budget.
+                evicted_bytes = self._estimate_entry_memory(evicted.get("kv_data", {}))
+                self._total_memory_bytes = max(0, self._total_memory_bytes - evicted_bytes)
+                if self._ttl_policy:
+                    self._ttl_policy.remove(_evicted_key)
 
             self._cache[key] = {
                 "tokens": list(token_ids),
@@ -272,13 +289,21 @@ class PrefixCache:
                 h = ((h * self._HASH_BASE) + tok) % self._HASH_MOD
             key = (h, tenant_id)
             if key in self._cache:
-                del self._cache[key]
+                entry = self._cache.pop(key)
+                # Decrement the ledger: a popped entry that keeps its bytes
+                # counted leaves phantom usage that later evicts live
+                # entries which actually fit the budget.
+                entry_bytes = self._estimate_entry_memory(entry.get("kv_data", {}))
+                self._total_memory_bytes = max(0, self._total_memory_bytes - entry_bytes)
+                if self._ttl_policy:
+                    self._ttl_policy.remove(key)
                 return True
             return False
 
     def clear(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._total_memory_bytes = 0
             self._hits = 0
             self._misses = 0
             if self._ttl_policy:

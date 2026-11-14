@@ -167,12 +167,22 @@ class TestListModels:
 
 
 class TestUpdateParams:
+    """Mid-stream steering endpoint.
+
+    Regression context: ``ParamUpdateChannel.update()`` returns None (it is
+    not a status signal), so the route used to 404 for every *live* request.
+    Worse, it forwarded ``None`` for unset fields, which ``setattr`` wrote
+    into the live params, and the next sampling step crashed comparing None
+    against int/float. These tests drive a real channel, not a mock.
+    """
+
     @pytest.fixture(autouse=True)
     def setup(self, coordinator):
+        from distllm.core.param_update_channel import ParamUpdateChannel
+
         original = g.coordinator
         g.coordinator = coordinator
-        coordinator._param_update_channel = MagicMock()
-        coordinator._param_update_channel.update = MagicMock()
+        coordinator._param_update_channel = ParamUpdateChannel()
         yield
         g.coordinator = original
 
@@ -186,11 +196,8 @@ class TestUpdateParams:
         return client
 
     def test_update_params_success(self, coordinator):
-        updated = MagicMock()
-        updated.temperature = 0.8
-        updated.top_p = 0.95
-        updated.top_k = 50
-        coordinator._param_update_channel.update.return_value = updated
+        channel = coordinator._param_update_channel
+        channel.register("req-123")
 
         client = self._authed_client()
         resp = client.post(
@@ -203,17 +210,69 @@ class TestUpdateParams:
         assert data["temperature"] == 0.8
         assert data["top_p"] == 0.95
         assert data["top_k"] == 50
+        # The live params really changed.
+        live = channel.get("req-123")
+        assert (live.temperature, live.top_p, live.top_k) == (0.8, 0.95, 50)
 
-    def test_update_params_completed_request(self, coordinator):
-        coordinator._param_update_channel.update.return_value = None
+    def test_partial_update_does_not_null_unset_fields(self, coordinator):
+        """A {temperature} payload must not write None into top_p/top_k.
+
+        Regression: the next sampling step then raised
+        ``TypeError: '>' not supported between 'NoneType' and 'int'`` and the
+        client's own steering call truncated its stream.
+        """
+        channel = coordinator._param_update_channel
+        channel.register("req-partial")
 
         client = self._authed_client()
         resp = client.post(
-            "/v1/update-params/req-999",
+            "/v1/update-params/req-partial",
+            json={"temperature": 0.3},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["temperature"] == 0.3
+        # Defaults for the untouched fields, never None.
+        assert data["top_p"] == 0.9
+        assert data["top_k"] == 0
+        live = channel.get("req-partial")
+        assert live.temperature == 0.3
+        assert live.top_p == 0.9
+        assert live.top_k == 0
+
+        # And the sampling path can still use the params (this exact call
+        # raised TypeError when top_p/top_k had been nulled).
+        import torch
+
+        from distllm.core.token_generator import TokenGenerator
+
+        TokenGenerator().sample(
+            torch.randn(1, 16),
+            temperature=live.temperature,
+            top_p=live.top_p,
+            top_k=live.top_k,
+        )
+
+    def test_update_params_completed_request(self, coordinator):
+        client = self._authed_client()
+        resp = client.post(
+            "/v1/update-params/req-999",  # never registered
             json={"temperature": 0.5},
         )
         assert resp.status_code == 404
         assert "not found or already completed" in resp.json()["error"]["message"]
+
+    def test_update_params_live_request_is_not_404(self, coordinator):
+        """A registered (in-flight) id must not 404 — the old None-return bug."""
+        channel = coordinator._param_update_channel
+        channel.register("chatcmpl-live123")
+
+        client = self._authed_client()
+        resp = client.post(
+            "/v1/update-params/chatcmpl-live123",
+            json={"temperature": 0.3},
+        )
+        assert resp.status_code == 200, resp.text
 
     def test_update_params_no_coordinator(self):
         original = g.coordinator

@@ -24,6 +24,7 @@ from loguru import logger
 from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer
+from distllm.errors import ConfigError
 
 # Imported at module scope, not inside _stream_response. Starlette has already
 # sent the 200 status and headers by the time the generator body runs, so an
@@ -133,6 +134,60 @@ def _build_chunk(
         model=model,
         choices=[choice],
     )
+
+
+def ensure_streaming_available(coord: Any) -> None:
+    """Fail fast, before the SSE response starts, when *coord* cannot generate.
+
+    Starlette sends the 200 status line and headers before the first
+    iteration of a StreamingResponse iterator, so an error raised inside the
+    generator cannot become an HTTP error status. A coordinator that exists
+    but has neither a local partitioner nor registered pipeline nodes
+    therefore used to produce a role chunk, an empty ``finish_reason="stop"``
+    chunk and ``[DONE]`` — a silent, successful-looking empty completion —
+    while the identical non-streaming request correctly raised
+    ``ConfigError("No nodes registered in the pipeline")``. Route handlers
+    call this before returning a StreamingResponse so the failure surfaces as
+    a real HTTP error (500, code ``config_error``) instead.
+
+    Mirrors the dispatch conditions of :func:`_generate_tokens`: the local
+    partitioner (directly or on the inference engine) serves single-node
+    installs; a non-empty ``node_order`` serves distributed pipelines.
+    """
+    if coord is None:
+        # Routes raise their own 503 when no coordinator is loaded at all.
+        return
+    partitioner = getattr(coord, "local_partitioner", None)
+    if partitioner is None:
+        engine = getattr(coord, "_inference_engine", None)
+        partitioner = getattr(engine, "local_partitioner", None)
+    if partitioner is not None or getattr(coord, "node_order", None):
+        return
+    raise ConfigError(
+        "No nodes registered in the pipeline", context={"action": "stream"}
+    )
+
+
+async def _stream_zero_tokens(
+    request: Any,
+    object_type: str,
+    request_id_prefix: str,
+) -> AsyncGenerator[str, None]:
+    """SSE body for a ``max_tokens=0`` request that asked for ``stream=true``.
+
+    The routes used to return a JSON body for this combination, silently
+    ignoring the stream flag: an SSE reader (``distllm chat --stream``, any
+    OpenAI SDK with ``stream=True``) saw an empty stream with no ``[DONE]``,
+    indistinguishable from a dropped connection. Emit the same three-event
+    shape every other stream ends with: the role chunk, an empty content
+    chunk carrying the real finish reason (``length``, matching the
+    non-streaming zero-token response), and the ``[DONE]`` sentinel.
+    """
+    request_id = f"{request_id_prefix}{uuid.uuid4().hex[:12]}"
+    model_name = request.model
+    yield _build_chunk(request_id, object_type, model_name, include_role=True).to_sse()
+    yield _build_chunk(request_id, object_type, model_name, finish_reason="length").to_sse()
+    yield StreamChunk.data_done()
 
 
 def _step_local_model(
@@ -377,6 +432,19 @@ async def _generate_tokens(
 
             if token_id == tokenizer.eos_token_id:
                 break
+
+    else:
+        # Neither a local partitioner nor any pipeline nodes: there is no
+        # backend that could produce tokens. Falling off the end here is what
+        # made a streamed request against a coordinator with no workers look
+        # like a successful empty completion. Route handlers call
+        # ensure_streaming_available() before the response starts; this raise
+        # covers the race where nodes disappear between that check and the
+        # first token (the stream truncates without [DONE], and the cause is
+        # in the log) and direct _generate_tokens callers.
+        raise ConfigError(
+            "No nodes registered in the pipeline", context={"action": "stream"}
+        )
 
 
 async def _stream_response(

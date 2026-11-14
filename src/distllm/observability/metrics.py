@@ -41,6 +41,33 @@ _MISSING_SDK_MESSAGE = (
     'pip install "distributed-llm[observability]"'
 )
 
+_OTLP_MISSING_MESSAGE = (
+    "OTLP metric export requires the OTLP exporter: "
+    'pip install "distributed-llm[observability]"'
+)
+
+
+class _NoopInstrument:
+    """Drop-in for an OTel Instrument when no OTel API is importable.
+
+    Keeps ``DistLLMMetrics`` (and every caller of ``record_generation`` and
+    friends) usable on installations without the observability extra.
+    """
+
+    def record(self, *args, **kwargs):
+        pass
+
+    def add(self, *args, **kwargs):
+        pass
+
+
+class _NoopMeter:
+    def create_histogram(self, *args, **kwargs):
+        return _NoopInstrument()
+
+    def create_counter(self, *args, **kwargs):
+        return _NoopInstrument()
+
 
 def setup_metrics(
     service_name: str = "distllm",
@@ -58,7 +85,8 @@ def setup_metrics(
         Configured MeterProvider.
 
     Raises:
-        RuntimeError: when the observability extra is not installed.
+        RuntimeError: when the observability extra (SDK or OTLP exporter for
+            the requested ``endpoint``) is not installed.
     """
     if not _HAS_SDK:
         raise RuntimeError(_MISSING_SDK_MESSAGE)
@@ -67,7 +95,13 @@ def setup_metrics(
 
     readers = []
     if endpoint:
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        try:
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        except ImportError as exc:
+            # The SDK is installed but the OTLP exporter is not; a missing
+            # optional package must surface as the same actionable error
+            # rather than a bare ModuleNotFoundError out of server startup.
+            raise RuntimeError(_OTLP_MISSING_MESSAGE) from exc
         otlp_exporter = OTLPMetricExporter(endpoint=endpoint)
         readers.append(PeriodicExportingMetricReader(otlp_exporter))
 
@@ -81,6 +115,8 @@ def setup_metrics(
 
 def get_meter():
     """Get the default meter for distllm."""
+    if metrics is None:
+        return _NoopMeter()
     return metrics.get_meter("distllm")
 
 
@@ -150,3 +186,22 @@ class DistLLMMetrics:
         self.draft_latency.record(duration)
         if drafted > 0:
             self.draft_acceptance.record(accepted / drafted)
+
+
+_metrics_singleton: DistLLMMetrics | None = None
+
+
+def get_distllm_metrics() -> DistLLMMetrics:
+    """Return the shared :class:`DistLLMMetrics` instance.
+
+    Production callers (the request pipeline's success path) must not build
+    a new instance per request: each construction re-registers instruments
+    against the active meter and loses nothing today only because OTel
+    meters dedupe by name. More importantly, before this accessor existed
+    nothing in ``src/`` ever constructed the class, so none of the six OTel
+    metrics were recorded.
+    """
+    global _metrics_singleton
+    if _metrics_singleton is None:
+        _metrics_singleton = DistLLMMetrics()
+    return _metrics_singleton

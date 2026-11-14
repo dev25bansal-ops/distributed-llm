@@ -974,7 +974,7 @@ def cluster_join(
 def cluster_leave(
     node_id: str = typer.Argument(..., help="Node ID to remove from cluster"),
     coordinator_host: str = typer.Option("localhost", "--coordinator", "-c", help="Coordinator hostname"),
-    coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator port"),
+    coordinator_port: int = typer.Option(8000, "--port", "-p", help="Coordinator REST API port (admin endpoints; default 8000)"),
 ):
     """Gracefully leave the cluster and shut down worker."""
     from distllm.cli.cluster import _cluster_leave

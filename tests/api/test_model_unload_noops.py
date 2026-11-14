@@ -141,3 +141,84 @@ def test_unload_exception_is_clean_error_not_200(app_client):
         assert resp.status_code >= 400, (resp.status_code, body)
     finally:
         restore()
+
+
+# ---------------------------------------------------------------------------
+# Status-code contract for the failure paths.
+#
+# Defect: with no coordinator, load/unload returned HTTP 200 with a bare
+# {"error": "coordinator not available"} body, and the method-missing
+# variants did the same.  The repo's own CLI (distllm model load/unload,
+# distllm deploy) only checks the HTTP status via raise_for_status() and
+# then prints "Model loaded: ..." / "Deployment request accepted." -- so a
+# status-code-only client was told the operation succeeded when nothing
+# happened.
+# ---------------------------------------------------------------------------
+
+
+class _CoordinatorWithoutLoadMethods:
+    """Shape of a coordinator that exposes neither load nor unload method."""
+
+
+def test_load_without_coordinator_is_5xx_not_200_error_body(app_client):
+    restore = _set_coordinator(None)
+    try:
+        resp = app_client.post("/api/models/load", json={"model": "llama-x"})
+        body = resp.json()
+        assert resp.status_code >= 400, (resp.status_code, body)
+        assert "coordinator not available" in body["error"]["message"], body
+    finally:
+        restore()
+
+
+def test_unload_without_coordinator_is_5xx_not_200_error_body(app_client):
+    restore = _set_coordinator(None)
+    try:
+        resp = app_client.post("/api/models/unload", json={"model": "llama-x"})
+        body = resp.json()
+        assert resp.status_code >= 400, (resp.status_code, body)
+        assert "coordinator not available" in body["error"]["message"], body
+    finally:
+        restore()
+
+
+def test_load_without_method_is_5xx_not_200_error_body(app_client):
+    restore = _set_coordinator(_CoordinatorWithoutLoadMethods())
+    try:
+        resp = app_client.post("/api/models/load", json={"model": "llama-x"})
+        body = resp.json()
+        assert resp.status_code >= 400, (resp.status_code, body)
+        assert "no load_model method available" in body["error"]["message"], body
+    finally:
+        restore()
+
+
+def test_unload_without_method_is_5xx_not_200_error_body(app_client):
+    restore = _set_coordinator(_CoordinatorWithoutLoadMethods())
+    try:
+        resp = app_client.post("/api/models/unload", json={"model": "llama-x"})
+        body = resp.json()
+        assert resp.status_code >= 400, (resp.status_code, body)
+        assert "no unload_model method available" in body["error"]["message"], body
+    finally:
+        restore()
+
+
+def test_registry_detail_missing_model_is_404(app_client):
+    """A failed lookup must not be a 200 carrying an error object.
+
+    Defect: GET /api/models/registry/{model_id} returned HTTP 200 with
+    {"error": "model not found", ...}; clients keying on response.ok /
+    curl --fail read the miss as a successful detail fetch.
+    """
+    from distllm.api.routes import model_registry as reg
+
+    # The registry cache is module-global and TTL-based; force an empty view.
+    reg._get_registry(force=True)
+    resp = app_client.get("/api/models/registry/not-a-real-model")
+    assert resp.status_code == 404, (resp.status_code, resp.text)
+    body = resp.json()
+    # This bare app has no error-envelope handler: the detail lives either
+    # under "detail" (FastAPI default) or the structured envelope.
+    detail = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "not found" in detail, body

@@ -37,7 +37,12 @@ from distllm.observability.incident_response import (
     RunbookStep,
     TimelineEntry,
 )
-from distllm.observability.metrics import DistLLMMetrics, get_meter, setup_metrics
+from distllm.observability.metrics import (
+    DistLLMMetrics,
+    get_distllm_metrics,
+    get_meter,
+    setup_metrics,
+)
 from distllm.observability.slo_config import (
     SLO,
     AvailabilitySLI,
@@ -61,6 +66,7 @@ __all__ = [
     "setup_metrics",
     "get_meter",
     "DistLLMMetrics",
+    "get_distllm_metrics",
     "TailBasedSampler",
     "TraceLokiExporter",
     "ExemplarExporter",

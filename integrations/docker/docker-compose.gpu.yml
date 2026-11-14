@@ -78,7 +78,10 @@ services:
   # DistLLM Coordinator (control plane + gRPC gateway)
   # ═══════════════════════════════════════════════════════════════════════════
   coordinator:
-    <<: *distllm-image
+    # Single merge of a list: two `<<:` keys in one mapping is a YAML
+    # construct error for docker compose's Go parser ("mapping key "<<"
+    # already defined"), which rejected the whole file.
+    <<: [*distllm-image, *gpu-reservation]
     container_name: distllm-coordinator
     command: >
       distllm system coordinator
@@ -148,7 +151,6 @@ services:
       - "prometheus.io/scrape=true"
       - "prometheus.io/port=9090"
       - "prometheus.io/path=/metrics"
-    <<: *gpu-reservation
 
   # ═══════════════════════════════════════════════════════════════════════════
   # GPU Workers (named services for pinned GPU assignment)
@@ -160,7 +162,7 @@ services:
   # ───────────────────────────────────────────────────────────────────────────
 
   worker-1:
-    <<: *distllm-image
+    <<: [*distllm-image, *gpu-reservation]
     container_name: distllm-worker-1
     command: >
       distllm system worker
@@ -218,10 +220,9 @@ services:
       - "com.distllm.worker-id=1"
       - "prometheus.io/scrape=true"
       - "prometheus.io/port=9090"
-    <<: *gpu-reservation
 
   worker-2:
-    <<: *distllm-image
+    <<: [*distllm-image, *gpu-reservation]
     container_name: distllm-worker-2
     command: >
       distllm system worker
@@ -279,7 +280,6 @@ services:
       - "com.distllm.worker-id=2"
       - "prometheus.io/scrape=true"
       - "prometheus.io/port=9090"
-    <<: *gpu-reservation
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Redis — KV cache backend, rate limiting, pub/sub coordination

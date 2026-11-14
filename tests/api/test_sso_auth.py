@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import time
 from unittest.mock import patch
 
@@ -511,3 +512,205 @@ class TestLocalJwtIssuerAndExpiry:
 
         custom_token = _create_jwt(SSOUserInfo(sub="user1"))
         assert _decode_jwt(custom_token) is not None
+
+
+# ======================================================================
+# Callback hardening: mandatory id_token, unconditional nonce check,
+# fail-closed userinfo enrichment, .env config, login-state minting
+# ======================================================================
+
+
+def _bare_oidc_handler(
+    *,
+    has_userinfo: bool = True,
+    nonce: str | None = "n",
+    allow_unverified: bool = True,
+) -> OIDCHandler:
+    """OIDCHandler built via __new__ (no network discovery)."""
+    h = OIDCHandler.__new__(OIDCHandler)
+    h._state_store = {"s": time.time() + 600}
+    h._nonce_store = (
+        {"s": {"nonce": nonce, "expires": time.time() + 600}} if nonce else {}
+    )
+    h._pkce_store = {"s": "verifier"}
+    h._token_endpoint = "https://x/t"
+    h._client_id = "c"
+    h._client_secret = "s"
+    h._callback_url = "https://x/cb"
+    h._userinfo_endpoint = "https://x/u" if has_userinfo else ""
+    h._jwks_url = None
+    h._discovered_jwks_url = None
+    h._allow_unverified_id_token = allow_unverified
+    h._nonce_ttl = 600.0
+    return h
+
+
+def _unsigned_id_token(claims: dict) -> str:
+    """Structural JWT (alg=none) — decodable only via the unverified path."""
+    import base64
+
+    def _b64(obj: dict) -> str:
+        return base64.urlsafe_b64encode(
+            json.dumps(obj).encode()
+        ).rstrip(b"=").decode()
+
+    return f"{_b64({'alg': 'none', 'typ': 'JWT'})}.{_b64(claims)}."
+
+
+class _Resp:
+    status_code = 200
+    text = ""
+
+    def __init__(self, body: dict, status_code: int = 200):
+        self._body = body
+        self.status_code = status_code
+
+    def json(self) -> dict:
+        return self._body
+
+
+class TestCallbackHardening:
+    def test_missing_id_token_is_refused(self):
+        """A token response without id_token must fail closed: previously it
+        skipped both signature verification and the nonce replay check and
+        authenticated from userinfo."""
+        h = _bare_oidc_handler()
+        with patch("httpx.post", lambda *a, **k: _Resp({"access_token": "at"})), patch(
+            "httpx.get", lambda *a, **k: _Resp({"sub": "forged"})
+        ):
+            assert h.handle_callback("code", expected_state="s") is None
+
+    def test_nonce_replay_check_runs_even_when_nonce_store_empty(self):
+        """With a valid id_token but no stored nonce for the state, the
+        exchange must be refused (replay protection is not optional)."""
+        h = _bare_oidc_handler(nonce=None)
+        id_token = _unsigned_id_token({"sub": "u", "nonce": "anything"})
+        with patch(
+            "httpx.post",
+            lambda *a, **k: _Resp({"access_token": "at", "id_token": id_token}),
+        ), patch("httpx.get", lambda *a, **k: _Resp({"sub": "u"})):
+            assert h.handle_callback("code", expected_state="s") is None
+
+    def test_nonce_mismatch_is_refused(self):
+        h = _bare_oidc_handler(nonce="expected")
+        id_token = _unsigned_id_token({"sub": "u", "nonce": "attacker"})
+        with patch(
+            "httpx.post",
+            lambda *a, **k: _Resp({"access_token": "at", "id_token": id_token}),
+        ), patch("httpx.get", lambda *a, **k: _Resp({"sub": "u"})):
+            assert h.handle_callback("code", expected_state="s") is None
+
+    def test_userinfo_failure_fails_closed(self):
+        """A failed userinfo call after a valid id_token must not mint an
+        empty-subject identity (one shared JWT for every user + a valid
+        credential from a transient IdP outage)."""
+        h = _bare_oidc_handler(nonce="n")
+        id_token = _unsigned_id_token({"sub": "u", "nonce": "n"})
+        with patch(
+            "httpx.post",
+            lambda *a, **k: _Resp({"access_token": "at", "id_token": id_token}),
+        ), patch("httpx.get", lambda *a, **k: _Resp({"error": "boom"}, 500)):
+            assert h.handle_callback("code", expected_state="s") is None
+
+    def test_userinfo_failure_fails_closed_async(self):
+        import asyncio
+
+        h = _bare_oidc_handler(nonce="n")
+        id_token = _unsigned_id_token({"sub": "u", "nonce": "n"})
+
+        class _AsyncResp(_Resp):
+            pass
+
+        class _Client:
+            async def post(self, url, **kw):
+                return _AsyncResp({"access_token": "at", "id_token": id_token})
+
+            async def get(self, url, **kw):
+                return _AsyncResp({"error": "boom"}, 500)
+
+        with patch("distllm.api.sso_auth._get_async_client", lambda: _Client()):
+            result = asyncio.run(h.async_handle_callback("code", expected_state="s"))
+        assert result is None
+
+    def test_successful_exchange_returns_userinfo_identity(self):
+        """Positive control: valid id_token + matching nonce + userinfo 200
+        returns the enriched identity."""
+        h = _bare_oidc_handler(nonce="n")
+        id_token = _unsigned_id_token({"sub": "u", "nonce": "n"})
+        with patch(
+            "httpx.post",
+            lambda *a, **k: _Resp({"access_token": "at", "id_token": id_token}),
+        ), patch(
+            "httpx.get", lambda *a, **k: _Resp({"sub": "u", "email": "u@x"})
+        ):
+            user = h.handle_callback("code", expected_state="s")
+        assert user is not None
+        assert user.sub == "u"
+        assert user.email == "u@x"
+
+    def test_no_userinfo_endpoint_uses_verified_id_token_claims(self):
+        """Without a userinfo endpoint the identity comes from the verified
+        id_token — not from an empty-subject placeholder."""
+        h = _bare_oidc_handler(has_userinfo=False, nonce="n")
+        id_token = _unsigned_id_token({"sub": "u", "nonce": "n"})
+        with patch(
+            "httpx.post",
+            lambda *a, **k: _Resp({"access_token": "at", "id_token": id_token}),
+        ):
+            user = h.handle_callback("code", expected_state="s")
+        assert user is not None
+        assert user.sub == "u"
+
+
+class TestLoginStateMinting:
+    def test_get_login_url_state_roundtrip(self):
+        """get_login_url() mints state+nonce+PKCE that handle_callback then
+        accepts — the stores were previously populated but never fed by any
+        route, so every real callback was 'state not found'."""
+        import urllib.parse
+
+        h = _bare_oidc_handler(nonce=None)
+        h._authorization_endpoint = "https://x/authorize"
+        url = h.get_login_url()
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        state, nonce = qs["state"][0], qs["nonce"][0]
+        assert state in h._state_store
+        assert state in h._pkce_store
+        assert h._nonce_store[state]["nonce"] == nonce
+
+        id_token = _unsigned_id_token({"sub": "u", "nonce": nonce})
+        with patch(
+            "httpx.post",
+            lambda *a, **k: _Resp({"access_token": "at", "id_token": id_token}),
+        ), patch("httpx.get", lambda *a, **k: _Resp({"sub": "u"})):
+            user = h.handle_callback("code", expected_state=state)
+        assert user is not None and user.sub == "u"
+
+    def test_sso_handler_honors_dotenv_configuration(self, tmp_path, monkeypatch):
+        """.env-configured DISTLLM_SSO_* values must enable SSO: operators
+        configure every other DISTLLM_ setting through .env, and SSOAuthHandler
+        previously read os.environ only, silently leaving SSO off."""
+        for k in [k for k in os.environ if k.startswith("DISTLLM_SSO")]:
+            monkeypatch.delenv(k, raising=False)
+        (tmp_path / ".env").write_text(
+            "DISTLLM_SSO_PROVIDER=oidc\n"
+            "DISTLLM_SSO_CLIENT_ID=env-client\n"
+            "DISTLLM_SSO_AUTHORITY=https://idp.env.example\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        with patch.object(OIDCHandler, "_discover", lambda self: None):
+            handler = SSOAuthHandler()
+        assert handler.is_enabled
+        assert handler._handler._client_id == "env-client"
+
+    def test_process_env_wins_over_dotenv(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text(
+            "DISTLLM_SSO_PROVIDER=oidc\nDISTLLM_SSO_CLIENT_ID=env-client\n"
+            "DISTLLM_SSO_AUTHORITY=https://idp.env.example\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DISTLLM_SSO_CLIENT_ID", "proc-client")
+        with patch.object(OIDCHandler, "_discover", lambda self: None):
+            handler = SSOAuthHandler()
+        assert handler.is_enabled
+        assert handler._handler._client_id == "proc-client"

@@ -4,7 +4,10 @@ Supports loading API keys from:
 1. ``API_KEYS`` env var — inline JSON string
 2. ``API_KEYS_FILE`` env var — path to JSON or YAML file
 3. ``API_KEY`` env var — single key (backward compatible, admin role)
-4. Auto-generated fallback — single admin key (legacy behavior)
+4. ``DISTLLM_API_KEY`` env var — the documented v0.4 single-key name
+   (admin role); accepted alongside ``API_KEY`` so a client holding
+   either name authenticates
+5. Auto-generated fallback — single admin key (legacy behavior)
 
 Each key has a ``role``: ``admin``, ``read-only``, or ``inference-only``.
 
@@ -182,6 +185,34 @@ class StoredKey:
 
 def _api_key_path() -> str:
     return os.environ.get("DISTLLM_KEY_FILE") or os.path.join(".distllm", "api_key")
+
+
+def resolve_api_key() -> str | None:
+    """Return the API key a local server expects, if one is available.
+
+    Single source of truth for "which key wins" on the client side —
+    imported by the CLI, the distributed worker and the framework adapters
+    so every consumer of the same server sends the same credential:
+
+    1. ``API_KEY`` env var
+    2. ``DISTLLM_API_KEY`` env var (the documented v0.4 name)
+    3. the persisted key file (``DISTLLM_KEY_FILE`` or ``.distllm/api_key``)
+
+    ``API_KEY`` wins when both variables are set because it is the name the
+    server has always honored (see ``ApiKeyStore._load``); the store also
+    accepts ``DISTLLM_API_KEY``, so either value authenticates.
+    """
+    for name in ("API_KEY", "DISTLLM_API_KEY"):
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+
+    try:
+        with open(_api_key_path(), encoding="utf-8") as fh:
+            key = fh.read().strip()
+    except OSError:
+        return None
+    return key or None
 
 
 # ── Key store ───────────────────────────────────────────────────────────────
@@ -525,19 +556,43 @@ class ApiKeyStore:
             except (FileNotFoundError, json.JSONDecodeError, Exception) as e:
                 logger.warning(f"Failed to load API_KEYS_FILE {path}: {e}")
 
-        # 3. Fall back to single API_KEY env var (backward compatible)
-        legacy_key = os.environ.get("API_KEY")
-        if legacy_key:
-            salt = self._generate_salt()
-            self._keys.append(StoredKey(
-                key=self._hash_key(legacy_key, salt),
-                role="admin",
-                label="legacy-api-key",
-                key_id="legacy",
-                salt=salt,
-                created_at=time.time(),
-            ))
-            logger.info("Loaded single API_KEY (admin role, backward compatible)")
+        # 3. Fall back to single-key env vars (backward compatible).
+        #
+        #    Two names configure an admin key: ``API_KEY`` (the historical
+        #    name the server has always read) and ``DISTLLM_API_KEY`` (the
+        #    documented v0.4 name every CLI/SDK client prefers).  Only
+        #    ``API_KEY`` used to be read, so an operator who followed the
+        #    docs — ``export DISTLLM_API_KEY=sk-...`` — got a silently
+        #    auto-generated file key instead, and every client sending the
+        #    documented value 401'd.  When both names are set to different
+        #    values, BOTH authenticate (a half-migrated deployment must not
+        #    lock out either generation of clients).
+        single_env: list[tuple[str, str, str, str]] = []
+        seen_values: set[str] = set()
+        for env_name, label, key_id in (
+            ("API_KEY", "legacy-api-key", "legacy"),
+            ("DISTLLM_API_KEY", "distllm-api-key", "distllm-api-key"),
+        ):
+            value = os.environ.get(env_name)
+            if value and value.strip() and value.strip() not in seen_values:
+                seen_values.add(value.strip())
+                single_env.append((env_name, value.strip(), label, key_id))
+        if single_env:
+            for env_name, value, label, key_id in single_env:
+                salt = self._generate_salt()
+                self._keys.append(StoredKey(
+                    key=self._hash_key(value, salt),
+                    role="admin",
+                    label=label,
+                    key_id=key_id,
+                    salt=salt,
+                    created_at=time.time(),
+                ))
+            names = ", ".join(entry[0] for entry in single_env)
+            logger.info(
+                f"Loaded single-key admin credential from {names} "
+                f"(backward compatible)"
+            )
             return
 
         # 4. Auto-generated key (legacy behavior) — adopt, never overwrite.
@@ -557,7 +612,7 @@ class ApiKeyStore:
             logger.info(
                 f"No API keys configured; reusing the existing auto-generated "
                 f"API key found in {key_path}. Delete that file or set API_KEY "
-                f"in the environment to rotate keys."
+                f"(or DISTLLM_API_KEY) in the environment to rotate keys."
             )
             return
 
@@ -569,7 +624,8 @@ class ApiKeyStore:
             logger.info(
                 f"No API keys configured; another process created {key_path} "
                 f"first — reusing that auto-generated API key. Delete that file "
-                f"or set API_KEY in the environment to rotate keys."
+                f"or set API_KEY (or DISTLLM_API_KEY) in the environment to "
+                f"rotate keys."
             )
             return
 
@@ -577,9 +633,9 @@ class ApiKeyStore:
         logger.warning(
             "No API keys configured. Generated an admin API key"
             + (f" and wrote it to {written_path}" if written_path else " (in-memory only)")
-            + ". Set API_KEYS, API_KEYS_FILE, or API_KEY in the environment to "
-            "pin keys instead. Clients pick the key up from that file "
-            "automatically."
+            + ". Set API_KEYS, API_KEYS_FILE, API_KEY, or DISTLLM_API_KEY in the "
+            "environment to pin keys instead. Clients pick the key up from that "
+            "file automatically."
         )
 
     @staticmethod
@@ -725,9 +781,9 @@ class ApiKeyStore:
     def get_display_key(self) -> str | None:
         """Return the API key for display to the user.
 
-        Returns the raw key if it was auto-generated, or the API_KEY
-        env var value if set. Returns None if keys were loaded from
-        a file or JSON config.
+        Returns the raw key if it was auto-generated, or the single-key
+        env var value (``API_KEY`` or ``DISTLLM_API_KEY``) if set. Returns
+        None if keys were loaded from a file or JSON config.
 
         .. warning::
 
@@ -741,10 +797,11 @@ class ApiKeyStore:
         if hasattr(self, '_auto_generated_key'):
             return self._auto_generated_key
 
-        # Single API_KEY env var
-        env_key = os.environ.get("API_KEY")
-        if env_key:
-            return env_key
+        # Single-key env vars
+        for name in ("API_KEY", "DISTLLM_API_KEY"):
+            env_key = os.environ.get(name)
+            if env_key:
+                return env_key
 
         return None
 

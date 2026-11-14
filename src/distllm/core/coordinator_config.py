@@ -177,7 +177,22 @@ class CoordinatorConfig(BaseModel):
 
         Returns:
             A validated CoordinatorConfig instance.
+
+        Raises:
+            TypeError: If an override names no CoordinatorConfig field
+                (typo'd overrides used to be silently ignored).
+            pydantic.ValidationError: If a value violates a field
+                constraint. Overrides are passed through the normal
+                constructor, so ``port=99999`` or ``dtype="int4"`` are
+                rejected exactly like they are by ``CoordinatorConfig(...)``.
         """
+        unknown = sorted(set(overrides) - set(cls.model_fields))
+        if unknown:
+            raise TypeError(
+                f"Unknown CoordinatorConfig override(s): {', '.join(unknown)}. "
+                f"Valid fields: {', '.join(sorted(cls.model_fields))}"
+            )
+
         wa = settings.wide_area
         wide_area_config = None
         if wa.enabled:
@@ -192,7 +207,11 @@ class CoordinatorConfig(BaseModel):
                 backoff_base_seconds=wa.backoff_base_seconds,
             )
 
-        config = cls(
+        # Copy EVERY field that has a DistLLMSettings counterpart.  Only
+        # copying a subset silently replaced explicitly configured values
+        # (e.g. prefix_cache.enabled=True) with CoordinatorConfig defaults
+        # (False/256) — no error, no warning.
+        values: dict[str, Any] = dict(
             model_name=settings.model.name,
             port=settings.coordinator.port,
             dtype=settings.model.dtype,
@@ -204,8 +223,28 @@ class CoordinatorConfig(BaseModel):
             wide_area_config=wide_area_config,
         )
 
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
+        # Prefix cache + chunked prefill settings.  Read defensively so
+        # duck-typed settings stand-ins without these sections keep their
+        # CoordinatorConfig defaults rather than receiving mock values.
+        _pc = getattr(settings, "prefix_cache", None)
+        if _pc is not None:
+            if isinstance(getattr(_pc, "enabled", None), bool):
+                values["prefix_cache_enabled"] = _pc.enabled
+            if isinstance(getattr(_pc, "max_entries", None), int):
+                values["prefix_cache_max_entries"] = _pc.max_entries
+            if isinstance(getattr(_pc, "min_prefix_len", None), int):
+                values["prefix_cache_min_prefix_len"] = _pc.min_prefix_len
+            if isinstance(getattr(_pc, "radix_tree_enabled", None), bool):
+                values["radix_tree_cache_enabled"] = _pc.radix_tree_enabled
+        _cp = getattr(settings, "chunked_prefill", None)
+        if _cp is not None:
+            if isinstance(getattr(_cp, "enabled", None), bool):
+                values["chunked_prefill_enabled"] = _cp.enabled
+            if isinstance(getattr(_cp, "chunk_size", None), int):
+                values["chunked_prefill_chunk_size"] = _cp.chunk_size
 
-        return config
+        # Overrides go through the constructor so pydantic validates them —
+        # setattr after construction bypassed every Field constraint and
+        # custom validator (port le=65535, dtype allow-list, ge=1, ...).
+        values.update(overrides)
+        return cls(**values)

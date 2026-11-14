@@ -103,21 +103,47 @@ def check_tls() -> Check:
 
 def check_auth() -> Check:
     """Authentication required / disabled."""
-    api_key = os.environ.get("API_KEY", "")
-    was_set = os.environ.get("API_KEY_WAS_SET", "")
-    if not api_key:
+    # Either documented name counts: the key store loads API_KEY and
+    # DISTLLM_API_KEY as admin credentials, plus the persisted key file.
+    source = ""
+    key_path = ""
+    for name in ("API_KEY", "DISTLLM_API_KEY"):
+        if os.environ.get(name, ""):
+            source = name
+            break
+    if not source:
+        try:
+            from distllm.core.api_key_store import _api_key_path
+
+            candidate = _api_key_path()
+            if os.path.isfile(candidate):
+                source = "file"
+                key_path = candidate
+        except Exception:
+            # CQ-08: fail-open to the WARN branch below; the check only reports.
+            pass
+    if not source:
         # Middleware auto-generates a key — that's an INFO, not FAIL,
         # but operators should set API_KEY explicitly.
         return Check(
             name="auth_required",
             status="WARN",
-            detail="API_KEY not set — middleware generated a random key for this process",
-            remediation="Set API_KEY=<secret> explicitly so restarts don't rotate the key.",
+            detail="No API key configured — middleware generated a random key for this process",
+            remediation=(
+                "Set API_KEY=<secret> (or DISTLLM_API_KEY=<secret>) explicitly so "
+                "restarts don't rotate the key."
+            ),
+        )
+    if source == "file":
+        return Check(
+            name="auth_required",
+            status="PASS",
+            detail=f"auth is required; key loaded from {key_path}",
         )
     return Check(
         name="auth_required",
         status="PASS",
-        detail="API_KEY is set; auth is required",
+        detail=f"{source} is set; auth is required",
     )
 
 
@@ -181,18 +207,22 @@ def check_csrf() -> Check:
 
 def check_api_key_store() -> Check:
     """API key store source: env / file / generated."""
-    # The middleware reads from API_KEY first, then falls back to a
-    # generated random key.  We don't have visibility into the
-    # generated-key log without a live process; report what's visible
-    # from the environment.
-    api_key = os.environ.get("API_KEY", "")
-    if api_key:
-        source = "env"
-    elif os.path.isfile(os.path.expanduser("~/.distllm/api_key")):
-        source = "file"
+    # The store reads API_KEY and DISTLLM_API_KEY as admin credentials and
+    # otherwise adopts ``DISTLLM_KEY_FILE`` / ``.distllm/api_key`` — a
+    # cwd-relative path shared with the CLI. This check used to look for
+    # ``~/.distllm/api_key`` (a location neither the server nor any client
+    # reads), so a deployment running off the real key file was reported
+    # as "generated".
+    from distllm.core.api_key_store import _api_key_path
+
+    env_names = [n for n in ("API_KEYS", "API_KEYS_FILE", "API_KEY", "DISTLLM_API_KEY") if os.environ.get(n)]
+    key_path = _api_key_path()
+    if env_names:
+        detail = f"API key source: env ({', '.join(env_names)})"
+    elif os.path.isfile(key_path):
+        detail = f"API key source: file ({key_path})"
     else:
-        source = "generated"
-    detail = f"API key source: {source}"
+        detail = "API key source: generated (no env key and no persisted key file found)"
     return Check(
         name="api_key_store",
         status="INFO",

@@ -94,6 +94,12 @@ _HEALTH_CHECK_INTERVAL = 10.0          # Background health check interval (secon
 _SEMANTIC_CACHE_MAX_ENTRIES = 10000    # Max entries in semantic cache
 _CARBON_CHECK_INTERVAL = 300.0         # Carbon migration check interval (seconds, 5 min)
 _STOP_TIMEOUT = 30.0                   # Graceful shutdown drain timeout (seconds)
+_DRAIN_STATE_FILE = "drain_state.json"  # operator drain intent, survives restarts
+
+# Serializes read-modify-write cycles on the drain-intent file: admin verbs
+# run on the API server's thread pool, so two concurrent drains would
+# otherwise race and one marker would be lost.
+_DRAIN_INTENT_LOCK = threading.Lock()
 
 
 class Coordinator:
@@ -144,6 +150,16 @@ class Coordinator:
         self.total_layers = 0
 
         self._resource_mgr = ResourceManager()
+        # Restore breaker state persisted at the last graceful shutdown
+        # (see stop() step 9b). Missing or corrupt state is fine — a fresh
+        # manager is the correct default.
+        try:
+            _cb_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+            _cb_path = os.path.join(_cb_dir, "circuit_breakers.json")
+            if os.path.isfile(_cb_path):
+                self._resource_mgr.load_state(_cb_path)
+        except Exception as e:
+            logger.warning(f"Failed to load circuit breaker state: {e}")
         self._cache_mgr = CacheManager()
         self._pipeline = PipelineOrchestrator(
             resource_mgr=self._resource_mgr,
@@ -669,6 +685,89 @@ class Coordinator:
             expert_ids=expert_ids, cluster_id=cluster_id,
             cluster_key=cluster_key,
         )
+        # A node re-registering with the same id inherits the operator drain
+        # intent persisted before a restart. Before this hook, draining was
+        # pure in-memory ResourceManager state: a drained node came back
+        # fully listed and routable after any coordinator restart, and a
+        # just-drained node was routable again after HA failover (whose
+        # snapshot apply re-registers through here too).
+        self._enforce_drain_intent(node_id)
+
+    # ── Operator drain intent (survives restarts) ─────────────────────
+    #
+    # ``ResourceManager._draining_nodes`` mixes two kinds of entries:
+    # transient circuit-breaker cooldowns (added by record_failure, cleared
+    # by the cooldown/health paths) and operator intent (added by the admin
+    # drain/offline verbs, meant to last until an explicit undrain). Only
+    # the latter is persisted — otherwise a node that merely tripped its
+    # breaker once would come back from a restart forced-draining forever.
+
+    def _drain_state_path(self) -> str:
+        state_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+        return os.path.join(state_dir, _DRAIN_STATE_FILE)
+
+    def _read_drain_intent(self) -> set[str]:
+        """Operator drain intent as persisted to disk (empty on any problem)."""
+        import json
+        try:
+            with open(self._drain_state_path(), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return set()
+        nodes = data.get("draining_nodes") if isinstance(data, dict) else None
+        if not isinstance(nodes, list):
+            return set()
+        return {str(n) for n in nodes}
+
+    def _write_drain_intent(self, nodes: set[str]) -> None:
+        import json
+        path = self._drain_state_path()
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(
+                    {"draining_nodes": sorted(nodes), "updated_at": time.time()}, f
+                )
+        except OSError as e:
+            logger.warning(f"Could not persist drain state to {path}: {e}")
+
+    def record_drain_intent(self, node_id: str) -> None:
+        """Persist that *node_id* was drained by an operator.
+
+        Called by the admin drain/offline verbs; re-applied when the node
+        (re-)registers after a coordinator restart.
+        """
+        with _DRAIN_INTENT_LOCK:
+            nodes = self._read_drain_intent()
+            nodes.add(str(node_id))
+            self._write_drain_intent(nodes)
+
+    def clear_drain_intent(self, node_id: str) -> None:
+        """Drop a persisted drain marker (undrain/recover/deregister)."""
+        with _DRAIN_INTENT_LOCK:
+            nodes = self._read_drain_intent()
+            nodes.discard(str(node_id))
+            self._write_drain_intent(nodes)
+
+    def _enforce_drain_intent(self, node_id: str) -> None:
+        """Re-apply a persisted drain marker to a freshly registered node.
+
+        An operator drain must not dissolve because the coordinator (or the
+        node process) restarted — the point of draining is to keep new work
+        off the node until an operator undrains it explicitly.
+        """
+        if str(node_id) not in self._read_drain_intent():
+            return
+        resource_mgr = getattr(self, "_resource_mgr", None)
+        if resource_mgr is not None and hasattr(resource_mgr, "mark_node_draining"):
+            try:
+                resource_mgr.mark_node_draining(node_id)
+                logger.info(
+                    f"Re-applied persisted drain state to re-registered node {node_id}"
+                )
+            except Exception:
+                logger.warning(f"Could not re-apply drain state for {node_id}")
 
     # ── Generation (delegated to RequestHandler) ──
 
@@ -1712,6 +1811,20 @@ class Coordinator:
             self._save_shutdown_state()
         except Exception as e:
             logger.warning(f"Failed to save shutdown state: {e}")
+
+        # 9b. Persist circuit breaker state — ResourceManager.save_state had
+        # no callers anywhere in src/, so failure counts and cooldowns were
+        # rebuilt from zero after every restart, immediately re-probing nodes
+        # the breaker had quarantined. Same protected dir as the shutdown
+        # state; failure to persist must not block shutdown.
+        try:
+            state_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+            os.makedirs(state_dir, exist_ok=True)
+            self._resource_mgr.save_state(
+                os.path.join(state_dir, "circuit_breakers.json")
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save circuit breaker state: {e}")
 
         logger.info("Graceful shutdown complete")
 

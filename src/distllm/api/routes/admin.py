@@ -114,6 +114,53 @@ class CompressResponse(BaseModel):
 # ── Helper ──────────────────────────────────────────────────────────────────
 
 
+def _record_drain_intent(coord, node_id: str, *, draining: bool) -> None:
+    """Persist (or clear) operator drain intent for *node_id*.
+
+    Drain/offline/undrain/recover/deregister all funnel through here so the
+    durable copy of "this node was deliberately drained" is maintained in
+    one place. ``ResourceManager._draining_nodes`` alone is in-memory only:
+    a coordinator restart (or HA failover) lost it and the drained node
+    came back fully routable. Coordinators without the persistence surface
+    (test doubles, embedded embedders) are simply skipped.
+    """
+    method = "record_drain_intent" if draining else "clear_drain_intent"
+    fn = getattr(coord, method, None)
+    if fn is None:
+        return
+    try:
+        fn(node_id)
+    except Exception:
+        # Drain bookkeeping must never fail the admin verb itself.
+        logger.opt(exception=True).warning(
+            f"Admin: could not persist drain intent for {node_id}")
+
+
+def _node_health(node) -> bool:
+    """Read a node's health, whichever attribute shape it has.
+
+    Live pipeline nodes are ``PipelineNode`` objects whose canonical field is
+    ``is_healthy`` (``healthy`` is ``NodeRegistration``'s spelling and is not
+    defined on the dataclass), so a bare ``getattr(node, 'healthy', ...)``
+    reported every real node as unhealthy — ``healthy_count`` was always 0
+    and ``cluster/status`` permanently said "degraded" even while the node
+    served requests. Dict-shaped registrations and registration objects keep
+    their own spelling.
+
+    The spelling is resolved via the instance ``__dict__`` first: a test
+    double (MagicMock) answers ``hasattr`` for any name, so hasattr alone
+    cannot choose between the two spellings when both are "present".
+    """
+    if isinstance(node, dict):
+        return bool(node.get("is_healthy", node.get("healthy", True)))
+    instance = getattr(node, "__dict__", {})
+    if "is_healthy" in instance:
+        return bool(instance["is_healthy"])
+    if isinstance(getattr(type(node), "is_healthy", None), bool):
+        return bool(node.is_healthy)
+    return bool(getattr(node, "healthy", True))
+
+
 def _get_node_state(coord, node_id: str) -> str:
     """Determine the health state of a node from coordinator state."""
     try:
@@ -130,8 +177,7 @@ def _get_node_state(coord, node_id: str) -> str:
                     return record.state.value if hasattr(record.state, 'value') else str(record.state)
         node = coord.nodes.get(node_id)
         if node is not None:
-            healthy = node.get("healthy", True) if isinstance(node, dict) else getattr(node, "healthy", True)
-            return "healthy" if healthy else "unhealthy"
+            return "healthy" if _node_health(node) else "unhealthy"
     except Exception:
         # CQ-08: fail-open: node state unknown -> reported as 'unknown' rather than failing the cluster view.
         pass
@@ -156,7 +202,10 @@ def _format_node(node_id: str, node, coord) -> NodeInfo:
         node_id=node_id,
         host=getattr(node, 'host', ''),
         port=getattr(node, 'port', 0),
-        healthy=getattr(node, 'healthy', False),
+        # Same shape problem as _get_node_state: PipelineNode carries
+        # is_healthy, not healthy. Reading the wrong attribute listed every
+        # live node as healthy=false (healthy_count=0, cluster "degraded").
+        healthy=_node_health(node),
         draining=draining,
         state=state,
         start_layer=getattr(node, 'start_layer', 0),
@@ -258,6 +307,10 @@ async def drain_node(node_id: str):
     resource_mgr = getattr(coord, '_resource_mgr', None)
     if resource_mgr is not None and hasattr(resource_mgr, 'mark_node_draining'):
         resource_mgr.mark_node_draining(node_id)
+        # Persist operator intent: draining was pure in-memory state, so a
+        # node drained before a coordinator restart came back fully listed
+        # and routable (see Coordinator.record_drain_intent).
+        _record_drain_intent(coord, node_id, draining=True)
         logger.info(f"Admin: drained node {node_id}")
         return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' is now draining")
     return NodeActionResponse(
@@ -282,6 +335,9 @@ async def undrain_node(node_id: str):
     resource_mgr = getattr(coord, '_resource_mgr', None)
     if resource_mgr is not None and hasattr(resource_mgr, 'mark_node_alive'):
         resource_mgr.mark_node_alive(node_id)
+        # Undrain is the operator cancelling drain intent — drop the
+        # persisted marker too or the next restart would re-apply it.
+        _record_drain_intent(coord, node_id, draining=False)
         logger.info(f"Admin: restored node {node_id}")
         return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' restored to active service")
     return NodeActionResponse(
@@ -307,6 +363,7 @@ async def offline_node(node_id: str):
     if resource_mgr is not None:
         if hasattr(resource_mgr, 'mark_node_draining'):
             resource_mgr.mark_node_draining(node_id)
+            _record_drain_intent(coord, node_id, draining=True)
         if hasattr(resource_mgr, 'simulate_node_failure'):
             try:
                 resource_mgr.simulate_node_failure(node_id)
@@ -364,6 +421,9 @@ async def recover_node(node_id: str):
             resource_mgr.mark_node_alive(node_id)
         if hasattr(resource_mgr, 'record_success'):
             resource_mgr.record_success(node_id)
+        # Recover restores the node to service — the operator's drain
+        # marker (if any) is thereby cancelled.
+        _record_drain_intent(coord, node_id, draining=False)
 
     logger.info(f"Admin: recovered node {node_id}")
     return NodeActionResponse(status="ok", node_id=node_id, message=f"Node '{node_id}' recovered and restored to service")
@@ -412,6 +472,10 @@ async def deregister_node(node_id: str):
         except Exception:
             logger.opt(exception=True).warning(
                 f"Admin: could not clear drain state for {node_id}")
+
+    # Same for the persisted marker: a deregistered node is gone for good, so
+    # its drain intent must not survive to haunt a future node with this id.
+    _record_drain_intent(coord, node_id, draining=False)
 
     # The orchestrator keeps its own view of the nodes; remove it there too so
     # a request cannot be routed to a node that has gone.

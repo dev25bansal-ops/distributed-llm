@@ -54,9 +54,48 @@ class TestGetOpenAIClient:
         client = get_openai_client(api_key="sk-custom")
         assert client.api_key == "sk-custom"
 
-    def test_default_api_key(self) -> None:
+    def test_default_api_key_when_nothing_configured(self, monkeypatch, tmp_path) -> None:
+        """With no env key and no key file, the placeholder is kept."""
+        for var in ("API_KEY", "DISTLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(tmp_path / "absent"))
         client = get_openai_client()
         assert client.api_key == "not-needed"
+
+    def test_resolves_through_shared_precedence(self, monkeypatch, tmp_path) -> None:
+        """Audit finding: adapters resolved only DISTLLM_API_KEY (or fabricated
+        'not-needed'), so with the key only in the server's key file every
+        adapter request 401'd. Resolution must be the shared one:
+        API_KEY > DISTLLM_API_KEY > key file."""
+        from distllm.core.framework_adapters import _resolve_api_key
+
+        for var in ("API_KEY", "DISTLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        key_file = tmp_path / "api_key"
+        key_file.write_text("sk-from-file\n", encoding="utf-8")
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(key_file))
+
+        assert _resolve_api_key(None) == "sk-from-file"
+
+        monkeypatch.setenv("DISTLLM_API_KEY", "sk-distllm")
+        assert _resolve_api_key(None) == "sk-distllm"
+
+        monkeypatch.setenv("API_KEY", "sk-api-key")
+        assert _resolve_api_key(None) == "sk-api-key"
+
+        # Explicit argument still wins over everything.
+        assert _resolve_api_key("sk-explicit") == "sk-explicit"
+
+    def test_adapter_sends_the_resolved_key(self, monkeypatch, tmp_path) -> None:
+        for var in ("API_KEY", "DISTLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        key_file = tmp_path / "api_key"
+        key_file.write_text("sk-from-file\n", encoding="utf-8")
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(key_file))
+
+        client = get_openai_client()
+
+        assert client.api_key == "sk-from-file"
 
 
 class TestGetAsyncOpenAIClient:

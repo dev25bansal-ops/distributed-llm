@@ -425,48 +425,72 @@ class OIDCHandler:
             access_token = tokens.get("access_token", "")
             id_token = tokens.get("id_token", "")
 
-            if id_token:
-                try:
-                    validated = self.validate_token(id_token)
-                except Exception as e:
-                    logger.error(f"OIDC ID token validation failed with exception: {e}")
-                    return None
-                if validated is None:
-                    logger.error(
-                        "OIDC ID token validation failed (signature/JWKS) — "
-                        "rejecting authentication"
-                    )
-                    return None
-                logger.debug("OIDC ID token signature verified")
-
-                stored_nonce = self._nonce_store.pop(expected_state, None)
-                if stored_nonce is None or time.time() > stored_nonce.get("expires", 0):
-                    logger.error("OIDC nonce missing or expired — possible replay attack")
-                    return None
-                token_nonce = (getattr(validated, "raw_attributes", {}) or {}).get("nonce")
-                if not token_nonce or token_nonce != stored_nonce.get("nonce"):
-                    logger.error("OIDC nonce mismatch — possible replay attack")
-                    return None
-
-            if access_token and self._userinfo_endpoint:
-                user_resp = await client.get(
-                    self._userinfo_endpoint,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10.0,
+            # H-13: an id_token is MANDATORY for OIDC — the exchange fails
+            # closed without one (see the sync path for rationale), and the
+            # nonce replay check below runs unconditionally.
+            if not id_token:
+                logger.error(
+                    "OIDC token response has no id_token — refusing "
+                    "authentication (fail-closed)"
                 )
-                if user_resp.status_code == 200:
-                    user_data = user_resp.json()
-                    return SSOUserInfo(
-                        sub=user_data.get("sub", ""),
-                        email=user_data.get("email", ""),
-                        name=user_data.get("name", ""),
-                        roles=user_data.get("roles", []),
-                        groups=user_data.get("groups", user_data.get("groups_v2", [])),
-                        provider="oidc",
-                        raw_attributes=user_data,
-                    )
+                return None
+            try:
+                validated = self.validate_token(id_token)
+            except Exception as e:
+                logger.error(f"OIDC ID token validation failed with exception: {e}")
+                return None
+            if validated is None:
+                logger.error(
+                    "OIDC ID token validation failed (signature/JWKS) — "
+                    "rejecting authentication"
+                )
+                return None
+            if not validated.sub:
+                logger.error("OIDC ID token has no subject — rejecting authentication")
+                return None
+            logger.debug("OIDC ID token signature verified")
 
-            return SSOUserInfo(sub=tokens.get("sub", ""), provider="oidc")
+            stored_nonce = self._nonce_store.pop(expected_state, None)
+            if stored_nonce is None or time.time() > stored_nonce.get("expires", 0):
+                logger.error("OIDC nonce missing or expired — possible replay attack")
+                return None
+            token_nonce = (getattr(validated, "raw_attributes", {}) or {}).get("nonce")
+            if not token_nonce or token_nonce != stored_nonce.get("nonce"):
+                logger.error("OIDC nonce mismatch — possible replay attack")
+                return None
+
+            # userinfo is enrichment only; failure fails closed (see sync path).
+            if access_token and self._userinfo_endpoint:
+                try:
+                    user_resp = await client.get(
+                        self._userinfo_endpoint,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.error(f"OIDC userinfo request failed: {e}")
+                    return None
+                if user_resp.status_code != 200:
+                    logger.error(
+                        f"OIDC userinfo request failed: {user_resp.status_code}"
+                    )
+                    return None
+                user_data = user_resp.json()
+                user = SSOUserInfo(
+                    sub=user_data.get("sub", "") or validated.sub,
+                    email=user_data.get("email", ""),
+                    name=user_data.get("name", ""),
+                    roles=user_data.get("roles", []),
+                    groups=user_data.get("groups", user_data.get("groups_v2", [])),
+                    provider="oidc",
+                    raw_attributes=user_data,
+                )
+                if not user.sub:
+                    logger.error("OIDC userinfo has no subject — rejecting authentication")
+                    return None
+                return user
+
+            return validated
 
         except ImportError:
             logger.error("httpx required for OIDC callback handling")
@@ -552,55 +576,87 @@ class OIDCHandler:
             access_token = tokens.get("access_token", "")
             id_token = tokens.get("id_token", "")
 
-            # H-13: Verify ID token signature.  SECURITY: this is MANDATORY —
-            # an id_token must always be cryptographically validated, and the
-            # exchange fails closed when validation cannot be performed (e.g.
-            # JWKS unavailable).  Previously the check was skipped when OIDC
-            # discovery had failed, letting forged/unsigned claims through.
-            if id_token:
-                try:
-                    validated = self.validate_token(id_token)
-                except Exception as e:
-                    logger.error(f"OIDC ID token validation failed with exception: {e}")
-                    return None
-                if validated is None:
-                    logger.error(
-                        "OIDC ID token validation failed (signature/JWKS) — "
-                        "rejecting authentication"
-                    )
-                    return None
-                logger.debug("OIDC ID token signature verified")
-
-                # SECURITY: validate the OIDC nonce claim (replay protection).
-                stored_nonce = self._nonce_store.pop(expected_state, None)
-                if stored_nonce is None or time.time() > stored_nonce.get("expires", 0):
-                    logger.error("OIDC nonce missing or expired — possible replay attack")
-                    return None
-                token_nonce = (getattr(validated, "raw_attributes", {}) or {}).get("nonce")
-                if not token_nonce or token_nonce != stored_nonce.get("nonce"):
-                    logger.error("OIDC nonce mismatch — possible replay attack")
-                    return None
-
-            # Get user info
-            if access_token and self._userinfo_endpoint:
-                user_resp = httpx.get(
-                    self._userinfo_endpoint,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10.0,
+            # H-13: Verify ID token signature.  SECURITY: this is MANDATORY
+            # for OIDC — an id_token must always be cryptographically
+            # validated, and the exchange fails closed when it is absent or
+            # validation cannot be performed (e.g. JWKS unavailable).
+            # Previously the check was skipped entirely when the token
+            # response happened to omit an id_token, letting a response
+            # without one skip both the signature check and the nonce
+            # replay check while still authenticating from userinfo.
+            if not id_token:
+                logger.error(
+                    "OIDC token response has no id_token — refusing "
+                    "authentication (fail-closed)"
                 )
-                if user_resp.status_code == 200:
-                    user_data = user_resp.json()
-                    return SSOUserInfo(
-                        sub=user_data.get("sub", ""),
-                        email=user_data.get("email", ""),
-                        name=user_data.get("name", ""),
-                        roles=user_data.get("roles", []),
-                        groups=user_data.get("groups", user_data.get("groups_v2", [])),
-                        provider="oidc",
-                        raw_attributes=user_data,
-                    )
+                return None
+            try:
+                validated = self.validate_token(id_token)
+            except Exception as e:
+                logger.error(f"OIDC ID token validation failed with exception: {e}")
+                return None
+            if validated is None:
+                logger.error(
+                    "OIDC ID token validation failed (signature/JWKS) — "
+                    "rejecting authentication"
+                )
+                return None
+            if not validated.sub:
+                logger.error("OIDC ID token has no subject — rejecting authentication")
+                return None
+            logger.debug("OIDC ID token signature verified")
 
-            return SSOUserInfo(sub=tokens.get("sub", ""), provider="oidc")
+            # SECURITY: validate the OIDC nonce claim (replay protection).
+            # Runs unconditionally — a missing/expired/replayed nonce fails
+            # the exchange even when token validation succeeded.
+            stored_nonce = self._nonce_store.pop(expected_state, None)
+            if stored_nonce is None or time.time() > stored_nonce.get("expires", 0):
+                logger.error("OIDC nonce missing or expired — possible replay attack")
+                return None
+            token_nonce = (getattr(validated, "raw_attributes", {}) or {}).get("nonce")
+            if not token_nonce or token_nonce != stored_nonce.get("nonce"):
+                logger.error("OIDC nonce mismatch — possible replay attack")
+                return None
+
+            # Get user info (enrichment only — the identity is already
+            # authenticated by the id_token above).  A failed enrichment
+            # must fail closed: returning an empty-subject SSOUserInfo
+            # would mint one shared JWT identity for every user hitting
+            # the failed path, and turn a transient IdP outage into a
+            # valid credential.
+            if access_token and self._userinfo_endpoint:
+                try:
+                    user_resp = httpx.get(
+                        self._userinfo_endpoint,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.error(f"OIDC userinfo request failed: {e}")
+                    return None
+                if user_resp.status_code != 200:
+                    logger.error(
+                        f"OIDC userinfo request failed: {user_resp.status_code}"
+                    )
+                    return None
+                user_data = user_resp.json()
+                user = SSOUserInfo(
+                    sub=user_data.get("sub", "") or validated.sub,
+                    email=user_data.get("email", ""),
+                    name=user_data.get("name", ""),
+                    roles=user_data.get("roles", []),
+                    groups=user_data.get("groups", user_data.get("groups_v2", [])),
+                    provider="oidc",
+                    raw_attributes=user_data,
+                )
+                if not user.sub:
+                    logger.error("OIDC userinfo has no subject — rejecting authentication")
+                    return None
+                return user
+
+            # No userinfo endpoint configured — identity from the verified
+            # id_token claims.
+            return validated
 
         except ImportError:
             logger.error("httpx required for OIDC callback handling")
@@ -1034,6 +1090,28 @@ class GenericOAuth2Handler:
             return None
 
 
+def _sso_config(name: str, default: str = "") -> str:
+    """Resolve a ``DISTLLM_SSO_*`` setting.
+
+    Precedence: process environment first, then :class:`APISettings`
+    (which also loads a ``.env`` file).  Operators configure SSO the same
+    way as every other ``DISTLLM_`` setting — through a ``.env`` file —
+    so the handler must honor those values; reading ``os.environ`` alone
+    silently disabled SSO in deployments that believed it was on.
+    """
+    value = os.environ.get(name, "")
+    if value:
+        return value
+    try:
+        from distllm.api.api_settings import APISettings
+
+        field_name = name.removeprefix("DISTLLM_").lower()
+        settings = APISettings()
+        return str(getattr(settings, field_name, "") or "") or default
+    except Exception:
+        return default
+
+
 class SSOAuthHandler:
     """Unified SSO authentication handler — routes to the right provider.
 
@@ -1042,7 +1120,7 @@ class SSOAuthHandler:
     """
 
     def __init__(self):
-        self._provider: str = os.environ.get("DISTLLM_SSO_PROVIDER", "").lower()
+        self._provider: str = _sso_config("DISTLLM_SSO_PROVIDER").lower()
         self._handler: SAMLHandler | OIDCHandler | GenericOAuth2Handler | None = None
         self._initialize()
         # Local token revocation blocklist — maps (token_hash, iat) to
@@ -1054,10 +1132,10 @@ class SSOAuthHandler:
 
     def _initialize(self) -> None:
         """Initialize the appropriate SSO handler based on configuration."""
-        callback_url = os.environ.get("DISTLLM_SSO_CALLBACK_URL", "")
+        callback_url = _sso_config("DISTLLM_SSO_CALLBACK_URL")
 
         if self._provider == "saml":
-            metadata_url = os.environ.get("DISTLLM_SSO_METADATA_URL", "")
+            metadata_url = _sso_config("DISTLLM_SSO_METADATA_URL")
             if metadata_url:
                 self._handler = SAMLHandler(
                     metadata_url=metadata_url,
@@ -1066,10 +1144,10 @@ class SSOAuthHandler:
                 logger.info("SSO: SAML 2.0 handler initialized")
 
         elif self._provider == "oidc":
-            client_id = os.environ.get("DISTLLM_SSO_CLIENT_ID", "")
-            client_secret = os.environ.get("DISTLLM_SSO_CLIENT_SECRET", "")
-            authority = os.environ.get("DISTLLM_SSO_AUTHORITY", "")
-            jwks_url = os.environ.get("DISTLLM_SSO_JWKS_URL", "")
+            client_id = _sso_config("DISTLLM_SSO_CLIENT_ID")
+            client_secret = _sso_config("DISTLLM_SSO_CLIENT_SECRET")
+            authority = _sso_config("DISTLLM_SSO_AUTHORITY")
+            jwks_url = _sso_config("DISTLLM_SSO_JWKS_URL")
             if client_id and authority:
                 self._handler = OIDCHandler(
                     client_id=client_id,
@@ -1081,11 +1159,11 @@ class SSOAuthHandler:
                 logger.info(f"SSO: OIDC handler initialized (authority={authority})")
 
         elif self._provider == "oauth2":
-            client_id = os.environ.get("DISTLLM_SSO_CLIENT_ID", "")
-            client_secret = os.environ.get("DISTLLM_SSO_CLIENT_SECRET", "")
-            auth_url = os.environ.get("DISTLLM_SSO_AUTHORIZE_URL", "")
-            token_url = os.environ.get("DISTLLM_SSO_TOKEN_URL", "")
-            user_url = os.environ.get("DISTLLM_SSO_USERINFO_URL", "")
+            client_id = _sso_config("DISTLLM_SSO_CLIENT_ID")
+            client_secret = _sso_config("DISTLLM_SSO_CLIENT_SECRET")
+            auth_url = _sso_config("DISTLLM_SSO_AUTHORIZE_URL")
+            token_url = _sso_config("DISTLLM_SSO_TOKEN_URL")
+            user_url = _sso_config("DISTLLM_SSO_USERINFO_URL")
             if client_id and auth_url and token_url:
                 self._handler = GenericOAuth2Handler(
                     client_id=client_id,

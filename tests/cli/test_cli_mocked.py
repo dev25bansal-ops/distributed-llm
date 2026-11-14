@@ -135,10 +135,41 @@ class TestClientRetry:
         client = DistLLMClient(base_url="http://localhost:8000", api_key="test-key-123")
         assert client._headers["Authorization"] == "Bearer test-key-123"
 
-    def test_no_auth_when_no_key(self):
+    def test_no_auth_when_no_key(self, monkeypatch, tmp_path):
+        # "No key" must mean no key from ANY source: the client now falls back
+        # to the shared precedence (API_KEY > DISTLLM_API_KEY > key file), so
+        # isolate the environment before asserting the header is absent.
         from distllm.cli.client import DistLLMClient
+        for var in ("API_KEY", "DISTLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(tmp_path / "absent_key"))
         client = DistLLMClient(base_url="http://localhost:8000")
         assert "Authorization" not in client._headers
+
+    def test_key_file_fallback_authenticates(self, monkeypatch, tmp_path):
+        """Audit finding: DistLLMClient read only DISTLLM_API_KEY, so the default
+        eval flow 401'd against a cluster whose key lives only in the key file."""
+        from distllm.cli.client import DistLLMClient
+        for var in ("API_KEY", "DISTLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        key_file = tmp_path / "api_key"
+        key_file.write_text("sk-from-file\n", encoding="utf-8")
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(key_file))
+
+        client = DistLLMClient(base_url="http://localhost:8000")
+
+        assert client._headers["Authorization"] == "Bearer sk-from-file"
+
+    def test_env_key_wins_over_key_file(self, monkeypatch, tmp_path):
+        from distllm.cli.client import DistLLMClient
+        monkeypatch.delenv("DISTLLM_API_KEY", raising=False)
+        (tmp_path / "api_key").write_text("sk-from-file\n", encoding="utf-8")
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(tmp_path / "api_key"))
+        monkeypatch.setenv("API_KEY", "sk-from-env")
+
+        client = DistLLMClient(base_url="http://localhost:8000")
+
+        assert client._headers["Authorization"] == "Bearer sk-from-env"
 
 
 class TestHelpOutputs:

@@ -91,6 +91,11 @@ class _StubTokenTracker:
         return {"token_0": -0.5}
 
 
+class _StubModelSvc:
+    def get_spec_decoder(self):
+        return None
+
+
 class _StubCoordinator:
     """Minimal coordinator stub for pipeline construction tests."""
 
@@ -114,7 +119,7 @@ class _StubCoordinator:
         self._hybrid_parallel_executor: Any = None
         self._pipeline: Any = None
         self._continuous_trainer: Any = None
-        self._model_svc: Any = None
+        self._model_svc: Any = _StubModelSvc()
         self._preemption_policy: Any = None
         self.draft_model: Any = None
         self.num_assistant_tokens = 5
@@ -416,3 +421,122 @@ class TestGenerateContextWindow:
         with pytest.raises(Exception):
             # Will hit issues later (no real pipeline), but caps first
             pipeline.generate("hello", max_new_tokens=200)
+
+
+# ---------------------------------------------------------------------------
+# metrics_exporter writes carry the declared labels
+# ---------------------------------------------------------------------------
+
+
+class _LocalModelStub:
+    """full_model.generate() stand-in returning a deterministic tensor."""
+
+    def __init__(self, out_len: int):
+        self._out_len = out_len
+
+    @property
+    def full_model(self):
+        return self
+
+    def parameters(self):
+        import torch
+        return iter([torch.zeros(1)])
+
+    def generate(self, input_ids, **kwargs):
+        import torch
+        return torch.zeros((1, self._out_len), dtype=torch.long)
+
+
+class _StubPartitioner:
+    def __init__(self, out_len: int):
+        self.full_model = _LocalModelStub(out_len)
+
+
+class TestMetricsExporterLabels:
+    """Errors for the pipeline's metrics writes.
+
+    The coordinator fix that restored `self.metrics_exporter = config.
+    metrics_exporter` made these call sites reachable in production, and they
+    previously wrote WITHOUT labels on families declared with
+    ["model", "tenant"] (tokens_generated) or ["type", "model", "tenant"]
+    (errors_total). prometheus_client raises ValueError for a partial label
+    set, so a real exporter turned every successful generation into a crash
+    and replaced the original inference error in the handler.
+    """
+
+    def _local_coord(self, out_len: int = 6) -> _StubCoordinator:
+        import torch
+
+        coord = _StubCoordinator()
+        coord.local_partitioner = _StubPartitioner(out_len)
+        coord.node_order = []
+
+        class _StubTokenizer:
+            eos_token_id = -1  # never emitted -> runs the full horizon
+
+            def encode(self, text, return_tensors="pt"):
+                return torch.tensor([[1, 2]])
+
+            def decode(self, ids, **kwargs):
+                return "decoded"
+
+        coord.tokenizer = _StubTokenizer()
+        return coord
+
+    def _real_exporter(self):
+        from distllm.observability.exporter import DistLLMPrometheusExporter
+
+        return DistLLMPrometheusExporter()
+
+    def test_success_path_records_with_real_exporter(self) -> None:
+        coord = self._local_coord()
+        coord.metrics_exporter = self._real_exporter()
+        pipeline = RequestPipeline(coord)
+
+        result = pipeline.generate("hello", max_new_tokens=4)
+
+        assert isinstance(result, str)
+        from prometheus_client import generate_latest
+
+        text = generate_latest(coord.metrics_exporter.registry).decode()
+        tokens_line = next(
+            (l for l in text.splitlines()
+             if l.startswith("distllm_tokens_generated_total{") and l.rsplit(" ", 1)[-1] != "0.0"),
+            None,
+        )
+        assert tokens_line is not None, (
+            "tokens_generated_total was not written with labels; exposition:\n"
+            + "\n".join(l for l in text.splitlines() if "tokens_generated" in l)
+        )
+        assert 'model="test-model"' in tokens_line
+        # latency + throughput gauges must carry the model label as well
+        assert any(
+            l.startswith("distllm_token_generation_latency_seconds_count{model=\"test-model\"}")
+            for l in text.splitlines()
+        )
+
+    def test_error_path_records_full_label_set(self) -> None:
+        coord = self._local_coord()
+
+        class _ExplodingModel(_LocalModelStub):
+            def generate(self, input_ids, **kwargs):
+                raise RuntimeError("synthetic failure")
+
+        coord.local_partitioner = _StubPartitioner(4)
+        coord.local_partitioner.full_model = _ExplodingModel(4)
+        coord.metrics_exporter = self._real_exporter()
+        pipeline = RequestPipeline(coord)
+
+        with pytest.raises(RuntimeError, match="synthetic failure"):
+            pipeline.generate("hello", max_new_tokens=4)
+
+        from prometheus_client import generate_latest
+
+        text = generate_latest(coord.metrics_exporter.registry).decode()
+        assert any(
+            l.startswith('distllm_errors_total{')
+            and 'type="RuntimeError"' in l
+            and 'model="test-model"' in l
+            and 'tenant="default"' in l
+            for l in text.splitlines()
+        ), "errors_total missing the full label set:\n" + text

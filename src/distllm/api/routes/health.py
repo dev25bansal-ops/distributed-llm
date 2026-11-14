@@ -614,14 +614,31 @@ async def update_generation_params(request_id: str, params: ParamUpdateRequest):
 
     puc = getattr(coord, '_param_update_channel', None)
     if puc is None:
-        return {"status": "error", "detail": "param_update_channel not available"}
-    updated = puc.update(
-        request_id,
-        temperature=params.temperature if params.temperature is not None else None,
-        top_p=params.top_p if params.top_p is not None else None,
-        top_k=params.top_k if params.top_k is not None else None,
-    )
+        raise HTTPException(
+            status_code=503, detail="param_update_channel not available"
+        )
+    # Only forward the fields the caller actually set. Passing None for unset
+    # fields used to overwrite the live params (GenerationParams.update does a
+    # bare setattr), so the next sampling step compared None against int/float
+    # and the stream died mid-flight (token_generator.py top_k/top_p checks).
+    updates = {
+        name: value
+        for name, value in (
+            ("temperature", params.temperature),
+            ("top_p", params.top_p),
+            ("top_k", params.top_k),
+        )
+        if value is not None
+    }
+    # ParamUpdateChannel.update() returns None; it is not a status signal.
+    # Look the params up directly to distinguish "unknown request" (404) from
+    # "updated" (200).
+    if puc.get(request_id) is None:
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found or already completed")
+    puc.update(request_id, **updates)
+    updated = puc.get(request_id)
     if updated is None:
+        # Unregistered between the lookup and the update: the stream ended.
         raise HTTPException(status_code=404, detail=f"Request {request_id} not found or already completed")
 
     return {

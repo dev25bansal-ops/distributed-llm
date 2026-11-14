@@ -491,6 +491,62 @@ class TestChatMaxTokens:
         assert resp.json()["choices"][0]["finish_reason"] == "length"
         assert resp.json()["choices"][0]["message"]["content"] == ""
 
+    def test_zero_with_stream_stays_sse(self):
+        """stream=true + max_tokens=0 must still return SSE, not JSON.
+
+        Regression: the route returned a JSON ChatCompletionResponse before
+        ever checking ``stream``, so an SSE reader (distllm chat --stream,
+        any OpenAI SDK with stream=True) saw an empty stream and no [DONE],
+        indistinguishable from a dropped connection.
+        """
+        resp = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "distributed-llm",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 0,
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "").lower(), (
+            resp.headers.get("content-type")
+        )
+        lines = [ln for ln in resp.text.split("\n") if ln.startswith("data: ")]
+        assert lines, resp.text
+        # Role chunk first, then a finish chunk carrying the same reason the
+        # non-streaming zero-token response uses, then the [DONE] sentinel.
+        import json as _j
+
+        chunks = [_j.loads(ln[6:]) for ln in lines if ln != "data: [DONE]"]
+        assert chunks[0]["choices"][0]["delta"].get("role") == "assistant"
+        finishes = [
+            c["choices"][0].get("finish_reason") for c in chunks
+        ]
+        assert "length" in finishes
+        assert lines[-1] == "data: [DONE]"
+
+    def test_zero_stream_matches_zero_non_stream_finish_reason(self):
+        stream_resp = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "distributed-llm",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 0,
+                "stream": True,
+            },
+        )
+        non_stream = self._req(max_tokens=0)
+        import json as _j
+
+        lines = [ln for ln in stream_resp.text.split("\n") if ln.startswith("data: ")]
+        reasons = {
+            _j.loads(ln[6:])["choices"][0].get("finish_reason")
+            for ln in lines
+            if ln != "data: [DONE]"
+        }
+        assert non_stream.json()["choices"][0]["finish_reason"] in reasons
+
     def test_negative_rejected(self):
         resp = self._req(max_tokens=-1)
         assert resp.status_code == 422

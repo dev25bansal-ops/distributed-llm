@@ -336,10 +336,26 @@ class ClusterStateStore:
         current = self._backend.get(self._leader_key())
         if current:
             self._leader_id = current
+        else:
+            # The leader key lapsed and another node now holds the lock;
+            # clear this node's cached belief so a former leader does not
+            # keep answering True.
+            self._leader_id = ""
         return False
 
     def is_leader(self) -> bool:
-        return self._leader_id == self._node_id
+        """True only while this node holds the *live* leader key.
+
+        The previous version returned a cached flag, so a leader whose lease
+        lapsed (its heartbeat loop refreshes only its node key, not the
+        leader key) kept reporting True while another node legitimately
+        self-elected — two leaders believing they lead, with no fencing to
+        reject the stale one's late writes (the lock has no fencing token).
+        Verifying the live key makes leadership resolve to exactly one node.
+        """
+        if self._leader_id != self._node_id:
+            return False
+        return self._backend.get(self._leader_key()) == self._node_id
 
     def current_leader(self) -> str:
         leader = self._backend.get(self._leader_key())

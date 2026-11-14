@@ -101,6 +101,13 @@ _embedder = _EmbeddingModel()
 class _FaissIndex:
     """Flat / HNSW index wrapping FAISS for fast nearest-neighbour search.
 
+    Entries are *scoped*: each cached completion is keyed by the request
+    identity (``api_key_id`` / tenant) plus the generation configuration
+    (``model`` and the sampling parameters that change the output).  A
+    lookup only ever considers entries stored under the SAME scope, so a
+    completion cached for one credential — or one model/parameter set —
+    is never served to a different one.
+
     - Dim is auto-detected from the first stored vector.
     - Uses ``IndexIDMap`` so each stored vector has a stable integer ID that
       maps back to the cached response payload.
@@ -119,10 +126,14 @@ class _FaissIndex:
         self._dim: int = 0
         self._next_id: int = 0
         self._lock = threading.Lock()
-        self._id_to_key: dict[int, str] = {}           # faiss id → prompt key
-        self._response_store: dict[str, str] = {}       # prompt key → response text
-        self._ts_store: dict[str, float] = {}           # prompt key → timestamp
-        self._vec_store: dict[str, list[float]] = {}    # prompt key → embedding (cached at insert)
+        self._id_to_key: dict[int, str] = {}           # faiss id → store key
+        self._response_store: dict[str, str] = {}       # store key → response text
+        self._ts_store: dict[str, float] = {}           # store key → timestamp
+        self._vec_store: dict[str, list[float]] = {}    # store key → embedding
+        # store key → scope (identity+model+params). A key is
+        # f"{scope}\x00{prompt}"; the scope is kept separately so the
+        # brute-force path can filter cheaply without re-splitting.
+        self._scope_store: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Lazy init
@@ -145,10 +156,40 @@ class _FaissIndex:
     # Public API
     # ------------------------------------------------------------------
 
-    def search(self, query_vec: list[float], threshold: float) -> tuple[str | None, float]:
+    @staticmethod
+    def make_scope(
+        api_key_id: str,
+        params: dict | None = None,
+    ) -> str:
+        """Build the cache scope string for one request identity/config.
+
+        The scope is part of every cache key, so two requests with a
+        different credential, a different model, or different generation
+        parameters can never be served each other's cached completion.
+        ``params`` should be the request body minus the prompt/messages
+        and stream flag (i.e. model + generation parameters).
+        """
+        import json as _json
+        canonical = _json.dumps(params or {}, sort_keys=True, default=str)
+        return f"{api_key_id or ''}|{canonical}"
+
+    @staticmethod
+    def _store_key(scope: str, prompt: str) -> str:
+        """Scope-namespaced store key.
+
+        Unscoped entries keep the bare prompt as key (back-compat with
+        direct dict seeding); scoped entries embed the scope before a
+        NUL separator that can't appear in parsed-JSON prompt text.
+        """
+        return f"{scope}\x00{prompt}" if scope else prompt
+
+    def search(
+        self, query_vec: list[float], threshold: float, scope: str = "",
+    ) -> tuple[str | None, float]:
         """Return (response_text, similarity) for the best match ≥ *threshold*.
 
-        Returns (None, 0.0) when no match meets the threshold.
+        Only entries stored under *scope* are considered.  Returns
+        (None, 0.0) when no match meets the threshold.
         """
         import numpy as np
         q = np.array([query_vec], dtype=np.float32)
@@ -158,43 +199,59 @@ class _FaissIndex:
             with self._lock:
                 if self._index.ntotal == 0:
                     return None, 0.0
-                sims, ids = self._index.search(q, 1)
-                best_sim = float(sims[0][0])
-                best_id = int(ids[0][0])
-                if best_sim >= threshold and best_id >= 0:
-                    key = self._id_to_key.get(best_id)
-                    if key and key in self._response_store:
-                        return self._response_store[key], best_sim
-                return None, 0.0
-        else:
-            # ── Brute-force fallback ──────────────────────────────────
-            best_sim = 0.0
-            best_key = None
-            now = time.time()
-            stale: list[str] = []
-            with self._lock:
-                for key, ts in self._ts_store.items():
-                    if now - ts > _CACHE_TTL:
-                        stale.append(key)
+                # Over-fetch: the nearest neighbours may belong to other
+                # scopes, so ask for enough candidates to find the best
+                # in-scope match.  FAISS caps k at ntotal.
+                k = min(self._index.ntotal, _FAISS_SCOPE_FANOUT)
+                sims, ids = self._index.search(q, k)
+                best_sim = -1.0
+                best_key = None
+                for sim, fid in zip(sims[0], ids[0]):
+                    if int(fid) < 0:
                         continue
-                    entry_vec = self._vec_store.get(key)
-                    if entry_vec is None:
-                        # Legacy/direct-inserted entry without a cached vector —
-                        # embed once and cache it so future searches don't re-embed.
-                        entry_vec = _embedder.embed(key)
-                        self._vec_store[key] = entry_vec
-                    sim = self._cosine(query_vec, entry_vec)
-                    if sim > best_sim:
-                        best_sim = sim
+                    key = self._id_to_key.get(int(fid))
+                    if key is None or key not in self._response_store:
+                        continue
+                    if self._scope_store.get(key, "") != scope:
+                        continue
+                    if float(sim) > best_sim:
+                        best_sim = float(sim)
                         best_key = key
-                for k in stale:
-                    self._evict(k)
                 if best_key is not None and best_sim >= threshold:
-                    return self._response_store.get(best_key, ""), best_sim
-            return None, 0.0
+                    return self._response_store[best_key], best_sim
+                return None, 0.0
+        # ── Brute-force fallback ──────────────────────────────────────
+        best_sim = 0.0
+        best_key = None
+        now = time.time()
+        stale: list[str] = []
+        with self._lock:
+            for key, ts in self._ts_store.items():
+                if now - ts > _CACHE_TTL:
+                    stale.append(key)
+                    continue
+                if self._scope_store.get(key, "") != scope:
+                    continue
+                entry_vec = self._vec_store.get(key)
+                if entry_vec is None:
+                    # Legacy/direct-inserted entry without a cached vector —
+                    # embed once and cache it so future searches don't re-embed.
+                    # The store key is f"{scope}\x00{prompt}"; strip the scope.
+                    entry_vec = _embedder.embed(key.split("\x00", 1)[-1])
+                    self._vec_store[key] = entry_vec
+                sim = self._cosine(query_vec, entry_vec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_key = key
+            for k in stale:
+                self._evict(k)
+            if best_key is not None and best_sim >= threshold:
+                return self._response_store.get(best_key, ""), best_sim
+        return None, 0.0
 
-    def add(self, prompt: str, response_text: str) -> None:
-        """Store a (prompt, response) pair."""
+    def add(self, prompt: str, response_text: str, scope: str = "") -> None:
+        """Store a (prompt, response) pair under *scope*."""
+        store_key = self._store_key(scope, prompt)
         vec = _embedder.embed(prompt)
         import numpy as np
         v = np.array([vec], dtype=np.float32)
@@ -208,12 +265,13 @@ class _FaissIndex:
                 fid = self._next_id
                 self._next_id += 1
                 self._index.add_with_ids(v, np.array([fid], dtype=np.int64))
-                self._id_to_key[fid] = prompt
+                self._id_to_key[fid] = store_key
             # else brute-force uses the dicts directly
 
-            self._response_store[prompt] = response_text
-            self._ts_store[prompt] = now
-            self._vec_store[prompt] = vec
+            self._response_store[store_key] = response_text
+            self._ts_store[store_key] = now
+            self._vec_store[store_key] = vec
+            self._scope_store[store_key] = scope
 
             # LRU eviction via key-order tracking
             self._evict_lru()
@@ -222,6 +280,7 @@ class _FaissIndex:
         self._response_store.pop(key, None)
         self._ts_store.pop(key, None)
         self._vec_store.pop(key, None)
+        self._scope_store.pop(key, None)
 
     def _evict_lru(self) -> None:
         """Drop oldest entries when over the size limit."""
@@ -247,6 +306,12 @@ class _FaissIndex:
 
 _CACHE_MAX_ENTRIES = 5000
 _CACHE_TTL = 300.0  # 5 minutes
+
+# FAISS nearest-neighbour fan-out for scoped lookups: the index holds
+# entries from many scopes, so a single nearest neighbour may belong to a
+# different scope.  Fetching this many candidates keeps an in-scope match
+# findable in practice while staying O(1)-ish per request.
+_FAISS_SCOPE_FANOUT = 64
 
 _cache = _FaissIndex()
 
@@ -323,9 +388,27 @@ class SemanticCacheMiddleware(BaseHTTPMiddleware):
         if not prompt:
             return await call_next(request)
 
+        # ── Cache scope: credential + model + generation parameters ────
+        # Serving a cached completion across credentials is a disclosure,
+        # and serving one across model/parameter sets returns the wrong
+        # generation (e.g. a cheap model's output under an expensive model
+        # name).  Both are prevented by keying entries with this scope.
+        # AuthMiddleware runs outside this middleware and populates
+        # request.state.api_key_id (same identity source the dedup
+        # middleware namespaces with).
+        identity = (
+            getattr(request.state, "api_key_id", "")
+            or getattr(request.state, "tenant", "")
+        )
+        gen_params = {
+            k: v for k, v in body.items()
+            if k not in ("messages", "prompt", "stream")
+        }
+        scope = _FaissIndex.make_scope(identity, gen_params)
+
         # ── Semantic cache lookup ──────────────────────────────────────
         vec = _embedder.embed(prompt)
-        cached, sim = _cache.search(vec, threshold=threshold)
+        cached, sim = _cache.search(vec, threshold=threshold, scope=scope)
         if cached is not None:
             logger.debug(f"Semantic cache hit (sim={sim:.3f}, threshold={threshold})")
             resp = Response(content=cached, media_type="application/json")
@@ -340,7 +423,7 @@ class SemanticCacheMiddleware(BaseHTTPMiddleware):
             async for chunk in response.body_iterator:
                 resp_body += chunk
             if resp_body:
-                _cache.add(prompt, resp_body.decode())
+                _cache.add(prompt, resp_body.decode(), scope=scope)
             return Response(
                 content=resp_body,
                 status_code=response.status_code,

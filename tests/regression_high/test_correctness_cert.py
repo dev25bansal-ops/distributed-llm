@@ -223,3 +223,47 @@ def test_replay_determinism_across_repeated_battery_builds():
     c = aggregate_determinism_hash(run_battery(build_consistent_battery(56, 6, 20)))
     assert a == b
     assert a != c
+
+
+# ---------------------------------------------------------------------------
+# (d) registry defaults: shipped baseline readable, writes never hit the
+#     package directory (the installed-copy regression, packaging audit)
+# ---------------------------------------------------------------------------
+
+
+def test_default_registry_reads_shipped_baseline(tmp_path, monkeypatch):
+    # The committed evidence must replay True through the DEFAULT registry
+    # (no explicit path): an installed copy previously reported matches=False
+    # because correctness_registry.jsonl never shipped.
+    monkeypatch.setenv("DISTLLM_DATA_DIR", str(tmp_path / "userdata"))
+    matches, new_hash, stored, _ = replay_from_seed(1234, 8, 128)
+    assert stored is not None, "shipped baseline record not found"
+    assert stored["determinism_hash"] == new_hash
+    assert matches is True
+
+
+def test_default_registry_write_target_is_writable_not_package(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISTLLM_DATA_DIR", str(tmp_path / "userdata"))
+    reg = DeterminismRegistry()
+    # Writes must never land in the package directory (read-only in
+    # site-packages, and would churn the committed evidence).
+    assert reg.path != ch.DEFAULT_REGISTRY_PATH
+    assert str(tmp_path) in str(reg.path)
+    # Reading still consults the shipped baseline first.
+    assert ch.DEFAULT_REGISTRY_PATH in reg.read_paths
+    written = reg.record(
+        seed=1, n_pairs=1, vocab=8, seq_len=1, perturb=0.0,
+        determinism_hash="x", min_cosine=1.0, all_matched=True,
+    )
+    assert reg.path.exists()
+    assert written["seed"] == 1
+    # The shipped baseline is untouched by the append.
+    assert "x" not in ch.DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8")
+
+
+def test_default_registry_env_override_uses_single_file(tmp_path, monkeypatch):
+    override = tmp_path / "override.jsonl"
+    monkeypatch.setenv("DISTLLM_REGISTRY_PATH", str(override))
+    reg = DeterminismRegistry()
+    assert reg.path == override
+    assert reg.read_paths == [override]

@@ -1,9 +1,24 @@
 """Tests for distllm.dist.redundant."""
+import time
+
 import pytest
 import torch
 
-from distllm.dist.redundant import RedundantExecutor, StateReplicationEngine
 from distllm.dist.pipeline.orchestrator import PipelineOrchestrator
+from distllm.dist.redundant import RedundantExecutor, StateReplicationEngine
+from distllm.errors.types import NodeUnreachableError
+
+
+def _wait_for(predicate, timeout: float = 2.0) -> bool:
+    """Poll *predicate* until true or *timeout* — losing fan-out replicas
+    are discarded (not joined), so their calls may land just after the
+    winner returns."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
 
 
 class TestRedundantExecutor:
@@ -138,6 +153,167 @@ class TestRedundantExecutor:
         # Each stage fanned out to both redundant peers.
         assert len(calls) >= 2
         assert {c[0] for c in calls} == {"10.0.0.1", "10.0.0.2"}
+
+    # ── Same-range replicas are one logical stage ───────────────
+
+    def test_run_pipeline_same_range_replicas_apply_layers_once(self, monkeypatch):
+        """Regression: replicas covering the same layer range used to run as
+        separate sequential stages, applying the same layers twice and
+        corrupting the output (input 0 -> 2.0 instead of 1.0)."""
+        pipeline = PipelineOrchestrator()
+        pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
+        executor = RedundantExecutor(pipeline, redundancy=2)
+        input_ids = torch.zeros((1, 4), dtype=torch.long)
+        calls: list[str] = []
+
+        def fake_forward(host, port, hidden_states, kv_cache, request_id, **kw):
+            calls.append(host)
+            return hidden_states + 1
+
+        monkeypatch.setattr("distllm.dist.node_client.forward_request", fake_forward)
+        out = executor.run_pipeline(input_ids, {}, "req-1")
+        # Exactly one logical stage -> the layers were applied once, even
+        # though both replicas were asked.
+        assert out[0, 0].item() == 1.0
+        assert _wait_for(lambda: sorted(calls) == ["10.0.0.1", "10.0.0.2"])
+
+    def test_run_pipeline_two_ranges_each_redundant(self, monkeypatch):
+        """Two layer ranges x two replicas = two stages, each fanned out."""
+        pipeline = PipelineOrchestrator()
+        pipeline.register_node("a1", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("a2", "10.0.0.2", 50051, 0, 15)
+        pipeline.register_node("b1", "10.0.0.3", 50051, 16, 31)
+        pipeline.register_node("b2", "10.0.0.4", 50051, 16, 31)
+        executor = RedundantExecutor(pipeline, redundancy=2)
+        input_ids = torch.zeros((1, 4), dtype=torch.long)
+        hosts: list[str] = []
+
+        def fake_forward(host, port, hidden_states, kv_cache, request_id, **kw):
+            hosts.append(host)
+            return hidden_states + 1
+
+        monkeypatch.setattr("distllm.dist.node_client.forward_request", fake_forward)
+        out = executor.run_pipeline(input_ids, {}, "req-1")
+
+        # Each range applied exactly once -> 1.0 + 1.0 = 2.0, never a
+        # duplicated range (3.0/4.0).  All four replicas were asked.
+        assert out[0, 0].item() == 2.0
+        assert _wait_for(
+            lambda: sorted(hosts) == ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+        )
+
+    def test_run_pipeline_uses_injected_client(self):
+        """Fan-out prefers injected clients (same as the standard path)."""
+        import types as _types
+
+        pipeline = PipelineOrchestrator()
+        pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        calls: list[str] = []
+
+        def forward(hidden_states, kv_cache, request_id):
+            calls.append("injected")
+            return hidden_states + 1
+
+        pipeline._nodes["node-a"].client = _types.SimpleNamespace(forward=forward)
+        out = RedundantExecutor(pipeline, redundancy=2).run_pipeline(
+            torch.zeros((1, 4), dtype=torch.long), {}, "req-1",
+        )
+        assert calls == ["injected"]
+        assert out[0, 0].item() == 1.0
+
+    def test_run_pipeline_failover_to_healthy_replica(self):
+        """A failed replica must not fail the stage while a peer is healthy."""
+        import types as _types
+
+        pipeline = PipelineOrchestrator()
+        pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
+
+        def dead(hidden_states, kv_cache, request_id):
+            raise ConnectionRefusedError("replica down")
+
+        def alive(hidden_states, kv_cache, request_id):
+            return hidden_states + 1
+
+        pipeline._nodes["node-a"].client = _types.SimpleNamespace(forward=dead)
+        pipeline._nodes["node-b"].client = _types.SimpleNamespace(forward=alive)
+        out = RedundantExecutor(pipeline, redundancy=2, timeout_s=5.0).run_pipeline(
+            torch.zeros((1, 4), dtype=torch.long), {}, "req-1",
+        )
+        assert out[0, 0].item() == 1.0
+
+    def test_run_pipeline_fast_replica_beats_slow_primary(self):
+        """The first response wins: a slow primary does not block a fast peer."""
+        import types as _types
+
+        pipeline = PipelineOrchestrator()
+        pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
+
+        def slow(hidden_states, kv_cache, request_id):
+            time.sleep(0.25)
+            return hidden_states + 1
+
+        def fast(hidden_states, kv_cache, request_id):
+            return hidden_states + 1
+
+        pipeline._nodes["node-a"].client = _types.SimpleNamespace(forward=slow)
+        pipeline._nodes["node-b"].client = _types.SimpleNamespace(forward=fast)
+        t0 = time.monotonic()
+        out = RedundantExecutor(pipeline, redundancy=2, timeout_s=5.0).run_pipeline(
+            torch.zeros((1, 4), dtype=torch.long), {}, "req-1",
+        )
+        assert time.monotonic() - t0 < 0.2, "slow primary blocked the fast replica"
+        assert out[0, 0].item() == 1.0
+
+    def test_run_pipeline_enforces_timeout(self):
+        """timeout_s is enforced: all replicas hanging raises, not hangs."""
+        import types as _types
+
+        pipeline = PipelineOrchestrator()
+        pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
+
+        def hang(hidden_states, kv_cache, request_id):
+            time.sleep(1.0)
+            return hidden_states + 1
+
+        pipeline._nodes["node-a"].client = _types.SimpleNamespace(forward=hang)
+        pipeline._nodes["node-b"].client = _types.SimpleNamespace(forward=hang)
+        t0 = time.monotonic()
+        with pytest.raises(NodeUnreachableError):
+            RedundantExecutor(pipeline, redundancy=2, timeout_s=0.1).run_pipeline(
+                torch.zeros((1, 4), dtype=torch.long), {}, "req-1",
+            )
+        assert time.monotonic() - t0 < 0.5
+
+    def test_run_pipeline_skips_draining_replica(self):
+        """admin drain parity: a draining replica gets no new fan-out work."""
+        import types as _types
+
+        class _RM:
+            def get_draining_nodes(self):
+                return ["node-b"]
+
+        pipeline = PipelineOrchestrator(resource_mgr=_RM())
+        pipeline.register_node("node-a", "10.0.0.1", 50051, 0, 15)
+        pipeline.register_node("node-b", "10.0.0.2", 50051, 0, 15)
+        calls: list[str] = []
+
+        def mk(tag):
+            def forward(hidden_states, kv_cache, request_id):
+                calls.append(tag)
+                return hidden_states + 1
+            return forward
+
+        pipeline._nodes["node-a"].client = _types.SimpleNamespace(forward=mk("a"))
+        pipeline._nodes["node-b"].client = _types.SimpleNamespace(forward=mk("b"))
+        out = RedundantExecutor(pipeline, redundancy=2, timeout_s=2.0).run_pipeline(
+            torch.zeros((1, 4), dtype=torch.long), {}, "req-1",
+        )
+        assert calls == ["a"], "drained replica must not be fanned out to"
+        assert out[0, 0].item() == 1.0
 
     # ── get_node_groups ─────────────────────────────────────────
 

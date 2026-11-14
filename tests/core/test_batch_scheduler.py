@@ -25,6 +25,46 @@ from distllm.core.batch_scheduler import (
     SequenceStatus,
 )
 
+
+# ============================================================
+# Explicit budget contract (regression: audit 2026-11-13)
+# ============================================================
+
+
+class TestExplicitBudgetHonored:
+    """An explicitly configured max_tokens_per_batch is the ceiling.
+
+    Before the fix compute_dynamic_budget silently clamped it to 131072,
+    so config.yaml's batching.max_tokens_per_batch=200000 was never what
+    ran (the attribute read 131072 with no warning).
+    """
+
+    def test_budget_above_128k_is_honored(self):
+        scheduler = BatchScheduler(max_tokens_per_batch=200000)
+        assert scheduler.max_tokens_per_batch == 200000
+
+    def test_budget_below_cap_unchanged(self):
+        scheduler = BatchScheduler(max_tokens_per_batch=4096)
+        assert scheduler.max_tokens_per_batch == 4096
+
+    def test_default_budget_unchanged(self):
+        scheduler = BatchScheduler()
+        assert scheduler.max_tokens_per_batch == 32768
+
+    def test_pool_pressure_still_shrinks_but_never_grows(self):
+        """Pool-derived adjustment may shrink under pressure but must not
+        exceed the configured ceiling."""
+
+        class _Pool:
+            free_count = 100
+            block_size = 16
+
+        class _Mgr:
+            pool = _Pool()
+
+        scheduler = BatchScheduler(max_tokens_per_batch=200000, paged_attention_mgr=_Mgr())
+        assert scheduler.max_tokens_per_batch == 100 * 16 * 9 // 10  # 1440
+
 # ============================================================
 # Sequence Tests
 # ============================================================

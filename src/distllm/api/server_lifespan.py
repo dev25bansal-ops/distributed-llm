@@ -64,8 +64,26 @@ def _init_observability() -> None:
     # request-layer RED metric into an orphaned registry: /metrics renders
     # state.metrics_exporter (the new one), so requests_total,
     # request_latency_seconds and errors_total were all invisible.
+    # When the state has been reset (test harnesses), restore the exact
+    # instance the middleware references rather than building a fresh one.
     if state.metrics_exporter is None:
-        state.metrics_exporter = DistLLMPrometheusExporter()
+        from distllm.api.server import _METRICS_EXPORTER
+
+        state.metrics_exporter = _METRICS_EXPORTER
+
+    # OpenTelemetry metrics: only meaningful with an OTLP endpoint. Without
+    # this call the whole DistLLMMetrics surface (node latency, generation
+    # duration, draft acceptance) stayed unregistered -- setup_metrics was
+    # never invoked anywhere in production and the OTel instruments were
+    # decoration. A deployment without the observability extra keeps serving.
+    _otlp_metrics_endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if _otlp_metrics_endpoint:
+        try:
+            from distllm.observability.metrics import setup_metrics
+
+            setup_metrics(service_name="distllm-api", endpoint=_otlp_metrics_endpoint)
+        except RuntimeError as exc:
+            logger.info(f"OTel metrics disabled: {exc}")
 
 
 def _init_plugins(ps: PluginSystem) -> None:

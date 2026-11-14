@@ -423,6 +423,26 @@ class WorkerNode:
 
         self._server.wait()
 
+    def _coordinator_auth_headers(self, cluster_key: str | None = None) -> dict[str, str]:
+        """Authorization headers for the coordinator's HTTP admin API.
+
+        Registration and the ready notification used to send
+        ``Bearer <cluster_key>`` (a gRPC cluster secret the API key store
+        does not accept) or nothing at all when no env var was set — so a
+        worker joining a default deployment (key only in the coordinator's
+        ``.distllm/api_key`` file) always 401'd and its ready signal never
+        landed. Resolve through the one shared precedence the CLI uses
+        (``API_KEY`` > ``DISTLLM_API_KEY`` > key file); the cluster key is
+        only a last-resort fallback for deployments that deliberately reuse
+        one secret for both.
+        """
+        from distllm.core.api_key_store import resolve_api_key
+
+        api_key = resolve_api_key() or cluster_key
+        if api_key:
+            return {"Authorization": f"Bearer {api_key}"}
+        return {}
+
     def _register_with_coordinator(self, cluster_key: str | None = None) -> None:
         """Register this worker with the coordinator's HTTP API.
 
@@ -447,14 +467,7 @@ class WorkerNode:
             "ready": self._ready,  # Reflects actual model-load state, not a hardcoded assumption
         }
         headers = {"Content-Type": "application/json"}
-        if cluster_key:
-            headers["Authorization"] = f"Bearer {cluster_key}"
-        else:
-            # Try environment variables for API key
-            import os
-            env_key = os.environ.get("API_KEY") or os.environ.get("DISTLLM_API_KEY")
-            if env_key:
-                headers["Authorization"] = f"Bearer {env_key}"
+        headers.update(self._coordinator_auth_headers(cluster_key))
 
         try:
             import httpx
@@ -484,12 +497,7 @@ class WorkerNode:
         )
         payload = {"ready": True}
         headers = {"Content-Type": "application/json"}
-        if cluster_key:
-            headers["Authorization"] = f"Bearer {cluster_key}"
-        else:
-            env_key = os.environ.get("API_KEY") or os.environ.get("DISTLLM_API_KEY")
-            if env_key:
-                headers["Authorization"] = f"Bearer {env_key}"
+        headers.update(self._coordinator_auth_headers(cluster_key))
 
         try:
             import httpx

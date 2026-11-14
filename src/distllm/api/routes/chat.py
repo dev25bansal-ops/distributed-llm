@@ -20,7 +20,12 @@ from distllm.core.structured_output import JSONSchemaConstraint, StructuredOutpu
 
 from ..api_state import g
 from ..errors import error_openapi_entry
-from ..streaming import _get_client_id, _stream_response
+from ..streaming import (
+    _get_client_id,
+    _stream_response,
+    _stream_zero_tokens,
+    ensure_streaming_available,
+)
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
@@ -737,12 +742,25 @@ async def chat_completions(
             )
 
     if body.max_tokens == 0:
+        if body.stream:
+            # stream=true must stay SSE even for a zero-token budget. Returning
+            # a JSON body here silently switched the client's stream off: an
+            # SSE reader sees an empty stream with no [DONE].
+            return StreamingResponse(
+                _stream_zero_tokens(body, "chat.completion.chunk", "chatcmpl-"),
+                media_type="text/event-stream",
+            )
         return ChatCompletionResponse(
             model=resolved_model,
             choices=[ChatChoice(message=ChatMessage(role="assistant", content=""), finish_reason="length")],
         )
 
     if body.stream:
+        # Fail before the SSE status line is sent: with a coordinator but no
+        # partitioner and no registered nodes, the generator would otherwise
+        # emit role + empty stop + [DONE] — a 200 that looks like a
+        # successful empty completion while nothing generated.
+        ensure_streaming_available(coord)
         client_id = _get_client_id(request)
         return StreamingResponse(
             _stream_response(

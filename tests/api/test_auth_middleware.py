@@ -918,11 +918,51 @@ class TestObservabilityMiddlewareMounted:
 
         from distllm.api.server import app, state
 
-        client = TestClient(app)
-        client.get("/health")
-        exporter = getattr(state, "metrics_exporter", None)
-        assert exporter is not None, "exporter not initialized by lifespan"
-        text = generate_latest(exporter.registry).decode()
+        # Capture the exporter the middleware holds its fixed reference to
+        # (created at module load, server.py:409) BEFORE startup runs.
+        middleware_exporter = state.metrics_exporter
+        assert middleware_exporter is not None
+
+        # The context manager RUNS the lifespan. Without it the startup hook
+        # never executes and the test asserts against the module-load
+        # exporter — which is exactly the state in which the duplicate-
+        # exporter bug stayed invisible: a second exporter swapped into
+        # state.metrics_exporter at startup would leave the middleware
+        # recording into an orphaned registry while this test still passed.
+        # With `with TestClient(app)` the assertions below fail if startup
+        # replaces the instance the middleware holds.
+        #
+        # The real lifespan calls setup_tracing(), which installs a GLOBAL
+        # OpenTelemetry tracer provider — and OTel only honours the first
+        # set_tracer_provider() per process. That silently disables the
+        # per-test providers the span tests below build, so their in-memory
+        # exporters receive nothing. Snapshot and restore OTel's globals
+        # (including the once-per-process _TRACER_PROVIDER_SET_ONCE flag);
+        # set_tracer_provider() alone cannot undo it.
+        #
+        # Restore the RAW module global, not get_tracer_provider(): when no
+        # provider has been set, that accessor returns the module-level PROXY
+        # provider, and writing the proxy into _TRACER_PROVIDER makes the
+        # proxy delegate to itself — every later tracing test in the process
+        # (test_webrtc, streaming, sso, …) dies with RecursionError from
+        # proxy.get_tracer(). _TRACER_PROVIDER is legitimately None until the
+        # first set_tracer_provider().
+        from opentelemetry import trace as _otel_trace
+
+        _prev_provider = _otel_trace._TRACER_PROVIDER
+        _prev_set_once = _otel_trace._TRACER_PROVIDER_SET_ONCE._done
+        try:
+            with TestClient(app) as client:
+                exporter = state.metrics_exporter
+                assert exporter is not None, "exporter not initialized by lifespan"
+                # Startup must REUSE the module-load exporter, not replace it.
+                assert exporter is middleware_exporter
+                client.get("/health")
+                text = generate_latest(exporter.registry).decode()
+        finally:
+            # Bypass the once-guard to actually restore the prior provider.
+            _otel_trace._TRACER_PROVIDER = _prev_provider
+            _otel_trace._TRACER_PROVIDER_SET_ONCE._done = _prev_set_once
         assert "distllm_requests_total" in text
         # Parse the requests_total sample: it must be non-zero after a request.
         for line in text.splitlines():

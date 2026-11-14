@@ -499,6 +499,14 @@ class TestFailover:
         for ft in (b, c):
             ft._peers["coordinator-a"]["last_seen"] = 0.0
 
+        # The surviving standbys confirm each other. Their outbound
+        # transport is dead in this unit test, so liveness is driven via
+        # inbound heartbeats (the same convention the first half of this
+        # test uses for coordinator-a). Without contact a standby cannot
+        # count the other toward quorum — that is the fail-closed election.
+        b.handle_heartbeat_request("coordinator-c", term=0)
+        c.handle_heartbeat_request("coordinator-b", term=0)
+
         b._run_election_round()
         c._run_election_round()
 
@@ -580,7 +588,11 @@ class TestSplitBrainPrevention:
         assert a._state == CoordinatorState.LEADER
         assert a._current_term == 6
 
-        # B's election round: A has lower ID so B follows A
+        # B's election round: A (the new leader, term 6) has just
+        # heartbeated B, which is how B learns A is alive — the outbound
+        # transport is dead in this unit test. A peer that was never
+        # contacted cannot count toward quorum (fail-closed election).
+        b.handle_heartbeat_request("coordinator-a", term=6)
         b._run_election_round()
         assert b._state == CoordinatorState.FOLLOWER
         assert b._leader_id == "coordinator-a"
@@ -800,3 +812,84 @@ class TestShutdownRecovery:
                 os.environ["DISTLLM_DATA_DIR"] = prev
             else:
                 os.environ.pop("DISTLLM_DATA_DIR", None)
+
+
+# =========================================================================
+# 6. DRAIN-INTENT PERSISTENCE (survives restarts / failover)
+# =========================================================================
+
+
+class TestDrainIntentPersistence:
+    """Draining used to live only in ``ResourceManager._draining_nodes``.
+
+    A node drained just before a coordinator restart came back fully listed
+    and routable — and a failover that re-registers nodes from the leader's
+    snapshot lost the drain too. The operator's drain marker is now
+    persisted (DISTLLM_DATA_DIR/drain_state.json) and re-applied whenever a
+    node with that id (re-)registers.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_state_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DISTLLM_DATA_DIR", str(tmp_path))
+
+    def test_intent_round_trips_through_disk(self) -> None:
+        coord = _make_coordinator()
+
+        coord.record_drain_intent("w1")
+        assert coord._read_drain_intent() == {"w1"}
+
+        coord.clear_drain_intent("w1")
+        assert coord._read_drain_intent() == set()
+
+    def test_manual_register_reapplies_a_persisted_drain(self) -> None:
+        """'Restart': a fresh coordinator finds intent on disk and enforces it."""
+        first = _make_coordinator()
+        first.record_drain_intent("w1")
+
+        second = _make_coordinator()  # post-restart process
+        assert not second._resource_mgr.is_node_draining("w1")
+        second.manual_register("w1", "10.0.0.1", 50051, 0, 7, total_layers=8)
+
+        assert second._resource_mgr.is_node_draining("w1") is True, (
+            "a drained-before-restart node must come back draining"
+        )
+        assert "w1" in second.nodes
+
+    def test_undrained_node_rejoins_serving(self) -> None:
+        first = _make_coordinator()
+        first.record_drain_intent("w1")
+        first.clear_drain_intent("w1")
+
+        second = _make_coordinator()
+        second.manual_register("w1", "10.0.0.1", 50051, 0, 7, total_layers=8)
+
+        assert second._resource_mgr.is_node_draining("w1") is False
+
+    def test_circuit_breaker_drains_are_not_persisted(self) -> None:
+        """Transient breaker drains must not become sticky operator intent.
+
+        Only explicit admin verbs persist. A node whose breaker tripped
+        should be able to recover normally after a restart instead of
+        coming back force-drained forever.
+        """
+        coord = _make_coordinator()
+        coord.manual_register("w1", "10.0.0.1", 50051, 0, 7, total_layers=8)
+        for _ in range(coord._resource_mgr.cb_config.threshold):
+            coord._resource_mgr.record_failure("w1")
+        assert coord._resource_mgr.is_node_draining("w1") is True
+
+        # No operator intent was recorded…
+        assert coord._read_drain_intent() == set()
+        # …so a fresh coordinator does not force-drain the re-registered node.
+        fresh = _make_coordinator()
+        fresh.manual_register("w1", "10.0.0.1", 50051, 0, 7, total_layers=8)
+        assert fresh._resource_mgr.is_node_draining("w1") is False
+
+    def test_missing_or_corrupt_state_file_is_tolerated(self, tmp_path) -> None:
+        coord = _make_coordinator()
+        (tmp_path / "drain_state.json").write_text("not json {", encoding="utf-8")
+
+        assert coord._read_drain_intent() == set()
+        coord.manual_register("w1", "10.0.0.1", 50051, 0, 7, total_layers=8)
+        assert "w1" in coord.nodes

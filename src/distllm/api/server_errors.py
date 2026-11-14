@@ -13,6 +13,7 @@ from distllm.api.errors import (
     FeatureDisabledError,
     error_response_from_request,
 )
+from distllm.errors import DistLLMError
 
 
 class ErrorResponse(BaseModel):
@@ -64,8 +65,30 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 
 async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Catch-all for unhandled exceptions with structured response."""
+    """Catch-all for unhandled exceptions with structured response.
+
+    A ``DistLLMError`` carries a deliberate, user-facing message (and a
+    remediation hint). Replacing it with the generic "unexpected error ...
+    try again later" text told callers to retry configuration problems that
+    will never succeed until an operator acts — e.g.
+    ``ConfigError("No nodes registered in the pipeline")`` became a
+    transient-looking 500 whose cause existed only in the server log. Typed
+    errors keep their message and remediation hint; everything else stays
+    masked.
+    """
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    if isinstance(exc, DistLLMError):
+        message = exc.user_message
+        if exc.remediation_hint:
+            message = f"{message} {exc.remediation_hint}"
+        return _error_response(
+            status_code=500,
+            error="Internal Server Error",
+            message=message,
+            type="internal_error",
+            request=request,
+            exc=exc,
+        )
     return _error_response(
         status_code=500,
         error="Internal Server Error",

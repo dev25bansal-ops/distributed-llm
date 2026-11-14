@@ -790,7 +790,21 @@ class PagedAttentionManager:
         swap_to_cpu: bool = False,
         max_swap_blocks: int = 0,
         max_seq_len: int = 4096,
+        auto_expand: bool = False,
     ):
+        """Create a paged-attention manager.
+
+        Args:
+            auto_expand: When True the block pool silently doubles (+64
+                blocks, minimum) once exhausted.  Default False: the
+                explicitly configured ``num_blocks`` (e.g. from
+                DISTLLM_PAGED_NUM_BLOCKS) is a memory ceiling — expanding
+                past it on demand silently exceeded the operator's GPU
+                budget, the same contract violation the prefix-cache
+                memory budget had.  Allocation failures are surfaced
+                instead (RuntimeError from create_sequence/append_tokens),
+                and operators who want elastic growth opt in explicitly.
+        """
         if dtype is None:
             dtype = torch.float16
         if block_size <= 0:
@@ -806,6 +820,11 @@ class PagedAttentionManager:
             device=device,
             swap_to_cpu=swap_to_cpu,
             max_swap_blocks=max_swap_blocks,
+            # Previously not forwarded, so the pool's auto-expand always
+            # applied and an explicitly configured num_blocks (e.g.
+            # DISTLLM_PAGED_NUM_BLOCKS) could never be a hard GPU-memory
+            # ceiling — the pool silently doubled (+64 min) on demand.
+            auto_expand=auto_expand,
         )
         self._tables: Dict[str, BlockTable] = {}
         self._lock = threading.Lock()

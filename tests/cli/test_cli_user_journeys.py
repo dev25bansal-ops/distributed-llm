@@ -158,6 +158,25 @@ class TestSelftest:
         check = st._check_api_roundtrip()
         assert check.status in (st.PASS, st.SKIP), check.detail
 
+    def test_torch_failure_remediation_names_self_hosted_extra(self):
+        """A torch-import FAIL must not advise reinstalling [cli] (no torch)."""
+        from distllm.cli import selftest as st
+
+        checks = [
+            st.Check("api roundtrip", st.FAIL, "ModuleNotFoundError: No module named 'torch'"),
+        ]
+        message = st._remediation(checks)
+        assert "self-hosted" in message
+        assert "[cli]" not in message
+
+    def test_non_ml_failure_remediation_keeps_cli_extra(self):
+        from distllm.cli import selftest as st
+
+        checks = [st.Check("console scripts", st.FAIL, "unresolvable: distllm-api")]
+        message = st._remediation(checks)
+        assert "[cli]" in message
+        assert "self-hosted" not in message
+
 
 class TestChatPreflight:
     def test_chat_reports_unreachable_server_before_accepting_input(self):

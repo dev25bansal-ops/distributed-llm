@@ -666,7 +666,10 @@ class KVCache:
         """Update KV cache for a layer with optional quantization.
 
         Uses pre-allocated slicing to avoid O(n²) torch.cat overhead.
-        Falls back to dynamic growth when max_seq_len is not set.
+        Without max_seq_len the buffer grows dynamically per append.  With
+        max_seq_len the pre-allocated buffer serves appends up to that
+        bound; an append past the bound reallocates (2x) and logs a
+        WARNING so an exceeded bound is observable (data is preserved).
 
         Args:
             layer_idx: Layer index.
@@ -709,6 +712,15 @@ class KVCache:
             # Overflow: grow buffer by 2x to reduce future reallocations
             # This avoids repeated torch.cat calls that fragment GPU memory
             new_max = max(self._max_seq_len or 0, cur_len + new_len) * 2
+            # An explicit max_seq_len is a caller-visible bound: when
+            # overflow forces the buffer past it, say so — the previous
+            # silent replace meant code passing max_seq_len as a memory
+            # cap got several times the memory with no signal.
+            logger.warning(
+                f"KVCache layer {layer_idx}: exceeded max_seq_len "
+                f"{self._max_seq_len} ({cur_len}+{new_len} tokens); "
+                f"reallocating buffer to {new_max} slots"
+            )
             expanded_k = torch.zeros(
                 (*old_k.shape[:2], new_max, old_k.shape[-1]),
                 dtype=old_k.dtype, device=old_k.device,

@@ -610,14 +610,25 @@ class NCCLStateReplicator:
 
 @dataclass
 class ParameterDelta:
-    """A recorded delta (change) for a single parameter at a given step.
+    """A recorded change for a single parameter at a given step.
 
     Attributes:
-        step: Training / generation step at which this delta was recorded.
+        step: Training / generation step at which this record was taken.
         name: Fully-qualified parameter name.
-        delta: The change tensor (``new_value - old_value``).
+        delta: The change tensor (``new_value - old_value``) — or, when
+            *absolute* is True, the parameter's absolute value.
         device: Original device of the parameter.
         dtype: Original data type of the parameter.
+        value: The parameter's observed absolute value at *step*.  Used
+            to compute the next delta exactly when ``base_params`` is
+            omitted.
+        absolute: When True this record is an absolute-value anchor: no
+            base reference was available at save time (first observation
+            without ``base_params``), so ``delta`` holds the parameter's
+            absolute value and :meth:`IncrementalRecovery.recover_to`
+            assigns it rather than adding it.  Without this, the first
+            delta of a parameter could never be computed and the no-base
+            mode silently recorded nothing.
     """
 
     step: int
@@ -625,6 +636,8 @@ class ParameterDelta:
     delta: torch.Tensor
     device: torch.device
     dtype: torch.dtype
+    value: torch.Tensor | None = None
+    absolute: bool = False
 
 
 class IncrementalRecovery:
@@ -696,15 +709,23 @@ class IncrementalRecovery:
 
         When *base_params* is provided, the delta is computed as
         ``params[name] - base_params[name]``.  When it is ``None``,
-        the delta is computed against the parameter's value at the last
-        recorded step (or the checkpoint if no prior delta exists).
+        the base is the parameter's observed value at its last recorded
+        step (each delta record stores the observed value alongside the
+        delta), or — if no prior record exists — no base at all.
+
+        When no base reference exists at all (first observation of a
+        parameter with no ``base_params`` — e.g. the first save of the
+        documented no-base mode), the current value is recorded as an
+        absolute-value anchor.  ``recover_to`` then reconciles it against
+        the checkpoint it is given, so recovery is exact while the
+        reference state is not needed at save time.
 
         Args:
             step: Step number (must be > ``latest_step``).
             params: Current parameter values after the step.
             base_params: Optional reference state.  When ``None``, the
-                reference is the checkpoint state (first occurrence) or
-                the previous step's saved value.
+                reference is the previously recorded absolute value for
+                the parameter (see above) or no reference at all.
 
         Raises:
             ValueError: If *step* is not greater than the latest recorded step.
@@ -714,48 +735,51 @@ class IncrementalRecovery:
                 f"Step {step} must be > latest step {self._latest_step}"
             )
 
-        step_deltas: dict[str, ParameterDelta] = {}
-
-        for name, current in params.items():
-            if current is None or current.numel() == 0:
-                continue
-
-            # Determine the base (reference) value.
-            if base_params is not None and name in base_params:
-                base = base_params[name]
-            else:
-                # Use the value from the previous delta, if any.
-                prev = self._find_previous_delta(name, step)
-                if prev is not None:
-                    # To compute the delta we need the absolute value at
-                    # the previous step.  We approximate by assuming the
-                    # delta was applied to the checkpoint value, which is
-                    # correct for the first occurrence.  For deeper chains
-                    # we accumulate.
-                    base = self._estimate_previous_value(name, step - 1)
-                else:
-                    # No previous delta -- this is the first recorded change
-                    # for this parameter, so delta is relative to checkpoint.
-                    base = current  # delta = 0 effectively
-
-            if base is None:
-                base = current  # no base available: delta is zero
-
-            delta = current - base
-
-            # Skip zero deltas to save memory.
-            if delta.abs().max().item() == 0:
-                continue
-
-            step_deltas[name] = ParameterDelta(
-                step=step,
-                name=name,
-                delta=delta.cpu().clone() if delta.is_cuda else delta.clone(),
-                device=current.device,
-                dtype=current.dtype,
-            )
-
         with self._lock:
+            step_deltas: dict[str, ParameterDelta] = {}
+
+            for name, current in params.items():
+                if current is None or current.numel() == 0:
+                    continue
+
+                delta: torch.Tensor | None
+                absolute = False
+
+                # Determine the base (reference) value.
+                if base_params is not None and base_params.get(name) is not None:
+                    delta = current - base_params[name]
+                else:
+                    prev_value = self._previous_value(name, step)
+                    if prev_value is not None:
+                        delta = current - prev_value.to(
+                            device=current.device, dtype=current.dtype,
+                        )
+                    else:
+                        # No reference available: record the absolute value
+                        # as an anchor so the next delta is exact and
+                        # recover_to can reconcile against the checkpoint.
+                        delta = current
+                        absolute = True
+
+                # Skip zero deltas to save memory (an absolute anchor is
+                # never a "zero delta" — it carries the value itself).
+                if not absolute and delta.abs().max().item() == 0:
+                    continue
+
+                step_deltas[name] = ParameterDelta(
+                    step=step,
+                    name=name,
+                    delta=delta.cpu().clone() if delta.is_cuda else delta.clone(),
+                    device=current.device,
+                    dtype=current.dtype,
+                    value=(
+                        current.cpu().clone()
+                        if current.is_cuda
+                        else current.clone()
+                    ),
+                    absolute=absolute,
+                )
+
             if step_deltas:
                 self._deltas[step] = step_deltas
                 self._step_order.append(step)
@@ -818,11 +842,16 @@ class IncrementalRecovery:
                 step_deltas = self._deltas.get(s, {})
             for name, delta_rec in step_deltas.items():
                 if name in params and params[name] is not None:
-                    delta_on_device = delta_rec.delta.to(
+                    value_on_device = delta_rec.delta.to(
                         device=params[name].device,
                         dtype=params[name].dtype,
                     )
-                    params[name] = params[name] + delta_on_device
+                    if delta_rec.absolute:
+                        # Anchor: no base existed at save time, so the
+                        # record is the parameter's absolute value.
+                        params[name] = value_on_device
+                    else:
+                        params[name] = params[name] + value_on_device
 
         return params
 
@@ -861,35 +890,55 @@ class IncrementalRecovery:
 
     # -- Internal helpers ---------------------------------------------------
 
-    def _find_previous_delta(
+    def _previous_value(
         self, name: str, before_step: int
-    ) -> ParameterDelta | None:
-        """Find the most recent delta for *name* at a step < *before_step*."""
-        candidate: ParameterDelta | None = None
+    ) -> torch.Tensor | None:
+        """Return *name*'s recorded absolute value at its last step < *before_step*.
+
+        Each :class:`ParameterDelta` stores the parameter's observed
+        absolute value (``value``), so the next delta can be computed as
+        ``current - value`` — exact even when the deltas chain across many
+        steps and across mixed base-params / no-base-params calls
+        (previously the "estimate" summed deltas, which corrupted the
+        next delta whenever a base had been used earlier).
+
+        Called with ``self._lock`` held by :meth:`save_delta`.
+        """
         for s in reversed(self._step_order):
             if s >= before_step:
                 continue
-            if name in self._deltas.get(s, {}):
-                candidate = self._deltas[s][name]
-                break
-        return candidate
+            rec = self._deltas.get(s, {}).get(name)
+            if rec is not None:
+                if rec.value is not None:
+                    return rec.value
+                # Records saved before value-tracking existed: fall back
+                # to delta-based accumulation (approximation).
+                return self._estimate_previous_value(name, s)
+        return None
 
     def _estimate_previous_value(
         self, name: str, step: int
     ) -> torch.Tensor | None:
-        """Estimate the absolute value of *name* at *step* by summing deltas."""
-        # This is an approximation: sum all deltas for this name up to *step*.
+        """Approximate *name*'s value at *step* by summing stored deltas.
+
+        Legacy fallback used only when a record lacks the observed
+        ``value`` (e.g. restored from an old serialized state).  Exact
+        for records written since value-tracking was added.
+        """
         accumulated: torch.Tensor | None = None
         for s in self._step_order:
             if s > step:
                 break
-            if name in self._deltas.get(s, {}):
-                delta_t = self._deltas[s][name].delta
-                accumulated = (
-                    delta_t.clone()
-                    if accumulated is None
-                    else accumulated + delta_t
-                )
+            rec = self._deltas.get(s, {}).get(name)
+            if rec is not None:
+                if rec.absolute:
+                    accumulated = rec.delta.clone()
+                else:
+                    accumulated = (
+                        rec.delta.clone()
+                        if accumulated is None
+                        else accumulated + rec.delta
+                    )
         return accumulated
 
     def stats(self) -> dict[str, Any]:
@@ -1262,8 +1311,9 @@ class RedundantExecutor:
         the fastest result.
 
         Each replica runs the callable concurrently (via thread pool) and
-        the first to complete wins.  Remaining replicas are allowed to drain
-        in the background; their results are discarded.
+        the first to *succeed* wins — a fast failure never pre-empts a
+        healthy replica that is still running.  Remaining replicas are
+        allowed to drain in the background; their results are discarded.
 
         Args:
             task: Callable to execute redundantly.  It receives
@@ -1278,7 +1328,9 @@ class RedundantExecutor:
             :class:`RedundantResult` describing the fastest replica's outcome.
 
         Raises:
-            RuntimeError: If all replicas failed.
+            RuntimeError: If every replica failed, or if no replica
+                succeeded before *timeout_s* expired (a timeout is a
+                failure, never a success-shaped empty result).
         """
         from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -1288,38 +1340,69 @@ class RedundantExecutor:
 
         executor = ThreadPoolExecutor(max_workers=n)
         futures = {}
+        start = time.monotonic()
         for i in range(n):
             rid = f"replica-{i}"
             fut = executor.submit(task, rid, *task_args, **kwargs)
             futures[fut] = rid
-
-        # Wait for the first completed result.
-        done, _ = wait(futures.keys(), return_when=FIRST_COMPLETED, timeout=timeout)
+        deadline = start + timeout
 
         failures = 0
+        winner_found = False
         best_result: Any = None
         best_id: str = ""
         best_elapsed: float = 0.0
         best_timestamp: float = 0.0
+        pending = set(futures)
 
-        for fut in done:
-            rid = futures[fut]
-            try:
-                t0 = time.monotonic()
-                result = fut.result(timeout=0)
-                elapsed = time.monotonic() - t0
-                best_result = result
-                best_id = rid
-                best_elapsed = elapsed
-                best_timestamp = time.monotonic()
-                break  # First completed is the winner.
-            except Exception as exc:
-                logger.warning(f"Redundant task {rid} failed: {exc}")
-                failures += 1
+        try:
+            # Wait for the first *successful* completion.  Inspecting only
+            # the first completed future was wrong: a replica that fails
+            # fast (e.g. connection refused on the primary) must not mask
+            # a healthy backup that answers moments later.
+            while pending:
+                done = {f for f in pending if f.done()}
+                if not done:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break  # deadline expired, nothing completed
+                    done, _ = wait(
+                        pending,
+                        return_when=FIRST_COMPLETED,
+                        timeout=remaining,
+                    )
+                    if not done:
+                        break  # wait timed out
+                pending -= done
+                winner_found = False
+                for fut in done:
+                    rid = futures[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as exc:
+                        logger.warning(f"Redundant task {rid} failed: {exc}")
+                        failures += 1
+                        continue
+                    best_result = result
+                    best_id = rid
+                    best_elapsed = time.monotonic() - start
+                    best_timestamp = time.monotonic()
+                    winner_found = True
+                    break
+                if winner_found:
+                    pending = set()  # winner chosen; stop waiting
+        finally:
+            executor.shutdown(wait=False)
 
-        executor.shutdown(wait=False)
-
-        if best_result is None and failures > 0:
+        if not winner_found:
+            if pending:
+                # Deadline expired with replicas still in flight and none
+                # of the completed ones succeeded: fail loudly instead of
+                # returning a success-shaped result with a None payload.
+                raise RuntimeError(
+                    f"All {n} redundant replicas timed out "
+                    f"(timeout={timeout}s, {failures} failures)"
+                )
             raise RuntimeError(
                 f"All {n} redundant replicas failed "
                 f"({failures} failures, timeout={timeout}s)"
@@ -1407,7 +1490,40 @@ class RedundantExecutor:
                 weights_synced = len(synced)
 
             # Phase 3: NCCL state replication.
-            if state_tensors is not None and self._replicator.is_initialized:
+            if state_tensors is not None:
+                if not self._replicator.is_initialized:
+                    # The default replicator is constructed with
+                    # auto_init=False; adopt an existing process group
+                    # (or the single-rank case) inline — both are
+                    # non-blocking.  A fresh multi-rank rendezvous is NOT
+                    # attempted here because it can block for the full
+                    # rendezvous timeout; that case is refused below
+                    # instead of silently skipping the phase while the
+                    # report claims success.
+                    import torch.distributed as _dist
+
+                    if _dist.is_initialized() or getattr(
+                        self._replicator, "_world_size", 1
+                    ) <= 1:
+                        try:
+                            self._replicator.initialize()
+                        except Exception as init_exc:
+                            raise RuntimeError(
+                                f"state replication requested "
+                                f"({len(state_tensors)} tensors) but the "
+                                f"NCCL replicator failed to initialise: "
+                                f"{init_exc}"
+                            ) from init_exc
+                if not self._replicator.is_initialized:
+                    raise RuntimeError(
+                        f"state replication requested "
+                        f"({len(state_tensors)} tensors) but the NCCL "
+                        f"replicator cannot replicate (torch.distributed "
+                        f"process group not available); initialise "
+                        f"torch.distributed and pass an initialised "
+                        f"replicator — refusing to report a no-op "
+                        f"recovery as success"
+                    )
                 logger.info(
                     f"Recovery phase 3: replicating "
                     f"{len(state_tensors)} state tensors via NCCL"

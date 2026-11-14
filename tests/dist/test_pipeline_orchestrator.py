@@ -513,6 +513,81 @@ class TestSequentialPipeline:
         torch.testing.assert_close(result, inp)
 
 
+class TestRedundancyWiring:
+    """The ``redundancy`` constructor knob must reach a code path.
+
+    Regression: coordinator wires config.redundancy into
+    PipelineOrchestrator._redundancy, but nothing read it, so redundancy=2
+    behaved identically to redundancy=1 (every stage ran exactly once).
+    """
+
+    def test_redundancy_one_runs_each_node_once(self) -> None:
+        orch = PipelineOrchestrator(redundancy=1)
+        orch.register_node(*NODE_0_ARGS)
+        orch.register_node(*NODE_1_ARGS)
+        with patch(
+            "distllm.dist.node_client.forward_request", side_effect=_sync_echo
+        ) as fwd:
+            orch.run_pipeline(
+                torch.tensor([[1, 2]], dtype=torch.long),
+                {"node-0": None, "node-1": None},
+                "r1",
+            )
+        assert fwd.call_count == 2
+
+    def test_redundancy_two_fans_out_same_range_replicas(self) -> None:
+        """Two replicas covering one range: both are asked, the layers are
+        applied once, and the output is not double-applied."""
+        orch = PipelineOrchestrator(redundancy=2)
+        orch.register_node("replica-a", "10.0.0.1", 50051, 0, 15)
+        orch.register_node("replica-b", "10.0.0.2", 50051, 0, 15)
+        hosts: list[str] = []
+
+        def forward(host: str, port: int, hidden_states, **_kw):
+            hosts.append(host)
+            return hidden_states + 1
+
+        with patch("distllm.dist.node_client.forward_request", side_effect=forward):
+            out = orch.run_pipeline(
+                torch.zeros((1, 4), dtype=torch.long),
+                {"replica-a": None, "replica-b": None},
+                "r1",
+            )
+        assert sorted(hosts) == ["10.0.0.1", "10.0.0.2"]
+        assert out[0, 0].item() == 1.0  # one pass, not two
+
+    def test_redundancy_two_failover_to_backup(self) -> None:
+        """A dead primary no longer fails the request while its redundant
+        peer is healthy."""
+        orch = PipelineOrchestrator(redundancy=2)
+        orch.register_node("primary", "10.0.0.1", 50051, 0, 15)
+        orch.register_node("backup", "10.0.0.2", 50051, 0, 15)
+
+        def forward(host: str, port: int, hidden_states, **_kw):
+            if host == "10.0.0.1":
+                raise ConnectionRefusedError("down")
+            return hidden_states + 1
+
+        with patch("distllm.dist.node_client.forward_request", side_effect=forward):
+            out = orch.run_pipeline(
+                torch.zeros((1, 4), dtype=torch.long),
+                {"primary": None, "backup": None},
+                "r1",
+            )
+        assert out[0, 0].item() == 1.0
+
+    def test_redundancy_stats_recorded(self) -> None:
+        orch = PipelineOrchestrator(redundancy=2)
+        orch.register_node("node-0", "10.0.0.1", 50051, 0, 15)
+        with patch(
+            "distllm.dist.node_client.forward_request", side_effect=_sync_echo
+        ):
+            orch.run_pipeline(torch.tensor([[1, 2]]), {"node-0": None}, "r1")
+        assert orch.stats()["pipeline_runs"] == 1
+        assert orch.stats()["errors"] == 0
+        assert orch.stats()["total_latency_ms"] > 0.0
+
+
 class TestMicrobatchedPipeline:
     """Async 1F1B micro-batched execution."""
 

@@ -131,6 +131,76 @@ class TestPrefixCache:
         assert matched == 0
         assert kv is None
 
+    # --- memory ledger (regression: audit 2026-11-13) ---
+
+    def _blob(self, n_bytes):
+        return {"k": _FakeTensor(n_bytes)}
+
+    def _cache(self, **kw):
+        c = PrefixCache(min_prefix_len=4, memory_budget_bytes=20000, **kw)
+        # Skip the psutil pressure check so results are deterministic.
+        c._last_pressure_check = time.time() + 10_000
+        return c
+
+    def test_evict_decrements_memory_bytes(self):
+        """evict() must subtract the entry's bytes, not leave phantoms."""
+        c = self._cache()
+        c.store(list(range(4, 24)), self._blob(9000))
+        assert c.evict(list(range(4, 24))) is True
+        assert len(c._cache) == 0
+        assert c._total_memory_bytes == 0
+
+    def test_max_entries_eviction_decrements_memory_bytes(self):
+        """The max_entries popitem loop must subtract evicted bytes."""
+        c = self._cache(max_entries=2)
+        for i in range(4):
+            c.store([100 + i] + list(range(4, 24)), self._blob(5000))
+        assert len(c._cache) == 2
+        assert c._total_memory_bytes == 10000  # 2 x 5000 real
+
+    def test_clear_resets_memory_bytes(self):
+        c = self._cache()
+        c.store(list(range(4, 24)), self._blob(19000))
+        c.clear()
+        assert len(c._cache) == 0
+        assert c._total_memory_bytes == 0
+
+    def test_no_phantom_eviction_of_live_entries_that_fit(self):
+        """Phantom bytes used to evict a live entry although two 9000B
+        entries fit a 20000B budget."""
+        c = self._cache()
+        T = list(range(4, 24))
+        c.store([1] + T, self._blob(9000))
+        c.evict([1] + T)
+        T_B = [2] + T
+        T_C = [3] + T
+        c.store(T_B, self._blob(9000))
+        c.store(T_C, self._blob(9000))
+        assert len(c._cache) == 2
+        assert c._total_memory_bytes == 18000
+        assert c.lookup(T_B)[0] == 21
+        assert c.lookup(T_C)[0] == 21
+
+    def test_overwrite_updates_memory_bytes(self):
+        """Re-storing a bigger payload for the same tokens must re-count."""
+        c = self._cache()
+        T = list(range(4, 24))
+        c.store(T, self._blob(1000))
+        c.store(T, self._blob(9000))
+        assert len(c._cache) == 1
+        assert c._total_memory_bytes == 9000
+
+    def test_explicit_budget_not_shrunk_by_memory_pressure(self):
+        """An explicit memory budget is a contract: the pressure check must
+        never reduce it (previously it shrank 20000 -> 15000 -> ...)."""
+        c = self._cache()
+        budgets = []
+        for _ in range(6):
+            c._last_pressure_check = 0.0  # force the check window open
+            c._evict_until_fit(0)
+            budgets.append(c._memory_budget)
+        assert budgets == [20000] * 6
+
     # --- evict ---
 
     def test_evict_existing(self):

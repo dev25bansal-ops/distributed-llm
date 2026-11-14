@@ -231,6 +231,36 @@ class TestTextCompletionMaxTokens:
         assert resp.json()["choices"][0]["finish_reason"] == "length"
         assert resp.json()["choices"][0]["text"] == ""
 
+    def test_zero_with_stream_stays_sse(self):
+        """stream=true + max_tokens=0 must still return SSE, not JSON.
+
+        Regression: the route returned a JSON CompletionResponse before
+        checking ``stream``, so an SSE reader saw an empty stream with no
+        [DONE].
+        """
+        import json as _j
+
+        resp = self.client.post(
+            "/v1/completions",
+            json={
+                "model": "distributed-llm",
+                "prompt": "Hello",
+                "max_tokens": 0,
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "").lower(), (
+            resp.headers.get("content-type")
+        )
+        lines = [ln for ln in resp.text.split("\n") if ln.startswith("data: ")]
+        assert lines, resp.text
+        chunks = [_j.loads(ln[6:]) for ln in lines if ln != "data: [DONE]"]
+        assert chunks[0]["object"] == "text_completion.chunk"
+        reasons = [c["choices"][0].get("finish_reason") for c in chunks]
+        assert "length" in reasons
+        assert lines[-1] == "data: [DONE]"
+
     def test_negative_rejected(self):
         resp = self.client.post(
             "/v1/completions",

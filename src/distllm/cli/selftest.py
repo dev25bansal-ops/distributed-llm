@@ -182,6 +182,28 @@ def _check_api_roundtrip() -> Check:
     return Check("api roundtrip", FAIL, f"/health returned unexpected {response.status_code}")
 
 
+def _remediation(checks: list[Check]) -> str:
+    """Name the extra that actually fixes the failures that were seen.
+
+    The old advice was unconditionally ``distributed-llm[cli]``; for the
+    torch-import failure ([cli] carries no torch — it lives in [self-hosted])
+    that command reinstalls the same extras closure and reproduces the
+    identical failure.  Failures whose detail names a missing ML/optional
+    module therefore get the [self-hosted] extra instead.
+    """
+    ml_markers = (
+        "torch",
+        "transformers",
+        "accelerate",
+        "safetensors",
+        "sentencepiece",
+        "huggingface",
+    )
+    needs_ml = any(c.status == FAIL and any(m in c.detail for m in ml_markers) for c in checks)
+    extra = "self-hosted" if needs_ml else "cli"
+    return f"Reinstall: pip install --force-reinstall " f"[cyan]distributed-llm\\[{extra}][/cyan]"
+
+
 def run_selftest(*, as_json: bool, strict: bool) -> int:
     # --json promises machine-readable output, so nothing else may reach
     # stdout: the loguru sink and the server's structured logging both write
@@ -213,9 +235,7 @@ def run_selftest(*, as_json: bool, strict: bool) -> int:
     warned = [c for c in checks if c.status == WARN]
     if failed:
         console.print(
-            f"\n[red]{len(failed)} check(s) failed.[/red] "
-            "Reinstall: pip install --force-reinstall "
-            "[cyan]distributed-llm\\[cli][/cyan]"
+            f"\n[red]{len(failed)} check(s) failed.[/red] " + _remediation(checks)
         )
     elif warned:
         console.print(f"\n[yellow]{len(warned)} warning(s).[/yellow]")

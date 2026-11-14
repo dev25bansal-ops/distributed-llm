@@ -194,17 +194,20 @@ class CacheManager:
             for tier_name in ("gpu", "cpu", "ssd"):
                 tier = self._tiers[tier_name]
                 if prefix_hash in tier["entries"]:
-                    blob, last_access, size = tier["entries"][prefix_hash]
+                    blob, _last_access, size = tier["entries"][prefix_hash]
                     now = time.time()
-                    # Promote: if hit in a lower tier, move to the tier above
+                    # Promote: if hit in a lower tier, move to the tier above.
+                    # _tier_store removes any existing copy of the prefix from
+                    # every tier before inserting, so the source copy is
+                    # already gone — do NOT pop/subtract it again here. The
+                    # old code subtracted unconditionally after a pop that the
+                    # nested eviction may already have performed, leaving
+                    # used_bytes under-reported and the entry duplicated
+                    # across tiers.
                     if tier_name == "ssd":
                         self._tier_store("cpu", prefix_hash, blob, size)
-                        self._tiers["ssd"]["entries"].pop(prefix_hash, None)
-                        self._tiers["ssd"]["used_bytes"] -= size
                     elif tier_name == "cpu":
                         self._tier_store("gpu", prefix_hash, blob, size)
-                        self._tiers["cpu"]["entries"].pop(prefix_hash, None)
-                        self._tiers["cpu"]["used_bytes"] -= size
                     else:
                         tier["entries"][prefix_hash] = (blob, now, size)
                     return tier_name, blob
@@ -232,25 +235,51 @@ class CacheManager:
 
     def _tier_store(self, tier_name: str, prefix_hash: str, blob: Any, size: int) -> None:
         """Store *blob* in *tier_name*, evicting if necessary.
-        Must be called with self._lock held.
+
+        Thread-safe: acquires ``self._lock`` (reentrant, so callers that
+        already hold it — e.g. :meth:`_tier_lookup` — are unaffected).  The
+        lock keeps the eviction loop's iteration over a tier's entries
+        consistent with concurrent stores; without it concurrent
+        ``store_prefix`` calls crashed with "dictionary keys changed during
+        iteration" and corrupted the byte ledger.
+
+        A prefix lives in exactly one tier: any existing copy of
+        *prefix_hash* is removed (with byte accounting) before the new copy
+        is inserted.  Without this, re-storing an existing prefix
+        double-counted its size, and promotions left the entry duplicated
+        across tiers while under-reporting ``used_bytes``.
         """
-        self._prune_ghost_cache()
-        tier = self._tiers[tier_name]
-        while tier["used_bytes"] + size > tier["max_bytes"] and tier["entries"]:
-            victim_hash, (victim_blob, _, victim_size) = min(
-                tier["entries"].items(),
-                key=lambda kv: self._tier_eviction_score(kv[0], kv[1], tier_name),
-            )
-            if tier_name == "gpu":
-                self._tier_store("cpu", victim_hash, victim_blob, victim_size)
-            elif tier_name == "cpu":
-                self._tier_store("ssd", victim_hash, victim_blob, victim_size)
-            else:
-                self._ghost_cache[victim_hash] = time.time()
-            tier["entries"].pop(victim_hash, None)
-            tier["used_bytes"] -= victim_size
-        tier["entries"][prefix_hash] = (blob, time.time(), size)
-        tier["used_bytes"] += size
+        with self._lock:
+            self._prune_ghost_cache()
+
+            # Remove any existing copy of this prefix from every tier. This
+            # covers both same-tier re-stores and cross-tier
+            # promotion/demotion, and keeps the used_bytes ledger exact.
+            for other_name in ("gpu", "cpu", "ssd"):
+                existing = self._tiers[other_name]["entries"].pop(prefix_hash, None)
+                if existing is not None:
+                    self._tiers[other_name]["used_bytes"] -= existing[2]
+
+            tier = self._tiers[tier_name]
+            while tier["used_bytes"] + size > tier["max_bytes"] and tier["entries"]:
+                victim_hash, (victim_blob, _, victim_size) = min(
+                    tier["entries"].items(),
+                    key=lambda kv: self._tier_eviction_score(kv[0], kv[1], tier_name),
+                )
+                # Pop and subtract the victim from THIS tier before the
+                # recursive store: that store removes the victim's existing
+                # copies (including from all tiers) itself, so subtracting
+                # again here would double-count.
+                del tier["entries"][victim_hash]
+                tier["used_bytes"] -= victim_size
+                if tier_name == "gpu":
+                    self._tier_store("cpu", victim_hash, victim_blob, victim_size)
+                elif tier_name == "cpu":
+                    self._tier_store("ssd", victim_hash, victim_blob, victim_size)
+                else:
+                    self._ghost_cache[victim_hash] = time.time()
+            tier["entries"][prefix_hash] = (blob, time.time(), size)
+            tier["used_bytes"] += size
 
     def _tier_eviction_score(
         self, prefix_hash: str, entry: tuple[Any, float, int], tier_name: str,
@@ -555,6 +584,8 @@ class CacheManager:
                 with self._lock:
                     self._tier_stats["local"]["hits"] += 1
                 return ("local", kv_data)
+            with self._lock:
+                self._tier_stats["local"]["misses"] += 1
 
         # 2. Disk persistence
         if self.persistence_manager is not None:
@@ -572,6 +603,8 @@ class CacheManager:
                     except Exception:
                         # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
+            with self._lock:
+                self._tier_stats["disk"]["misses"] += 1
 
         # 3. Gossip index lookup
         if self.cache_index is not None:
@@ -580,6 +613,8 @@ class CacheManager:
                 with self._lock:
                     self._tier_stats["gossip_index"]["hits"] += 1
                 return (node_id, None)
+            with self._lock:
+                self._tier_stats["gossip_index"]["misses"] += 1
 
         # 4. Active peer query: gossip cache index missed, broadcast to all peers
         if self.gossip_protocol is not None and self.gossip_client is not None:
@@ -592,6 +627,8 @@ class CacheManager:
                     return ("peer", kv_data)
             except Exception:
                 logger.debug("Broadcast peer query failed", exc_info=True)
+            with self._lock:
+                self._tier_stats["broadcast"]["misses"] += 1
 
         return None
 

@@ -172,6 +172,22 @@ class CoordinatorElection:
                 except Exception as e:
                     logger.warning(f"Failed to apply snapshot node {nid}: {e}")
 
+            # Re-apply the health the leader reported. Registration alone
+            # leaves a fresh node healthy-by-default, so a node the leader
+            # had marked unhealthy (or a drain-intent survivor) silently
+            # returned to service on failover. The snapshot has carried
+            # `healthy` all along; apply it now.
+            node = self._coordinator.nodes.get(nid)
+            if node is not None and "healthy" in info:
+                reported = bool(info["healthy"])
+                try:
+                    if isinstance(node, dict):
+                        node["is_healthy"] = reported
+                    elif hasattr(node, "is_healthy"):
+                        node.is_healthy = reported
+                except Exception as e:
+                    logger.warning(f"Failed to apply snapshot health for {nid}: {e}")
+
         logger.info(f"Applied state snapshot: {len(nodes)} nodes")
 
     def _sync_standby_status(self) -> None:
@@ -230,8 +246,15 @@ class CoordinatorElection:
             while self._coordinator._running.is_set():
                 tick += 1
                 try:
-                    # Full snapshot every ~10s, lightweight ping otherwise
-                    if tick % 10 == 0:
+                    # Full snapshot every ~10s, lightweight ping otherwise.
+                    # Only the leader may push full snapshots: a standby's
+                    # state is by definition not authoritative, and sending
+                    # it let a stale follower overwrite the leader's view on
+                    # every peer (the receiving side applies whatever arrives
+                    # at /api/v1/ha/snapshot). Heartbeats from any node are
+                    # harmless — they only signal liveness — so a non-leader
+                    # still sends those, preserving failover detection.
+                    if tick % 10 == 0 and self.is_leader:
                         snapshot = self.state_snapshot()
                     else:
                         snapshot = {

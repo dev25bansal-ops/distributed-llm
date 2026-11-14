@@ -88,6 +88,16 @@ _EXEMPT_PATHS: frozenset[str] = frozenset({
     "/healthz",
     "/readyz",
     "/metrics",
+    # The auth routes authenticate the caller by definition — login/token/
+    # refresh/revoke carry their own proof (code+state, refresh token, the
+    # token being revoked) and have no API key to present. Omitting them made
+    # every one of them answer 401 under the full plugin stack, so SSO could
+    # not be started or refreshed on any shipped server. Mirrors the
+    # exemption AuthMiddleware and SsoMiddleware apply to the same paths.
+    "/v1/auth/login",
+    "/v1/auth/token",
+    "/v1/auth/refresh",
+    "/v1/auth/revoke",
 })
 
 #: Default rate limits per role (requests per window).

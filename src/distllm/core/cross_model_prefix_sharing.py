@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from loguru import logger
@@ -113,7 +113,13 @@ class CrossModelPrefixSharing:
         entry = SharedCacheEntry(
             prefix_hash=prefix_hash,
             source_model=model_id,
-            token_ids=token_ids,
+            # Copy the caller's list: serving loops reuse one token buffer
+            # across requests, and keeping the reference meant a later
+            # in-place mutation (`buf[:] = ...`) rewrote entry.token_ids so
+            # it no longer matched its prefix_hash key. The sibling-branch
+            # guard then compared against the mutated list and could return
+            # KV computed for a *different* request's prompt.
+            token_ids=list(token_ids),
             kv_data=kv_data,
             shared_layers=model.shared_layers if model else 0,
         )
@@ -124,6 +130,18 @@ class CrossModelPrefixSharing:
             self._cache[f"{model_id}:{prefix_hash}"] = entry
 
         return prefix_hash
+
+    def _result_with_shared(self, entry: SharedCacheEntry, shared: int) -> SharedCacheEntry:
+        """Return *entry* with ``shared_layers`` clamped to *shared*.
+
+        A returned entry may be consumed by a model that shares FEWER
+        layers than the source model (e.g. entry stored by an 80-layer
+        variant, queried by a 70-layer sibling).  Returning the stored
+        entry unchanged let the consumer read KV produced by layers the
+        querying model does not share — wrong attention values. The clamp
+        is applied on a copy so the cached entry itself is untouched.
+        """
+        return replace(entry, shared_layers=shared)
 
     def lookup(
         self,
@@ -163,11 +181,11 @@ class CrossModelPrefixSharing:
                             entry.last_accessed = time.time()
                             self._stats["cross_model_hits"] += 1
                             self._stats["entries_shared"] += 1
-                            return entry
+                            return self._result_with_shared(entry, shared)
 
             # 3. Sibling models (same base)
             if model and model.base_model:
-                for key, entry in self._cache.items():
+                for _key, entry in self._cache.items():
                     if self._is_expired(entry):
                         continue
                     # KV is only reusable when the cached token prefix is
@@ -185,7 +203,7 @@ class CrossModelPrefixSharing:
                             entry.last_accessed = time.time()
                             self._stats["cross_model_hits"] += 1
                             self._stats["entries_shared"] += 1
-                            return entry
+                            return self._result_with_shared(entry, shared)
 
             return None
 
