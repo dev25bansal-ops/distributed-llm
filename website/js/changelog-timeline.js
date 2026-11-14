@@ -10,6 +10,7 @@
  */
 
 const TIMELINE = [
+    { version: 'v0.6.2.2', date: '2026-11-09', title: 'CLI & API Correctness', desc: 'Path agreement, auth for every command, unreachable routes repaired, OpenAI-compatible surface verified end-to-end, distllm shell REPL.', breaking: false, color: '#22c55e' },
     { version: 'v0.4.0', date: '2026-05-16', title: 'Production Readiness', desc: 'Graceful shutdown, structured errors, K8s probes, backpressure, YAML config, security hardening.', breaking: false, color: '#22c55e' },
     { version: 'v0.3.0', date: '2026-05-14', title: 'Security & Features', desc: 'CORS, security headers, auth + rate limiting, LoRA adapters, prefix cache, continuous batching.', breaking: true, color: '#ef4444' },
     { version: 'v0.2.0', date: '2026-04-20', title: 'Multi-Node', desc: 'Multi-node cluster support, pipeline parallelism, gRPC communication, worker registration.', breaking: false, color: '#22c55e' },

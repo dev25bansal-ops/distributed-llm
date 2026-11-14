@@ -32,7 +32,7 @@ export function initGitHubStars() {
         }
     } catch {}
 
-    fetch('https://api.github.com/repos/distributed-llm/distributed-llm')
+    fetch('https://api.github.com/repos/dev25bansal-ops/distributed-llm')
         .then(r => {
             if (!r.ok) throw new Error(r.status);
             return r.json();

@@ -152,7 +152,7 @@ export function initCommunityStats() {
     // GitHub contributors
     const contribEl = document.getElementById('contributors');
     if (contribEl) {
-        cachedFetch('contributors', 'https://api.github.com/repos/distributed-llm/distributed-llm/contributors?per_page=1&anon=true',
+        cachedFetch('contributors', 'https://api.github.com/repos/dev25bansal-ops/distributed-llm/contributors?per_page=1&anon=true',
             d => Array.isArray(d) ? d.length : 0
         ).then(v => {
             contribEl.textContent = (v !== null && v > 0) ? String(v) : 'GitHub';

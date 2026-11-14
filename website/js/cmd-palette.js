@@ -17,8 +17,8 @@ const ITEMS = [
     { icon: '❓', label: 'FAQ', action: () => scrollTo('faq') },
     { icon: '📖', label: 'Documentation', action: () => { window.location.href = '/docs.html'; } },
     { icon: '📝', label: 'Blog', action: () => { window.location.href = '/blog.html'; } },
-    { icon: '🔗', label: 'Open GitHub', action: () => { window.open('https://github.com/distributed-llm/distributed-llm', '_blank', 'noopener,noreferrer'); } },
-    { icon: '💬', label: 'GitHub Discussions', action: () => { window.open('https://github.com/distributed-llm/distributed-llm/discussions', '_blank', 'noopener,noreferrer'); } },
+    { icon: '🔗', label: 'Open GitHub', action: () => { window.open('https://github.com/dev25bansal-ops/distributed-llm', '_blank', 'noopener,noreferrer'); } },
+    { icon: '💬', label: 'GitHub Discussions', action: () => { window.open('https://github.com/dev25bansal-ops/distributed-llm/discussions', '_blank', 'noopener,noreferrer'); } },
 ];
 
 function scrollTo(id) {

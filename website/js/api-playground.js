@@ -69,7 +69,7 @@ function genGo(p) {
 import (
     "context"
     "fmt"
-    distllm "github.com/distributed-llm/distributed-llm/sdk/go"
+    distllm "github.com/dev25bansal-ops/distributed-llm/sdk/go"
 )
 
 func main() {

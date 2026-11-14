@@ -16,6 +16,20 @@
 
 const RELEASES = [
     {
+        version: 'v0.6.2.2',
+        date: '2026-11-09',
+        codename: 'CLI & API Correctness',
+        breaking: false,
+        highlights: [
+            'CLI/API path agreement, authentication for every command, unreachable routes repaired',
+            'OpenAI-compatible surface verified end-to-end',
+            'distllm shell interactive REPL with sessions and @file context',
+            'API server starts without the observability extra',
+        ],
+        breaking_changes: [],
+        migration: null,
+    },
+    {
         version: 'v0.4.0',
         date: '2026-05-16',
         codename: 'Production Readiness',

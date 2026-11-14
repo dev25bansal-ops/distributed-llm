@@ -8,7 +8,6 @@
   <Url type="text/html" template="https://dev25bansal-ops.github.io/distributed-llm/?q={searchTerms}"/>
   <Url type="application/html" template="https://dev25bansal-ops.github.io/distributed-llm/?q={searchTerms}"/>
   <Image width="16" height="16" type="image/svg+xml">https://dev25bansal-ops.github.io/distributed-llm/favicon.svg</Image>
-  <Image width="64" height="64" type="image/png">https://dev25bansal-ops.github.io/distributed-llm/favicon.png</Image>
   <InputEncoding>UTF-8</InputEncoding>
   <OutputEncoding>UTF-8</OutputEncoding>
   <Language>en-us</Language>

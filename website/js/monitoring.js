@@ -17,7 +17,7 @@
 const CONFIG = {
     sentryDsn: null, // Set via data attribute or environment
     environment: 'production',
-    release: '0.4.0',
+    release: '0.6.2.2',
     sampleRate: 1.0,
     tracesSampleRate: 0.1,
 };
