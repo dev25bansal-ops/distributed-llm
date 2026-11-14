@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Use Cases — DistLLM</title>
     <meta name="description" content="Industry-specific use cases for DistLLM distributed LLM inference.">
@@ -21,14 +21,14 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        :root{--bg:#1c1c1c;--surface:#262626;--card:#2a2a2a;--card-hover:#303030;--border:#383838;--border-hover:#4a4a4a;--text:#f1f1ef;--text-secondary:#c4c4be;--dim:#9a9b96;--muted:#9a9b96;--green:#8fa68e;--green-dim:#7a9179;--green-glow:rgba(143,166,142,0.14);--green-bg:rgba(143,166,142,0.08);--green-bd:rgba(143,166,142,0.28);--red:#c97b6e;--amber:#c9a26e;--blue:#7e93ad;--field-1:#c8c5ba;--field-1-ink:#1c1c1c;--radius:6px;--radius-sm:4px;--font-sans:'Archivo',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
         a{color:inherit;text-decoration:none}
         .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
-        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(28,28,28,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
         .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
         .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
         .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
@@ -44,7 +44,7 @@
         .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
         .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:28px;transition:all 0.2s cubic-bezier(0.16,1,0.3,1)}.card:hover{border-color:var(--green-bd);transform:translateY(-2px)}
         .card-icon{width:44px;height:44px;background:var(--green-bg);border:1px solid var(--green-bd);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:16px}
-        .card h3{font-size:17px;font-weight:700;margin-bottom:6px}
+        .card h2{font-size:17px;font-weight:700;margin-bottom:6px}
         .card p{font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:12px}
         .card-features{list-style:none;padding:0}.card-features li{font-size:12px;color:var(--dim);padding:4px 0;display:flex;align-items:center;gap:6px}.card-features li::before{content:'';width:4px;height:4px;background:var(--green);border-radius:50%;flex-shrink:0}
         .card-badge{display:inline-block;font-size:10px;font-weight:600;color:var(--green);background:var(--green-bg);border:1px solid var(--green-bd);padding:2px 8px;border-radius:100px;margin-bottom:12px}
@@ -91,7 +91,7 @@
                 <div class="card">
                     <div class="card-icon">&#129657;</div>
                     <span class="card-badge">HIPAA Compliant</span>
-                    <h3>Healthcare</h3>
+                    <h2>Healthcare</h2>
                     <p>Run clinical AI models on-premise to analyze patient records, assist diagnosis, and summarize medical literature without data leaving the hospital network.</p>
                     <ul class="card-features">
                         <li>HIPAA-compliant inference with audit logging</li>
@@ -104,7 +104,7 @@
                 <div class="card">
                     <div class="card-icon">&#128176;</div>
                     <span class="card-badge">On-Premise</span>
-                    <h3>Finance</h3>
+                    <h2>Finance</h2>
                     <p>Deploy trading models and risk analysis on your own infrastructure. Meet regulatory requirements while maintaining sub-millisecond latency for time-sensitive operations.</p>
                     <ul class="card-features">
                         <li>On-premise trading model inference</li>
@@ -117,7 +117,7 @@
                 <div class="card">
                     <div class="card-icon">&#127891;</div>
                     <span class="card-badge">Student-Facing</span>
-                    <h3>Education</h3>
+                    <h2>Education</h2>
                     <p>Build AI tutoring systems that run on school hardware. Provide personalized learning assistance while keeping student data safe and costs predictable.</p>
                     <ul class="card-features">
                         <li>Student data privacy by design</li>
@@ -130,7 +130,7 @@
                 <div class="card">
                     <div class="card-icon">&#9878;</div>
                     <span class="card-badge">Document Analysis</span>
-                    <h3>Legal</h3>
+                    <h2>Legal</h2>
                     <p>Analyze contracts, conduct legal research, and review privileged documents on secure infrastructure. Attorney-client privilege maintained by design.</p>
                     <ul class="card-features">
                         <li>Privileged document analysis on-premise</li>
@@ -143,7 +143,7 @@
                 <div class="card">
                     <div class="card-icon">&#128187;</div>
                     <span class="card-badge">Local Assistants</span>
-                    <h3>Code</h3>
+                    <h2>Code</h2>
                     <p>Power coding assistants that run entirely on developer machines or company servers. Code completions, reviews, and generation without sending source code to third parties.</p>
                     <ul class="card-features">
                         <li>Source code stays on your infrastructure</li>
@@ -156,7 +156,7 @@
                 <div class="card">
                     <div class="card-icon">&#128300;</div>
                     <span class="card-badge">Federated Learning</span>
-                    <h3>Research</h3>
+                    <h2>Research</h2>
                     <p>Run federated learning experiments across distributed GPU clusters. Train models on sensitive datasets without centralizing data, with built-in differential privacy.</p>
                     <ul class="card-features">
                         <li>Federated learning with differential privacy</li>

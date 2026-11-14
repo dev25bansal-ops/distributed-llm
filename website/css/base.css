@@ -1,32 +1,59 @@
 /* ─── Design Tokens ─── */
+/*
+ * Charcoal and sage. Deliberately not #050505 + #00e676: a tinted near-black
+ * with one acid accent is the generic developer-tool default, and this
+ * product's distinguishing feature is not "fast" but "spread across machines
+ * you already own". The palette stays quiet so the interface fragments
+ * (which carry the product) are the only coloured things on the page.
+ *
+ * Variable NAMES are unchanged on purpose — 24 other pages reference them.
+ * Only the values moved.
+ */
 :root {
-    --bg: #050505;
-    --surface: #0c0c0c;
-    --card: #111113;
-    --card-hover: #161618;
-    --border: #1c1c1e;
-    --border-hover: #2a2a2e;
-    --text: #ededed;
-    --text-secondary: #a0a0a0;
-    --dim: #8a8a8a;
-    --muted: #666;
-    --green: #00e676;
-    --green-dim: #00c853;
-    --green-glow: rgba(0, 230, 118, 0.12);
-    --green-bg: rgba(0, 230, 118, 0.06);
-    --green-bd: rgba(0, 230, 118, 0.18);
-    --red: #ef4444;
-    --amber: #f59e0b;
-    --blue: #3b82f6;
-    --radius: 12px;
-    --radius-sm: 8px;
-    --radius-xs: 6px;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
-    --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04);
+    --bg: #1c1c1c;
+    --surface: #262626;
+    --card: #2a2a2a;
+    --card-hover: #303030;
+    --border: #383838;
+    --border-hover: #4a4a4a;
+    --text: #f1f1ef;
+    --text-secondary: #c4c4be;
+    --dim: #9a9b96;
+    --muted: #9a9b96;
+    /* The single accent. On the primary button and the active control only. */
+    --green: #8fa68e;
+    --green-dim: #7a9179;
+    --green-glow: rgba(143, 166, 142, 0.14);
+    --green-bg: rgba(143, 166, 142, 0.08);
+    --green-bd: rgba(143, 166, 142, 0.28);
+    --red: #c97b6e;
+    --amber: #c9a26e;
+    --blue: #7e93ad;
+
+    /* One pale concrete field, used once on the page. */
+    --field-1: #c8c5ba;
+    --field-1-ink: #1c1c1c;
+
+    --radius: 6px;
+    --radius-sm: 4px;
+    --radius-xs: 3px;
+    /* No shadow at rest. These stay defined for the few things that float
+       (a menu, a dialog) but are near-invisible elsewhere. */
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+    --shadow-lg: 0 6px 24px rgba(0, 0, 0, 0.28);
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
     --ease-out: cubic-bezier(0.33, 1, 0.68, 1);
-    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+    /* One family. Archivo at 400 carries display and body; 600 for buttons. */
+    --font-sans: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+    /* Four visible steps plus display. Nothing in between. */
+    --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+    --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
+    --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
+    --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
+    --step-display: clamp(2.25rem, 1.2rem + 4.6vw, 4.5rem);
 }
 
 /* ─── Reset ─── */
@@ -73,7 +100,7 @@ button {
     top: -100%;
     left: 16px;
     background: var(--green);
-    color: #000;
+    color: var(--green-accent-ink, #1c1c1c);
     padding: 8px 16px;
     border-radius: var(--radius-xs);
     font-size: 13px;
@@ -84,6 +111,8 @@ button {
 
 .skip-link:focus {
     top: 8px;
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
 }
 
 /* ─── Noise Texture ─── */

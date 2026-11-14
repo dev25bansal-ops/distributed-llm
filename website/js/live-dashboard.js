@@ -22,7 +22,7 @@ import { escapeHtml } from './utils.js';
 
 // ── Demo Data ────────────────────────────────────────────────────
 const DEMO = {
-  coordinator: { status: 'running', uptime: '14d 3h 22m', version: '0.4.0', apiRequests: 15420, model: 'Llama 3.1 70B (4-bit)' },
+  coordinator: { status: 'running', uptime: '14d 3h 22m', version: '0.6.2.2', apiRequests: 15420, model: 'Llama 3.1 70B (4-bit)' },
   workers: [
     { name: 'Node-1 (RTX 4090)', status: 'online', gpuUtil: 72, memUtil: 65, temp: 68, tps: 42.3, uptime: '14d 3h', layers: '0-19' },
     { name: 'Node-2 (RTX 4090)', status: 'online', gpuUtil: 85, memUtil: 78, temp: 74, tps: 38.1, uptime: '14d 3h', layers: '20-39' },

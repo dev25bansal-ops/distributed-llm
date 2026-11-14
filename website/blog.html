@@ -18,11 +18,11 @@
     <meta name="twitter:image" content="https://dev25bansal-ops.github.io/distributed-llm/og-image.png">
     <link rel="canonical" href="https://dev25bansal-ops.github.io/distributed-llm/blog.html">
     <link rel="alternate" type="application/rss+xml" title="DistLLM Blog RSS" href="feed.xml">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'self'">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/base.css">
     <link rel="stylesheet" href="css/layout.css">
     <link rel="stylesheet" href="css/components.css">
@@ -54,7 +54,7 @@
                 "headline": "How to Run Llama 3.1 70B on Consumer GPUs with Pipeline Parallelism",
                 "url": "https://dev25bansal-ops.github.io/distributed-llm/blog.html#llama-70b-guide",
                 "datePublished": "2026-05-28",
-                "description": "Step-by-step guide to pooling 3x RTX 4090s to run Llama 3.1 70B at 30+ tokens/second.",
+                "description": "Step-by-step guide to pooling consumer GPUs to run Llama 3.1 70B with pipeline parallelism. Throughput figures vary by hardware; measure your own.",
                 "keywords": ["pipeline-parallelism", "llama", "tutorial"]
             },
             {
@@ -93,7 +93,11 @@
     <nav class="nav" role="navigation" aria-label="Main navigation">
         <div class="nav-in">
             <a href="index.html" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
-            <div class="nav-links"><a href="index.html">Home</a><a href="docs.html">Docs</a><a href="blog.html" class="active">Blog</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="blog.html" class="active">Blog</a><a href="index.html#pricing">Pricing</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-right">
+                <a href="https://github.com/dev25bansal-ops/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
+                <a href="https://github.com/dev25bansal-ops/distributed-llm#getting-started" class="nav-cta">Get Started</a>
+            </div>
         </div>
     </nav>
     <main id="main">
@@ -101,28 +105,28 @@
             <h1>Blog</h1>
             <p class="subtitle">Technical articles, tutorials, and updates from the DistLLM project.</p>
 
-            <article class="blog-post">
+            <article class="blog-post" id="llama-70b-guide">
                 <div class="blog-post-meta"><span class="blog-post-date">2026-05-28</span><span class="blog-post-tag">Tutorial</span><span class="blog-post-read">12 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
                 <h2><span class="blog-post-title-disabled">How to Run Llama 3.1 70B on Consumer GPUs with Pipeline Parallelism</span></h2>
-                <p>Step-by-step guide to pooling 3x RTX 4090s to run Llama 3.1 70B at 30+ tokens/second. Covers hardware setup, network configuration, quantization options, and performance tuning.</p>
+                <p>Step-by-step guide to pooling consumer GPUs to run Llama 3.1 70B with pipeline parallelism. Covers hardware setup, network configuration, quantization options, and performance tuning. We state method rather than promising a token rate, because the rate depends on your cards and your network.</p>
                 <div class="blog-post-tags"><span>pipeline-parallelism</span><span>llama</span><span>tutorial</span></div>
             </article>
 
-            <article class="blog-post">
+            <article class="blog-post" id="vs-vllm">
                 <div class="blog-post-meta"><span class="blog-post-date">2026-05-25</span><span class="blog-post-tag">Comparison</span><span class="blog-post-read">9 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
                 <h2><span class="blog-post-title-disabled">DistLLM vs vLLM: When to Use Distributed Inference</span></h2>
                 <p>A technical comparison of DistLLM and vLLM covering architecture, performance, use cases, and when each tool is the right choice.</p>
                 <div class="blog-post-tags"><span>vllm</span><span>benchmarking</span><span>architecture</span></div>
             </article>
 
-            <article class="blog-post">
+            <article class="blog-post" id="gpu-cluster-setup">
                 <div class="blog-post-meta"><span class="blog-post-date">2026-05-22</span><span class="blog-post-tag">Guide</span><span class="blog-post-read">5 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
                 <h2><span class="blog-post-title-disabled">Setting Up a GPU Cluster for LLM Inference in 10 Minutes</span></h2>
                 <p>From zero to distributed inference in 10 minutes with Docker Compose and mDNS auto-discovery.</p>
                 <div class="blog-post-tags"><span>docker</span><span>getting-started</span><span>monitoring</span></div>
             </article>
 
-            <article class="blog-post">
+            <article class="blog-post" id="cost-comparison">
                 <div class="blog-post-meta"><span class="blog-post-date">2026-05-19</span><span class="blog-post-tag">Analysis</span><span class="blog-post-read">10 min read</span><span class="blog-coming-soon">Coming Soon</span></div>
                 <h2><span class="blog-post-title-disabled">Cost Comparison: Self-Hosted LLM Inference vs Cloud APIs</span></h2>
                 <p>Detailed cost analysis comparing self-hosted DistLLM against OpenAI, Together AI, and Fireworks APIs.</p>
@@ -131,7 +135,7 @@
 
             <article class="blog-post">
                 <div class="blog-post-meta"><span class="blog-post-date">2026-05-16</span><span class="blog-post-tag">Release</span><span class="blog-post-read">4 min read</span></div>
-                <h2><a href="https://github.com/dev25bansal-ops/distributed-llm/releases/tag/v0.4.0" target="_blank" rel="noopener noreferrer">DistLLM v0.4.0 — Production Readiness</a></h2>
+                <h2><a href="changelog.html#release-040">DistLLM v0.4.0 — Production Readiness</a></h2>
                 <p>Graceful shutdown, structured errors, K8s probes, backpressure, YAML config, security hardening.</p>
                 <div class="blog-post-tags"><span>release</span><span>production</span><span>security</span></div>
             </article>
