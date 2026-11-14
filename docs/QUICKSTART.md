@@ -13,21 +13,26 @@
 ### Step 1: Clone and Configure
 
 ```bash
-git clone https://github.com/distributed-llm/distributed-llm.git
+git clone https://github.com/dev25bansal-ops/distributed-llm.git
 cd distributed-llm
+```
 
-# Copy example config
-cp config.yaml.example config.yaml
+That is all the configuration you need: `config.yaml` ships with working local
+defaults (a small model, coordinator on 127.0.0.1:50050, API on :8000). To
+customise it, edit that file or run the interactive wizard:
+
+```bash
+distllm config setup
 ```
 
 ### Step 2: Start the Cluster
 
 ```bash
 # Start coordinator + 2 workers
-docker-compose up -d
+docker compose up -d
 
 # Check status
-docker-compose ps
+docker compose ps
 ```
 
 ### Step 3: Download a Model
@@ -59,14 +64,19 @@ curl http://localhost:8000/v1/chat/completions \
 ### Step 1: Install
 
 ```bash
-pip install distllm
+# The distribution is "distributed-llm". A separate unrelated project owns the
+# name "distllm" on PyPI, so `pip install distllm` installs the wrong thing.
+# The cli extra brings typer/rich; self-hosted brings torch and transformers.
+pip install "distributed-llm[cli,self-hosted]"
 ```
 
 ### Step 2: Start Coordinator
 
 ```bash
-# Start with a small model (no auth required for local development)
-distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
+# Auth is always required (see the Authentication section below) -- set a key
+# first, or every request to this server is rejected.
+export API_KEY="choose-a-secret-value"
+distllm system api --model meta-llama/Llama-3.2-1B --local
 ```
 
 ### Step 3: Chat
@@ -81,7 +91,7 @@ distllm chat
 
 ### Step 1: Download
 
-Download the desktop app from [releases](https://github.com/distributed-llm/distributed-llm/releases).
+Download the desktop app from [releases](https://github.com/dev25bansal-ops/distributed-llm/releases).
 
 ### Step 2: Install and Run
 
@@ -94,33 +104,27 @@ Download the desktop app from [releases](https://github.com/distributed-llm/dist
 
 ## Authentication
 
-### Development (No Auth)
+There is no bypass. `--no-auth`, `DISTLLM_NO_AUTH` and `DISABLE_AUTH` are all no
+longer functional: passing any of them logs a warning and changes nothing.
+Earlier versions of this page told you to use `--no-auth` and said "no API key
+is needed" — both were wrong, and every request after that was rejected.
 
-For local development, disable authentication:
-
-```bash
-distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
-```
-
-No API key needed — anyone on localhost can connect.
-
-### With API Key
-
-Set an API key via environment variable:
+Set a key before starting the server. `API_KEY` seeds a single admin-role key:
 
 ```bash
-# Set your API key
-export API_KEY="your-secret-key"
-
-# Start the server
+export API_KEY="choose-a-secret-value"
 distllm system api --model meta-llama/Llama-3.2-1B --local
 ```
 
-The API key is shown on startup:
+Send it as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/models
 ```
-API Key: your-secret-key
-Use: curl -H 'Authorization: Bearer your-secret-key' http://localhost:8000/health
-```
+
+The key is whatever you set — it is not generated or printed for you. For
+multiple keys with per-key roles, use `API_KEYS` (inline JSON) or `API_KEYS_FILE`
+(path to JSON/YAML).
 
 ### Connecting External Tools
 
@@ -147,8 +151,10 @@ $env:API_KEY = "my-cluster-key"
 distllm cluster join --coordinator 192.168.1.100 --port 50050
 
 # Node 3 (Worker)
+# --port is the COORDINATOR's gRPC port, so it must match Node 2. Each worker's
+# own port is --listen-port (not needed here; it defaults to 50051).
 $env:API_KEY = "my-cluster-key"
-distllm cluster join --coordinator 192.168.1.100 --port 50051
+distllm cluster join --coordinator 192.168.1.100 --port 50050
 ```
 
 **Important**: All nodes must use the same `API_KEY`.
@@ -157,14 +163,14 @@ distllm cluster join --coordinator 192.168.1.100 --port 50051
 
 ```bash
 # Enable WAN mode
-export DISTLLM_WAN_ENABLED=true
-export DISTLLM_WAN_TRANSPORT=quic
+export WIDE_AREA_ENABLED=true
+export WIDE_AREA_TRANSPORT=quic
 
 # Start coordinator
 distllm system coordinator --model meta-llama/Llama-3.2-70B
 
 # Workers connect from anywhere
-distllm system run --coordinator-host your-server.com --port 50050
+distllm-node --coordinator-host your-server.com --port 50050
 ```
 
 ---
@@ -178,7 +184,7 @@ from distllm_sdk import DistLLMClient
 
 client = DistLLMClient(
     base_url="http://localhost:8000/v1",
-    api_key="your-api-key",  # or "not-needed" with --no-auth
+    api_key=os.environ["API_KEY"],  # required -- there is no no-auth mode
 )
 
 # Chat completion
@@ -196,7 +202,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="your-api-key",  # or "not-needed" with --no-auth
+    api_key=os.environ["API_KEY"],  # required -- there is no no-auth mode
 )
 
 response = client.chat.completions.create(
@@ -238,7 +244,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `CUDA out of memory` | Use a smaller model or enable quantization |
 | `Connection refused` | Check firewall, verify coordinator is running |
 | `Model not found` | Run `distllm model load <model-name>` first |
-| `Unauthorized` | Set `API_KEY` env var or use `--no-auth` flag |
+| `Unauthorized` | Set the `API_KEY` env var and send it as a bearer token. `--no-auth` no longer exists. |
 | Slow inference | Check GPU utilization with `nvidia-smi` |
 
 See [Troubleshooting Guide](TROUBLESHOOTING.md) for more.

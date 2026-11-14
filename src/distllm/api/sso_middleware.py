@@ -32,6 +32,7 @@ middlewares compose cleanly.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import secrets
@@ -40,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
@@ -57,7 +58,6 @@ from distllm.api.sso_auth import (
     get_sso_handler,
 )
 
-
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 DEFAULT_JWT_TTL_S = 3600             # 1 hour
@@ -66,10 +66,20 @@ REVOCATION_TTL_S = 3600.0            # 1 hour for blacklist entries
 REVOCATION_CLEANUP_INTERVAL_S = 300  # 5 minutes between cleanup passes
 
 AUTH_ROUTES: frozenset[str] = frozenset({
+    "/v1/auth/login",
     "/v1/auth/token",
     "/v1/auth/refresh",
     "/v1/auth/revoke",
 })
+
+# Local-JWT issuer claim (SEC-API-05-JWT).  Overridable through
+# ``DISTLLM_SSO_ISSUER``; tokens whose ``iss`` does not match are rejected.
+DEFAULT_JWT_ISSUER = "distllm"
+
+
+def _get_jwt_issuer() -> str:
+    """Return the expected ``iss`` claim for locally issued SSO JWTs."""
+    return os.environ.get("DISTLLM_SSO_ISSUER", "").strip() or DEFAULT_JWT_ISSUER
 
 HEALTH_ROUTES: frozenset[str] = frozenset({
     "/health",
@@ -83,8 +93,8 @@ HEALTH_ROUTES: frozenset[str] = frozenset({
 # middleware stack (on the first request), so provider registrations made
 # via setup_sso() before that point are buffered in _setup_handle and
 # flushed onto the live instance once it exists.
-_active: "SsoMiddleware | None" = None
-_setup_handle: "_SsoHandle | None" = None
+_active: SsoMiddleware | None = None
+_setup_handle: _SsoHandle | None = None
 
 
 # ── In-memory token blacklist with TTL-based auto-cleanup ──────────────────────
@@ -157,7 +167,7 @@ def _create_jwt(
     """Create a signed local JWT containing SSO user information.
 
     The returned token is a signed HS256 JWT with standard claims
-    (``sub``, ``iat``, ``exp``, ``jti``) plus custom claims:
+    (``iss``, ``sub``, ``iat``, ``exp``, ``jti``) plus custom claims:
     ``email``, ``name``, ``roles``, ``groups``, ``provider``, ``tenant_id``.
 
     Raises ``RuntimeError`` if PyJWT is not installed.
@@ -171,6 +181,7 @@ def _create_jwt(
     now = datetime.now(tz=timezone.utc)
     jti = secrets.token_hex(16)
     payload: dict[str, Any] = {
+        "iss": _get_jwt_issuer(),
         "sub": user.sub,
         "email": user.email,
         "name": user.name,
@@ -199,7 +210,16 @@ def _decode_jwt(token: str) -> dict[str, Any] | None:
         return None
     try:
         secret = _get_jwt_secret()
-        return pyjwt.decode(token, secret, algorithms=["HS256"])
+        # SEC-API-05-JWT: require ``exp`` so a stripped-down token can never
+        # become non-expiring, and pin ``issuer`` so only this deployment's
+        # signing context is accepted.
+        return pyjwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            issuer=_get_jwt_issuer(),
+            options={"require": ["exp"]},
+        )
     except pyjwt.ExpiredSignatureError:
         logger.debug("SSO JWT expired")
         return None
@@ -277,7 +297,10 @@ class SsoMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: FastAPI) -> None:
         super().__init__(app)
-        self._providers: dict[str, OIDCHandler] = {}
+        # SAML / OAuth2 handlers are first-class registrants too — the
+        # middleware only requires the handler expose the methods it calls
+        # (validate_token / handle_callback / get_login_url).
+        self._providers: dict[str, Any] = {}
         self._blacklist = TokenBlacklist()
         self._auto_detect_providers()
         # NOTE: Starlette passes a wrapped downstream app (an
@@ -294,22 +317,27 @@ class SsoMiddleware(BaseHTTPMiddleware):
 
     # ── Public configuration API ─────────────────────────────────────────────
 
-    def register_provider(self, name: str, handler: OIDCHandler) -> None:
-        """Register an OIDC provider for JWT validation.
+    def register_provider(self, name: str, handler: Any) -> None:
+        """Register an SSO provider for token validation.
 
         Args:
             name:    Provider identifier (used in API requests to ``/v1/auth/token``).
-            handler: An ``OIDCHandler`` instance configured for the provider.
+            handler: An ``OIDCHandler``, ``GenericOAuth2Handler``, or
+                     ``SAMLHandler`` instance.
         """
         self._providers[name] = handler
-        logger.info("SSO: provider '{}' registered (authority={})", name, handler._authority)
+        logger.info(
+            "SSO: provider '{}' registered (authority={})",
+            name,
+            getattr(handler, "_authority", type(handler).__name__),
+        )
 
-    def get_provider(self, name: str) -> OIDCHandler | None:
-        """Get a registered OIDC provider by name, or ``None``."""
+    def get_provider(self, name: str) -> Any | None:
+        """Get a registered provider by name, or ``None``."""
         return self._providers.get(name)
 
     @property
-    def registered_providers(self) -> dict[str, OIDCHandler]:
+    def registered_providers(self) -> dict[str, Any]:
         """Return a snapshot of registered providers."""
         return dict(self._providers)
 
@@ -356,10 +384,17 @@ class SsoMiddleware(BaseHTTPMiddleware):
                     "SSO: auto-registered default OIDC provider (authority={})",
                     inner._authority,
                 )
-            elif isinstance(inner, SAMLHandler):
-                logger.info("SSO: SAML provider detected (JWT flow unavailable)")
             elif isinstance(inner, GenericOAuth2Handler):
-                logger.info("SSO: OAuth2 provider detected")
+                # OAuth2 is a documented first-class provider: register it so
+                # /v1/auth/token can perform the code exchange instead of
+                # answering 400 unknown_provider for a configured deployment.
+                self._providers["default"] = inner
+                logger.info("SSO: auto-registered default OAuth2 provider")
+            elif isinstance(inner, SAMLHandler):
+                # SAML exchanges an assertion (not a code+state pair); the
+                # /v1/auth/token route handles it without the state check.
+                self._providers["default"] = inner
+                logger.info("SSO: auto-registered default SAML provider")
         except Exception as exc:
             logger.warning("SSO: auto-detection failed: {}", exc)
 
@@ -384,6 +419,30 @@ class SsoMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         token = auth_header[7:]
+
+        # 0. Revocation check by token hash.  ``revoke_token_str`` stores
+        # sha256(token) when the token cannot be decoded as a local JWT
+        # (i.e. an externally-validated OIDC access token).  Without this
+        # check the revocation would be a silent no-op for external tokens:
+        # the provider path below never consults the blacklist.
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        if self._blacklist.is_revoked(token_hash):
+            logger.info(
+                "SSO auth rejected | reason=token_revoked (hash) ip={} path={}",
+                request.client.host if request.client else "?",
+                request.url.path,
+            )
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "message": "Token has been revoked",
+                        "type": "auth_error",
+                        "code": "token_revoked",
+                    }
+                },
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            )
 
         # 1. Local JWT validation (fast path — no network)
         payload = _decode_jwt(token)
@@ -411,9 +470,21 @@ class SsoMiddleware(BaseHTTPMiddleware):
             )
             return await call_next(request)
 
-        # 2. External OIDC provider validation (network call to JWKS endpoint)
+        # 2. External OIDC provider validation (network call to JWKS endpoint).
+        # PERF-01: dispatch is async — use the provider's pooled async
+        # validator when available so a JWKS fetch never blocks the loop.
         for provider_name, handler in self._providers.items():
-            user = handler.validate_token(token)
+            # Providers without a Bearer-token validator (e.g. SAML) cannot
+            # authenticate API requests — skip them instead of crashing.
+            if not hasattr(handler, "validate_token") and not hasattr(
+                handler, "async_validate_token"
+            ):
+                continue
+            native_validate = getattr(handler, "async_validate_token", None)
+            if native_validate is not None:
+                user = await native_validate(token)
+            else:
+                user = await asyncio.to_thread(handler.validate_token, token)
             if user is not None:
                 _set_state_from_user(request, user, provider_name)
                 logger.info(
@@ -483,6 +554,73 @@ async def _get_sso_middleware(request: Request) -> SsoMiddleware:
     return mw  # type: ignore[return-value]
 
 
+@router.get("/login")
+async def auth_login(request: Request, provider: str = "default"):
+    """Start an SSO login: redirect the browser to the IdP authorize URL.
+
+    This is what mints the server-side ``state`` / PKCE verifier / nonce
+    that ``POST /v1/auth/token`` later validates.  Without it the code
+    exchange could never succeed — every callback carried a state the
+    server had never issued.
+
+    Multi-worker note: the state stores live in process memory (see
+    ``sso_auth.OIDCHandler``); run SSO behind a sticky/affinity LB, or a
+    shared store, when more than one worker serves the login and callback.
+
+    Query parameters:
+        provider: registered provider name (default: ``"default"``)
+
+    Responses:
+        * 302 — redirect to the provider's authorization endpoint
+        * 400 — SSO not configured / unknown provider
+        * 503 — SSO middleware not configured
+    """
+    try:
+        middleware = await _get_sso_middleware(request)
+    except RuntimeError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": "SSO middleware not configured on this server",
+                    "type": "server_error",
+                    "code": "sso_not_configured",
+                }
+            },
+        )
+
+    handler = middleware.get_provider(provider)
+    if handler is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": f"Unknown SSO provider: '{provider}'",
+                    "type": "invalid_request",
+                    "code": "unknown_provider",
+                }
+            },
+        )
+
+    try:
+        url = handler.get_login_url()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("SSO login URL generation failed: {}", exc)
+        url = ""
+    if not url:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "SSO provider is not configured for login",
+                    "type": "invalid_request",
+                    "code": "sso_not_configured",
+                }
+            },
+        )
+    return RedirectResponse(url, status_code=302)
+
+
 @router.post("/token")
 async def auth_token(request: Request) -> JSONResponse:
     """Exchange an SSO authorisation code for a local JWT.
@@ -492,9 +630,12 @@ async def auth_token(request: Request) -> JSONResponse:
         {
             "provider": "default",
             "code":     "authorization_code_from_provider",
-            "state":    "optional_csrf_state",
+            "state":    "csrf_state_from_the_login_redirect",
             "redirect_uri": "optional_redirect_uri"
         }
+
+    ``state`` is mandatory for OIDC/OAuth2 providers — obtain it from the
+    ``GET /v1/auth/login`` redirect (or from ``get_login_url()``).
 
     Returns::
 
@@ -548,18 +689,6 @@ async def auth_token(request: Request) -> JSONResponse:
             },
         )
 
-    if not state:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": {
-                    "message": "Missing required field: 'state' (OAuth2 CSRF protection)",
-                    "type": "invalid_request",
-                    "code": "missing_state",
-                }
-            },
-        )
-
     handler = middleware.get_provider(provider_name)
     if handler is None:
         return JSONResponse(
@@ -573,11 +702,41 @@ async def auth_token(request: Request) -> JSONResponse:
             },
         )
 
+    # state is mandatory for the OAuth2/OIDC authorization-code flow (CSRF
+    # protection).  SAML posts a signed assertion instead; pysaml2 validates
+    # it, so the state requirement does not apply there.
+    is_code_flow = isinstance(handler, (OIDCHandler, GenericOAuth2Handler))
+    if is_code_flow and not state:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "Missing required field: 'state' (OAuth2 CSRF protection)",
+                    "type": "invalid_request",
+                    "code": "missing_state",
+                }
+            },
+        )
+
     _cleanup_expired_refresh_tokens()
 
-    # Exchange the authorisation code for identity information.
-    user = handler.handle_callback(code, expected_state=state)
-    if user is None:
+    # Exchange the authorisation code / assertion for identity information.
+    # PERF-01: this route is async — prefer the provider's pooled
+    # AsyncClient path so the token/userinfo calls never block the loop.
+    native_callback = getattr(handler, "async_handle_callback", None)
+    if native_callback is not None:
+        user = await native_callback(code, expected_state=state)
+    elif isinstance(handler, (OIDCHandler, GenericOAuth2Handler)):
+        user = await asyncio.to_thread(
+            handler.handle_callback, code, expected_state=state
+        )
+    else:
+        # SAMLHandler.handle_callback(saml_response) — blocking XML
+        # signature validation runs on a worker thread.
+        user = await asyncio.to_thread(handler.handle_callback, code)
+    if user is None or not user.sub:
+        # Fail closed: never mint a credential from a failed exchange or an
+        # empty subject (all users would collapse into one identity).
         return JSONResponse(
             status_code=401,
             content={
@@ -758,21 +917,21 @@ class _SsoHandle:
     """
 
     def __init__(self) -> None:
-        self._pending: dict[str, OIDCHandler] = {}
+        self._pending: dict[str, Any] = {}
 
-    def register_provider(self, name: str, handler: OIDCHandler) -> None:
+    def register_provider(self, name: str, handler: Any) -> None:
         if _active is not None:
             _active.register_provider(name, handler)
         else:
             self._pending[name] = handler
 
-    def get_provider(self, name: str) -> OIDCHandler | None:
+    def get_provider(self, name: str) -> Any | None:
         if _active is not None:
             return _active.get_provider(name)
         return self._pending.get(name)
 
     @property
-    def registered_providers(self) -> dict[str, OIDCHandler]:
+    def registered_providers(self) -> dict[str, Any]:
         if _active is not None:
             return _active.registered_providers
         return dict(self._pending)

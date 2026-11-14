@@ -385,6 +385,7 @@ class TopologyProbe:
                 if result.returncode == 0:
                     return max(elapsed, 0.05)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         # Fallback: TCP connect RTT

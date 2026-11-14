@@ -14,6 +14,7 @@ Addresses the #1 enterprise LLM deployment concern.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -50,6 +51,29 @@ class InjectionResult:
         self.action = action
         self.reason = reason
         self.sanitized_prompt = sanitized_prompt
+
+
+def _raw_prompts_allowed() -> bool:
+    """True only when DISTLLM_AUDIT_RAW_PROMPTS=1 is explicitly set.
+
+    Raw prompt text in the audit log is a data-protection hazard: the log
+    can contain user secrets, PII, or proprietary instructions. Operators
+    who genuinely need the plaintext (e.g. incident forensics under a
+    change-control ticket) opt in via the environment variable and, in
+    exchange, MUST store the audit file with 0600 permissions and rotate
+    it with the rest of the secret-bearing logs. The default is OFF.
+    """
+    return os.environ.get("DISTLLM_AUDIT_RAW_PROMPTS", "") == "1"
+
+
+def prompt_fingerprint(prompt: str) -> str:
+    """Return a stable, non-reversible identifier for a prompt.
+
+    sha256(prompt)[:16] — enough entropy to correlate repeat submissions
+    from the same client without disclosing any part of the plaintext and
+    without being feasible to invert (16 hex chars = 64 bits).
+    """
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
 
 
 # ── Fast Classifier ──────────────────────────────────────────────────────
@@ -295,6 +319,8 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
         DISTLLM_INJECTION_SANITIZE_THRESHOLD=0.7
         DISTLLM_INJECTION_FLAG_THRESHOLD=0.4
         DISTLLM_INJECTION_AUDIT_LOG=injection_audit.jsonl
+        DISTLLM_AUDIT_RAW_PROMPTS=1 (opt-in; store the audit file 0600 and
+            rotate it — enables raw prompt text in the audit entry)
     """
 
     # Paths to skip
@@ -328,6 +354,7 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
         try:
             body_bytes = await request.body()
         except Exception:
+            # CQ-08: fail-open on unreadable body: the middleware cannot moderate what it cannot read; body read failures are logged at debug.
             return await call_next(request)
         request.state.body = body_bytes
 
@@ -356,12 +383,13 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
             # Clean — pass through
             return await call_next(request)
 
-        # Log the detection
+        # Log the detection — fingerprint only; raw text is gated behind
+        # DISTLLM_AUDIT_RAW_PROMPTS (see _raw_prompts_allowed).
         with self._lock:
             self._alert_count += 1
         logger.warning(
             f"Prompt injection detected: score={score:.2f}, "
-            f"action={action.value}, prompt_preview={prompt[:80]!r}"
+            f"action={action.value}, prompt_fingerprint={prompt_fingerprint(prompt)}"
         )
         self._audit_log(request, prompt, score, action)
 
@@ -402,6 +430,7 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
         try:
             body: dict[str, Any] = json.loads(raw_body)
         except Exception:
+            # CQ-08: fail-open on unparseable body: no prompt can be extracted, so there is nothing to classify; the request proceeds.
             return ""
         # Try common prompt fields
         prompt = body.get("prompt", "")
@@ -420,7 +449,15 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
     def _audit_log(
         self, request: Request, prompt: str, score: float, action: InjectionAction,
     ) -> None:
-        """Append detection event to the audit log."""
+        """Append detection event to the audit log.
+
+        The prompt is recorded as a sha256 fingerprint (see
+        ``prompt_fingerprint``). Full plaintext is only written when
+        DISTLLM_AUDIT_RAW_PROMPTS=1 is set, which requires the operator to
+        store the audit file with 0600 permissions and rotate it on a
+        schedule — it then contains user secrets and must be treated as
+        sensitive data.
+        """
         if not self._audit_path:
             return
         try:
@@ -430,8 +467,11 @@ class PromptInjectionMiddleware(BaseHTTPMiddleware):
                 "path": request.url.path,
                 "score": score,
                 "action": action.value,
-                "prompt_preview": prompt[:200],
+                "prompt_fingerprint": prompt_fingerprint(prompt),
+                "prompt_redacted": not _raw_prompts_allowed(),
             }
+            if not entry["prompt_redacted"]:
+                entry["prompt_preview"] = prompt[:200]
             with open(self._audit_path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception as e:

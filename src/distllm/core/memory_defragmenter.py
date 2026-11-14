@@ -16,7 +16,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -481,6 +483,7 @@ class MemoryDefragmenter:
             try:
                 torch.cuda.empty_cache()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         result.tier_used = tier or TieredCompactionLevel.L1_HOT
@@ -538,6 +541,7 @@ class MemoryDefragmenter:
                     mgr.swap_blocks_to_cpu(seq_id)
                     offloaded += 1
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
         return offloaded
 
@@ -640,6 +644,7 @@ class MemoryDefragmenter:
             if self._metric_duration is not None:
                 self._metric_duration.observe(result.time_ms)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     # ── Properties ──

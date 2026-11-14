@@ -25,8 +25,8 @@ try:
     from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
     from opentelemetry.sdk.trace.export import (
         BatchSpanProcessor,
-        SpanExportResult,
         SpanExporter,
+        SpanExportResult,
     )
     from opentelemetry.sdk.trace.sampling import (
         ParentBased,
@@ -41,8 +41,8 @@ try:
         from opentelemetry.sdk.trace.sampling import (  # type: ignore[no-redef]
             SamplingDecision,
         )
-    from opentelemetry.trace import StatusCode
     from opentelemetry.sdk.resources import Resource
+    from opentelemetry.trace import StatusCode
 
     _OTEL_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -359,6 +359,7 @@ class TraceLokiExporter(SpanExporter):
                 # Export failures are non-fatal — avoid raising.
                 pass
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         return SpanExportResult.SUCCESS
@@ -369,6 +370,7 @@ class TraceLokiExporter(SpanExporter):
             try:
                 self._http_client.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._http_client = None
 
@@ -494,6 +496,7 @@ class ExemplarExporter:
                     f"{ctx.span_id:016x}",
                 )
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return None, None
 
@@ -640,6 +643,7 @@ class TracingConfigurator:
                         if ctx is not None:
                             otel_context.attach(ctx)
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
 
                 response = await call_next(request)
@@ -657,12 +661,14 @@ class TracingConfigurator:
                                 f"{ctx.span_id:016x}"
                             )
                     except Exception:
+                        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                         pass
 
                 return response
 
             app.add_middleware(BaseHTTPMiddleware, dispatch=tracing_middleware)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         # -- OpenTelemetry ASGI middleware for automatic span creation --
@@ -673,4 +679,5 @@ class TracingConfigurator:
 
             app.add_middleware(OpenTelemetryMiddleware)
         except (ImportError, Exception):
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass

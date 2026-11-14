@@ -11,6 +11,19 @@ import pytest
 from distllm.core.split_brain import SplitBrainDetector, PeerState
 
 
+@pytest.fixture(autouse=True)
+def _isolated_fence_state(tmp_path, monkeypatch):
+    """Keep the durable fence-token files inside the test.
+
+    SplitBrainDetector persists its fencing token per cluster id (by design:
+    a restart must not reset the counter). Without isolation, token state
+    would leak between tests that reuse cluster ids like ``cluster-a`` and
+    between separate pytest runs.
+    """
+    monkeypatch.setenv("DISTLLM_FENCE_STATE_DIR", str(tmp_path))
+    yield
+
+
 class TestSplitBrainDetection:
     """Test split-brain detection scenarios."""
 
@@ -29,11 +42,19 @@ class TestSplitBrainDetection:
         assert len(detector.get_alive_peers()) == 2
 
     def test_partition_detected_when_quorum_lost(self):
-        """Partition detected when fewer than quorum peers are alive."""
+        """Partition detected when fewer than quorum peers are alive.
+
+        quorum_size counts this cluster too: `_has_quorum_locked` compares
+        alive_peers + 1 against it, so that check_partition and quorum_check
+        agree (they previously disagreed, which is why both call one helper).
+        Losing one of two peers therefore still meets quorum_size=2 — self plus
+        the survivor. Declaring a partition with one peer down needs the
+        quorum to require all three.
+        """
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b", "cluster-c"],
-            quorum_size=2,
+            quorum_size=3,
             failure_threshold=2,
         )
 
@@ -47,11 +68,17 @@ class TestSplitBrainDetection:
         assert "cluster-c" in detector.get_partitioned_peers()
 
     def test_heartbeat_timeout_triggers_partition(self):
-        """Peers that stop sending heartbeats are detected."""
+        """Peers that stop sending heartbeats are detected.
+
+        quorum_size=2 because the check counts this cluster: with one peer
+        dead, alive_peers is 0, and 0 + 1 >= 1 would still pass a quorum of 1.
+        Requiring 2 means "both of us must be up", which is what a two-cluster
+        federation losing its only peer actually is.
+        """
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b"],
-            quorum_size=1,
+            quorum_size=2,
             heartbeat_timeout_s=0.1,
             failure_threshold=1,
         )
@@ -102,11 +129,15 @@ class TestSplitBrainDetection:
         assert detector.should_accept_request(current + 1)
 
     def test_recovery_after_partition_heals(self):
-        """Detector recovers when peers start heartbeating again."""
+        """Detector recovers when peers start heartbeating again.
+
+        quorum_size=2, not 1: the quorum check counts this cluster, so 0 alive
+        peers still satisfies a quorum of 1 and no partition is ever declared.
+        """
         detector = SplitBrainDetector(
             cluster_id="cluster-a",
             peer_cluster_ids=["cluster-b"],
-            quorum_size=1,
+            quorum_size=2,
             failure_threshold=2,
         )
 
@@ -152,6 +183,12 @@ class TestSplitBrainDetection:
             quorum_size=2,
             failure_threshold=2,
         )
+
+        # PeerState starts is_alive=False for a configured peer ("a silent peer
+        # fails closed instead of masking a partition"), so cluster-b must be
+        # heartbeated before it counts as healthy. Without this it was already
+        # in get_partitioned_peers() and the count was 3, not 2.
+        detector.heartbeat("cluster-b")
 
         # First partition: lose cluster-c
         for _ in range(3):

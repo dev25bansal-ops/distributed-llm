@@ -17,11 +17,11 @@ import asyncio
 import os
 import threading
 import time
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
-
 
 # ── Lazy import guards ──────────────────────────────────────────────────
 
@@ -70,6 +70,7 @@ class VoiceActivityDetector:
         try:
             return self._vad.is_speech(audio_frame, sample_rate)
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     @property
@@ -150,6 +151,7 @@ class TextToSpeech:
             return
         try:
             import torch
+
             # Try Piper (local, fast)
             from piper import PiperVoice
             self._pipe = PiperVoice.load(self._model_path)

@@ -7,9 +7,10 @@ where the output of each step feeds into the next.
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator
+from typing import Any
 
 from loguru import logger
 

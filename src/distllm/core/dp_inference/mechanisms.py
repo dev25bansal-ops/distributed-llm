@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import math
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 # ---------------------------------------------------------------------------
 # Core DP operations
 # ---------------------------------------------------------------------------

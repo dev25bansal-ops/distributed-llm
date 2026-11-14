@@ -4,6 +4,8 @@ import httpx
 from rich.console import Console
 from rich.markdown import Markdown
 
+from distllm.cli.http_client import client_for
+
 
 def run_chat(
     model: str,
@@ -15,18 +17,35 @@ def run_chat(
 ):
     """Run interactive chat mode."""
     base_url = f"http://{host}:{port}"
-    console.print(f"\n[bold blue]DistLLM Interactive Chat[/bold blue]")
+    console.print("\n[bold blue]DistLLM Interactive Chat[/bold blue]")
     console.print(f"Model: {model}")
     console.print(f"Server: {base_url}")
     console.print("Type 'quit' or 'exit' to stop, 'clear' to reset\n")
 
+    # Fail before the prompt rather than after the first message: the old code
+    # entered the loop, accepted input, then errored, which reads as though the
+    # message had been sent.
+    try:
+        with client_for(host, port, timeout=10.0) as probe:
+            probe.get("/health").raise_for_status()
+    except (httpx.HTTPError, OSError):
+        console.print(
+            f"[red]Cannot reach the server at {base_url}.[/red]\n"
+            "Start one with:\n"
+            "  [cyan]distllm cluster start --model <model>[/cyan]\n"
+            "or point at another server with [cyan]--host/--port[/cyan]."
+        )
+        return
+
     conversation = []
 
     try:
-        with httpx.Client(timeout=120.0) as client:
+        with client_for(host, port, timeout=120.0) as client:
             while True:
                 try:
-                    prompt = input("\n[bold You:[/bold] ").strip()
+                    # input() is not a Rich renderer: a markup prompt is shown
+                    # to the user as the literal string "[bold You:[/bold]".
+                    prompt = input("\nYou: ").strip()
                 except (EOFError, KeyboardInterrupt):
                     console.print("\nGoodbye!")
                     break
@@ -47,7 +66,7 @@ def run_chat(
 
                 try:
                     response = client.post(
-                        f"{base_url}/v1/chat/completions",
+                        "/v1/chat/completions",
                         json={
                             "model": model,
                             "messages": conversation,
@@ -60,7 +79,7 @@ def run_chat(
                     data = response.json()
                     assistant_msg = data["choices"][0]["message"]["content"]
 
-                    console.print(f"\n[bold green]Assistant:[/bold green]")
+                    console.print("\n[bold green]Assistant:[/bold green]")
                     console.print(Markdown(assistant_msg))
 
                     if "usage" in data:
@@ -76,4 +95,5 @@ def run_chat(
                     console.print(f"\n[red]Error:[/red] {e}")
 
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         console.print(f"[red]Error:[/red] {e}")

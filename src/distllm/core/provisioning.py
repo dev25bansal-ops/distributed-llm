@@ -42,11 +42,11 @@ def _validate_terraform_value(field_name: str, value: object) -> None:
     if value is None:
         return
     text = str(value)
-    bad = ("${", "$$", "\n", "\r", " ")
+    bad = ("${", "$$", "}", "\n", "\r", "\u2028", '"', "\\")
     if any(sub in text for sub in bad):
         raise ValueError(
             f"HCL injection detected in field '{field_name}': value contains "
-            "an interpolation/newline sequence"
+            "Unsafe value: an interpolation, quote, backslash, brace or newline sequence"
         )
 
 
@@ -78,13 +78,13 @@ def _terraform_aws(config: ProvisioningConfig) -> str:
     market_type = "spot" if config.spot else ""
     spot_block = ""
     if config.spot:
-        spot_block = f"""
-  instance_market_options {{
+        spot_block = """
+  instance_market_options {
     market_type = "spot"
-    spot_options {{
+    spot_options {
       spot_instance_type = "one-time"
-    }}
-  }}"""
+    }
+  }"""
     return f"""terraform {{
   required_providers {{
     aws = {{
@@ -167,7 +167,7 @@ resource "google_compute_instance" "distllm" {{
 
   scheduling {{
     on_host_maintenance = "TERMINATE"
-    {f'preemptible = true' if config.spot else ''}
+    {'preemptible = true' if config.spot else ''}
   }}
 
   network_interface {{

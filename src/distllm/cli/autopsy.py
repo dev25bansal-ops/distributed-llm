@@ -78,6 +78,7 @@ def collect_autopsy(
         resp = httpx.get(f"{base_url}/health", timeout=5)
         data["health"] = resp.json()
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["health"] = {"error": str(e)}
 
     if quick:
@@ -88,13 +89,32 @@ def collect_autopsy(
         resp = httpx.get(f"{base_url}/metrics", timeout=5)
         data["metrics"] = resp.text[:100000]
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["metrics"] = {"error": str(e)}
 
-    # 3. Node list
+    # 3. Node list (filtered to --nodes when the caller asked for specific
+    #    nodes; the flag used to be parsed at the argparse entry point and
+    #    then silently dropped)
+    if nodes:
+        data["requested_nodes"] = list(nodes)
     try:
         resp = httpx.get(f"{base_url}/api/cluster/nodes", timeout=5)
-        data["nodes"] = resp.json()
+        node_data = resp.json()
+        if nodes:
+            node_list = node_data.get("nodes") if isinstance(node_data, dict) else node_data
+            if isinstance(node_list, list):
+                wanted = set(nodes)
+                filtered = [
+                    n for n in node_list
+                    if isinstance(n, dict) and str(n.get("node_id")) in wanted
+                ]
+                if isinstance(node_data, dict):
+                    node_data = {**node_data, "nodes": filtered}
+                else:
+                    node_data = filtered
+        data["nodes"] = node_data
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["nodes"] = {"error": str(e)}
 
     # 4. Scheduler stats
@@ -102,6 +122,7 @@ def collect_autopsy(
         resp = httpx.get(f"{base_url}/v1/scheduler/stats", timeout=5)
         data["scheduler"] = resp.json()
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["scheduler"] = {"error": str(e)}
 
     # 5. KV cache stats
@@ -109,6 +130,7 @@ def collect_autopsy(
         resp = httpx.get(f"{base_url}/api/metrics/cache", timeout=5)
         data["cache"] = resp.json()
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["cache"] = {"error": str(e)}
 
     # 6. Recent errors
@@ -116,6 +138,7 @@ def collect_autopsy(
         resp = httpx.get(f"{base_url}/v1/debug/recent?limit=50", timeout=5)
         data["recent_requests"] = resp.json()
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         data["recent_requests"] = {"error": str(e)}
 
     # 7. Configuration files
@@ -131,6 +154,7 @@ def collect_autopsy(
                 with open(cf) as f:
                     configs[cf] = f.read()[:10000]
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
     data["config_files"] = configs
 
@@ -153,6 +177,14 @@ def collect_autopsy(
         }
     except ImportError:
         data["system"] = {"error": "psutil not installed"}
+    except Exception as e:
+        # psutil is a diagnostic probe, not a dependency of the thing being
+        # diagnosed. On some kernels cpu_percent raises (observed on CI:
+        # "TypeError: scputimes.__new__() missing 10 required positional
+        # arguments"), and letting that escape killed the whole autopsy command
+        # -- the report a user runs precisely when something is already wrong.
+        # Record the probe's failure and carry on.
+        data["system"] = {"error": f"psutil probe failed: {e}"}
 
     # 9. GPU info
     try:
@@ -171,6 +203,7 @@ def collect_autopsy(
                 })
         data["gpu"] = gpu_info
     except Exception:
+        # CQ-08: intentional fail-open: empty-container fallback assigned on failure.
         data["gpu"] = []
 
     # 10. Log tail from journal/systemd
@@ -275,6 +308,7 @@ Examples:
         )
         print(f"\nReport: {report_path}")
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         print(f"\nError: {e}", file=sys.stderr)
         sys.exit(1)
 

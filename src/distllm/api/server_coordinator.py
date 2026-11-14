@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from loguru import logger
+
+from distllm.api.server_config import _grpc_max_workers
+from distllm.api.server_state import state
+from distllm.config.settings import DistLLMSettings
 from distllm.core.coordinator import Coordinator
 from distllm.core.monitor import SystemMonitor
-from distllm.config.settings import DistLLMSettings
-from distllm.api.server_state import state
-from loguru import logger
 
 __all__ = [
     "create_coordinator",
@@ -101,7 +103,7 @@ def create_coordinator(
         coord._node_server = NodeServer(
             coord._node_wrapper,
             port=coord_port,
-            max_workers=4,
+            max_workers=_grpc_max_workers(),
             cluster_key=getattr(coord.config, "cluster_key", None),
         )
         coord._node_server.start(

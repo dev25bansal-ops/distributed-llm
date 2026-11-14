@@ -240,6 +240,36 @@ class TestAsyncPipelineEngine:
         engine = AsyncPipelineEngine(config=config)
         assert engine._warmup == 5
 
+    def test_warmup_custom_survives_forward(self):
+        """An explicitly configured warmup must not be replaced by the
+        num_stages-1 derivation on the first forward().
+
+        Regression: audit 2026-11-13 — forward() unconditionally
+        overwrote _warmup with min(num_stages-1, num_micro_b), so the
+        setting (and its env var) never affected the schedule or stats.
+        """
+        engine = _build_engine(num_stages=3, num_micro_batches=8)
+        engine._config = AsyncPipelineConfig(
+            num_stages=3, num_micro_batches=8, num_warmup_micro_batches=7,
+        )
+        engine.forward(torch.zeros(8, 2))
+        assert engine._warmup == 7
+        assert engine.stats()["warmup"] == 7
+
+    def test_warmup_unset_derives_from_stages(self):
+        engine = _build_engine(num_stages=3, num_micro_batches=8)
+        engine.forward(torch.zeros(8, 2))
+        assert engine._warmup == 2  # num_stages - 1
+
+    def test_warmup_capped_at_available_micro_batches(self):
+        """Configured warmup > available micro-batches caps at the count."""
+        engine = _build_engine(num_stages=3, num_micro_batches=2)
+        engine._config = AsyncPipelineConfig(
+            num_stages=3, num_micro_batches=2, num_warmup_micro_batches=7,
+        )
+        engine.forward(torch.zeros(2, 2))
+        assert engine._warmup == 2
+
     def test_warmup_in_stats(self):
         engine = _build_engine(num_stages=3, num_micro_batches=6)
         stats = engine.stats()

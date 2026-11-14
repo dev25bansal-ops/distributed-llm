@@ -43,22 +43,54 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-
 # ── GPU Diagnostics ──────────────────────────────────────────────────────
 
 def _check_cuda() -> list[dict[str, Any]]:
-    """Check CUDA availability, driver version, and GPU details."""
+    """Check CUDA availability, driver version, and GPU details.
+
+    On macOS there is no CUDA to find: Apple Silicon accelerates through
+    Metal (torch's ``mps`` backend). Reporting CUDA as an ``error`` there
+    fails the whole doctor run on a perfectly healthy MacBook, so the darwin
+    branch reports MPS instead.
+    """
     results = []
     try:
         import torch
         results.append({"check": "PyTorch version", "status": "ok", "value": torch.__version__})
 
         cuda_available = torch.cuda.is_available()
-        results.append({
-            "check": "CUDA available",
-            "status": "ok" if cuda_available else "error",
-            "value": str(cuda_available),
-        })
+        # "CUDA available: False" is ambiguous and the single most confusing
+        # failure for a new user: it reads the same whether the machine has no
+        # GPU or PyTorch is the CPU-only wheel. pip installs the CPU wheel by
+        # default from PyPI, so a machine with an A10 reports False. Name the
+        # cause and the fix.
+        is_cpu_build = "+cpu" in torch.__version__
+        if cuda_available:
+            status, detail = "ok", "True"
+        elif sys.platform == "darwin":
+            # macOS: absence of CUDA is expected, not a defect.
+            mps_ok = (
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            )
+            if mps_ok:
+                status, detail = "ok", "n/a on macOS — Metal (MPS) acceleration available"
+            else:
+                status, detail = (
+                    "warn",
+                    "n/a on macOS — no Metal (MPS) device visible; CPU inference only",
+                )
+        elif is_cpu_build:
+            status = "error"
+            detail = (
+                "False — this is the CPU-only PyTorch build ('+cpu'), not a "
+                "missing GPU. Install a CUDA build: "
+                "pip install torch --index-url https://download.pytorch.org/whl/cu128"
+            )
+        else:
+            status = "error"
+            detail = "False — no CUDA device visible to PyTorch (driver or GPU?)"
+        results.append({"check": "CUDA available", "status": status, "value": detail})
 
         if cuda_available:
             results.append({"check": "CUDA version", "status": "ok", "value": torch.version.cuda or "unknown"})
@@ -100,24 +132,28 @@ def _check_cuda() -> list[dict[str, Any]]:
     except ImportError:
         results.append({"check": "PyTorch", "status": "error", "value": "not installed"})
 
-    # nvidia-smi driver check
-    try:
-        v = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,driver_version,temperature.gpu,power.draw",
-             "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if v.returncode == 0:
-            for line in v.stdout.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 4:
-                    results.append({
-                        "check": f"nvidia-smi ({parts[0]})",
-                        "status": "ok",
-                        "value": f"Driver {parts[1]}, Temp {parts[2]}°C, Power {parts[3]}W",
-                    })
-    except FileNotFoundError:
-        results.append({"check": "nvidia-smi", "status": "warn", "value": "not found"})
+    # nvidia-smi driver check. On macOS there is no NVIDIA driver to query —
+    # a missing-nvidia-smi "warn" there is noise, so report it as skipped.
+    if sys.platform == "darwin":
+        results.append({"check": "nvidia-smi", "status": "skip", "value": "n/a on macOS"})
+    else:
+        try:
+            v = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,driver_version,temperature.gpu,power.draw",
+                 "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if v.returncode == 0:
+                for line in v.stdout.strip().split("\n"):
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 4:
+                        results.append({
+                            "check": f"nvidia-smi ({parts[0]})",
+                            "status": "ok",
+                            "value": f"Driver {parts[1]}, Temp {parts[2]}°C, Power {parts[3]}W",
+                        })
+        except FileNotFoundError:
+            results.append({"check": "nvidia-smi", "status": "warn", "value": "not found"})
 
     return results
 
@@ -183,6 +219,7 @@ def _check_gpu_benchmarks() -> list[dict[str, Any]]:
         torch.cuda.empty_cache()
 
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         results.append({"check": "GPU benchmark", "status": "error", "value": str(e)})
 
     return results
@@ -315,7 +352,18 @@ def _check_model_compatibility(model_name: str) -> list[dict[str, Any]]:
                         "value": "Single GPU — no partitioning needed",
                     })
             else:
-                results.append({"check": "GPU memory", "status": "error", "value": "No CUDA GPU detected"})
+                # macOS has no CUDA by design; a MacBook is not a broken GPU
+                # host. Say what is actually true there, and keep it out of
+                # the error count that makes `distllm doctor` exit non-zero.
+                if sys.platform == "darwin":
+                    results.append({
+                        "check": "GPU memory",
+                        "status": "info",
+                        "value": "n/a on macOS — this model's sizing assumes CUDA; "
+                                 "Apple Silicon inference is CPU/Metal-bound",
+                    })
+                else:
+                    results.append({"check": "GPU memory", "status": "error", "value": "No CUDA GPU detected"})
         except ImportError:
             results.append({"check": "PyTorch", "status": "error", "value": "not installed"})
     else:
@@ -349,6 +397,7 @@ def _check_config() -> list[dict[str, Any]]:
                     if data.get("rate_limiting", {}).get("enabled") is False:
                         results.append({"check": "Rate limiting", "status": "warn", "value": "disabled"})
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 results.append({"check": f"config {path}", "status": "error", "value": str(e)})
         else:
             results.append({"check": f"config {path}", "status": "info", "value": "not found (OK for defaults)"})

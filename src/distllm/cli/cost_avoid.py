@@ -145,7 +145,7 @@ def main() -> None:
     )
 
     print(f"\n{'='*55}")
-    print(f"  Cost Avoidance Calculator")
+    print("  Cost Avoidance Calculator")
     print(f"{'='*55}")
     print(f"  Model:              {result['model']}")
     print(f"  Size:               {result['model_size_b']}B parameters")
@@ -160,7 +160,7 @@ def main() -> None:
     if result['payback_period_days'] < 3650:
         print(f"  GPU payback:        ~{result['payback_period_days']} days")
     else:
-        print(f"  GPU payback:        N/A (no savings)")
+        print("  GPU payback:        N/A (no savings)")
     print("=" * 55 + "\n")
 
 

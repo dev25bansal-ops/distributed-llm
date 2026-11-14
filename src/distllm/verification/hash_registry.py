@@ -10,12 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 @dataclass
 class GenerationOutput:
     """Captures all outputs from a single generation run.

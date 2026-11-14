@@ -90,7 +90,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[dev,testing]" 2>/dev/null || pip install pytest pytest-cov httpx
+          # test-path defaults to "tests/", which includes tests/sdk — that
+          # module imports distllm_sdk from the separate sdk/ package.
+          pip install -e sdk/ 2>/dev/null || true
           ${{ inputs.extra-deps && format('pip install {0}', inputs.extra-deps) || '' }}
+      - uses: ./.github/actions/generate-protobuf
       - name: Cache pytest
         uses: actions/cache@v4
         with:
@@ -103,7 +107,9 @@ jobs:
             --cov-fail-under=${{ inputs.coverage-threshold }} \
             -m "not e2e and not slow" --ignore=node_modules
       - name: Upload coverage
-        if: ${{ secrets.codecov-token != '' }}
+        if: env.CODECOV_TOKEN != ''
+        env:
+          CODECOV_TOKEN: ${{ secrets.codecov-token }}
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.codecov-token }}

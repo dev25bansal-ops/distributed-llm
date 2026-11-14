@@ -103,11 +103,13 @@ class TestSpeculativeDecodingCorrectness:
             draft_tokens = harness.draft(None)
 
             # Verify with decoder
-            is_accepted = harness.decoder.verify_and_accept(
+            accepted_count, accepted_ids, next_token = harness.decoder.verify_and_accept(
+                draft_tokens=draft_tokens.argmax(dim=-1),
                 target_logits=logits,
                 draft_logits=draft_tokens,
                 temperature=0.0,
             )
+            is_accepted = accepted_count > 0
 
             # Greedy target: argmax of target logits
             expected = logits[0, -1].argmax().item()
@@ -131,6 +133,7 @@ class TestSpeculativeDecodingCorrectness:
             draft_logits = harness.draft(None)
 
             accepted = harness.decoder.verify_and_accept(
+                draft_tokens=(draft_logits).argmax(dim=-1),
                 target_logits=target_logits,
                 draft_logits=draft_logits,
                 temperature=0.0,
@@ -160,6 +163,7 @@ class TestSpeculativeDecodingCorrectness:
             draft_logits = target_logits.clone() if i < 7 else torch.randn(1, 1, harness.vocab_size)
 
             decoder.verify_and_accept(
+                draft_tokens=(draft_logits).argmax(dim=-1),
                 target_logits=target_logits,
                 draft_logits=draft_logits,
                 temperature=1.0,
@@ -182,9 +186,11 @@ class TestSpeculativeDecodingCorrectness:
         # After warmup, decoder enables
         for i in range(6):
             harness.set_logits(torch.randn(1, 1, harness.vocab_size))
+            draft_logits = torch.randn(1, 1, harness.vocab_size)
             decoder.verify_and_accept(
+                draft_tokens=draft_logits.argmax(dim=-1),
                 target_logits=torch.randn(1, 1, harness.vocab_size),
-                draft_logits=torch.randn(1, 1, harness.vocab_size),
+                draft_logits=draft_logits,
                 temperature=1.0,
             )
 
@@ -198,6 +204,7 @@ class TestSpeculativeDecodingCorrectness:
 
         torch.manual_seed(42)
         result_a = harness.decoder.verify_and_accept(
+            draft_tokens=(harness.draft(None)).argmax(dim=-1),
             target_logits=logits,
             draft_logits=harness.draft(None),
             temperature=0.0,
@@ -205,6 +212,7 @@ class TestSpeculativeDecodingCorrectness:
 
         torch.manual_seed(42)
         result_b = harness.decoder.verify_and_accept(
+            draft_tokens=(harness.draft(None)).argmax(dim=-1),
             target_logits=logits,
             draft_logits=harness.draft(None),
             temperature=0.0,
@@ -222,6 +230,7 @@ class TestSpeculativeDecodingCorrectness:
 
             # Perfect draft: returns exactly target logits
             decoder.verify_and_accept(
+                draft_tokens=(logits.clone()).argmax(dim=-1),
                 target_logits=logits,
                 draft_logits=logits.clone(),
                 temperature=1.0,
@@ -242,13 +251,25 @@ class TestSpeculativeDecodingCorrectness:
         assert decoder.min_acceptance_rate == 0.5
 
     def test_acceptance_rate_floor(self):
-        """Acceptance rate is clamped to valid range [0, 1]."""
+        """Acceptance rate is clamped to valid range [0, 1].
+
+        This used to ASSIGN acceptance_rate = 1.5 and expect it clamped, but
+        the rate is derived from accepted/total, not stored -- there is nothing
+        to clamp on write. Assert the property of the derivation instead: it
+        stays in range for every reachable counter state, including an empty
+        history and a fully-accepted one.
+        """
         decoder = SpeculativeDecoder()
 
-        # Set rate above 1
-        decoder.acceptance_rate = 1.5
-        assert decoder.acceptance_rate <= 1.0, "Rate should be clamped to <= 1.0"
+        # Empty history: no division by zero.
+        assert decoder.acceptance_rate == 0.0
 
-        # Set rate below 0
-        decoder.acceptance_rate = -0.5
+        # Every acceptance: exactly 1.0, never above.
+        decoder._stats["total_proposed"] = 10
+        decoder._stats["accepted"] = 10
+        assert decoder.acceptance_rate == 1.0
+
+        # A counter that somehow over-reports is still clamped.
+        decoder._stats["accepted"] = 15
+        assert decoder.acceptance_rate <= 1.0, "Rate should be clamped to <= 1.0"
         assert decoder.acceptance_rate >= 0.0, "Rate should be clamped to >= 0.0"

@@ -10,7 +10,7 @@ aliases:
 ---
 # Security & Compliance — `src/distllm/{security,compliance}/` + auth surfaces
 
-**18 .py files · ~4.3K LOC** in `security/`+`compliance/`, **plus** the pervasive auth/SSO/WAF/moderation surfaces in [[03 API Server]] and the key-rotation/secret/compliance machinery in [[01 Core Engine]].
+**18 .py files · ~4.7K LOC** in `security/`+`compliance/`, **plus** the pervasive auth/SSO/WAF/moderation surfaces in [[03 API Server]] and the key-rotation/secret/compliance machinery in [[01 Core Engine]].
 
 > The trust & safety wall: **end-to-end encryption** of tensor bytes between nodes (X25519 + XSalsa20-Poly1305 with key ratchet), **SSRF/DNS-rebinding-safe HTTP**, **model watermarking**, **content moderation** (toxicity / PII / jailbreak / topic), attestation scaffolds (SPIFFE, TEE, edge), and **auditor-facing compliance evidence packs**.
 
@@ -53,4 +53,6 @@ aliases:
 - `security/*content_moderation` re-exported; async `thread-pool` variants provided per detector.
 
 ## Tests
-`tests/security/` (~23 files): JWT/auth, CSRF, SSRF, cache poisoning, content moderation, log redaction, pickle ban, idor, input validation, vulnerabilities/comprehensive sweeps. Plus `tests/security_pkg/`, `tests/edge/`.
+`tests/security/` (~34 files): JWT/auth, CSRF, SSRF, cache poisoning, content moderation, log redaction, pickle ban, idor, input validation, vulnerabilities/comprehensive sweeps. Plus `tests/security_pkg/`, `tests/edge/`.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

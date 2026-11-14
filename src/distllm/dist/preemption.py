@@ -5,7 +5,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -18,11 +20,17 @@ class GPUMemoryMonitor:
 
     def get_utilization(self) -> float:
         if not torch.cuda.is_available():
-            return 0.0
-        allocated = torch.cuda.memory_allocated(self.device)
-        reserved = torch.cuda.memory_reserved(self.device)
-        total = torch.cuda.get_device_properties(self.device).total_memory
-        util = max(allocated, reserved) / total
+            # No CUDA means no GPU memory pressure, so 0.0 is the correct
+            # reading -- but it must still be recorded. Returning early left
+            # _history permanently empty on a CPU-only node, so
+            # get_smoothed_utilization() fell back to re-reading 0.0 every
+            # time and any history-dependent logic saw a frozen window.
+            util = 0.0
+        else:
+            allocated = torch.cuda.memory_allocated(self.device)
+            reserved = torch.cuda.memory_reserved(self.device)
+            total = torch.cuda.get_device_properties(self.device).total_memory
+            util = max(allocated, reserved) / total
         self._history.append(util)
         if len(self._history) > 10:
             self._history = self._history[-10:]

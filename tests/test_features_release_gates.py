@@ -254,7 +254,12 @@ def test_backup_id_path_traversal_rejected():
 # ── 6.4 Security: torch.load weights_only grep gate (C2) ──
 
 def test_torch_load_weights_only_gate():
-    """CI grep gate: no torch.load in src may omit weights_only=True."""
+    """CI grep gate: no torch.load in src may omit weights_only=True.
+
+    The check must span the whole call expression, not one physical line: a
+    multi-line ``torch.load(\\n    path, map_location="cpu", weights_only=True\\n)``
+    previously tripped the single-line check even though it is safe.
+    """
     src_root = os.path.join(os.path.dirname(__file__), "..", "src", "distllm")
     src_root = os.path.abspath(src_root)
     offenders = []
@@ -268,9 +273,28 @@ def test_torch_load_weights_only_gate():
             except OSError:
                 continue
             for m in re.finditer(r"torch\.load\(", text):
-                line = text[: m.start()].count("\n")
-                snippet = text.splitlines()[line]
-                if "weights_only" not in snippet:
+                # Scan the balanced parenthesised call, not just the line it
+                # starts on: a multi-line call keeps weights_only on a later
+                # line and a single-line check would flag it as unsafe.
+                start = m.start()
+                depth = 0
+                end = start + len("torch.load(")
+                for i in range(start, len(text)):
+                    ch = text[i]
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                call = text[start:end]
+                # Require the keyword set to True, not merely present: a call
+                # passing weights_only=False is exactly the unsafe case.
+                normalized = "".join(call.split())
+                if "weights_only=True" not in normalized:
+                    line = text[:start].count("\n")
+                    snippet = text.splitlines()[line]
                     offenders.append(f"{p}:{line + 1}: {snippet.strip()}")
     assert not offenders, "torch.load without weights_only=True:\n" + "\n".join(offenders)
 

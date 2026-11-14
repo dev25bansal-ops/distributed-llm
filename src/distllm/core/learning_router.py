@@ -37,9 +37,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from loguru import logger
+from distllm._optional_deps import optional_import
 
-import torch
+torch = optional_import("torch")
+from loguru import logger
 
 if TYPE_CHECKING:
     from distllm.core.model_router import ModelRouter, RouteMatch, RoutingContext
@@ -619,7 +620,15 @@ class NeuralBanditRouter:
         action = self._models.index(model)
 
         with self._lock:
-            self._replay_buffer.append((x.cpu(), action))
+            # The reward has to be part of what is stored, or there is nothing
+            # to learn FROM. It used to be dropped here, which made
+            # record_outcome(model, reward=1.0) and record_outcome(model,
+            # reward=-1.0) the same training signal: the network was fitted to
+            # imitate which model happened to be called (cross-entropy against
+            # `action`), not to prefer the one that earned reward. Measured
+            # consequence: teaching fast-model reward 1.0 for 15 rounds still
+            # routed to it only 14 times in 30 -- chance.
+            self._replay_buffer.append((x.cpu(), action, float(reward)))
             if len(self._replay_buffer) > self._replay_capacity:
                 self._replay_buffer.pop(0)
             buf_size = len(self._replay_buffer)
@@ -627,14 +636,32 @@ class NeuralBanditRouter:
         if buf_size < self._min_samples:
             return
 
-        # Online mini-batch training
+        # Online mini-batch training.
+        #
+        # Samples with reward <= 0 are not taught as examples to follow: the
+        # action that earned them is the WRONG answer, and cross-entropy only
+        # expresses "do this". Dropping them leaves the gradient pointing at
+        # the actions that were actually rewarded. (Learning "avoid this" would
+        # need negative labels or an explicit reward model, which is a larger
+        # change than this fix.)
         import random as _random
         batch = _random.sample(self._replay_buffer, min(self._batch_size, buf_size))
-        batch_x = torch.stack([b[0] for b in batch]).to(self._device)
-        batch_a = torch.tensor([b[1] for b in batch], device=self._device)
+        positives = [b for b in batch if b[2] > 0]
+        if not positives:
+            return
+        batch_x = torch.stack([b[0] for b in positives]).to(self._device)
+        batch_a = torch.tensor([b[1] for b in positives], device=self._device)
+        batch_w = torch.tensor(
+            [b[2] for b in positives], device=self._device, dtype=torch.float32,
+        )
 
         logits = self._net(batch_x)
-        loss = torch.nn.functional.cross_entropy(logits, batch_a)
+        # Weight each sample by its reward so a strongly rewarded action pulls
+        # the policy harder than a weakly rewarded one.
+        per_sample = torch.nn.functional.cross_entropy(
+            logits, batch_a, reduction="none",
+        )
+        loss = (per_sample * batch_w).sum() / batch_w.sum()
 
         self._optimizer.zero_grad()
         loss.backward()

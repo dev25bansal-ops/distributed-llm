@@ -13,12 +13,11 @@ from __future__ import annotations
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
-from loguru import logger
-
 
 router = APIRouter(tags=["router"])
 

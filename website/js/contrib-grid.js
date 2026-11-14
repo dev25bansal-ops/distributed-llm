@@ -52,7 +52,7 @@ export function initContribGrid() {
 
     container.appendChild(card);
 
-    fetch('https://api.github.com/repos/distributed-llm/distributed-llm/contributors?per_page=30')
+    fetch('https://api.github.com/repos/dev25bansal-ops/distributed-llm/contributors?per_page=30')
         .then(r => r.ok ? r.json() : [])
         .then(contribs => {
             const g = document.getElementById('cgGrid');

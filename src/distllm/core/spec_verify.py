@@ -18,10 +18,10 @@ through :func:`prefix_len` and :func:`accept_token`, so a fix lands once.
 
 from __future__ import annotations
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 def prefix_len(prefix: torch.Tensor) -> int:
     """Causal-LM draft index for a ``prefix`` tensor of shape ``(1, L)``.
 

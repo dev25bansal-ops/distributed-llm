@@ -92,6 +92,7 @@ class DiscoveryService:
                 self._zeroconf.unregister_all_services()
                 self._zeroconf.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._zeroconf = None
             self._running = False
@@ -108,6 +109,7 @@ class DiscoveryService:
             s.close()
             return ip
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
 

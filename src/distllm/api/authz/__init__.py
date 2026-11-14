@@ -14,8 +14,8 @@ that implements the *same* allow/deny contract from a policy dict.
 from __future__ import annotations
 
 from distllm.api.authz.opa import (
-    Decision,
     OPA_AVAILABLE,
+    Decision,
     OPAClient,
     authorize,
     load_policy,

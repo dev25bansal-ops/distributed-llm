@@ -175,9 +175,15 @@ def test_rejects_request_when_quota_exceeded():
     meter.enforce_quota = lambda tenant_id, raise_on_block=True, requested_tokens=None: (
         False, "Daily token limit exceeded")
     import distllm.api.quota_middleware as qm
+    # The module-level _meter singleton is process-wide: leaving this
+    # permanently-rejecting mock installed 429s every later test in a
+    # combined run. Save and restore it.
+    previous_meter = qm._meter
     qm._meter = meter
-
-    resp = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    try:
+        resp = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    finally:
+        qm._meter = previous_meter
     assert resp.status_code == 429
     body = resp.json()
     assert "quota_exceeded" in body.get("error", {}).get("type", "")

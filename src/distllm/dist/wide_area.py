@@ -15,7 +15,9 @@ import statistics
 import threading
 from typing import TYPE_CHECKING, Any, Callable
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.config.loader import NodeRole
@@ -251,6 +253,7 @@ class WideAreaPipeline(PipelineOrchestrator):
                 import statistics
                 return max(1.0, statistics.median(recent))
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return default
 

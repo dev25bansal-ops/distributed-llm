@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Learning Hub — DistLLM</title>
     <meta name="description" content="Learn distributed LLM inference with interactive tutorials, video demos, and architecture deep-dives.">
@@ -21,7 +21,7 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/base.css">
     <link rel="stylesheet" href="css/layout.css">
     <link rel="stylesheet" href="css/components.css">
@@ -49,7 +49,7 @@
     <nav class="nav" role="navigation" aria-label="Main navigation">
         <div class="nav-in">
             <a href="index.html" class="logo"><div class="logo-icon">D</div>dist<b>llm</b></a>
-            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="learn.html" class="active">Learn</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
+            <div class="nav-links"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="docs.html">Docs</a><a href="blog.html">Blog</a><a href="learn.html" class="active">Learn</a><a href="index.html#pricing">Pricing</a><a href="https://github.com/dev25bansal-ops/distributed-llm" target="_blank" rel="noopener noreferrer">GitHub</a></div>
             <div class="nav-right">
                 <a href="https://github.com/dev25bansal-ops/distributed-llm" class="gh-stars" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><use href="#icon-github"/></svg>Star</a>
                 <a href="https://github.com/dev25bansal-ops/distributed-llm#getting-started" class="nav-cta">Get Started</a>
@@ -66,19 +66,19 @@
             <div class="learn-paths">
                 <div class="learn-path">
                     <div class="learn-path-icon">🌱</div>
-                    <h3>Beginner</h3>
+                    <h2>Beginner</h2>
                     <p>Get started with DistLLM in 10 minutes</p>
                     <a href="#tutorial-quickstart" class="learn-path-link">Start Learning →</a>
                 </div>
                 <div class="learn-path">
                     <div class="learn-path-icon">🔧</div>
-                    <h3>Intermediate</h3>
+                    <h2>Intermediate</h2>
                     <p>Multi-node clusters and optimization</p>
                     <a href="#tutorial-multinode" class="learn-path-link">Start Learning →</a>
                 </div>
                 <div class="learn-path">
                     <div class="learn-path-icon">🏗️</div>
-                    <h3>Advanced</h3>
+                    <h2>Advanced</h2>
                     <p>Architecture deep-dives and custom backends</p>
                     <a href="#architecture" class="learn-path-link">Start Learning →</a>
                 </div>
@@ -119,9 +119,9 @@
                                             </div>
                                             <div class="terminal-output">
 Collecting distributed-llm
-  Downloading distributed_llm-0.4.0-py3-none-any.whl
+  Downloading distributed_llm-0.6.2.2-py3-none-any.whl
 Installing collected packages: distributed-llm
-Successfully installed distributed-llm-0.4.0
+Successfully installed distributed-llm-0.6.2.2
                                             </div>
                                         </div>
                                     </div>
@@ -159,7 +159,9 @@ Successfully installed distributed-llm-0.4.0
                                     <div class="terminal">
                                         <div class="terminal-header">
                                             <span class="terminal-title">Terminal</span>
-                                            <button class="terminal-copy" data-copy='curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d \'{"messages":[{"role":"user","content":"Hello!"}]}\''>Copy</button>
+                                            <button class="terminal-copy" data-copy="curl http://localhost:8000/v1/chat/completions \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello!&quot;}]}&#39;">Copy</button>
                                         </div>
                                         <div class="terminal-body">
                                             <div class="terminal-line">
@@ -267,7 +269,7 @@ Successfully installed distributed-llm-0.4.0
                             <div class="video-duration">12:34</div>
                         </div>
                         <div class="video-info">
-                            <h4>Getting Started with DistLLM</h4>
+                            <h3>Getting Started with DistLLM</h3>
                             <p>Complete walkthrough from installation to first inference.</p>
                             <span class="video-meta">Beginner · June 2026</span>
                         </div>
@@ -278,7 +280,7 @@ Successfully installed distributed-llm-0.4.0
                             <div class="video-duration">18:45</div>
                         </div>
                         <div class="video-info">
-                            <h4>Multi-Node Pipeline Parallelism</h4>
+                            <h3>Multi-Node Pipeline Parallelism</h3>
                             <p>Deep-dive into how DistLLM splits models across GPUs.</p>
                             <span class="video-meta">Intermediate · May 2026</span>
                         </div>
@@ -289,7 +291,7 @@ Successfully installed distributed-llm-0.4.0
                             <div class="video-duration">25:10</div>
                         </div>
                         <div class="video-info">
-                            <h4>Production Deployment Guide</h4>
+                            <h3>Production Deployment Guide</h3>
                             <p>Security, monitoring, and scaling for production workloads.</p>
                             <span class="video-meta">Advanced · May 2026</span>
                         </div>
@@ -348,7 +350,7 @@ Successfully installed distributed-llm-0.4.0
                                 <li><strong>Stage 3 (GPU 2)</strong>: Processes layers 16-23</li>
                                 <li><strong>Stage 4 (GPU 3)</strong>: Processes layers 24-31, produces output token</li>
                             </ol>
-                            <p><strong>Advantage</strong>: Near-linear scaling. 4 GPUs ≈ 3.5-3.8× speedup.</p>
+                            <p><strong>Trade-off</strong>: scaling is real but sub-linear. Our own measurement is 1.66× throughput at 2 nodes (83.2% efficiency) over 1&nbsp;GbE; we have not measured 4 GPUs. Expect gains to depend heavily on interconnect.</p>
                         </div>
                     </div>
 
@@ -362,19 +364,19 @@ Successfully installed distributed-llm-0.4.0
                             <div class="tensor-demo">
                                 <div class="tensor-layer">
                                     <div class="tensor-gpu">
-                                        <div class="tensor-part" style="background: #00e676;"></div>
+                                        <div class="tensor-part" style="background: var(--green);"></div>
                                         <span>GPU 0</span>
                                     </div>
                                     <div class="tensor-gpu">
-                                        <div class="tensor-part" style="background: #3b82f6;"></div>
+                                        <div class="tensor-part" style="background: var(--blue);"></div>
                                         <span>GPU 1</span>
                                     </div>
                                     <div class="tensor-gpu">
-                                        <div class="tensor-part" style="background: #f59e0b;"></div>
+                                        <div class="tensor-part" style="background: var(--amber);"></div>
                                         <span>GPU 2</span>
                                     </div>
                                     <div class="tensor-gpu">
-                                        <div class="tensor-part" style="background: #ef4444;"></div>
+                                        <div class="tensor-part" style="background: var(--red);"></div>
                                         <span>GPU 3</span>
                                     </div>
                                 </div>
@@ -402,15 +404,15 @@ Successfully installed distributed-llm-0.4.0
                         <div class="explainer-animation">
                             <div class="sequence-demo">
                                 <div class="sequence-input">
-                                    <div class="seq-token" style="background: #00e676;">The</div>
-                                    <div class="seq-token" style="background: #00e676;">quick</div>
-                                    <div class="seq-token" style="background: #00e676;">brown</div>
-                                    <div class="seq-token" style="background: #3b82f6;">fox</div>
-                                    <div class="seq-token" style="background: #3b82f6;">jumps</div>
-                                    <div class="seq-token" style="background: #3b82f6;">over</div>
-                                    <div class="seq-token" style="background: #f59e0b;">the</div>
-                                    <div class="seq-token" style="background: #f59e0b;">lazy</div>
-                                    <div class="seq-token" style="background: #f59e0b;">dog</div>
+                                    <div class="seq-token" style="background: var(--green);">The</div>
+                                    <div class="seq-token" style="background: var(--green);">quick</div>
+                                    <div class="seq-token" style="background: var(--green);">brown</div>
+                                    <div class="seq-token" style="background: var(--blue);">fox</div>
+                                    <div class="seq-token" style="background: var(--blue);">jumps</div>
+                                    <div class="seq-token" style="background: var(--blue);">over</div>
+                                    <div class="seq-token" style="background: var(--amber);">the</div>
+                                    <div class="seq-token" style="background: var(--amber);">lazy</div>
+                                    <div class="seq-token" style="background: var(--amber);">dog</div>
                                 </div>
                                 <div class="sequence-gpus">
                                     <span>GPU 0</span>
@@ -469,6 +471,17 @@ Successfully installed distributed-llm-0.4.0
                     }
                 });
             }, 2000);
+        });
+
+        // Copy buttons (terminal snippets)
+        document.querySelectorAll('.terminal-copy').forEach(btn => {
+            btn.addEventListener('click', () => {
+                navigator.clipboard.writeText(btn.dataset.copy).then(() => {
+                    const original = btn.textContent;
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => { btn.textContent = original; }, 2000);
+                });
+            });
         });
     </script>
 </body>

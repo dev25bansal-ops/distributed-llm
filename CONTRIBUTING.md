@@ -23,7 +23,7 @@ Thank you for your interest in contributing! This guide covers everything you ne
 
 ### Prerequisites
 
-- **Python 3.10+** (3.11 or 3.12 recommended)
+- **Python 3.11+** (3.11 or 3.12 recommended)
 - **Git**
 - **CUDA 12.x** (for GPU development — optional for API-only work)
 - **Docker** (for container builds — optional)
@@ -106,7 +106,7 @@ distributed-llm/
 │   ├── cli/                      # Typer CLI commands
 │   │   ├── main.py               # CLI app entry point
 │   │   ├── chat.py               # `distllm chat` command
-│   │   ├── run.py                # `distllm run` command
+│   │   ├── run.py                # `distllm system run` command
 │   │   └── ...                   # Other commands (deploy, status, cert, etc.)
 │   ├── config/                   # Pydantic settings
 │   │   ├── settings.py           # DistLLMSettings root config
@@ -822,7 +822,7 @@ python benchmarks/run.py --model roneneldan/TinyStories-1M --output before.json
 python benchmarks/run.py --model roneneldan/TinyStories-1M --output after.json
 
 # Compare
-python benchmarks/compare.py before.json after.json
+python benchmarks/regression_check.py --baseline before.json --current after.json
 ```
 
 ---

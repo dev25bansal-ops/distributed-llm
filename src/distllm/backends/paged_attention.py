@@ -18,6 +18,7 @@ The distributed variant (``dist/attention.py``) adds:
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import threading
@@ -38,13 +39,15 @@ class Defragmentable(Protocol):
     def set_free_blocks(self, free_ids: list[int]) -> None:
         ...
 
-    def acquire_lock(self) -> Any:
+    def acquire_lock(self, timeout: float | None = None) -> Any:
         ...
 
     def release_lock(self) -> None:
         ...
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -144,7 +147,14 @@ class PagedAttentionManager:
         # free-list ops to keep lock ordering strict:
         #   shard(seqA) -> shard(seqB) (sorted) -> free-list -> block state
         # preventing deadlock in the cross-sequence COW paths.
-        self._lock = threading.Lock()          # legacy attribute: free-list + global ops
+        # B-02: RLock (not Lock) — leaf readers (num_free_blocks,
+        # get_stats) re-acquire it while callers already hold it
+        # (e.g. allocate_sequence updates stats after taking the
+        # shard+global pair). Lock ordering (global, deadlock-free):
+        #   sequence shard(s), sorted by index -> self._lock
+        # Every mutator/reader of seq metadata, ref_counts, block
+        # tensors, or the free-list must follow that order.
+        self._lock = threading.RLock()         # legacy attribute: free-list + global ops
         self._lock_shards: list[threading.RLock] = [threading.RLock() for _ in range(16)]
         self._numa_node = self._detect_numa_node()
 
@@ -180,7 +190,7 @@ class PagedAttentionManager:
                 # CUDA_VISIBLE_DEVICES maps GPU to NUMA node
                 gpu_id = int(os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
                 # Try reading from sysfs (Linux)
-                numa_path = f"/sys/bus/pci/devices/*/numa_node"
+                numa_path = "/sys/bus/pci/devices/*/numa_node"
                 import glob
                 for path in glob.glob(numa_path):
                     try:
@@ -191,6 +201,7 @@ class PagedAttentionManager:
                     except (ValueError, OSError):
                         continue
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return 0
 
@@ -203,8 +214,19 @@ class PagedAttentionManager:
     def set_free_blocks(self, free_ids: list[int]) -> None:
         self._free_blocks = free_ids
 
-    def acquire_lock(self) -> threading.RLock:
-        self._lock.acquire()
+    def acquire_lock(self, timeout: float | None = None) -> threading.RLock:
+        """Take the allocator lock and return it.
+
+        ``timeout`` bounds the wait, in seconds. It is optional so existing
+        ``acquire_lock()`` callers keep their blocking behaviour, but a caller
+        that must not hang — the concurrent defrag stress test drives alloc and
+        free from several threads — can pass one instead of deadlocking.
+        Raises ``TimeoutError`` when the lock is not acquired in time.
+        """
+        if not self._lock.acquire(timeout=-1 if timeout is None else timeout):
+            raise TimeoutError(
+                f"could not acquire the paged-attention lock within {timeout}s"
+            )
         return self._lock
 
     def release_lock(self) -> None:
@@ -229,13 +251,48 @@ class PagedAttentionManager:
         idxs = {hash(sid) % len(self._lock_shards) for sid in sequence_ids}
         return [self._lock_shards[i] for i in sorted(idxs)]
 
+    # B-01/BK-01: unified acquisition context. Every public method funnels
+    # through this helper so shard acquisition order is defined in exactly
+    # one place: shards sorted by index → the global free-list lock.
+    # The previous code violated this in three places: copy_on_write
+    # acquired two shards in caller order, swap_blocks_to_cpu took a shard
+    # but no free-list lock, and swap_blocks_to_gpu took the free-list lock
+    # but no shard — allowing deadlock and races with concurrent
+    # alloc/free/append.
+    @contextlib.contextmanager
+    def _locked(self, *sequence_ids: str):
+        shards = self._shards_for(*sequence_ids)
+        with contextlib.ExitStack() as stack:
+            for shard in shards:
+                stack.enter_context(shard)
+            stack.enter_context(self._lock)
+            yield
+
+    @contextlib.contextmanager
+    def _locked_all_shards(self):
+        """Acquire every shard (sorted) then the global lock.
+
+        Used by operations that touch all sequences (reset): without
+        the shards they cannot detect/mutate state held by an
+        in-flight per-sequence op and could corrupt the free-list.
+        """
+        with contextlib.ExitStack() as stack:
+            for shard in self._lock_shards:
+                stack.enter_context(shard)
+            stack.enter_context(self._lock)
+            yield
+
     @property
     def num_free_blocks(self) -> int:
-        return len(self._free_blocks)
+        # B-02: leaf reader — takes only the global lock (no shard),
+        # matching the tail of the ordering above.
+        with self._lock:
+            return len(self._free_blocks)
 
     @property
     def num_used_blocks(self) -> int:
-        return self._num_blocks - len(self._free_blocks)
+        with self._lock:
+            return self._num_blocks - len(self._free_blocks)
 
     @property
     def memory_usage_pct(self) -> float:
@@ -286,8 +343,12 @@ class PagedAttentionManager:
         Raises:
             RuntimeError: If not enough free blocks available.
         """
-        with self._shard_for(sequence_id), self._lock:
-            num_blocks_needed = math.ceil(num_tokens / self._block_size)
+        if num_tokens < 0:
+            raise ValueError(f"num_tokens must be non-negative, got {num_tokens}")
+        # An empty sequence still needs one block so the first
+        # append_token() call has a block to write into (B-03).
+        num_blocks_needed = max(1, math.ceil(num_tokens / self._block_size))
+        with self._locked(sequence_id):
 
             if len(self._free_blocks) < num_blocks_needed:
                 raise RuntimeError(
@@ -301,11 +362,19 @@ class PagedAttentionManager:
             self._free_blocks = remaining_free
 
             block_ids = []
+            # Seed per-block num_tokens from the prefill length: full
+            # block_size for every block except the last, which takes
+            # the remainder (B-03). Without this, block.num_tokens is
+            # always 0 after allocation, so append_token() never
+            # advances to a new block on the boundary (388-390).
+            remaining = num_tokens
             for bid in candidates:
                 block = self._blocks[bid]
                 if not block.is_allocated:
                     block.allocate(self._num_heads, self._head_dim, self._device)
                 block.ref_count = 1
+                block.num_tokens = min(self._block_size, remaining)
+                remaining -= block.num_tokens
                 block_ids.append(bid)
 
             seq_blocks = SequenceBlocks(
@@ -324,7 +393,7 @@ class PagedAttentionManager:
 
     def free_sequence(self, sequence_id: str) -> None:
         """Free all blocks belonging to a sequence."""
-        with self._shard_for(sequence_id), self._lock:
+        with self._locked(sequence_id):
             seq = self._seq_blocks.pop(sequence_id, None)
             if seq is None:
                 return
@@ -377,12 +446,32 @@ class PagedAttentionManager:
         Returns:
             The block ID where the new token should be written.
         """
-        with self._shard_for(sequence_id), self._lock:
+        with self._locked(sequence_id):
             seq = self._seq_blocks.get(sequence_id)
             if seq is None:
                 raise ValueError(f"Unknown sequence: {sequence_id}")
 
             seq.num_tokens += 1
+
+            if not seq.block_ids:
+                # Defensive: a sequence with no blocks (e.g. created
+                # before the allocate_sequence(0) guard, or via
+                # copy_on_write of an empty sequence) must not hit
+                # IndexError on the next append (B-03).
+                if not self._free_blocks:
+                    raise RuntimeError("No free KV cache blocks available")
+                new_bid = self._free_blocks.pop()
+                new_block = self._blocks[new_bid]
+                if not new_block.is_allocated:
+                    new_block.allocate(self._num_heads, self._head_dim, self._device)
+                new_block.ref_count = 1
+                new_block.num_tokens = 1
+                seq.block_ids.append(new_bid)
+                self._stats["allocations"] += 1
+                self._stats["peak_blocks_used"] = max(
+                    self._stats["peak_blocks_used"], self.num_used_blocks,
+                )
+                return new_bid
 
             # Check if current block has space
             last_idx = len(seq.block_ids) - 1
@@ -420,27 +509,47 @@ class PagedAttentionManager:
 
     def get_block_table(self, sequence_id: str) -> list[int]:
         """Get the block table (list of block IDs) for a sequence."""
-        seq = self._seq_blocks.get(sequence_id)
-        if seq is None:
-            return []
-        return list(seq.block_ids)
+        with self._locked(sequence_id):
+            seq = self._seq_blocks.get(sequence_id)
+            if seq is None:
+                return []
+            # Snapshot copy under the lock — returning live state let
+            # readers race with append/free mutations (B-01/BK-01).
+            return list(seq.block_ids)
 
     def get_kv_cache(
         self, sequence_id: str, layer_idx: int,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Get concatenated KV cache tensors for a sequence at a layer.
 
+        Block storage is single-layer: each ``KVCacheBlock`` holds data
+        for exactly one layer (the allocation has no layer dimension),
+        so only ``layer_idx=0`` is supported. Any other layer index
+        raises ``NotImplementedError`` rather than silently returning
+        the wrong layer's data.
+
         Returns:
             (key_cache, value_cache) tensors, or (None, None) if not found.
         """
-        seq = self._seq_blocks.get(sequence_id)
-        if seq is None:
-            return None, None
+        if layer_idx != 0:
+            raise NotImplementedError(
+                f"Per-layer KV retrieval not supported: blocks store a "
+                f"single layer (layer_idx=0 only), got layer_idx={layer_idx}"
+            )
+        with self._locked(sequence_id):
+            seq = self._seq_blocks.get(sequence_id)
+            if seq is None:
+                return None, None
+
+            # Snapshot block refs under the lock; the tensors themselves
+            # are read-only here. Reading seq.block_ids without the lock
+            # raced concurrent append/free (B-01/BK-01).
+            block_ids = list(seq.block_ids)
+            blocks = [self._blocks[bid] for bid in block_ids]
 
         keys = []
         values = []
-        for bid in seq.block_ids:
-            block = self._blocks[bid]
+        for block in blocks:
             if block.key_cache is not None:
                 keys.append(block.key_cache)
                 values.append(block.value_cache)
@@ -455,7 +564,10 @@ class PagedAttentionManager:
 
         Increments ref_count on shared blocks instead of copying data.
         """
-        with self._shard_for(source_id), self._shard_for(dest_id):
+        # B-01/BK-01: shards acquired in sorted order via _locked — the
+        # previous caller-order acquisition deadlocked when two COW calls
+        # crossed two sequences hashed to different shards.
+        with self._locked(source_id, dest_id):
             source = self._seq_blocks.get(source_id)
             if source is None:
                 return
@@ -476,7 +588,9 @@ class PagedAttentionManager:
         Returns:
             Number of blocks swapped.
         """
-        with self._shard_for(sequence_id):
+        # B-01/BK-01: also take the global free-list lock (previously
+        # shard-only), so swap is ordered vs. concurrent alloc/free/append.
+        with self._locked(sequence_id):
             seq = self._seq_blocks.get(sequence_id)
             if seq is None:
                 return 0
@@ -504,7 +618,9 @@ class PagedAttentionManager:
         Returns:
             Number of blocks swapped.
         """
-        with self._lock:
+        # B-01/BK-01: take the sequence shard in addition to the global
+        # lock (previously lock-only), matching every other mutator.
+        with self._locked(sequence_id):
             seq = self._seq_blocks.get(sequence_id)
             if seq is None:
                 return 0
@@ -521,19 +637,31 @@ class PagedAttentionManager:
 
     def get_stats(self) -> dict[str, Any]:
         """Get block manager statistics."""
-        return {
-            **self._stats,
-            "num_blocks": self._num_blocks,
-            "block_size": self._block_size,
-            "free_blocks": self.num_free_blocks,
-            "used_blocks": self.num_used_blocks,
-            "memory_usage_pct": round(self.memory_usage_pct, 1),
-            "active_sequences": len(self._seq_blocks),
-        }
+        # B-02: snapshot stats + seq count under the global lock so a
+        # concurrent alloc/free cannot tear the accounting.
+        with self._lock:
+            return {
+                **self._stats,
+                "num_blocks": self._num_blocks,
+                "block_size": self._block_size,
+                "free_blocks": len(self._free_blocks),
+                "used_blocks": self._num_blocks - len(self._free_blocks),
+                "memory_usage_pct": round(
+                    (self._num_blocks - len(self._free_blocks))
+                    / max(self._num_blocks, 1) * 100, 1,
+                ),
+                "active_sequences": len(self._seq_blocks),
+            }
 
     def reset(self) -> None:
         """Reset all blocks to free state."""
-        with self._lock:
+        # B-02: reset() holds only the global lock while every
+        # per-sequence mutator also takes a shard first — a shard
+        # holder joins the allocation AFTER the reset and its
+        # block then collides with post-reset state (double-used
+        # block / lost free-list entry). Acquire all shards in
+        # sorted order via _locked_all_shards().
+        with self._locked_all_shards():
             for block in self._blocks:
                 block.free()
             self._free_blocks = list(range(self._num_blocks))

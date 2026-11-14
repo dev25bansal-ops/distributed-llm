@@ -15,17 +15,17 @@ from distllm.cloud.common import (
     multi_provider_session,
 )
 from distllm.cloud.spot_orchestrator import (
+    GPU_ON_DEMAND_REFERENCE,
     BidResult,
     BidStatus,
     CostReport,
     GPUInstance,
-    GPU_ON_DEMAND_REFERENCE,
     GPUSpotMarket,
     InstanceStatus,
-    normalize_gpu_name,
     Provider,
     ProviderProtocol,
     SpotOrchestrator,
+    normalize_gpu_name,
 )
 
 __all__ = [

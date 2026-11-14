@@ -9,7 +9,7 @@
  * Version: v1.0.0
  */
 
-const CACHE_NAME = "distllm-v1";
+const CACHE_NAME = "distllm-v0.6.2.2";
 const STATIC_ASSETS = [
   "/css/base.css",
   "/css/layout.css",

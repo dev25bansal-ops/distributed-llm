@@ -27,11 +27,11 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from loguru import logger
-
 
 # ── Event Types ──────────────────────────────────────────────────────────────
 
@@ -375,6 +375,7 @@ class EventBus:
                     return True
                 last_error = f"HTTP {resp.status_code}"
             except Exception as exc:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 last_error = str(exc)
 
             if attempt < self._max_retries:

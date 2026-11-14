@@ -7,8 +7,7 @@ mod state;
 mod tray;
 mod types;
 
-use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Listener, Manager};
 
 pub use error::AppError;
 pub use state::AppState;
@@ -28,24 +27,24 @@ pub fn run() {
             // 5.8: Register deep link handler for distllm:// URLs
             let handle = app.handle().clone();
             app.listen("deep-link://new-url", move |event| {
-                if let Some(urls) = event.payload().as_str() {
-                    // Payload is a JSON array of URLs, parse the first one
-                    if let Ok(parsed) = serde_json::from_str::<Vec<String>>(urls) {
-                        if let Some(url) = parsed.first() {
-                            let _ = handle.emit("deep-link-connect", url.as_str());
-                            if let Some(window) = handle.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                let urls = event.payload();
+                // Payload is a JSON array of URLs, parse the first one
+                if let Ok(parsed) = serde_json::from_str::<Vec<String>>(urls) {
+                    if let Some(url) = parsed.first() {
+                        let _ = handle.emit("deep-link-connect", url.as_str());
+                        if let Some(window) = handle.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
                 }
             });
 
-            // 3.5: Start background health monitor for process crash detection
-            let state = app.state::<AppState>();
-            let state_arc = Arc::new(AppState::new());
-            health::start_health_monitor(app.handle().clone(), state_arc);
+            // 3.5: Start background health monitor for process crash detection.
+            // It resolves the *managed* AppState from the handle on each tick;
+            // the previous code passed a freshly constructed AppState that no
+            // other code ever touched, so a real crash was never observed.
+            health::start_health_monitor(app.handle().clone());
 
             Ok(())
         })

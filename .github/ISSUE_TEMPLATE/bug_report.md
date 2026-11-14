@@ -27,7 +27,7 @@ What actually happened.
 ## Environment
 
 - **OS**: [e.g., Ubuntu 22.04, Windows 11, macOS 14]
-- **Python version**: [e.g., 3.10, 3.11, 3.12]
+- **Python version**: [e.g., 3.11, 3.12, 3.13]
 - **DistLLM version**: [e.g., 0.4.0]
 - **GPU**: [e.g., NVIDIA RTX 4090, A100 80GB]
 - **CUDA version**: [e.g., 12.1]

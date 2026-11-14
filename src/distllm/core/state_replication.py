@@ -167,6 +167,7 @@ class StateReplicationStore:
                     data = json.load(f)
                 return ReplicatedState(**data)
             except Exception:
+                # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
                 return None
         return None
 

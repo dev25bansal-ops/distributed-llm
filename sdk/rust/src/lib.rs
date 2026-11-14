@@ -15,7 +15,10 @@
 //!         messages: vec![Message::user("Hello!")],
 //!         ..Default::default()
 //!     }).await?;
-//!     println!("{}", response.choices[0].message.content);
+//!     println!(
+//!         "{}",
+//!         response.choices[0].message.as_ref().expect("no message").content
+//!     );
 //!     Ok(())
 //! }
 //! ```
@@ -147,9 +150,13 @@ impl Client {
 pub struct Message {
     pub role: String,
     pub content: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    // `name` and `tool_call_id` are optional on the wire in both directions:
+    // requests omit them when empty, and responses (ours and every other
+    // OpenAI-compatible server) usually do not send them at all. Without
+    // `default`, deserializing any normal response fails on the missing field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_call_id: String,
 }
 
@@ -165,8 +172,12 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
+    // `serde(default = ...)` only applies when DESERIALIZING. A request built
+    // with `..Default::default()` calls Default, which would otherwise leave
+    // this empty and send an empty model name to the server. The manual impl
+    // below keeps both paths pointing at default_model().
     #[serde(default = "default_model")]
     pub model: String,
     pub messages: Vec<Message>,
@@ -180,6 +191,20 @@ pub struct ChatRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<String>>,
+}
+
+impl Default for ChatRequest {
+    fn default() -> Self {
+        Self {
+            model: default_model(),
+            messages: Vec::new(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: None,
+            stop: None,
+        }
+    }
 }
 
 fn default_model() -> String {
@@ -293,4 +318,156 @@ pub struct Usage {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     pub tokens_per_second: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Request serialization ──────────────────────────────────────────
+    // These pin the JSON we actually put on the wire. A client that renames
+    // a field or starts sending `null` where the server expects an absent key
+    // breaks against a real server without any Rust type error.
+
+    #[test]
+    fn message_constructors_set_the_right_role() {
+        assert_eq!(Message::user("hi").role, "user");
+        assert_eq!(Message::system("hi").role, "system");
+        assert_eq!(Message::assistant("hi").role, "assistant");
+        assert_eq!(Message::user("hi").content, "hi");
+    }
+
+    #[test]
+    fn empty_optional_message_fields_are_omitted_not_sent_as_empty() {
+        let json = serde_json::to_value(Message::user("hello")).unwrap();
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"], "hello");
+        // `name` and `tool_call_id` are skip_serializing_if empty; sending
+        // them as "" would be a different request shape to the server.
+        assert!(json.get("name").is_none(), "empty name must be omitted");
+        assert!(json.get("tool_call_id").is_none(), "empty tool_call_id must be omitted");
+    }
+
+    #[test]
+    fn chat_request_omits_none_sampling_fields() {
+        let req = ChatRequest {
+            messages: vec![Message::user("ping")],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["model"], "distributed-llm", "default model must be filled in");
+        assert!(json.get("temperature").is_none());
+        assert!(json.get("top_p").is_none());
+        assert!(json.get("max_tokens").is_none());
+        assert!(json.get("stop").is_none());
+    }
+
+    #[test]
+    fn chat_request_sends_sampling_fields_when_set() {
+        let req = ChatRequest {
+            messages: vec![Message::user("ping")],
+            temperature: Some(0.2),
+            max_tokens: Some(64),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["temperature"], 0.2);
+        assert_eq!(json["max_tokens"], 64);
+    }
+
+    // ── Response deserialization ───────────────────────────────────────
+    // Shaped after real OpenAI-compatible payloads, including the optional
+    // fields a stricter server may omit entirely.
+
+    #[test]
+    fn chat_response_parses_a_minimal_openai_payload() {
+        let body = r#"{
+            "id": "chatcmpl-1",
+            "model": "distributed-llm",
+            "created": 1700000000,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello there"},
+                "finish_reason": "stop"
+            }]
+        }"#;
+        let resp: ChatResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.id, "chatcmpl-1");
+        assert_eq!(resp.choices.len(), 1);
+        let msg = resp.choices[0].message.as_ref().expect("message present");
+        assert_eq!(msg.content, "hello there");
+        assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
+        // usage omitted entirely must not be an error
+        assert!(resp.usage.is_none());
+    }
+
+    #[test]
+    fn chat_response_parses_usage_when_present() {
+        let body = r#"{
+            "id": "c", "model": "m", "created": 1,
+            "choices": [{"index": 0, "message": {"role":"assistant","content":"x"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
+        }"#;
+        let resp: ChatResponse = serde_json::from_str(body).unwrap();
+        let usage = resp.usage.expect("usage present");
+        assert_eq!(usage.total_tokens, 12);
+        assert!(usage.cost_usd.is_none());
+    }
+
+    #[test]
+    fn completion_response_parses_text_choices() {
+        let body = r#"{
+            "id": "cmpl-1", "model": "m", "created": 2,
+            "choices": [{"index": 0, "text": " done", "finish_reason": "length"}]
+        }"#;
+        let resp: CompletionResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.choices[0].text, " done");
+        assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("length"));
+    }
+
+    #[test]
+    fn embedding_response_parses_float_vectors() {
+        let body = r#"{
+            "model": "m",
+            "data": [{"index": 0, "embedding": [0.1, -0.2, 0.3]}]
+        }"#;
+        let resp: EmbeddingResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.data[0].embedding.len(), 3);
+        assert!((resp.data[0].embedding[1] - (-0.2)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn model_list_parses_with_optional_owner() {
+        let body = r#"{"data": [{"id": "llama-3-70b"}, {"id": "m2", "owned_by": "org"}]}"#;
+        let list: ModelList = serde_json::from_str(body).unwrap();
+        assert_eq!(list.data.len(), 2);
+        assert_eq!(list.data[0].id, "llama-3-70b");
+        assert_eq!(list.data[0].owned_by, "", "omitted owner defaults to empty");
+        assert_eq!(list.data[1].owned_by, "org");
+    }
+
+    #[test]
+    fn health_response_parses_a_minimal_body() {
+        let body = r#"{"status": "ok"}"#;
+        let h: HealthResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(h.status, "ok");
+        assert!(h.model.is_none());
+    }
+
+    // ── Error type ─────────────────────────────────────────────────────
+
+    #[test]
+    fn api_error_displays_status_and_message() {
+        let e = Error::Api { status: 429, message: "rate limited".into() };
+        let shown = e.to_string();
+        assert!(shown.contains("429"), "status must appear: {shown}");
+        assert!(shown.contains("rate limited"), "message must appear: {shown}");
+    }
+
+    #[test]
+    fn client_strips_a_trailing_slash_from_the_base_url() {
+        // A doubled slash (//v1/chat/...) 404s against a strict server.
+        let c = Client::new("http://localhost:8000/", "k");
+        assert!(!c.base_url.ends_with('/'), "base_url must not end with '/': {}", c.base_url);
+    }
 }

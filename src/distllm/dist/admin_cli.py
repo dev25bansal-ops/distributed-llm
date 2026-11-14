@@ -285,6 +285,7 @@ def main() -> None:
         print(f"Connection failed: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

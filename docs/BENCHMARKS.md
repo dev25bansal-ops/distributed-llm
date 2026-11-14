@@ -35,6 +35,10 @@
 
 <!-- /TOC -->
 
+> ℹ️ TOC note (hygiene pass 2026-11-06): the TOC's 22 entries match the 22 content
+> headers; the 23rd heading (`## Table of Contents`) is the TOC itself and is
+> intentionally unlisted. Left as-is — no anchors are missing.
+
 ---
 
 ## Methodology
@@ -76,7 +80,9 @@ python -m benchmarks.cluster_benchmark --models llama8b --clusters 2 --prompt-le
 python -m benchmarks.regression_check --current results.json --baseline baseline.json
 
 # Full suite with Docker
-docker run --gpus all distllm-benchmark
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06): no `distllm-benchmark` image exists
+# > in the repo (no benchmark Dockerfile; Dockerfile/Dockerfile.cuda12.1/Dockerfile.cuda12.6
+# > do not mention benchmarks, and no workflow runs `docker run`). Use `python -m benchmarks.run` above.
 ```
 
 ---
@@ -114,6 +120,21 @@ docker run --gpus all distllm-benchmark
 ## Throughput Benchmarks
 
 ### Llama 3.1 8B (FP16)
+
+> **Provenance — read before quoting these numbers.** The 92.0 and 153.1
+> figures below were measured in June 2026 on hardware not in this
+> repository, and **no raw measurement artifact was committed**; the run
+> log lives outside the tree. The 92.0 value is *also* the input constant
+> of the analytical estimator in
+> `benchmarks/cluster_benchmark.py` (`ModelSpec.single_gpu_tok_s`), so the
+> estimator does **not** independently reproduce it — it starts from it.
+> Treat both rows as reported measurements awaiting re-confirmation, not as
+> reproducible CI output. To re-measure on your own hardware, run the
+> estimator's live mode against a running cluster:
+> `python -m benchmarks.cluster_benchmark --models llama8b --live --api-url http://localhost:8000`
+> (the default, non-live mode prints analytical estimates and is not a
+> measurement). The Buildathon application cites these figures; this note
+> is the honest caveat attached to them.
 
 | Configuration | tok/s | Speedup | Efficiency |
 |:---|---:|---:|---:|
@@ -193,20 +214,17 @@ For a 4-node pipeline with micro_batch_size=4:
 
 ## Regression Tracking
 
-Regression baselines are stored at `benchmarks/baseline.json`. The nightly CI pipeline compares current results against the baseline and posts an issue if any metric regresses beyond tolerance.
+Regression baselines are not committed to the repo. CI (`.github/workflows/benchmark-regression.yml`) downloads the previous baseline as a workflow artifact, compares it against the current run, and re-uploads the new baseline on `main`. Historical runs were never committed; see [docs/benchmark-results.md](./benchmark-results.md) for real measurements.
 
 ### Baseline Files
 
-| File | Coverage | Updated |
-|------|----------|---------|
-| `benchmarks/baseline.json` | Throughput + latency | — |
-| `benchmarks/results/` | Historical runs | — |
+No baseline or results files are committed: `benchmarks/` contains only scripts + `HARDWARE_GUIDE.md` (`ls benchmarks/`), and `benchmarks/results/` is gitignored (`.gitignore` line 56). Real measurements live in [docs/benchmark-results.md](./benchmark-results.md).
 
 ---
 
 ## Raw Results
 
-Raw JSON results from every CI benchmark run are archived as GitHub Actions artifacts and in `benchmarks/results/`.
+Raw JSON results from every CI benchmark run are archived as GitHub Actions artifacts only — `benchmarks/results/` was never committed to the repo (gitignored; see [docs/benchmark-results.md](./benchmark-results.md) for published measurements).
 
 ### Latest Results
 

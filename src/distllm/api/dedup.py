@@ -9,6 +9,7 @@ Streaming requests are NEVER deduplicated to avoid breaking SSE.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import time
@@ -102,10 +103,8 @@ class _FingerprintCache:
         event = asyncio.Event()
         self._wait_events.setdefault(fp, set()).add(event)
 
-        try:
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
 
         entry = self._results.get(fp)
         return entry[1] if entry is not None else None

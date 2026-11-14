@@ -177,6 +177,7 @@ class ProvisioningEngine:
             dep.region_offer = offer
             dep.status = DeploymentStatus.PROVISIONING
         except Exception as e:
+            # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
             dep.status = DeploymentStatus.FAILED
             dep.error_message = str(e)
             return dep

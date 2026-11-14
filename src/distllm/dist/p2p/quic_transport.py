@@ -729,6 +729,7 @@ if HAS_AIOQUIC:
                         # Keep connection alive until closed signal
                         await protocol._closed_event.wait()
                 except Exception as exc:
+                    # CQ-08: intentional fail-open: fallback default assigned on failure.
                     error_ref[0] = exc
                     ready.set()
                 finally:
@@ -852,6 +853,7 @@ if HAS_AIOQUIC:
                 try:
                     await conn.close()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             self._connections.clear()
             if self._server is not None:

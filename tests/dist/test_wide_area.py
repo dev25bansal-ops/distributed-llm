@@ -163,25 +163,19 @@ class TestWideAreaPipelineConstruction:
         # (if aioquic is available). Either way, no exception.
         assert pipeline.wan.enabled is True
 
-    def test_init_wan_enabled_quic_forced_no_aioquic(self) -> None:
+    def test_init_wan_enabled_quic_forced_no_aioquic(self, monkeypatch) -> None:
         """enabled=True + transport='quic' should raise if aioquic missing.
 
-        aioquic may be installed on this machine, so its absence is
-        simulated by nulling ``sys.modules["aioquic"]`` — an ``import
-        aioquic`` then raises ImportError, which ``is_quic_available``
-        translates to ``False``.
+        Availability is decided once at import (``_AIOQUIC_AVAILABLE``), so
+        that flag is what is_quic_available() reads -- patching sys.modules
+        after import would not change it.
         """
+        from distllm.dist import quic_transport
+
+        monkeypatch.setattr(quic_transport, "_AIOQUIC_AVAILABLE", False)
         config = WideAreaConfig(enabled=True, transport="quic")
-        previously_imported = sys.modules.get("aioquic")
-        sys.modules["aioquic"] = None
-        try:
-            with pytest.raises(RuntimeError, match="QUIC transport requested"):
-                WideAreaPipeline(wan_config=config)
-        finally:
-            if previously_imported is not None:
-                sys.modules["aioquic"] = previously_imported
-            else:
-                sys.modules.pop("aioquic", None)
+        with pytest.raises(RuntimeError, match="QUIC transport requested"):
+            WideAreaPipeline(wan_config=config)
 
     def test_multiple_instances_independent(self) -> None:
         p1 = WideAreaPipeline()

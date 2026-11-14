@@ -277,3 +277,88 @@ class TestTieredMemoryPool:
         pool.get("l2key")
         assert pool._l2_cache["l2key"].access_count == 1
         assert pool._l2_cache["l2key"].last_access > 0
+
+
+class TestL3LedgerAndCapacity:
+    """Regression tests for audit 2026-11-13 tiered_store findings.
+
+    The L3 byte counter must track real bytes on disk, evictions must
+    subtract, and demotions must respect the configured NVMe capacity.
+    """
+
+    def _l3_pool(self, tmp_path, capacity_bytes: int) -> TieredMemoryPool:
+        return TieredMemoryPool(
+            gpu_memory_gb=0.000001,
+            cpu_memory_gb=0.0001,
+            nvme_path=str(tmp_path / "nvme"),
+            nvme_max_gb=capacity_bytes / 1e9,
+        )
+
+    def test_l3_eviction_subtracts_bytes_and_keeps_fitting_entries(self, tmp_path) -> None:
+        """5 x 4000B into a 10000B tier: exactly two entries (8000B) must
+        survive with l3_used==8000.
+
+        Before the fix the counter grew to 20000 and every put wiped the
+        whole tier, leaving one 4000B file on disk.
+        """
+        pool = self._l3_pool(tmp_path, 10000)
+        for i in range(5):
+            assert pool.put(f"k{i}", b"x" * 4000, tier=StorageTier.COLD) is True
+
+        on_disk = sorted(p.name for p in (tmp_path / "nvme").glob("*.bin"))
+        assert on_disk == ["k3.bin", "k4.bin"], on_disk
+        assert pool._l3_used == 8000
+        real = sum(e.size_bytes for e in pool._l3_cache.values())
+        assert pool._l3_used == real
+
+    def test_get_miss_on_lost_file_is_a_miss_and_frees_bytes(self, tmp_path) -> None:
+        """A vanishing NVMe file must serve None, count a COLD miss, and
+        release the entry's bytes.
+
+        Before the fix get() incremented the COLD 'hits' counter before
+        verifying the load and popped without decrementing, so a served
+        miss was counted as a hit and l3_used stayed at 4000 with zero
+        entries.
+        """
+        import os
+        pool = self._l3_pool(tmp_path, 100_000)
+        pool.put("c0", b"y" * 4000, tier=StorageTier.COLD)
+        os.remove(str(tmp_path / "nvme" / "c0.bin"))
+
+        hits_before = pool._stats[StorageTier.COLD]["hits"]
+        misses_before = pool._stats[StorageTier.COLD]["misses"]
+        assert pool.get("c0") is None
+        assert pool._stats[StorageTier.COLD]["hits"] == hits_before
+        assert pool._stats[StorageTier.COLD]["misses"] == misses_before + 1
+        assert pool._l3_used == 0
+        assert "c0" not in pool._l3_cache
+
+    def test_demote_to_l3_respects_capacity(self, tmp_path) -> None:
+        """L2 evictions demoting to L3 must not exceed the NVMe quota.
+
+        Before the fix _demote_to_l3 never checked _l3_capacity: 20 warm
+        puts of 400B with a 1000B L3 produced l3_used=3200 and 8 files.
+        """
+        pool = TieredMemoryPool(
+            gpu_memory_gb=0.000001,
+            cpu_memory_gb=0.000005,  # 5000B L2
+            nvme_path=str(tmp_path / "nvme"),
+            nvme_max_gb=0.000001,    # 1000B L3
+        )
+        for i in range(20):
+            pool.put(f"w{i}", b"z" * 400, tier=StorageTier.WARM)
+
+        assert pool._l3_used <= pool._l3_capacity, (
+            f"l3_used={pool._l3_used} exceeds capacity={pool._l3_capacity}"
+        )
+        real = sum(e.size_bytes for e in pool._l3_cache.values())
+        assert pool._l3_used == real
+        on_disk = list((tmp_path / "nvme").glob("*.bin"))
+        assert len(on_disk) * 400 == pool._l3_used
+
+    def test_put_l3_replacing_existing_key_does_not_double_count(self, tmp_path) -> None:
+        pool = self._l3_pool(tmp_path, 100_000)
+        pool.put("k", b"a" * 1000, tier=StorageTier.COLD)
+        pool.put("k", b"a" * 2000, tier=StorageTier.COLD)
+        assert pool._l3_used == 2000
+        assert len(pool._l3_cache) == 1

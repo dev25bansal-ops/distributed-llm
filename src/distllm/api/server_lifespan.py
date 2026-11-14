@@ -46,13 +46,44 @@ def _init_observability() -> None:
     import os as _os
 
     _trace_sample_rate = float(_os.environ.get("DISTLLM_TRACE_SAMPLE_RATE", "0.1"))
-    setup_tracing(
-        service_name="distllm-api",
-        sampling_strategy="head",
-        sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
-    )
+    try:
+        setup_tracing(
+            service_name="distllm-api",
+            sampling_strategy="head",
+            sampling_ratio=min(1.0, max(0.0, _trace_sample_rate)),
+        )
+    except RuntimeError as exc:
+        # Tracing is optional: the SDK lives in the [observability] extra. A
+        # deployment that did not install it must still serve requests -- the
+        # old unconditional call made the server fail to start at all.
+        logger.info(f"Tracing disabled: {exc}")
 
-    state.metrics_exporter = DistLLMPrometheusExporter()
+    # Reuse the exporter the module already built (server.py:409) and handed
+    # to ObservabilityMiddleware. Creating a second DistLLMPrometheusExporter
+    # here — which this line used to do — left the middleware recording every
+    # request-layer RED metric into an orphaned registry: /metrics renders
+    # state.metrics_exporter (the new one), so requests_total,
+    # request_latency_seconds and errors_total were all invisible.
+    # When the state has been reset (test harnesses), restore the exact
+    # instance the middleware references rather than building a fresh one.
+    if state.metrics_exporter is None:
+        from distllm.api.server import _METRICS_EXPORTER
+
+        state.metrics_exporter = _METRICS_EXPORTER
+
+    # OpenTelemetry metrics: only meaningful with an OTLP endpoint. Without
+    # this call the whole DistLLMMetrics surface (node latency, generation
+    # duration, draft acceptance) stayed unregistered -- setup_metrics was
+    # never invoked anywhere in production and the OTel instruments were
+    # decoration. A deployment without the observability extra keeps serving.
+    _otlp_metrics_endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if _otlp_metrics_endpoint:
+        try:
+            from distllm.observability.metrics import setup_metrics
+
+            setup_metrics(service_name="distllm-api", endpoint=_otlp_metrics_endpoint)
+        except RuntimeError as exc:
+            logger.info(f"OTel metrics disabled: {exc}")
 
 
 def _init_plugins(ps: PluginSystem) -> None:
@@ -140,12 +171,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                         scheduler.max_batch_size = new_settings.batching.max_batch_size
                                         scheduler.max_tokens_per_batch = new_settings.batching.max_tokens_per_batch
                         else:
-                            logger.info(f"Config reloaded (no coordinator to update)")
+                            logger.info("Config reloaded (no coordinator to update)")
                 except Exception:
                     logger.exception(
-                        "Config reload queue processor crashed -- SIGHUP reloads will not work until the process is restarted"
+                        "Config reload queue processor error -- continuing (SIGHUP reloads remain available)"
                     )
-                    return
+                    continue
 
         signal.signal(signal.SIGHUP, _reload_config)
         logger.info("SIGHUP handler registered for config hot-reload")

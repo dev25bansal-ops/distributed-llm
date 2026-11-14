@@ -8,18 +8,24 @@ hidden states, token IDs), and compares them.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
+
+if TYPE_CHECKING:
+    from distllm.dist.node_service import NodeServer
 
 from distllm.config.settings import DistLLMSettings
 from distllm.core.inference_engine import InferenceEngine
 from distllm.core.token_generator import TokenGenerator
 from distllm.dist.pipeline import PipelineOrchestrator
-from distllm.models.partitioner import ModelPartitioner, get_model_info
 from distllm.dist.worker import WorkerNode
+from distllm.models.partitioner import ModelPartitioner, get_model_info
 from distllm.verification.comparator import (
     OutputComparison,
     compare_hidden_states,
@@ -181,11 +187,13 @@ class AccuracyVerifier:
                 try:
                     s.stop(grace=1.0)
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             for w in workers:
                 try:
                     w.stop()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             del ref_partitioner
             if torch.cuda.is_available():
@@ -410,7 +418,7 @@ class AccuracyVerifier:
         """
         from distllm.dist import node_pb2
         from distllm.dist.node_client import create_node_client
-        from distllm.dist.node_service import tensor_to_proto, tensor_from_proto
+        from distllm.dist.node_service import tensor_from_proto, tensor_to_proto
 
         generated = input_ids.clone()
         step_logits: list[torch.Tensor] = []
@@ -774,8 +782,8 @@ def run_verification_cli(
     )
 
     from rich.console import Console
-    from rich.table import Table
     from rich.panel import Panel
+    from rich.table import Table
 
     console = Console()
     console.print(

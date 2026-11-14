@@ -155,31 +155,107 @@ pub struct HealthResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchRequest {
-    #[serde(rename = "input_file_id", skip_serializing_if = "Option::is_none")]
-    pub input_file_id: Option<String>,
-    #[serde(rename = "endpoint", skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-    #[serde(rename = "metadata", skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+pub struct BatchSubmitItem {
+    #[serde(rename = "request_id", skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(rename = "prompt")]
+    pub prompt: String,
+    #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i64>,
+    #[serde(rename = "temperature", skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchJob {
-    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+pub struct BatchSubmitRequest {
+    #[serde(rename = "items")]
+    pub items: Vec<BatchSubmitItem>,
+    #[serde(rename = "webhook_url", skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+    #[serde(rename = "webhook_token", skip_serializing_if = "Option::is_none")]
+    pub webhook_token: Option<String>,
+    #[serde(rename = "item_timeout", skip_serializing_if = "Option::is_none")]
+    pub item_timeout: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchSubmitResponse {
+    #[serde(rename = "batch_id")]
+    pub batch_id: String,
+    #[serde(rename = "status")]
+    pub status: String,
+    #[serde(rename = "total_items", skip_serializing_if = "Option::is_none")]
+    pub total_items: Option<i64>,
+    #[serde(rename = "created_at", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<f64>,
+    #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchItemResult {
+    #[serde(rename = "request_id")]
+    pub request_id: String,
+    #[serde(rename = "prompt", skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i64>,
+    #[serde(rename = "temperature", skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
     #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(rename = "input_file_id", skip_serializing_if = "Option::is_none")]
-    pub input_file_id: Option<String>,
-    #[serde(rename = "created_at", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<i64>,
+    #[serde(rename = "result", skip_serializing_if = "Option::is_none")]
+    pub result: Option<std::collections::HashMap<String, serde_json::Value>>,
+    #[serde(rename = "error", skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(rename = "cost")]
+    pub cost: f64,
+    #[serde(rename = "started_at", skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<f64>,
+    #[serde(rename = "completed_at", skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchList {
-    #[serde(rename = "data", skip_serializing_if = "Option::is_none")]
-    pub data: Option<Vec<BatchJob>>,
+pub struct BatchStatusResponse {
+    #[serde(rename = "batch_id")]
+    pub batch_id: String,
+    #[serde(rename = "status")]
+    pub status: String,
+    #[serde(rename = "total_items")]
+    pub total_items: i64,
+    #[serde(rename = "pending")]
+    pub pending: i64,
+    #[serde(rename = "running")]
+    pub running: i64,
+    #[serde(rename = "completed")]
+    pub completed: i64,
+    #[serde(rename = "failed")]
+    pub failed: i64,
+    #[serde(rename = "timed_out")]
+    pub timed_out: i64,
+    #[serde(rename = "cancelled")]
+    pub cancelled: i64,
+    #[serde(rename = "total_cost")]
+    pub total_cost: f64,
+    #[serde(rename = "created_at")]
+    pub created_at: f64,
+    #[serde(rename = "completed_at", skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<f64>,
+    #[serde(rename = "items", skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<BatchItemResult>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchCancelResponse {
+    #[serde(rename = "batch_id")]
+    pub batch_id: String,
+    #[serde(rename = "status")]
+    pub status: String,
+    #[serde(rename = "cancelled_items")]
+    pub cancelled_items: i64,
+    #[serde(rename = "message")]
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +275,7 @@ pub struct UsageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub type: Option<String>,
+    pub r#type: Option<String>,
     #[serde(rename = "function", skip_serializing_if = "Option::is_none")]
     pub function: Option<std::collections::HashMap<String, serde_json::Value>>,
 }

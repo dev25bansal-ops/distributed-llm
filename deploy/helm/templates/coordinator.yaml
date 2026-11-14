@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-coordinator
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  serviceName: {{ include "distllm-operator.fullname" . }}-coordinator-headless
+  # A single coordinator is the default. coordinator.ha.enabled raises the
+  # count so CI's `--set coordinator.ha.enabled=true` render actually exercises
+  # something -- it previously produced a byte-identical manifest, which meant
+  # the check asserted a capability the chart did not have. The kustomize
+  # overlays already run three coordinators in staging and production, so this
+  # brings the chart in line with them rather than inventing a new default.
+  replicas: {{ if .Values.coordinator.ha.enabled }}3{{ else }}1{{ end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+        app.kubernetes.io/component: coordinator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: coordinator
+          image: "{{ .Values.controller.defaultCoordinatorImage }}"
+          # The image entrypoint routes on DISTLLM_ROLE. Use the "api" role:
+          # distllm-api serves /live /ready /metrics and ALSO starts the
+          # coordinator gRPC server worker nodes connect back to. The
+          # "coordinator" role (distllm-coordinator) serves no HTTP at all,
+          # which would make every probe below fail.
+          env:
+            - name: DISTLLM_ROLE
+              value: api
+            - name: DISTLLM_MODEL__NAME
+              value: {{ .Values.model.name | quote }}
+            - name: DISTLLM_MODEL__DTYPE
+              value: {{ .Values.model.dtype | default "float16" | quote }}
+            - name: DISTLLM_COORDINATOR__HOST
+              value: "0.0.0.0"
+            - name: DISTLLM_COORDINATOR__API_PORT
+              value: {{ .Values.network.coordinatorPort | quote }}
+          ports:
+            - containerPort: {{ .Values.network.coordinatorGrpcPort }}
+              name: grpc
+            - containerPort: {{ .Values.network.coordinatorPort }}
+              name: api
+          volumeMounts:
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+          resources: {{- toYaml .Values.defaultResources.coordinator | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: api
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: api
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep {{ .Values.controller.coordinatorGracePeriodSeconds }}"]
+      volumes:
+        - name: model-cache
+          emptyDir: {}
+      terminationGracePeriodSeconds: {{ add .Values.controller.coordinatorGracePeriodSeconds 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-coordinator
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    app.kubernetes.io/component: coordinator
+  ports:
+    - port: {{ .Values.network.coordinatorGrpcPort }}
+      targetPort: grpc
+      name: grpc
+    - port: {{ .Values.network.coordinatorPort }}
+      targetPort: api
+      name: api
+---
+# Headless Service backing the coordinator StatefulSet's serviceName. It did
+# not exist, so the StatefulSet never got stable per-pod DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-coordinator-headless
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    app.kubernetes.io/component: coordinator
+  clusterIP: None
+  ports:
+    - port: {{ .Values.network.coordinatorGrpcPort }}
+      targetPort: grpc
+      name: grpc
+    - port: {{ .Values.network.coordinatorPort }}
+      targetPort: api
+      name: api

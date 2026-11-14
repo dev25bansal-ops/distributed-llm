@@ -10,8 +10,8 @@ from loguru import logger
 
 from distllm.security.content_moderation.base import (
     _DEFAULT_JAILBREAK_THRESHOLD,
-    _lazy_import,
     JailbreakResult,
+    _lazy_import,
 )
 
 # Known jailbreak and prompt-injection patterns.  These are matched case-

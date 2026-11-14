@@ -96,7 +96,7 @@ class TestKustomizeProductionOverlay:
         k = _load_yaml(KUSTOMIZE_DIR / "production" / "kustomization.yaml")
         assert "images" in k
         for img in k["images"]:
-            assert img.get("newTag") == "0.4.0"
+            assert img.get("newTag") == "0.4.1"
 
     def test_prod_coordinator_three_replicas(self):
         patch = (KUSTOMIZE_DIR / "production" / "resource-patch.yaml").read_text()

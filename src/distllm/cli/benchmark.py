@@ -1,14 +1,16 @@
 """Benchmark command for DistLLM CLI."""
 
-import time
 import json
 import os
+import time
 from pathlib import Path
+
 import httpx
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from distllm.cli.http_client import client_for
 
 TEST_PROMPTS = [
     "Once upon a time in a distant galaxy,",
@@ -47,13 +49,13 @@ def _run_benchmarks(
         task = progress.add_task("Running benchmarks...", total=num_prompts)
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with client_for(host, port, timeout=120.0) as client:
                 for i in range(num_prompts):
                     prompt = TEST_PROMPTS[i % len(TEST_PROMPTS)]
 
                     start_time = time.time()
                     response = client.post(
-                        f"{base_url}/v1/completions",
+                        "/v1/completions",
                         json={
                             "model": model,
                             "prompt": prompt,
@@ -85,6 +87,7 @@ def _run_benchmarks(
             console.print(f"[red]Error:[/red] Could not connect to {base_url}")
             return []
         except Exception as e:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(f"[red]Error:[/red] {e}")
             return []
 
@@ -125,7 +128,7 @@ def run_benchmark(
     console: Console,
 ):
     """Run benchmarks against the API server."""
-    console.print(f"\n[bold blue]DistLLM Benchmark[/bold blue]\n")
+    console.print("\n[bold blue]DistLLM Benchmark[/bold blue]\n")
     console.print(f"Model: {model}")
     console.print(f"Prompts: {num_prompts}")
     console.print(f"Max tokens: {max_tokens}\n")
@@ -176,7 +179,7 @@ def run_benchmark_compare(
     console: Console,
 ):
     """Run benchmark and compare against saved baseline."""
-    console.print(f"\n[bold blue]DistLLM Benchmark Compare[/bold blue]\n")
+    console.print("\n[bold blue]DistLLM Benchmark Compare[/bold blue]\n")
     console.print(f"Model: {model}")
     console.print(f"Prompts: {num_prompts}")
     console.print(f"Max tokens: {max_tokens}\n")

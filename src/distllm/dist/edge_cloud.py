@@ -193,6 +193,7 @@ def _detect_device_type() -> DeviceType:
                     return DeviceType.LAPTOP
                 return DeviceType.DESKTOP
             except Exception:
+                # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
                 return DeviceType.LAPTOP
         return DeviceType.DESKTOP
 
@@ -203,6 +204,7 @@ def _detect_device_type() -> DeviceType:
             if hasattr(psutil, "sensors_battery") and psutil.sensors_battery():
                 return DeviceType.LAPTOP
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return DeviceType.DESKTOP
 
@@ -223,6 +225,7 @@ def _detect_gpu(caps: DeviceCapabilities) -> None:
             try:
                 caps.torch_version = torch.__version__
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             return
     except ImportError:
@@ -244,6 +247,7 @@ def _detect_gpu(caps: DeviceCapabilities) -> None:
                 )
                 caps.gpu_memory_bytes = int(result.stdout.strip())
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 caps.gpu_memory_bytes = 16 * 1024**3
             return
     except ImportError:

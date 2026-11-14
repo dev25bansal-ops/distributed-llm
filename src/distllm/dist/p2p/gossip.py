@@ -347,8 +347,30 @@ class GossipProtocol:
             if was_new and peer_id not in self._peer_metrics:
                 self._peer_metrics[peer_id] = PeerMetrics(joined_at=time.time())
             if len(self.state.known_peers) > self.max_peers:
-                excess = self.state.known_peers - set(random.sample(list(self.state.known_peers), self.max_peers))
-                self.state.known_peers -= excess
+                # Evict the longest-unseen peers, and never the one just added.
+                # This used to pick a random victim from ALL peers including
+                # peer_id, so add_peer() could silently discard the peer it was
+                # called to add -- and which peers survived was non-deterministic
+                # run to run, which is why test_gossip_peer_management failed
+                # only in whole-directory runs.
+                candidates = [p for p in self.state.known_peers if p != peer_id]
+                # Sort by staleness, then by peer id. The id tiebreak is not
+                # cosmetic: time.time() has coarse resolution (measured: 4
+                # successive calls produced 2 distinct values), so peers added
+                # in the same tick share joined_at. Without a secondary key the
+                # victim then depends on set-iteration order, which varies with
+                # hash randomisation -- eviction would differ run to run, which
+                # is the property this change exists to remove.
+                candidates.sort(
+                    key=lambda p: (
+                        getattr(self._peer_metrics.get(p), "last_success_time", 0.0)
+                        or getattr(self._peer_metrics.get(p), "joined_at", 0.0),
+                        p,
+                    )
+                )
+                drop = len(self.state.known_peers) - self.max_peers
+                for victim in candidates[:drop]:
+                    self.state.known_peers.discard(victim)
 
     def remove_peer(self, peer_id: str) -> None:
         with self._lock:
@@ -699,6 +721,7 @@ class GossipProtocol:
                     if result is not None:
                         return result
                 except Exception:
+                    # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                     continue
         return None
 

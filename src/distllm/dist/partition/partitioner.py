@@ -209,6 +209,7 @@ class HardwareAwarePartitioner:
                 profile = self._gpu_profiler._profile_single_gpu(gpu_id)
                 return gpu_id, profile
             except Exception as e:
+                # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
                 return gpu_id, e
 
         with ThreadPoolExecutor(max_workers=min(num_gpus, 4)) as executor:
@@ -346,6 +347,7 @@ class HardwareAwarePartitioner:
             with open(path) as f:
                 return json.load(f)
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def summary(self) -> str:

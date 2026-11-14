@@ -161,7 +161,10 @@ class TestArgoCDApplication:
 
     def test_application_target_revision(self):
         obj = _load(ARGOCD_DIR / "application.yaml")
-        assert obj["spec"]["source"]["targetRevision"] == "main"
+        # Must name a branch that exists. It said "main" while the repository's
+        # default branch is master, so applying this failed with "branch not
+        # found" before creating anything.
+        assert obj["spec"]["source"]["targetRevision"] == "master"
 
     def test_application_dest_namespace(self):
         obj = _load(ARGOCD_DIR / "application.yaml")
@@ -223,16 +226,19 @@ class TestArgoCDApplicationSet:
         assert prod["autoSync"] is False
 
     def test_applicationset_production_revision_pinned(self):
+        # The repo has no v0.4.0 tag (only master + v0.4.1); pinning it would
+        # make ArgoCD fail to sync. Production tracks master with autoSync off.
         obj = _load(ARGOCD_DIR / "applicationset.yaml")
         elements = obj["spec"]["generators"][0]["list"]["elements"]
         prod = [e for e in elements if e["environment"] == "production"][0]
-        assert prod["revision"] == "v0.4.0"
+        assert prod["revision"] == "master"
 
     def test_applicationset_staging_revision(self):
+        # There is no `release` branch; every environment resolves a real ref.
         obj = _load(ARGOCD_DIR / "applicationset.yaml")
         elements = obj["spec"]["generators"][0]["list"]["elements"]
         staging = [e for e in elements if e["environment"] == "staging"][0]
-        assert staging["revision"] == "release"
+        assert staging["revision"] == "master"
 
     def test_applicationset_template_uses_go_template(self):
         obj = _load(ARGOCD_DIR / "applicationset.yaml")
@@ -265,7 +271,8 @@ class TestFluxGitRepository:
 
     def test_gitrepository_branch(self):
         obj = _load(FLUX_DIR / "gitrepository.yaml")
-        assert obj["spec"]["ref"]["branch"] == "main"
+        # master is the repository's default branch; "main" does not exist.
+        assert obj["spec"]["ref"]["branch"] == "master"
 
     def test_gitrepository_secret_ref(self):
         obj = _load(FLUX_DIR / "gitrepository.yaml")

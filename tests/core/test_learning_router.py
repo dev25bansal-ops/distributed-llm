@@ -465,13 +465,27 @@ class TestNeuralBanditRewardLearning:
         fast = picks.count("fast-model")
         assert fast > 21, f"expected strong preference for rewarded model, got {fast}/30"
 
-        # Flip the rewards: smart-model now earns more. The learned policy
-        # must move off fast-model (old replay samples decay as capacity
-        # cycles and the fresh rewards dominate the advantage baseline).
+        # Flip the rewards: smart-model now earns more.
+        #
+        # What is guaranteed: the policy moves TOWARD smart-model. What is not:
+        # that the greedy argmax flips within this many samples. Training draws
+        # batch_size=8 uniformly from the whole replay buffer, which still
+        # holds every fast-model sample, so the flip depends on which samples
+        # each step happens to draw -- it flipped in one arrangement and not in
+        # another on the same machine. Asserting the exact argmax made this a
+        # coin toss dressed as a property.
+        #
+        # So: require a clear shift in preference, measured over routes. That
+        # is the behaviour reward learning is supposed to produce, and it holds
+        # regardless of which individual batch flipped.
         for _ in range(100):
             router.record_outcome("fast-model", reward=0.0, text=prompt)
             router.record_outcome("smart-model", reward=1.0, text=prompt)
-        assert greedy_pick(prompt) == "smart-model"
+        after = [router.route(prompt) for _ in range(30)]
+        assert after.count("smart-model") > 21, (
+            f"expected preference to shift to smart-model, "
+            f"got {after.count('smart-model')}/30"
+        )
 
     def test_equal_rewards_leave_loss_at_zero_but_do_not_crash(self):
         router, _ = self._router()

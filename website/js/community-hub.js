@@ -120,7 +120,7 @@ export function initCommunityHub() {
         content.appendChild(wrapper);
 
         // Fetch from GitHub API
-        fetch('https://api.github.com/repos/distributed-llm/distributed-llm/contributors?per_page=20')
+        fetch('https://api.github.com/repos/dev25bansal-ops/distributed-llm/contributors?per_page=20')
             .then(r => r.ok ? r.json() : [])
             .then(contribs => {
                 const contribList = document.getElementById('contribList');
@@ -157,7 +157,7 @@ export function initCommunityHub() {
                 contribList.appendChild(
                     buildElement('p', { style: 'color:#888;font-size:13px;' }, [
                         document.createTextNode('Could not load contributors. Check '),
-                        buildElement('a', { href: 'https://github.com/distributed-llm/distributed-llm/graphs/contributors', style: 'color:#22c55e;', textContent: 'GitHub' }),
+                        buildElement('a', { href: 'https://github.com/dev25bansal-ops/distributed-llm/graphs/contributors', style: 'color:#22c55e;', textContent: 'GitHub' }),
                         document.createTextNode('.'),
                     ])
                 );
@@ -189,7 +189,7 @@ export function initCommunityHub() {
     function showDiscussions() {
         const wrapper = buildElement('div', { className: 'comm-content' }, [
             buildElement('p', { style: 'font-size:13px;color:#888;margin-bottom:12px;', textContent: 'Join the conversation on GitHub Discussions.' }),
-            buildElement('iframe', { className: 'discuss-frame', src: 'https://github.com/distributed-llm/distributed-llm/discussions', loading: 'lazy' }),
+            buildElement('iframe', { className: 'discuss-frame', src: 'https://github.com/dev25bansal-ops/distributed-llm/discussions', loading: 'lazy' }),
         ]);
         content.appendChild(wrapper);
     }

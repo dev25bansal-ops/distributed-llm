@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 class BackendState(Enum):
     """Lifecycle state of a backend adapter.
 
@@ -59,7 +59,39 @@ class BackendAdapter(ABC):
       - ``shutdown()`` — release GPU memory and resources
 
     Plus metadata ``@classmethod`` methods for auto-detection and selection.
+
+    Capability split (B-09/CQ-009): every adapter exposes
+    ``supports_forward()`` (a classmethod with a sensible default).  The
+    registry's ``select()`` filters candidates by it, so generate-only
+    (remote HTTP) backends are never handed to pipeline nodes that call
+    ``forward()``:
+
+      - :class:`ForwardCapable` — the default (backward-compatible):
+        a local engine that can do a layer-level ``forward()``.
+      - :class:`GenerateOnly` — a remote HTTP server (Ollama/TGI/NIM-style)
+        whose ``forward()`` raises ``NotImplementedError``; only
+        ``generate()`` is real.  Subclasses override ``supports_forward()``
+        to return ``False``.
     """
+
+    # ── Capability ───────────────────────────────────────────────────
+    # ``supports_forward`` is deliberately *not* abstract: third-party
+    # adapters written before this split must keep working (they do
+    # forward passes, so the default ``True`` is right for them).
+    @classmethod
+    def supports_forward(cls) -> bool:
+        """Return whether this backend can serve a layer-level ``forward()``.
+
+        Local engines (PyTorch, vLLM, llama.cpp, ONNX, TensorRT, Triton,
+        ExLlama, MLX) return ``True``.  Remote generate-only adapters
+        (Ollama, TGI) return ``False`` — their ``forward()`` raises
+        ``NotImplementedError`` and they must only be selected for
+        single-shot generation, never for pipeline parallelism.
+
+        The registry filters on this in ``select()``; a ``True`` default
+        keeps pre-split third-party adapters working.
+        """
+        return True
 
     # ── Required instance methods ──────────────────────────────────────
 
@@ -172,6 +204,7 @@ class BackendAdapter(ABC):
         try:
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def health_check(self) -> bool:
@@ -201,3 +234,64 @@ class BackendAdapter(ABC):
     @classmethod
     def version(cls) -> str:
         return "1.0.0"
+
+
+class ForwardCapable(BackendAdapter):
+    """Marker for local engines that serve layer-level ``forward()``.
+
+    This is the default capability of :class:`BackendAdapter`; the mixin
+    exists so intent is explicit at the class definition and so
+    ``isinstance``/subclass checks are self-documenting.  It changes no
+    behaviour — ``supports_forward()`` already returns ``True``.
+    """
+
+
+class GenerateOnly(BackendAdapter):
+    """Marker for remote generate-only backends (Ollama/TGI/NIM-style).
+
+    Subclasses inherit ``supports_forward() == False`` and must only be
+    selected for single-shot ``generate()`` calls.  The registry filters
+    them out of ``forward()``-oriented selection (``select()`` default).
+    Their concrete ``forward()`` raises ``NotImplementedError``.
+    """
+
+    # ── Generate-only ────────────────────────────────────────────────
+    # Remote HTTP adapters cannot run a layer-level forward pass: the
+    # server owns its weights and only exposes token generation.
+    @classmethod
+    def supports_forward(cls) -> bool:
+        return False
+
+    # ``forward()`` is abstract on the base class; give generate-only
+    # adapters a concrete, loudly-failing implementation so the class
+    # stays instantiable without every subclass repeating the raise.
+    def forward(
+        self,
+        hidden_states: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        input_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        raise NotImplementedError(
+            f"{type(self).__name__} is generate-only and does not support "
+            "layer-level forward()"
+        )
+
+
+class InferenceBackend(BackendAdapter):
+    """Backward compatibility alias for BackendAdapter."""
+
+    def load(self, *args: Any, **kwargs: Any) -> None:
+        """Alias for load_model()."""
+        return self.load_model(*args, **kwargs)
+
+    def unload(self) -> None:
+        """Alias for shutdown()."""
+        return self.shutdown()
+
+    @classmethod
+    def health_check(cls) -> bool:
+        """Alias for is_available()."""
+        return cls.is_available()
+

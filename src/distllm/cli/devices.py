@@ -37,11 +37,26 @@ def _safe_run(cmd: list[str], timeout: float = 5.0) -> str:
         return ""
 
 
+def _read_memory_psutil() -> tuple[int, int]:
+    """Portable memory probe for platforms without /proc (macOS and others).
+
+    psutil is a core dependency, so this works on every supported platform;
+    /proc is still preferred on Linux only because it needs no import.
+    """
+    try:
+        import psutil  # type: ignore
+
+        vm = psutil.virtual_memory()
+        return int(vm.total), int(vm.available)
+    except (ImportError, OSError, AttributeError):
+        return 0, 0
+
+
 def _read_meminfo_linux() -> tuple[int, int]:
     """Parse /proc/meminfo. Returns (total_bytes, available_bytes)."""
     try:
         info: dict[str, int] = {}
-        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
             for line in fh:
                 if ":" not in line:
                     continue
@@ -85,10 +100,19 @@ def _read_meminfo_windows() -> tuple[int, int]:
     return 0, 0
 
 
-def _memory_total_available() -> tuple[int, int]:
-    if sys.platform == "win32" or platform.system() == "Windows":
+def _memory_total_available(system: str | None = None) -> tuple[int, int]:
+    """Return (total, available) bytes for the current host.
+
+    ``system`` is ``platform.system()`` unless the caller passes one in, which
+    exists so the platform branches are testable without a Mac.
+    """
+    if system is None:
+        system = platform.system()
+    if system == "Windows":
         return _read_meminfo_windows()
-    return _read_meminfo_linux()
+    if system == "Linux":
+        return _read_meminfo_linux()
+    return _read_memory_psutil()
 
 
 def _cpu_info() -> dict[str, Any]:
@@ -149,6 +173,26 @@ def _gpu_info() -> list[dict[str, Any]]:
     except ImportError:
         pass
 
+    # 1b) Apple Silicon: no CUDA and no nvidia-smi, but the MPS backend is a
+    # real accelerator. Without this a MacBook reports "(none detected)".
+    if not gpus:
+        try:
+            import torch  # type: ignore
+
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                gpus.append({
+                    "index": 0,
+                    "name": f"Apple Silicon GPU (MPS, {platform.machine()})",
+                    # Unified memory: no separate VRAM figure, so report host
+                    # memory rather than a misleading zero.
+                    "vram_bytes": _read_memory_psutil()[0],
+                    "cuda_version": "n/a (Metal)",
+                    "driver_version": platform.release(),
+                    "compute_capability": "n/a",
+                })
+        except ImportError:
+            pass
+
     # 2) Fallback to nvidia-smi so the command works even when torch is
     # CPU-only or missing; preserves order and fills in driver/CUDA versions.
     if not gpus:
@@ -157,9 +201,13 @@ def _gpu_info() -> list[dict[str, Any]]:
             "--query-gpu=index,name,memory.total,driver_version,compute_cap",
             "--format=csv,noheader,nounits",
         ])
-        cuda_ver = _safe_run(["nvidia-smi", "--query-gpu=cuda_version", "--format=csv,noheader"])
-        # nvidia-smi's cuda_version is "CUDA Version: 12.4" — strip prefix
-        cuda_short = (cuda_ver.split(":")[-1].strip().split()[0]) if cuda_ver else "unknown"
+        # There is no `cuda_version` query field: nvidia-smi answers
+        # `Field "cuda_version" is not a valid field to query.` on stderr and
+        # exits 0, and _safe_run reads stdout only, so a query for it silently
+        # yields "". The CUDA version is read from the header line instead —
+        # `nvidia-smi` with no arguments prints `CUDA Version: 12.4` in its
+        # table header, which is the documented way to get it.
+        cuda_short = _nvidia_smi_cuda_version()
         for line in smi.splitlines():
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 5:
@@ -168,8 +216,12 @@ def _gpu_info() -> list[dict[str, Any]]:
                 vram_mib = int(parts[2])
             except ValueError:
                 vram_mib = 0
+            try:
+                gpu_index = int(parts[0])
+            except ValueError:
+                continue
             gpus.append({
-                "index": int(parts[0]),
+                "index": gpu_index,
                 "name": parts[1],
                 "vram_bytes": vram_mib * 1024 * 1024,
                 "cuda_version": cuda_short,
@@ -179,11 +231,30 @@ def _gpu_info() -> list[dict[str, Any]]:
     return gpus
 
 
+def _nvidia_smi_cuda_version() -> str:
+    """Return the driver's CUDA version, or "unknown".
+
+    Read from the header of plain `nvidia-smi` output. Two spellings exist
+    across driver generations: older drivers print ``CUDA Version: 12.4`` and
+    newer ones (621.x here) print ``CUDA UMD Version: 13.5``; both are tried.
+    The previous `--query-gpu=cuda_version` is not a valid field, so the old
+    code shipped whatever diagnostic nvidia-smi printed — the string "Field"
+    on a machine whose driver rejects the query.
+    """
+    header = _safe_run(["nvidia-smi"])
+    for line in header.splitlines():
+        for marker in ("CUDA UMD Version:", "CUDA Version:"):
+            if marker in line:
+                value = line.split(marker, 1)[1].strip().strip("|").strip()
+                return value or "unknown"
+    return "unknown"
+
+
 def _driver_version_linux() -> str | None:
     """Read NVIDIA kernel module version on Linux for an authoritative driver string."""
     for path in ("/proc/driver/nvidia/version",):
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 line = fh.readline().strip()
                 # Line is e.g. "NVRM version: NVIDIA UNIX Open Kernel Module ..."
                 if line:
@@ -241,7 +312,7 @@ def _topology_info() -> dict[str, Any]:
             for dev in os.listdir("/sys/bus/pci/devices"):
                 vendor_path = f"/sys/bus/pci/devices/{dev}/vendor"
                 try:
-                    with open(vendor_path, "r", encoding="utf-8") as fh:
+                    with open(vendor_path, encoding="utf-8") as fh:
                         if fh.read().strip() == "0x10de":
                             nvidia_count += 1
                 except OSError:
@@ -273,19 +344,24 @@ def _format_pretty(obj: Any) -> Any:
     return obj
 
 
-def run_devices() -> dict[str, Any]:
+def run_devices(system: str | None = None) -> dict[str, Any]:
     """Discover node hardware topology.
 
     Returns a dict suitable for both pretty-printing and JSON serialization.
     Keys: ``hostname``, ``platform``, ``gpus``, ``cpu``, ``memory``,
     ``network``, ``topology``.
+
+    ``system`` overrides ``platform.system()`` for the memory probe so the
+    macOS/Linux/Windows branches can be exercised off their own platform.
     """
-    mem_total, mem_avail = _memory_total_available()
+    if system is None:
+        system = platform.system()
+    mem_total, mem_avail = _memory_total_available(system)
     gpus = _gpu_info()
     cpu = _cpu_info()
     network = _network_interfaces()
     topology = _topology_info()
-    driver = _driver_version_linux() if sys.platform != "win32" else None
+    driver = _driver_version_linux() if system == "Linux" else None
     if driver and gpus:
         # Annotate the first GPU with the kernel module line so it's not lost;
         # nvidia-smi's driver_version can be misleading on containerized hosts.
@@ -375,11 +451,18 @@ def print_devices(result: dict[str, Any], console) -> None:
     if not net:
         nt.add_row("(none)", "-", "-", "-")
     else:
+        from rich.text import Text
+
         for iface in net:
+            mac = str(iface.get("mac", "-")) or "-"
+            # Rich interprets :shortcode: sequences as emoji even inside a
+            # table cell, so a MAC address like e6:cd:9f:23:1d:69 rendered as
+            # "e6💿9f:23:1d:69" (and then crashed any cp1252 console). A Text
+            # object is printed verbatim, with no markup pass.
             nt.add_row(
                 str(iface.get("name", "?")),
                 str(iface.get("ipv4", "-")) or "-",
-                str(iface.get("mac", "-")) or "-",
+                Text(mac),
                 "yes" if iface.get("up") else "no",
             )
     console.print(nt)

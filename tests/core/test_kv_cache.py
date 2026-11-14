@@ -90,6 +90,36 @@ class TestKVCacheUpdate:
         with pytest.raises(IndexError):
             cache.update(5, torch.randn(1, 2, 1, 4), torch.randn(1, 2, 1, 4))
 
+    def test_overflow_past_explicit_max_seq_len_warns(self):
+        """Overflowing an explicitly passed max_seq_len must be observable.
+
+        Regression: audit 2026-11-13 — update() silently replaced an
+        explicit max_seq_len with a doubled value (8 -> 24 after one
+        overflow append), so code using it as a per-request memory cap
+        got 3x the memory with no signal.
+        """
+        from loguru import logger as _loguru_logger
+
+        records = []
+        handler_id = _loguru_logger.add(
+            lambda msg: records.append(str(msg)), level="WARNING",
+        )
+        try:
+            cache = KVCache(max_seq_len=8, num_layers=1)
+            cache.init_cache(1, 1, 1, 4, "cpu")
+            cache.update(0, torch.randn(1, 1, 8, 4), torch.randn(1, 1, 8, 4))
+            k, v = cache.update(0, torch.randn(1, 1, 4, 4), torch.randn(1, 1, 4, 4))
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        # Data is preserved (shape 12), the buffer grew, and the growth
+        # was logged rather than silent.
+        assert k.shape[-2] == 12
+        assert cache._max_seq_len == 24  # 2x of (8+4)
+        assert any("max_seq_len" in r for r in records), (
+            f"overflow growth must be logged; captured: {records}"
+        )
+
 
 class TestKVCacheGet:
     """Tests for KVCache retrieval."""

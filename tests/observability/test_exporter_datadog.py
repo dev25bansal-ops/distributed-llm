@@ -757,10 +757,21 @@ class TestContextManager:
     def test_context_manager_calls_close(self):
         from distllm.observability.exporter_datadog import DatadogMetricsExporter
 
-        with patch.object(DatadogMetricsExporter, "close") as mock_close:
-            with DatadogMetricsExporter():
-                pass
-            mock_close.assert_called()
+        # start auto-collection is part of __enter__, and __exit__ delegates to
+        # close(). Mocking close means the real one never runs, so the
+        # background collector thread was left alive and kept pushing
+        # {"collector": "auto"} metrics into whatever test ran next -- that is
+        # why test_push_metrics_only saw TWO calls to push_metrics and failed
+        # only when this file's tests ran in order. Stop the thread explicitly.
+        exporter = None
+        try:
+            with patch.object(DatadogMetricsExporter, "close") as mock_close:
+                with DatadogMetricsExporter() as ex:
+                    exporter = ex
+                mock_close.assert_called()
+        finally:
+            if exporter is not None:
+                exporter._stop_auto_collect()
 
 
 # ---------------------------------------------------------------------------

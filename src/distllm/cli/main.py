@@ -4,10 +4,64 @@ import os
 import sys
 import time
 
-import typer
+# typer/rich are in the [cli] extra, not core deps (pyproject: "Core should be
+# CLI-free so headless/library users don't pull unnecessary dependencies").
+# The console script is installed for every user regardless, so a bare
+# `pip install distributed-llm` followed by `distllm` used to die with a raw
+# ModuleNotFoundError traceback -- a stranger's first command. Fail with the
+# install line instead.
+try:
+    import typer
+    from rich.console import Console
+    from rich.table import Table
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised by the install gate
+    if exc.name in {"typer", "rich"}:
+        sys.stderr.write(
+            "distllm: the CLI needs extra dependencies that this install lacks "
+            f"({exc.name}).\n"
+            "Install them with:\n\n"
+            '    pip install "distributed-llm[cli]"\n\n'
+            "Library users can ignore this: importing `distllm` does not need them.\n"
+        )
+        raise SystemExit(1) from None
+    raise
+
 from loguru import logger
-from rich.console import Console
-from rich.table import Table
+
+
+def _force_utf8_output() -> None:
+    """Reconfigure stdout/stderr to UTF-8 before any command writes.
+
+    The CLI prints box drawing, ≥/≤, arrows and check marks. On a console whose
+    encoding cannot represent them (Windows cp1252, a C/POSIX locale) every
+    such command died with UnicodeEncodeError *after* doing its work, so the
+    output was lost and the exit code was still 0 -- e.g. `distllm cli-doctor`.
+    Reconfiguring is a no-op where the stream is already UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Detached or already-closed stream (pytest capture, pipes).
+            pass
+
+
+_force_utf8_output()
+
+
+def _cli_auth_headers() -> dict[str, str]:
+    """Authorization headers for commands implemented inline in main.py.
+
+    Several subcommands here build a bare httpx request instead of going
+    through client_for(), so they sent no credentials and every call was a 401
+    against a key-protected server. Resolve once, here, so they all agree.
+    """
+    from distllm.cli.http_client import auth_headers
+
+    return auth_headers()
 
 
 def _display_qr(port: int = 50050) -> None:
@@ -33,6 +87,218 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 console = Console()
+
+
+def _distllm_version() -> str:
+    """Installed package version, falling back to the source constant."""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("distributed-llm")
+    except Exception:
+        try:
+            from distllm import __version__
+
+            return __version__
+        except Exception:
+            return "unknown"
+
+
+def _version_callback(value: bool) -> None:
+    """Print the package version and exit."""
+    if not value:
+        return
+    console.print(f"distllm {_distllm_version()}")
+    raise typer.Exit()
+
+
+@app.callback()
+def _app_callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the distllm version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Show full tracebacks instead of short error messages.",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress informational output; errors only.",
+    ),
+) -> None:
+    """Distributed LLM Inference System."""
+    # Store the flags where the error handler and command bodies can read them.
+    import os
+
+    os.environ["DISTLLM_CLI_VERBOSE"] = "1" if verbose else ""
+    os.environ["DISTLLM_CLI_QUIET"] = "1" if quiet else ""
+
+
+def _friendly_error(exc: BaseException) -> None:
+    """Render an uncaught command error without a raw traceback.
+
+    A user who mistypes a model id should see one sentence and a next step, not
+    a 30-frame traceback from inside transformers. The full traceback is still
+    available with --verbose, and DISTLLM_CLI_VERBOSE=1.
+    """
+    import os
+    import traceback
+
+    if os.environ.get("DISTLLM_CLI_VERBOSE"):
+        traceback.print_exc()
+        return
+
+    message = str(exc).strip() or exc.__class__.__name__
+
+    # Pull the useful sentence out of the common library errors rather than
+    # printing the whole multi-line blob.
+    if "is not a local folder and is not a valid model identifier" in message:
+        model = message.split(" is not a local folder")[0].strip()
+        console.print(
+            f"[red]Model not found:[/red] {model}\n"
+            "It is not a local path and Hugging Face does not have it.\n"
+            "Find one that fits this machine with:\n"
+            "  [cyan]distllm model search[/cyan]"
+        )
+        return
+    if "Expecting value" in message or "JSONDecodeError" in exc.__class__.__name__:
+        console.print(
+            f"[red]Could not parse a server response:[/red] {message}\n"
+            "Check that the API server is the version you expect."
+        )
+        return
+    if isinstance(exc, (ConnectionError, TimeoutError)) or "Connection" in exc.__class__.__name__:
+        console.print(
+            f"[red]Connection failed:[/red] {message}\n"
+            "Is the server running? Start one with "
+            "[cyan]distllm cluster start --model <model>[/cyan]"
+        )
+        return
+
+    console.print(f"[red]Error:[/red] {message.splitlines()[0]}")
+    if len(message.splitlines()) > 1:
+        console.print("[dim]Run again with --verbose for the full traceback.[/dim]")
+    else:
+        console.print("[dim]Run again with --verbose for the full traceback.[/dim]")
+
+
+def main() -> None:
+    """Entry point for the distllm CLI.
+
+    Wraps ``app()`` so an unexpected exception prints a short message instead of
+    a traceback. Ctrl-C exits quietly.
+    """
+    try:
+        app()
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+    except SystemExit:
+        raise
+    except typer.Exit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - last-resort handler
+        _friendly_error(exc)
+        raise SystemExit(1) from None
+
+
+@app.command("shell")
+def shell(
+    model: str = typer.Option(
+        "distributed-llm", "--model", "-m", help="Model to chat with"
+    ),
+    host: str = typer.Option("localhost", "--host", help="API server host"),
+    port: int = typer.Option(8000, "--port", "-p", help="API server port"),
+    temperature: float = typer.Option(0.7, "--temp", help="Sampling temperature"),
+    max_tokens: int = typer.Option(1024, "--max-tokens", help="Max tokens per reply"),
+    session: str = typer.Option(
+        "", "--session", "-s", help="Resume a saved session by name"
+    ),
+):
+    """Interactive shell: slash commands, @file context, saved sessions.
+
+    The full-screen counterpart to `distllm chat`: /help lists the commands,
+    @path attaches a file to the next message, and every session is saved to
+    .distllm/sessions so it can be resumed with --session.
+    """
+    from distllm.cli.shell import load_session, run_shell
+
+    if session:
+        try:
+            restored = load_session(session)
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        model = restored.model or model
+        temperature = restored.temperature
+        max_tokens = restored.max_tokens
+
+    raise typer.Exit(
+        run_shell(
+            model=model,
+            base_url=f"http://{host}:{port}",
+            temperature=temperature,
+            max_tokens=max_tokens,
+            session_name=session,
+        )
+    )
+
+
+@app.command("quickstart")
+def quickstart(
+    model: str = typer.Option(
+        None, "--model", "-m", help="Model to run (default: largest that fits this machine)"
+    ),
+    query: str = typer.Option(
+        "", "--search", help="Bias the automatic model choice, e.g. 'code' or 'qwen'"
+    ),
+    port: int = typer.Option(50050, "--port", "-p", help="Coordinator gRPC port"),
+    api_port: int = typer.Option(8000, "--api-port", help="REST API port"),
+    no_start: bool = typer.Option(
+        False, "--no-start", help="Pick a model and show the command, do not start"
+    ),
+):
+    """Detect hardware, pick a model, start a cluster, verify it works.
+
+    The single command to run first. Equivalent to working out what fits, then
+    `cluster start --model … --local`, then polling /health by hand.
+    """
+    from distllm.cli.quickstart import run_quickstart
+
+    raise typer.Exit(
+        run_quickstart(
+            model=model,
+            query=query,
+            port=port,
+            api_port=api_port,
+            no_start=no_start,
+        )
+    )
+
+
+@app.command("selftest")
+def selftest(
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output (for CI)"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Treat warnings as failures"
+    ),
+):
+    """Verify this installation: entry points, imports, catalog, API.
+
+    Where `cli-doctor` inspects the machine (CUDA, ports, disk), this checks the
+    package itself — that every console script resolves, the modules import,
+    Hugging Face is reachable, and a real /health request succeeds.
+    """
+    from distllm.cli.selftest import run_selftest
+
+    raise typer.Exit(run_selftest(as_json=as_json, strict=strict))
 
 
 @app.command("completion")
@@ -110,7 +376,7 @@ Register-ArgumentCompleter -Native -CommandName distllm -ScriptBlock {
     console.print(f"[green]Generated {shell} completion script:[/green]")
     console.print()
     console.print(script)
-    console.print(f"[dim]Add this to your shell config file to enable autocomplete.[/dim]")
+    console.print("[dim]Add this to your shell config file to enable autocomplete.[/dim]")
 
 # ── Command groups ──────────────────────────────────────────────────────
 #
@@ -122,25 +388,31 @@ Register-ArgumentCompleter -Native -CommandName distllm -ScriptBlock {
 #   system     — daemons, diagnostics, logs, notifications
 #
 
-cluster_app = typer.Typer(help="Manage cluster: start, join, status, list-nodes, scale, drain, deploy")
-model_app = typer.Typer(help="Manage models: list, load, info, compress, adapters")
-benchmark_app = typer.Typer(help="Run benchmarks, compare results, profile inference")
-config_app = typer.Typer(help="Configuration, setup, webhooks, quotas, backups")
-security_app = typer.Typer(help="TLS certificates and cryptographic keys")
-system_app = typer.Typer(help="Daemons, diagnostics, logs, notifications, cost analysis")
-router_app = typer.Typer(help="Model router: rules, test, stats, patterns")
+# no_args_is_help makes a bare `distllm model` print its subcommands instead of
+# "Missing command." -- what every other CLI does, and what a user typing a
+# group name is asking for.
+cluster_app = typer.Typer(help="Manage cluster: start, join, status, list-nodes, scale, drain, deploy", no_args_is_help=True)
+model_app = typer.Typer(help="Manage models: list, load, info, compress, adapters", no_args_is_help=True)
+benchmark_app = typer.Typer(help="Run benchmarks, compare results, profile inference", no_args_is_help=True)
+config_app = typer.Typer(help="Configuration, setup, webhooks, quotas, backups", no_args_is_help=True)
+security_app = typer.Typer(help="TLS certificates and cryptographic keys", no_args_is_help=True)
+system_app = typer.Typer(help="Daemons, diagnostics, logs, notifications, cost analysis", no_args_is_help=True)
+router_app = typer.Typer(
+    help="Model router (no subcommands yet — rules/test/stats/patterns are not implemented)"
+)
 
 # Nested groups
 model_adapters_app = typer.Typer(help="Manage LoRA/QLoRA adapters")
 system_logs_app = typer.Typer(help="Stream and filter logs")
 
 # Module-owned groups (each module owns its Typer app; see the module files)
-from distllm.cli.verify import verify_app
-from distllm.cli.webhook import webhook_app
-from distllm.cli.quota import quota_app
 from distllm.cli.backup import backup_app
 from distllm.cli.cert import cert_app
 from distllm.cli.notify import notify_app
+from distllm.cli.profile_presets import profile_app
+from distllm.cli.quota import quota_app
+from distllm.cli.verify import verify_app
+from distllm.cli.webhook import webhook_app
 
 app.add_typer(cluster_app, name="cluster")
 app.add_typer(model_app, name="model")
@@ -159,6 +431,7 @@ benchmark_app.add_typer(verify_app, name="verify")
 config_app.add_typer(webhook_app, name="webhook")
 config_app.add_typer(quota_app, name="quota")
 config_app.add_typer(backup_app, name="backup")
+config_app.add_typer(profile_app, name="profile")
 security_app.add_typer(cert_app, name="cert")
 system_app.add_typer(system_logs_app, name="logs")
 system_app.add_typer(notify_app, name="notify")
@@ -176,7 +449,7 @@ def defrag_status(
 
     base_url = f"http://{host}:{port}"
     try:
-        resp = httpx.get(f"{base_url}/v1/defrag/status", timeout=5.0)
+        resp = httpx.get(f"{base_url}/v1/defrag/status", timeout=5.0, headers=_cli_auth_headers())
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -224,7 +497,7 @@ def defrag_run(
 
     base_url = f"http://{host}:{port}"
     try:
-        resp = httpx.post(f"{base_url}/v1/defrag/run", timeout=120.0)
+        resp = httpx.post(f"{base_url}/v1/defrag/run", timeout=120.0, headers=_cli_auth_headers())
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -259,7 +532,7 @@ def defrag_stats(
 
     base_url = f"http://{host}:{port}"
     try:
-        resp = httpx.get(f"{base_url}/v1/defrag/stats", timeout=5.0)
+        resp = httpx.get(f"{base_url}/v1/defrag/stats", timeout=5.0, headers=_cli_auth_headers())
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -429,7 +702,7 @@ def config_openapi(
     schema = fastapi_app.openapi()
 
     # Add DistLLM-specific metadata
-    schema["info"]["x-distllm-version"] = "0.4.0"
+    schema["info"]["x-distllm-version"] = _distllm_version()
     schema["info"]["x-sdk-version"] = "1.0.0"
 
     if format == "yaml":
@@ -470,6 +743,114 @@ def model_info(
     """Show detailed model information."""
     from distllm.cli.models import _model_info
     _model_info(host, port, model_id)
+
+
+@model_app.command("search")
+def model_search(
+    query: str = typer.Argument("", help="Search term, e.g. 'qwen' or 'code'"),
+    limit: int = typer.Option(15, "--limit", "-n", help="Max results to show"),
+    all_models: bool = typer.Option(
+        False, "--all", help="Show everything found, not just what fits this machine"
+    ),
+    dtype: str = typer.Option("float16", "--dtype", help="Assume this dtype for sizing"),
+    context: int = typer.Option(4096, "--context", help="Assume this context length"),
+    source: str = typer.Option(
+        "all", "--source", help="Catalog to search: hf, ollama, or all"
+    ),
+):
+    """Search public model catalogs and show what this machine can run.
+
+    Queries Hugging Face (and Ollama when available) for real models with real
+    parameter counts, then reports which fit the detected hardware, which do
+    not, and what quantization would make the latter fit.
+    """
+    from distllm.cli.onboard import _detect_hardware, _hardware_profile
+    from distllm.models.catalog import search_all, search_huggingface, search_ollama
+    from distllm.models.recommend import rank
+
+    hw = _hardware_profile(_detect_hardware())
+    if hw.is_cpu_only:
+        console.print(
+            "[yellow]No CUDA GPU detected — sizing against system RAM. "
+            "CPU inference is much slower.[/yellow]"
+        )
+    else:
+        console.print(
+            f"[dim]Target: {hw.gpu_name or 'GPU'} — "
+            f"{hw.total_vram_gb:.1f} GB VRAM across {hw.gpu_count} device(s)[/dim]"
+        )
+
+    if source == "hf":
+        found = search_huggingface(query, limit=max(limit * 3, 30))
+    elif source == "ollama":
+        found = search_ollama(query, limit=max(limit * 3, 30))
+    else:
+        found = search_all(query, limit=max(limit * 3, 30))
+
+    if not found:
+        console.print(
+            "[red]No models found.[/red] Check your connection, or try a "
+            "different search term."
+        )
+        raise typer.Exit(1)
+
+    pairs = [(c.model_id, c.params) for c in found if c.params]
+    by_id = {c.model_id: c for c in found}
+
+    if all_models:
+        table = Table(title=f"Search results for {query or '(all)'}")
+        table.add_column("Model", style="cyan")
+        table.add_column("Size", justify="right")
+        table.add_column("Downloads", justify="right")
+        table.add_column("Source")
+        for cand in found[:limit]:
+            table.add_row(
+                cand.model_id, cand.size_label, f"{cand.downloads:,}", cand.source
+            )
+        console.print(table)
+        return
+
+    fits, too_big = rank(
+        pairs, hw, dtype=dtype, context_tokens=context, max_results=limit
+    )
+
+    if fits:
+        table = Table(title="Runs on this machine — " + (query if query else "all " + str(len(found)) + " models"))
+        table.add_column("Model", style="green")
+        table.add_column("Params", justify="right")
+        table.add_column("Needs", justify="right")
+        table.add_column("VRAM", justify="right")
+        table.add_column("Notes", style="dim")
+        for fit in fits:
+            note = "; ".join(by_id[fit.model_id].notes) if fit.model_id in by_id else ""
+            table.add_row(
+                fit.model_id,
+                f"{fit.params / 1e9:.1f}B",
+                f"{fit.total_gb:.1f} GB",
+                f"{fit.utilisation * 100:.0f}%",
+                note or "; ".join(fit.notes),
+            )
+        console.print(table)
+    else:
+        console.print("[yellow]Nothing found fits this machine as-is.[/yellow]")
+
+    if too_big:
+        console.print()
+        table = Table(title="Too large — but these would fit quantized")
+        table.add_column("Model", style="yellow")
+        table.add_column("Needs", justify="right")
+        table.add_column("Options", style="dim")
+        for fit in too_big[:5]:
+            hint = next(
+                (n for n in fit.notes if "quantization" in n), "requires a bigger GPU"
+            )
+            table.add_row(fit.model_id, f"{fit.total_gb:.1f} GB", hint)
+        console.print(table)
+
+    console.print(
+        f"\n[dim]{len(fits)} fit / {len(too_big)} too large, from {len(found)} "
+        f"candidates. Load one with: distllm model load <id>[/dim]"
+    )
 
 
 @model_app.command("load")
@@ -593,7 +974,7 @@ def cluster_join(
 def cluster_leave(
     node_id: str = typer.Argument(..., help="Node ID to remove from cluster"),
     coordinator_host: str = typer.Option("localhost", "--coordinator", "-c", help="Coordinator hostname"),
-    coordinator_port: int = typer.Option(50050, "--port", "-p", help="Coordinator port"),
+    coordinator_port: int = typer.Option(8000, "--port", "-p", help="Coordinator REST API port (admin endpoints; default 8000)"),
 ):
     """Gracefully leave the cluster and shut down worker."""
     from distllm.cli.cluster import _cluster_leave
@@ -675,16 +1056,21 @@ def logs_stream(
 @model_app.command("compress")
 def model_compress(
     model: str = typer.Option(..., "--model", "-m", help="Model name or HuggingFace path"),
-    target: str = typer.Option("int4", "--target", "-t", help="Target precision (int4, int8, int4-awq, int4-gptq)"),
-    output: str = typer.Option("./compressed", "--output", "-o", help="Output directory for compressed model"),
+    target: str = typer.Option("int4", "--target", "-t", help="Target precision: fp16, fp32 (dtype cast). int8/int4/int4-awq/int4-gptq are rejected — no quantization pipeline in this build"),
+    output: str = typer.Option("./compressed", "--output", "-o", help="Output directory for the converted model"),
     tokenizer: str | None = typer.Option(None, "--tokenizer", help="Tokenizer name/path (defaults to model)"),
-    prune_ratio: float = typer.Option(0.0, "--prune", "-p", help="Structured pruning ratio (0.0-1.0)"),
-    calibration_samples: int = typer.Option(128, "--calibration-samples", help="Calibration samples for PTQ"),
-    method: str = typer.Option("awq", "--method", help="Quantization method (awq, gptq)"),
+    prune_ratio: float = typer.Option(0.0, "--prune", "-p", help="Ignored — pruning is not available in this build"),
+    calibration_samples: int = typer.Option(128, "--calibration-samples", help="Ignored — casting needs no calibration"),
+    method: str = typer.Option("none", "--method", help="Quantization method (awq, gptq). Both are rejected — no quantization pipeline in this build"),
     local: bool = typer.Option(True, "--local", "-l", help="Run in local mode (no cluster)"),
     trust_remote_code: bool = typer.Option(False, "--trust-remote-code", help="Allow loading remote code from HuggingFace models (security risk)"),
 ):
-    """Compress a model (AWQ/GPTQ INT4, INT8, pruning) and save to disk."""
+    """Cast a model to fp16/fp32 and save it to disk.
+
+    Quantized targets (int8, int4, int4-awq, int4-gptq) and AWQ/GPTQ methods
+    exit non-zero before downloading anything: the compression pipeline does
+    not exist in this build.
+    """
     from distllm.cli.compress import run_compress
     run_compress(
         model_name=model,
@@ -766,7 +1152,7 @@ def federate_train(
         # 2. Submit to coordinator for merging
         console.print("  Submitting to coordinator...")
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=30.0, headers=_cli_auth_headers()) as client:
                 resp = client.post(
                     f"{base_url}/v1/federated/rounds/submit",
                     json={
@@ -785,12 +1171,13 @@ def federate_train(
 
         # 3. Trigger merge if coordinator available
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=30.0, headers=_cli_auth_headers()) as client:
                 resp = client.post(f"{base_url}/v1/federated/rounds/merge")
                 if resp.status_code == 200:
                     data = resp.json()
                     console.print(f"  [green]Merged:[/green] {data.get('path', 'OK')}")
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     console.print("\n[green]Federated training complete[/green]")
@@ -805,7 +1192,7 @@ def federate_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=10.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/v1/federated/stats")
             resp.raise_for_status()
             stats = resp.json()
@@ -1089,6 +1476,7 @@ def system_coordinator(
     """Start the coordinator facade for distributed inference."""
     from loguru import logger
 
+    from distllm.cli.coordinator_serve import serve_coordinator
     from distllm.core.coordinator import Coordinator
     from distllm.core.debug import set_debug_mode
 
@@ -1114,9 +1502,9 @@ def system_coordinator(
                 result = c.generate(prompt, max_new_tokens=128)
                 print(f"\nResult: {result}")
         else:
-            c.start()
+            raise typer.Exit(serve_coordinator(c))
     else:
-        c.start()
+        raise typer.Exit(serve_coordinator(c))
 
 
 @system_app.command("api")
@@ -1130,8 +1518,9 @@ def system_api(
     no_auth: bool = typer.Option(False, "--no-auth", help="Disable API key authentication (development only)"),
 ):
     """Start the OpenAI-compatible REST API server."""
-    import uvicorn
     import os
+
+    import uvicorn
     from loguru import logger
 
     from distllm.api.server import app, create_coordinator
@@ -1203,7 +1592,7 @@ def system_slo_report(
     import httpx
     from rich.table import Table
     try:
-        resp = httpx.get(f"http://{host}:{port}/api/cluster/reputation", timeout=5)
+        resp = httpx.get(f"http://{host}:{port}/api/cluster/reputation", timeout=5, headers=_cli_auth_headers())
         data = resp.json()
         table = Table(title="Cluster SLO Report")
         table.add_column("Metric")
@@ -1214,6 +1603,7 @@ def system_slo_report(
         console = Console()
         console.print(table)
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         console = Console()
         console.print(f"[red]Failed to fetch SLO data: {e}[/red]")
 
@@ -1326,7 +1716,7 @@ def daas_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/metrics")
             resp.raise_for_status()
             metrics = resp.json()
@@ -1376,6 +1766,7 @@ def daas_benchmark(
                     resp.raise_for_status()
                     latencies.append(time.monotonic() - start)
                 except Exception:
+                    # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
                     errors += 1
 
         async with httpx.AsyncClient() as client:
@@ -1414,7 +1805,7 @@ def draft_fleet_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/v1/speculative/fleet")
             resp.raise_for_status()
             data = resp.json()
@@ -1458,7 +1849,7 @@ def draft_migration_status(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, headers=_cli_auth_headers()) as client:
             resp = client.get(f"http://{host}:{port}/v1/speculative/migration")
             resp.raise_for_status()
             data = resp.json()
@@ -1530,7 +1921,7 @@ def system_observe(
         distllm system observe --dashboard-port 3000    # Custom port
     """
     from distllm.cli.observe import run_observe
-    run_observe(
+    raise typer.Exit(run_observe(
         coordinator_url=coordinator_url,
         metrics_port=metrics_port,
         dashboard_port=dashboard_port,
@@ -1538,7 +1929,7 @@ def system_observe(
         prometheus_url=prometheus_url,
         metrics_only=metrics_only,
         console=console,
-    )
+    ))
 
 
 # ── Tune command group ──────────────────────────────────────────────────
@@ -1644,9 +2035,6 @@ def audit(
 
 
 if __name__ == "__main__":
-    app()
-
-
-def main():
-    """Entry point for the distllm CLI."""
-    app()
+    # Route through the same wrapper the console script uses, so running
+    # `python -m distllm.cli.main` behaves identically to `distllm`.
+    main()

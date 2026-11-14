@@ -31,9 +31,10 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     import torch
@@ -41,7 +42,6 @@ except ImportError:  # pragma: no cover
     torch = None  # type: ignore
 
 from loguru import logger
-
 
 # ---------------------------------------------------------------------------
 # Preference store

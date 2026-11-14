@@ -34,12 +34,26 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Install pip-audit
         run: |
           python -m pip install --upgrade pip
           pip install pip-audit
+
+      - name: Check requirements.lock covers every core dependency
+        # The Docker image installs requirements.lock, not pyproject, so a core
+        # dependency missing from the lock produces an image that builds fine
+        # and fails at runtime. Caught transformers, grpcio/protobuf and
+        # python-multipart this way one 20-minute rebuild at a time.
+        run: python scripts/ci/check_lock_completeness.py
+
+      - name: Reject dependencies on the shadowing package name
+        # The project publishes as "distributed-llm"; an unrelated "distllm"
+        # package exists on PyPI (1.0.2) and silently replaces this install.
+        # All ten integrations declared "distllm>=0.1.0" and CI installed the
+        # foreign package over the local one.
+        run: python scripts/ci/check_package_name.py
 
       - name: Install project (core dependency set)
         # Core deps only (fastapi, uvicorn, pydantic, httpx, pyjwt, numpy, ...).
@@ -49,8 +63,18 @@ jobs:
 
       - name: Run pip-audit (blocking)
         run: |
-          pip-audit --strict --desc --format json --output dep-audit.json
-          pip-audit --desc
+          # filelock 4.1.0 advisories (17 CVEs) are waived with expiry: 4.2.1
+          # does not exist on PyPI (4.1.0 is the latest release), filelock is a
+          # CI-tooling transitive dep (CacheControl <- pip-audit), NOT a project
+          # runtime dep, and the audit env is ephemeral. Setuptools advisories
+          # are fixed by the >=84.1.0 floor in pyproject.toml.
+          # Waiver expiry 2026-12-06: re-check upstream; if 4.2.1 ships, drop
+          # the waiver and floor filelock>=4.2.1 instead.
+          # NOTE: --ignore-vuln takes exactly one ID per flag (pip-audit CLI).
+          pip-audit --strict --desc --format json --output dep-audit.json \
+            --ignore-vuln CVE-2026-112906 --ignore-vuln CVE-2026-112907 --ignore-vuln CVE-2026-112908 --ignore-vuln CVE-2026-112909 --ignore-vuln CVE-2026-112910 --ignore-vuln CVE-2026-112911 --ignore-vuln CVE-2026-112912 --ignore-vuln CVE-2026-112913 --ignore-vuln CVE-2026-112914 --ignore-vuln CVE-2026-112915 --ignore-vuln CVE-2026-112934 --ignore-vuln CVE-2026-112935 --ignore-vuln CVE-2026-112937 --ignore-vuln CVE-2026-112938 --ignore-vuln CVE-2026-112939 --ignore-vuln CVE-2026-112940 --ignore-vuln CVE-2026-112941
+          pip-audit --desc \
+            --ignore-vuln CVE-2026-112906 --ignore-vuln CVE-2026-112907 --ignore-vuln CVE-2026-112908 --ignore-vuln CVE-2026-112909 --ignore-vuln CVE-2026-112910 --ignore-vuln CVE-2026-112911 --ignore-vuln CVE-2026-112912 --ignore-vuln CVE-2026-112913 --ignore-vuln CVE-2026-112914 --ignore-vuln CVE-2026-112915 --ignore-vuln CVE-2026-112934 --ignore-vuln CVE-2026-112935 --ignore-vuln CVE-2026-112937 --ignore-vuln CVE-2026-112938 --ignore-vuln CVE-2026-112939 --ignore-vuln CVE-2026-112940 --ignore-vuln CVE-2026-112941
 
       - name: Upload audit report
         if: always()

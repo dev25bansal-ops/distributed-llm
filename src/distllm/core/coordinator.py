@@ -15,23 +15,49 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import torch
 from loguru import logger
-from transformers import AutoTokenizer
 
-from distllm.core.subsystem_registry import SubsystemRegistry
+if TYPE_CHECKING:
+    from distllm.core.autoscaler import IntelligentAutoscaler
+
+# torch and transformers are ML-stack dependencies ([self-hosted] extra), but
+# this module sits on the coordinator startup path and both were imported
+# unconditionally, so a torch-free install could not start a coordinator at
+# all. All uses are inside methods; the deferral below keeps `import
+# distllm.core.coordinator` working and raises a message that names the fix
+# the moment torch is actually touched.
+class _MlStackNotInstalled:
+    def __init__(self, package: str) -> None:
+        self._package = package
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            f"{self._package} is required for local model loading. Install the "
+            "ML stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _MlStackNotInstalled("torch")  # type: ignore[assignment]
+
+try:
+    from transformers import AutoTokenizer
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    AutoTokenizer = _MlStackNotInstalled("transformers")  # type: ignore[assignment,misc]
+
+from distllm.config.settings import NodeRole
 from distllm.core.batch_scheduler import BatchScheduler
 from distllm.core.cache_manager import CacheManager
 from distllm.core.cluster_manager import ClusterManager
-from distllm.config.settings import NodeRole
 from distllm.core.coordinator_config import CoordinatorConfig
 from distllm.core.coordinator_config_wiring import CoordinatorConfigurator
 from distllm.core.coordinator_request import RequestHandler
 from distllm.core.debug import set_debug_mode
 from distllm.core.health_manager import HealthManager
-from distllm.errors import NotLeaderError
 from distllm.core.inference_engine import InferenceEngine, TokenGenerator
 from distllm.core.memory_defragmenter import (
     DefragConfig,
@@ -44,12 +70,14 @@ from distllm.core.model_router import ModelRouter
 from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.request_tracker import RequestTracker
 from distllm.core.resource_manager import ResourceManager
+from distllm.core.subsystem_registry import SubsystemRegistry
 from distllm.dist.federation import FederationConfig
 from distllm.dist.latency import LatencyTracker
 from distllm.dist.pipeline import PipelineOrchestrator
 from distllm.dist.recovery import NodeRecoveryManager
 from distllm.dist.reputation import ReputationSystem
 from distllm.dist.straggler import DetectionMethod, StragglerDetector
+from distllm.errors import NotLeaderError
 from distllm.models.partitioner import ModelPartitioner
 from distllm.security import hf_revision
 
@@ -66,6 +94,12 @@ _HEALTH_CHECK_INTERVAL = 10.0          # Background health check interval (secon
 _SEMANTIC_CACHE_MAX_ENTRIES = 10000    # Max entries in semantic cache
 _CARBON_CHECK_INTERVAL = 300.0         # Carbon migration check interval (seconds, 5 min)
 _STOP_TIMEOUT = 30.0                   # Graceful shutdown drain timeout (seconds)
+_DRAIN_STATE_FILE = "drain_state.json"  # operator drain intent, survives restarts
+
+# Serializes read-modify-write cycles on the drain-intent file: admin verbs
+# run on the API server's thread pool, so two concurrent drains would
+# otherwise race and one marker would be lost.
+_DRAIN_INTENT_LOCK = threading.Lock()
 
 
 class Coordinator:
@@ -98,6 +132,14 @@ class Coordinator:
                 discovery_mode=kwargs.get("discovery_mode"),
                 wide_area_config=kwargs.get("wide_area_config"),
                 plugin_system=kwargs.get("plugin_system"),
+                # HA surface: without these the constructor's ha_enabled
+                # branch never ran for kwargs-based construction, so the
+                # whole election/replication path was dead in production.
+                ha_enabled=kwargs.get("ha_enabled", False),
+                ha_peer_coordinators=kwargs.get("ha_peer_coordinators"),
+                ha_replication_peers=kwargs.get("ha_replication_peers"),
+                ha_heartbeat_interval_s=kwargs.get("ha_heartbeat_interval_s", 2.0),
+                ha_election_timeout_s=kwargs.get("ha_election_timeout_s", 10.0),
             )
         self.config = config or CoordinatorConfig(model_name="")
         self.model_name = self.config.model_name
@@ -108,6 +150,16 @@ class Coordinator:
         self.total_layers = 0
 
         self._resource_mgr = ResourceManager()
+        # Restore breaker state persisted at the last graceful shutdown
+        # (see stop() step 9b). Missing or corrupt state is fine — a fresh
+        # manager is the correct default.
+        try:
+            _cb_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+            _cb_path = os.path.join(_cb_dir, "circuit_breakers.json")
+            if os.path.isfile(_cb_path):
+                self._resource_mgr.load_state(_cb_path)
+        except Exception as e:
+            logger.warning(f"Failed to load circuit breaker state: {e}")
         self._cache_mgr = CacheManager()
         self._pipeline = PipelineOrchestrator(
             resource_mgr=self._resource_mgr,
@@ -216,6 +268,14 @@ class Coordinator:
         # High-availability election (delegated to CoordinatorElection)
         self._election = CoordinatorElection(self)
 
+        # Created BEFORE the HA block below: set_replication_peers reads
+        # self._coordinator._running to decide whether to start the
+        # replication task now or defer it, and this Event used to be created
+        # eight lines later — so enabling both ha_enabled and
+        # ha_replication_peers crashed the constructor with AttributeError.
+        self._running = threading.Event()
+        self._async_shutdown = asyncio.Event()
+
         # HA leader election + state replication — enabled from config so the
         # previously-unreachable enable_ha()/set_replication_peers() surface
         # actually runs in production.
@@ -233,8 +293,6 @@ class Coordinator:
         # Subsystem lifecycle manager is created at the top of __init__
         # (before the StragglerDetector callback is wired); it is available
         # here for the HA/replication paths below.
-        self._running = threading.Event()
-        self._async_shutdown = asyncio.Event()
         self._request_results: dict[str, str] = {}
         self._request_events: dict[str, threading.Event] = {}
         self._request_lock = threading.Lock()  # Protects _request_results and _request_events
@@ -319,7 +377,12 @@ class Coordinator:
         self.draft_model = None
         # Optional metrics exporter (set by the API server when wired);
         # the pipeline guards with `if c.metrics_exporter`.
-        self.metrics_exporter = None
+        # Take it from the config: the constructor used to hard-set None
+        # here after storing the kwarg in CoordinatorConfig, which discarded
+        # the exporter the API server passed in — making every
+        # `if c.metrics_exporter:` write in request_pipeline.py dead code and
+        # leaving distllm_tokens_generated_total and friends frozen at zero.
+        self.metrics_exporter = self.config.metrics_exporter
         # SelfOptimizingEngine hook is wired later; the pipeline guards
         # with `if c._self_optimizing`.
         self._self_optimizing = None
@@ -336,8 +399,8 @@ class Coordinator:
         self._multi_model: Any = None
         mmc = kwargs.get("multi_model_config")
         if mmc is not None and getattr(mmc, "enabled", False):
-            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
             from distllm.core.coordinator_multi_model import MultiModelManager
+            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
 
             reg = _MMRegistry(max_models=getattr(mmc, "max_models", 4))
             for name, path in (getattr(mmc, "models", {}) or {}).items():
@@ -378,6 +441,7 @@ class Coordinator:
                 hb = GPUHeartbeat(node_id=node_id)
                 self._auto_healer.record_heartbeat(hb)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     def _on_node_redistribute(self, node_id: str, plan: Any) -> None:
@@ -621,6 +685,89 @@ class Coordinator:
             expert_ids=expert_ids, cluster_id=cluster_id,
             cluster_key=cluster_key,
         )
+        # A node re-registering with the same id inherits the operator drain
+        # intent persisted before a restart. Before this hook, draining was
+        # pure in-memory ResourceManager state: a drained node came back
+        # fully listed and routable after any coordinator restart, and a
+        # just-drained node was routable again after HA failover (whose
+        # snapshot apply re-registers through here too).
+        self._enforce_drain_intent(node_id)
+
+    # ── Operator drain intent (survives restarts) ─────────────────────
+    #
+    # ``ResourceManager._draining_nodes`` mixes two kinds of entries:
+    # transient circuit-breaker cooldowns (added by record_failure, cleared
+    # by the cooldown/health paths) and operator intent (added by the admin
+    # drain/offline verbs, meant to last until an explicit undrain). Only
+    # the latter is persisted — otherwise a node that merely tripped its
+    # breaker once would come back from a restart forced-draining forever.
+
+    def _drain_state_path(self) -> str:
+        state_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+        return os.path.join(state_dir, _DRAIN_STATE_FILE)
+
+    def _read_drain_intent(self) -> set[str]:
+        """Operator drain intent as persisted to disk (empty on any problem)."""
+        import json
+        try:
+            with open(self._drain_state_path(), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return set()
+        nodes = data.get("draining_nodes") if isinstance(data, dict) else None
+        if not isinstance(nodes, list):
+            return set()
+        return {str(n) for n in nodes}
+
+    def _write_drain_intent(self, nodes: set[str]) -> None:
+        import json
+        path = self._drain_state_path()
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(
+                    {"draining_nodes": sorted(nodes), "updated_at": time.time()}, f
+                )
+        except OSError as e:
+            logger.warning(f"Could not persist drain state to {path}: {e}")
+
+    def record_drain_intent(self, node_id: str) -> None:
+        """Persist that *node_id* was drained by an operator.
+
+        Called by the admin drain/offline verbs; re-applied when the node
+        (re-)registers after a coordinator restart.
+        """
+        with _DRAIN_INTENT_LOCK:
+            nodes = self._read_drain_intent()
+            nodes.add(str(node_id))
+            self._write_drain_intent(nodes)
+
+    def clear_drain_intent(self, node_id: str) -> None:
+        """Drop a persisted drain marker (undrain/recover/deregister)."""
+        with _DRAIN_INTENT_LOCK:
+            nodes = self._read_drain_intent()
+            nodes.discard(str(node_id))
+            self._write_drain_intent(nodes)
+
+    def _enforce_drain_intent(self, node_id: str) -> None:
+        """Re-apply a persisted drain marker to a freshly registered node.
+
+        An operator drain must not dissolve because the coordinator (or the
+        node process) restarted — the point of draining is to keep new work
+        off the node until an operator undrains it explicitly.
+        """
+        if str(node_id) not in self._read_drain_intent():
+            return
+        resource_mgr = getattr(self, "_resource_mgr", None)
+        if resource_mgr is not None and hasattr(resource_mgr, "mark_node_draining"):
+            try:
+                resource_mgr.mark_node_draining(node_id)
+                logger.info(
+                    f"Re-applied persisted drain state to re-registered node {node_id}"
+                )
+            except Exception:
+                logger.warning(f"Could not re-apply drain state for {node_id}")
 
     # ── Generation (delegated to RequestHandler) ──
 
@@ -831,6 +978,7 @@ class Coordinator:
             temps = self._batch_scheduler.get_active_temperatures()
             return sum(temps) / len(temps) if temps else None
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def _get_paged_backends(self) -> list[Any]:
@@ -1050,8 +1198,8 @@ class Coordinator:
             "memory_budget_gb": memory_budget_gb,
         }
         if self._multi_model is None or getattr(self._multi_model, "registry", None) is None:
-            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
             from distllm.core.coordinator_multi_model import MultiModelManager
+            from distllm.core.multi_model_serving import ModelRegistry as _MMRegistry
 
             self._multi_model = MultiModelManager(
                 model_name=self.model_name,
@@ -1126,6 +1274,7 @@ class Coordinator:
                 from distllm.core.monitor import SystemMonitor
                 monitor = SystemMonitor()
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 monitor = False
             self._system_monitor = monitor
         return monitor or None
@@ -1152,6 +1301,7 @@ class Coordinator:
                 raw = gpu_info.get("utilization_gpu")
                 gpu_util = float(raw) if raw is not None else None
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 gpu_util = None
         if gpu_util is None:
             gpu_util = min(100.0, (active + pending) / max_batch * 100.0)
@@ -1509,6 +1659,7 @@ class Coordinator:
                 try:
                     await self._async_shutdown.wait()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
                 finally:
                     if on_stop:
@@ -1660,6 +1811,20 @@ class Coordinator:
             self._save_shutdown_state()
         except Exception as e:
             logger.warning(f"Failed to save shutdown state: {e}")
+
+        # 9b. Persist circuit breaker state — ResourceManager.save_state had
+        # no callers anywhere in src/, so failure counts and cooldowns were
+        # rebuilt from zero after every restart, immediately re-probing nodes
+        # the breaker had quarantined. Same protected dir as the shutdown
+        # state; failure to persist must not block shutdown.
+        try:
+            state_dir = os.environ.get("DISTLLM_DATA_DIR", os.path.expanduser("~/.distllm"))
+            os.makedirs(state_dir, exist_ok=True)
+            self._resource_mgr.save_state(
+                os.path.join(state_dir, "circuit_breakers.json")
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save circuit breaker state: {e}")
 
         logger.info("Graceful shutdown complete")
 

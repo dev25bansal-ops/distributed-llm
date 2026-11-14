@@ -6,6 +6,18 @@ from unittest.mock import patch
 
 import pytest
 
+# The distllm-openai-agents integration lives in its own distribution
+# (integrations/openai-agents) and CI's [dev,testing] install does not include
+# it, so all 15 tests here failed with ModuleNotFoundError rather than testing
+# behaviour. The gate is the integration package itself, not its optional
+# `agents`/`openai` dependencies: importing it works without them because the
+# model module imports them lazily inside methods, and the tests exercise that
+# degradation path deliberately.
+pytestmark = pytest.mark.skipif(
+    __import__("importlib").util.find_spec("distllm.integrations.openai_agents") is None,
+    reason="needs the integration installed: pip install -e integrations/openai-agents",
+)
+
 
 # ---------------------------------------------------------------------------
 # Test DistLLMAgentModel creation

@@ -10,8 +10,12 @@ import logging
 import typer
 from rich.console import Console
 
-from distllm.backends.registry import list_available_backends
-from distllm.verification.runner import AccuracyVerifier
+# NOTE: distllm.backends.registry and distllm.verification.runner are imported
+# inside the command bodies, not here. They pull in backends/protocol, which
+# does a top-level `import torch`; importing them at module scope made every
+# `distllm` invocation require torch just to render --help, so a plain
+# `pip install "distributed-llm[cli]"` produced a console script that died with
+# ModuleNotFoundError before it could do anything.
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,8 @@ def verify_run(
         logger.warning(
             "--trust-remote-code enabled: loading arbitrary code from HuggingFace repos (RCE risk)"
         )
+
+    from distllm.verification.runner import AccuracyVerifier
 
     verifier = AccuracyVerifier(
         model_name=model,
@@ -79,6 +85,8 @@ def verify_run(
 @verify_app.command("list-backends")
 def verify_list_backends() -> None:
     """List available inference backends."""
+    from distllm.backends.registry import list_available_backends
+
     backends = list_available_backends()
     if not backends:
         console.print("[yellow]No backends available[/]")

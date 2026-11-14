@@ -88,15 +88,14 @@ class TestTensorTransport:
     def test_init_auto_falls_to_grpc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """AUTO falls through to gRPC when NCCL+QUIC are unavailable.
 
-        aioquic may be installed on this machine, so its absence is
-        simulated by nulling ``sys.modules["aioquic"]`` (an ``import
-        aioquic`` then raises ImportError, which ``is_quic_available``
-        translates to ``False``).  No GPU is present, so NCCL is also
-        unavailable and the fallback path is exercised for real.
+        Availability is decided once at import (``_AIOQUIC_AVAILABLE``),
+        which is_quic_available() reads, so that flag is patched here. No GPU
+        is present, so NCCL is also unavailable and the fallback path is
+        exercised for real.
         """
-        import sys
+        from distllm.dist import quic_transport
 
-        monkeypatch.setitem(sys.modules, "aioquic", None)
+        monkeypatch.setattr(quic_transport, "_AIOQUIC_AVAILABLE", False)
         t = TensorTransport(backend=TransportBackend.AUTO)
         assert t.is_available is False
         assert t._quic_client is None
@@ -125,14 +124,12 @@ class TestTensorTransport:
     def test_is_quic_supported(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without aioquic installed, QUIC is not supported.
 
-        aioquic may be installed on this machine, so its absence is
-        simulated by nulling ``sys.modules["aioquic"]`` — an ``import
-        aioquic`` then raises ImportError, which the property translates
-        to ``False``.
+        Availability is decided once at import (``_AIOQUIC_AVAILABLE``),
+        which the property reads, so that flag is patched here.
         """
-        import sys
+        from distllm.dist import quic_transport
 
-        monkeypatch.setitem(sys.modules, "aioquic", None)
+        monkeypatch.setattr(quic_transport, "_AIOQUIC_AVAILABLE", False)
         t = TensorTransport(backend=TransportBackend.GRPC)
         assert t.is_quic_supported is False
         t.destroy()

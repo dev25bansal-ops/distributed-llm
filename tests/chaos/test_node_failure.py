@@ -16,6 +16,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 NodeClient = object  # gRPC removed
+
+# The gRPC NodeClient was deleted from src/, and this module kept a bare
+# `NodeClient = object` stub. Four tests here still subclass it and
+# `patch.object(NodeClient, "health_check")` -- patching object raises
+# AttributeError and subclassing it gives a class with no gRPC behaviour, so
+# they fail with an error rather than an assertion. They describe a client that
+# no longer exists and cannot be repaired without reintroducing it.
+# Quarantined rather than deleted so the gap is visible: if a non-gRPC node
+# client ever lands, these are the tests to revive.
+_NEEDS_GRPC_CLIENT = pytest.mark.xfail(
+    reason="subclasses the removed gRPC NodeClient (stubbed to object); needs a "
+    "real node-client class to test against",
+    strict=False,
+)
 from distllm.core.coordinator import Coordinator
 from distllm.core.resource_manager import NodeRegistration
 
@@ -110,6 +124,7 @@ class TestNodeFailure:
         return coord
 
     @patch.object(NodeClient, "health_check")
+    @_NEEDS_GRPC_CLIENT
     def test_node_crash_detected_by_health_check(self, mock_health):
         """Health check should detect a crashed node and mark it unhealthy."""
         # Make first call succeed (node-0), second fails (node-1)
@@ -125,6 +140,7 @@ class TestNodeFailure:
         assert health["node-1"]["healthy"] is False
 
     @patch.object(NodeClient, "health_check")
+    @_NEEDS_GRPC_CLIENT
     def test_node_recovery_after_crash(self, mock_health):
         """Node should be marked healthy again after recovery."""
         # First call: node-0 healthy, node-1 fails
@@ -163,6 +179,7 @@ class TestNetworkPartition:
     """Verify behavior during and after network partitions."""
 
     @patch.object(NodeClient, "__init__", return_value=None)
+    @_NEEDS_GRPC_CLIENT
     def test_grpc_timeout_behavior(self, mock_init):
         """gRPC calls should timeout within configured limit, not hang forever."""
         client = NodeClient.__new__(NodeClient)
@@ -179,6 +196,7 @@ class TestNetworkPartition:
         assert elapsed < 15, f"Health check took too long: {elapsed:.1f}s"
 
     @patch.object(NodeClient, "__init__", return_value=None)
+    @_NEEDS_GRPC_CLIENT
     def test_repeated_health_checks_during_partition(self, mock_init):
         """Health checks should continue failing during partition, not accumulate errors."""
         errors = []

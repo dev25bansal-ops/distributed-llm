@@ -1,0 +1,31 @@
+# Files that belong in the sdist but are not Python packages.
+#
+# The wheel ships the generated distllm/dist/node_pb2*.py, but nothing in the
+# wheel can regenerate them: node.proto lived outside the source tree the sdist
+# packaged, so `pip install` from the sdist produced a package whose gRPC layer
+# imported a module that was never built. Regenerating requires the .proto, so
+# it has to travel with the source.
+include proto/*.proto
+# The package-data copy that actually ships in the wheel (see the
+# [tool.setuptools.package-data] comment in pyproject.toml).
+include src/distllm/dist/*.proto
+# Dashboard HTML/CSS/JS and the committed correctness-registry evidence are
+# declared as package data; listing them here too keeps the sdist complete
+# even for tools that only honour MANIFEST.in.
+recursive-include src/distllm/dashboard/static *
+recursive-include src/distllm/dashboard/static_v2 *
+include src/distllm/core/correctness_registry.jsonl
+
+# Released builds carry the changelog; docs and CI config do not need to.
+include CHANGELOG.md
+include README.md
+include LICENSE
+
+# Packaging metadata a downstream rebuild reads.
+include pyproject.toml
+include requirements.lock
+
+exclude .tmp*
+exclude .taste-skill/*
+prune .claude
+prune tests

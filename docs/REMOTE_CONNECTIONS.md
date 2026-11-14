@@ -11,7 +11,7 @@ All devices can connect to the **same coordinator** at the same time:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    YOUR LAPTOP (Coordinator)                     │
-│                    192.168.1.59 / 100.68.122.100                │
+│                    192.168.1.X / 100.68.122.X                │
 │                                                                 │
 │  ┌──────────────────────┐    ┌──────────────────────┐          │
 │  │   API Server :8000   │    │  gRPC Server :50050  │          │
@@ -61,7 +61,7 @@ ngrok http 8000
 
 ```powershell
 $env:API_KEY = "dev"
-distllm cluster join --coordinator 192.168.1.59 --port 50050
+distllm cluster join --coordinator 192.168.1.X --port 50050
 ```
 
 #### Step 4: Connect MacBook (Tailscale)
@@ -70,7 +70,7 @@ distllm cluster join --coordinator 192.168.1.59 --port 50050
 # Install Tailscale on MacBook
 # Login to same account as this laptop
 export API_KEY="dev"
-distllm cluster join --coordinator 100.68.122.100 --port 50050
+distllm cluster join --coordinator 100.68.122.X --port 50050
 ```
 
 #### Step 5: Use from Colab
@@ -95,7 +95,7 @@ Same as Colab — paste the same code in a Kaggle notebook cell.
 #### Step 7: Use from Phone
 
 - **Option A**: Open `https://abc123.ngrok-free.app` in phone browser
-- **Option B**: Install Tailscale on phone, use `http://100.68.122.100:8000`
+- **Option B**: Install Tailscale on phone, use `http://100.68.122.X:8000`
 
 ### Important Notes
 
@@ -171,10 +171,10 @@ pip install distributed-llm
 export API_KEY="dev"
 
 # Connect as worker
-distllm cluster join --coordinator 192.168.1.59 --port 50050
+distllm cluster join --coordinator 192.168.1.X --port 50050
 
 # Or just use the API
-curl -H "Authorization: Bearer dev" http://192.168.1.59:8000/v1/models
+curl -H "Authorization: Bearer dev" http://192.168.1.X:8000/v1/models
 ```
 
 ### Option B: Tailscale (works from anywhere)
@@ -189,10 +189,10 @@ curl -H "Authorization: Bearer dev" http://192.168.1.59:8000/v1/models
 
 # 4. Connect
 export API_KEY="dev"
-distllm cluster join --coordinator 100.68.122.100 --port 50050
+distllm cluster join --coordinator 100.68.122.X --port 50050
 
 # 5. Use the API
-curl -H "Authorization: Bearer dev" http://100.68.122.100:8000/v1/chat/completions \
+curl -H "Authorization: Bearer dev" http://100.68.122.X:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"Qwen/Qwen2.5-3B","messages":[{"role":"user","content":"Hello!"}]}'
 ```
@@ -203,11 +203,12 @@ curl -H "Authorization: Bearer dev" http://100.68.122.100:8000/v1/chat/completio
 # Install
 pip install distributed-llm
 
-# Start with llama.cpp backend (works on M1/M2/M3)
-distllm system api --model Qwen/Qwen2.5-3B --local --port 8000 --no-auth
+# Start with llama.cpp backend (works on M1/M2/M3). Auth is always required.
+export API_KEY="choose-a-secret-value"
+distllm system api --model Qwen/Qwen2.5-3B --local --port 8000
 
 # Or connect as worker to your laptop's coordinator
-distllm cluster join --coordinator 192.168.1.59 --port 50050
+distllm cluster join --coordinator 192.168.1.X --port 50050
 ```
 
 ---
@@ -224,7 +225,7 @@ distllm cluster join --coordinator 192.168.1.59 --port 50050
 4. Make a request:
 
 ```
-POST http://100.68.122.100:8000/v1/chat/completions
+POST http://100.68.122.X:8000/v1/chat/completions
 Authorization: Bearer dev
 Content-Type: application/json
 

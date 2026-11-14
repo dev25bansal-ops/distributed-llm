@@ -50,7 +50,7 @@ python benchmarks/run.py --benchmark memory-efficiency --model roneneldan/TinySt
 python benchmarks/run.py --benchmark kv-cache-hit-rate --model roneneldan/TinyStories-1M --device cuda
 python benchmarks/run.py --benchmark spec-accept-rate
 
-# distllm engine path (benchmarks/engine_bench.py):
+# engine path (benchmarks/engine_bench.py):
 python benchmarks/engine_bench.py --device cuda --output benchmarks/results/engine-cuda.json
 python benchmarks/engine_bench.py --device cpu --output benchmarks/results/engine-cpu.json
 ```
@@ -149,7 +149,7 @@ path re-forwarded the full sequence each step (O(n²) total work).
 
 ### Harness
 
-New `benchmarks/kv_reuse_bench.py` measures engine paths and raw HF
+New `benchmarks/kv_reuse_bench.py` **(harness not committed — see the annotated reproduction section below)** measures engine paths and raw HF
 baselines **in one process** (same weights/tokenizer/device/dtype), 8 prompts,
 64 new tokens, greedy (temperature 0). Tokens are derived from an instrumented
 forward probe (`cache_len + input_len`, authoritative for both decode styles).
@@ -278,8 +278,13 @@ set HF_HOME=D:\distributed-llm\.hf_cache   # or export on POSIX
 set HF_HUB_OFFLINE=1
 python benchmarks/run.py --benchmark all --model roneneldan/TinyStories-1M --device cuda
 python benchmarks/engine_bench.py --device cpu
-python benchmarks/kv_reuse_bench.py --device cpu --output benchmarks/results/kv-reuse-cpu.json
-python benchmarks/kv_reuse_bench.py --device cuda --output benchmarks/results/kv-reuse-cuda.json
+# NOTE: benchmarks/kv_reuse_bench.py was never committed to the repository.
+# The kv-reuse numbers in this file are reported measurements whose harness
+# is not in the tree; they cannot be re-run as previously documented until
+# that harness is contributed. benchmarks/engine_bench.py is the closest
+# committed tool (engine-path throughput) but it is not the same harness.
+# python benchmarks/kv_reuse_bench.py --device cpu --output benchmarks/results/kv-reuse-cpu.json
+# python benchmarks/kv_reuse_bench.py --device cuda --output benchmarks/results/kv-reuse-cuda.json
 ```
 
 ## Fixes required to make the suite run (2026-08-24)

@@ -23,10 +23,10 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 def compute_logit_cosine(
     draft_logits: torch.Tensor | None,
     target_logits: torch.Tensor | None,
@@ -47,6 +47,7 @@ def compute_logit_cosine(
         d = draft_logits.reshape(-1).float()
         t = target_logits.reshape(-1).float()
     except Exception:
+        # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
         return None
     if d.numel() == 0 or t.numel() == 0:
         return None

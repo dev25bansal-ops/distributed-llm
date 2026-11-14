@@ -6,7 +6,9 @@ of reusable buffers sized for common batch shapes.
 
 from __future__ import annotations
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from collections import defaultdict
 
 
@@ -20,9 +22,14 @@ class TensorPool:
     def get_buffer(
         self,
         shape: tuple[int, ...],
-        dtype: torch.dtype = torch.long,
+        dtype: torch.dtype | None = None,
         device: str = "cpu",
     ) -> torch.Tensor:
+        # Resolved in the body: default values evaluate at def time, so
+        # `torch.long` in the signature made the whole module unimportable
+        # without torch.
+        if dtype is None:
+            dtype = torch.long
         pool_key = (device, dtype)
         pool = self._pools[pool_key]
 
@@ -80,9 +87,11 @@ class GPUMemoryPool:
     def allocate(
         self,
         shape: tuple[int, ...],
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         device: str = "cuda",
     ) -> torch.Tensor | None:
+        if dtype is None:
+            dtype = torch.float16
         required_bytes = 1
         for s in shape:
             required_bytes *= s

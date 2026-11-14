@@ -100,6 +100,7 @@ class PipelineNode:
             self.last_health_time = time.time()
             self.last_heartbeat = self.last_health_time
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self.is_healthy = False
             self.last_health_time = time.time()
         return self.is_healthy
@@ -417,11 +418,36 @@ class PipelineOrchestrator:
         start_time = time.time()
         self._stats["pipeline_runs"] += 1
 
-        with self._lock:
-            ordered_nodes = [
-                self._nodes[nid] for nid in self._node_order
-                if nid in self._nodes and self._nodes[nid].is_healthy
-            ]
+        # Redundancy engages here: with redundancy > 1 the same stage is
+        # fanned out to the peers covering its layer range and the first
+        # successful response wins.  Before this wiring existed, the
+        # ``redundancy`` config knob (coordinator --redundancy) reached no
+        # code path and every stage ran exactly once.
+        if self._redundancy > 1:
+            from distllm.dist.redundant import RedundantExecutor
+
+            try:
+                result = RedundantExecutor(
+                    self,
+                    redundancy=self._redundancy,
+                    timeout_s=self._timeout,
+                ).run_pipeline(input_ids, node_kv_caches, request_id)
+            except Exception:
+                self._stats["errors"] += 1
+                raise
+            self._stats["total_latency_ms"] += (time.time() - start_time) * 1000
+            return result
+
+        # A draining node keeps finishing in-flight requests but must not
+        # receive NEW work. The serving path used to filter on is_healthy
+        # only, so `admin drain` marked the node in the ResourceManager and
+        # nothing consulted it — drained nodes kept taking fresh requests
+        # and drain could never actually quiesce a node for removal.
+        ordered_nodes = [
+            node for node in (
+                self._nodes.get(nid) for nid in self.serving_node_ids()
+            ) if node is not None
+        ]
 
         if not ordered_nodes:
             raise RuntimeError("No healthy nodes in pipeline")
@@ -533,11 +559,16 @@ class PipelineOrchestrator:
         if micro_batch_size is None:
             micro_batch_size = self._default_micro_batch_size
 
-        with self._lock:
-            ordered_nodes = [
-                self._nodes[nid] for nid in self._node_order
-                if nid in self._nodes and self._nodes[nid].is_healthy
-            ]
+        # Same serving filter as the sequential path (``run_pipeline``):
+        # healthy AND not draining. The overlap/micro-batched path is what
+        # request_pipeline actually calls when overlap or 1F1B is enabled,
+        # so without this a drained node kept receiving NEW micro-batches
+        # even though `admin drain` and the sequential path honoured it.
+        ordered_nodes = [
+            node for node in (
+                self._nodes.get(nid) for nid in self.serving_node_ids()
+            ) if node is not None
+        ]
 
         if not ordered_nodes:
             raise RuntimeError("No healthy nodes in pipeline")
@@ -858,6 +889,38 @@ class PipelineOrchestrator:
         """Return list of healthy node IDs."""
         with self._lock:
             return [nid for nid, n in self._nodes.items() if n.is_healthy]
+
+    def _draining_node_ids(self) -> set[str]:
+        """Node IDs the ResourceManager has marked draining.
+
+        Every serving path filters these out of its node set (in-flight
+        requests still complete on the node they started on, because the
+        node list is snapshotted per request). Missing/degraded resource
+        managers yield an empty set — draining is operator intent and must
+        never crash a request path.
+        """
+        if self._resource_mgr is None or not hasattr(self._resource_mgr, "get_draining_nodes"):
+            return set()
+        try:
+            return set(self._resource_mgr.get_draining_nodes())
+        except Exception:
+            return set()
+
+    def serving_node_ids(self) -> list[str]:
+        """Node IDs eligible for NEW work: healthy and not draining.
+
+        The single source of truth for the serving filter, shared by the
+        sequential and the overlapped/micro-batched paths so `admin drain`
+        means the same thing on both.
+        """
+        draining = self._draining_node_ids()
+        with self._lock:
+            return [
+                nid for nid in self._node_order
+                if nid in self._nodes
+                and self._nodes[nid].is_healthy
+                and nid not in draining
+            ]
 
     def mark_node_healthy(self, node_id: str) -> None:
         with self._lock:

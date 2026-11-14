@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Benchmark: Ray pipeline performance.
 
-Since gRPC has been removed in favor of Ray-native transport, this script
-benchmarks Ray object store latency, remote call overhead, and end-to-end
+gRPC is still used for inter-node transport (see distllm/dist/grpc_client.py
+and api/grpc_bridge.py), so this script is not a gRPC-vs-Ray comparison: it
+measures Ray object store latency, remote call overhead, and end-to-end
 generation throughput.
 
 Usage:
@@ -49,7 +50,10 @@ def benchmark_ray_put_latency(
 
     results = {}
     for mb in size_mb:
-        tensor = torch.randn(int(mb * 256 * 1024), dtype=torch.float16)
+        # float16 = 2 bytes/element, so a size_mb-megabyte tensor has
+        # size_mb * 1024 * 1024 / 2 elements (~0.5 MiB per 256K elements,
+        # i.e. int(mb * 512 * 1024) elements), not int(mb * 256 * 1024).
+        tensor = torch.randn(int(mb * 512 * 1024), dtype=torch.float16)
         latencies = []
         for _ in range(num_trials):
             start = time.perf_counter()
@@ -128,7 +132,7 @@ if RAY_AVAILABLE:
             self.stage_id = stage_id
             self.delay_s = delay_s
 
-        def forward(self, x: Optional[torch.Tensor]) -> torch.Tensor:
+        def forward(self, x: torch.Tensor | None) -> torch.Tensor:
             if self.delay_s > 0:
                 time.sleep(self.delay_s)
             if x is None:
@@ -140,7 +144,7 @@ else:
             self.stage_id = stage_id
             self.delay_s = delay_s
 
-        def forward(self, x: Optional[torch.Tensor]) -> torch.Tensor:
+        def forward(self, x: torch.Tensor | None) -> torch.Tensor:
             if self.delay_s > 0:
                 time.sleep(self.delay_s)
             if x is None:

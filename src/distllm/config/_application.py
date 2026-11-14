@@ -1,6 +1,7 @@
 """RAG pipeline, agent loop, and plugin system configuration classes."""
 
 from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 __all__ = [

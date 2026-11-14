@@ -71,9 +71,10 @@ test.describe('Accessibility', () => {
     test('skip to content link should exist', async ({ page }) => {
         await page.goto('/');
         const skipLink = page.locator('.skip-link, a[href="#main"]');
-        // Skip link should exist for screen readers
-        const exists = await skipLink.count();
-        expect(exists).toBeGreaterThanOrEqual(0); // May not exist yet
+        // The page ships a skip link (index.html: a.skip-link[href="#main"]), so
+        // this must be a real assertion — the previous `>= 0` could never fail.
+        await expect(skipLink.first()).toBeAttached();
+        await expect(page.locator('#main')).toBeAttached();
     });
 });
 

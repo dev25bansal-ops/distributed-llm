@@ -6,11 +6,11 @@
 #
 annotated-types==0.7.0
     # via pydantic
-anyio==4.13.0
+anyio==4.14.2
     # via
     #   httpx
     #   starlette
-certifi==2026.4.22
+certifi==2026.10.23
     # via
     #   httpcore
     #   httpx
@@ -32,6 +32,8 @@ httpcore==1.0.9
     # via httpx
 httpx==0.28.1
     # via distllm (pyproject.toml)
+grpcio==1.85.1
+    # via distllm (pyproject.toml)
 idna==3.15
     # via
     #   anyio
@@ -42,8 +44,12 @@ markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-numpy==2.4.6
+numpy>=2.0,<2.3
     # via distllm (pyproject.toml)
+protobuf==7.36.2
+    # via
+    #   distllm (pyproject.toml)
+    #   grpcio-tools
 opentelemetry-api==1.42.0
     # via
     #   distllm (pyproject.toml)
@@ -68,7 +74,7 @@ prometheus-client==0.25.0
     #   opentelemetry-exporter-prometheus
 psutil==7.2.2
     # via distllm (pyproject.toml)
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via distllm (pyproject.toml)
 pydantic==2.13.4
     # via
@@ -83,13 +89,16 @@ pygments==2.20.0
     # via rich
 python-dotenv==1.2.2
     # via pydantic-settings
+python-multipart==0.0.32
+    # via distllm (pyproject.toml) -- FastAPI raises at import time without it;
+    # 0.0.33 requires Python >=3.11 and the image is 3.10.
 pyyaml==6.0.3
     # via distllm (pyproject.toml)
 rich==15.0.0
     # via typer
 shellingham==1.5.4
     # via typer
-starlette==1.0.0
+starlette==1.10.0
     # via fastapi
 typer==0.25.1
     # via distllm (pyproject.toml)

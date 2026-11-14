@@ -40,8 +40,9 @@ gossip wire is a transport concern and is out of scope for this task; the
 from __future__ import annotations
 
 import time
+from collections.abc import Hashable
 from dataclasses import dataclass, field
-from typing import Any, Generic, Hashable, TypeVar
+from typing import Any, Generic, TypeVar
 
 # ---------------------------------------------------------------------------
 # Timestamp (HLC value)
@@ -103,7 +104,7 @@ class Timestamp:
         return [self.physical_ns, self.counter, self.node_id]
 
     @staticmethod
-    def from_wire(data: list) -> "Timestamp":
+    def from_wire(data: list) -> Timestamp:
         return Timestamp(physical_ns=int(data[0]), counter=int(data[1]), node_id=str(data[2]))
 
 
@@ -217,7 +218,7 @@ class CausalContext:
         if ts.counter > cur:
             self.max_counter[ts.node_id] = ts.counter
 
-    def merge(self, other: "CausalContext") -> None:
+    def merge(self, other: CausalContext) -> None:
         for node, c in other.max_counter.items():
             if c > self.max_counter.get(node, -1):
                 self.max_counter[node] = c
@@ -282,7 +283,7 @@ class ORSet(Generic[_T]):
 
     # -- merge -------------------------------------------------------------
 
-    def merge(self, other: "ORSet[_T]") -> None:
+    def merge(self, other: ORSet[_T]) -> None:
         """Merge ``other`` into this set (in-place, commutative/associative)."""
         self._adds |= other._adds
         self._removes |= other._removes
@@ -291,7 +292,7 @@ class ORSet(Generic[_T]):
         for _, t in other._adds | other._removes:
             self._clock.observe(t)
 
-    def merged(self, other: "ORSet[_T]") -> "ORSet[_T]":
+    def merged(self, other: ORSet[_T]) -> ORSet[_T]:
         """Return a new set that is the merge of ``self`` and ``other``."""
         result = ORSet(self._node_id)
         result._adds = set(self._adds)
@@ -376,7 +377,7 @@ class LWWRegister(Generic[_T]):
         self.value = value
         self.timestamp = timestamp
 
-    def merge(self, other: "LWWRegister[_T]") -> "LWWRegister[_T]":
+    def merge(self, other: LWWRegister[_T]) -> LWWRegister[_T]:
         if other.timestamp > self.timestamp:
             return LWWRegister(other.value, other.timestamp)
         # Tie on timestamp: fall back to node_id for determinism (total order),
@@ -386,10 +387,10 @@ class LWWRegister(Generic[_T]):
         return LWWRegister(self.value, self.timestamp)
 
     @classmethod
-    def from_put(cls, value: _T | None, clock: HybridLogicalClock) -> "LWWRegister[_T]":
+    def from_put(cls, value: _T | None, clock: HybridLogicalClock) -> LWWRegister[_T]:
         return cls(value, clock.tick())
 
-    def as_removed(self, clock: HybridLogicalClock) -> "LWWRegister[_T]":
+    def as_removed(self, clock: HybridLogicalClock) -> LWWRegister[_T]:
         """Return a tombstoned copy (value=None) timestamped by ``clock``."""
         return LWWRegister(None, clock.tick())
 
@@ -438,13 +439,13 @@ class CRDTCacheMap(Generic[_T, _V]):
 
     # -- merge -------------------------------------------------------------
 
-    def merge(self, other: "CRDTCacheMap[_T, _V]") -> None:
+    def merge(self, other: CRDTCacheMap[_T, _V]) -> None:
         self._membership.merge(other._membership)
         for key, reg in other._values.items():
             cur = self._values.get(key)
             self._values[key] = reg if cur is None else cur.merge(reg)
 
-    def merged(self, other: "CRDTCacheMap[_T, _V]") -> "CRDTCacheMap[_T, _V]":
+    def merged(self, other: CRDTCacheMap[_T, _V]) -> CRDTCacheMap[_T, _V]:
         result = CRDTCacheMap[_T, _V](self._node_id)
         result._membership = self._membership.merged(other._membership)
         for key, reg in {**self._values, **other._values}.items():
@@ -475,7 +476,7 @@ class CRDTCacheMap(Generic[_T, _V]):
     def items(self) -> dict[_T, _V]:
         return {k: self.get(k) for k in self.keys()}  # type: ignore[misc]
 
-    def timestamp_of(self, key: _T) -> "Timestamp | None":
+    def timestamp_of(self, key: _T) -> Timestamp | None:
         """Return the HLC timestamp of the winning register for ``key``.
 
         ``None`` if the key is absent / tombstoned.  Used to serialize the
@@ -487,7 +488,7 @@ class CRDTCacheMap(Generic[_T, _V]):
             return None
         return reg.timestamp
 
-    def ingest(self, key: _T, value: _V, ts: "Timestamp") -> None:
+    def ingest(self, key: _T, value: _V, ts: Timestamp) -> None:
         """Merge a single ``(key -> value)`` register stamped with ``ts``.
 
         ``ts`` is the HLC timestamp carried on the gossip wire (produced by the

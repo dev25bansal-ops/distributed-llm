@@ -103,6 +103,7 @@ class RedisPromptCache:
             try:
                 self._client.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         self._connected = False
 
@@ -114,6 +115,7 @@ class RedisPromptCache:
             self._client.ping()
             return True
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self._connected = False
             return False
 
@@ -239,6 +241,7 @@ class RedisPromptCache:
                         best_len = data["token_count"]
                         best_ref = data["kv_cache_ref"]
             except Exception:
+                # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                 continue
 
         return best_len, best_ref

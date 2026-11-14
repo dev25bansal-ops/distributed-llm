@@ -84,6 +84,20 @@ def _resolve_max_tokens(
     return fallback
 
 
+def _stream_content(chunk: Any) -> tuple[str, dict[str, Any]]:
+    """Extract (content, delta) from one streamed chat chunk.
+
+    The SDK's ``chat_completions_stream`` yields plain strings; older builds
+    and hand-rolled mocks yield OpenAI-shaped dicts, so keep accepting those.
+    """
+    if isinstance(chunk, str):
+        return chunk, {}
+    if isinstance(chunk, dict):
+        delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+        return delta.get("content", "") or "", chunk
+    return "", {}
+
+
 def _extract_usage(resp: Any) -> dict[str, int]:
     """Extract token usage from a response dict or typed object."""
     if isinstance(resp, dict):
@@ -280,10 +294,7 @@ class DistLLMChat(BaseChatModel):
     ) -> Iterator[ChatGenerationChunk]:
         payload = self._build_payload(messages, stop, kwargs)
         for chunk in self._client.chat_completions_stream(**payload):
-            delta = chunk if isinstance(chunk, dict) else {}
-            content = (
-                delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
-            )
+            content, delta = _stream_content(chunk)
             if not content:
                 continue
             # 4.2 — Pipeline-aware streaming metadata
@@ -313,10 +324,7 @@ class DistLLMChat(BaseChatModel):
     ) -> AsyncIterator[ChatGenerationChunk]:
         payload = self._build_payload(messages, stop, kwargs)
         async for chunk in self._async_client.chat_completions_stream(**payload):
-            delta = chunk if isinstance(chunk, dict) else {}
-            content = (
-                delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
-            )
+            content, delta = _stream_content(chunk)
             if not content:
                 continue
             # 4.2 — Pipeline-aware streaming metadata

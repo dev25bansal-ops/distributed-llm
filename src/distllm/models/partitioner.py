@@ -6,12 +6,43 @@ import gc
 import inspect
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import torch
-import torch.nn as nn
+if TYPE_CHECKING:
+    from transformers import BitsAndBytesConfig
+
+# torch and transformers are [self-hosted]-extra dependencies. This module is
+# imported by the coordinator, the API server and the worker on their startup
+# paths, so unconditional imports here made every console-script entry point
+# require the full ML stack. All uses are inside methods except DTYPE_MAP,
+# which is built lazily below; touching torch without it installed raises a
+# RuntimeError naming the fix.
+class _MlStackNotInstalled:
+    def __init__(self, package: str) -> None:
+        self._package = package
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            f"{self._package} is required for model partitioning. Install the "
+            "ML stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+    import torch.nn as nn
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _MlStackNotInstalled("torch")  # type: ignore[assignment]
+    nn = _MlStackNotInstalled("torch")  # type: ignore[assignment]
+
 from loguru import logger
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+try:
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    AutoConfig = _MlStackNotInstalled("transformers")  # type: ignore[assignment,misc]
+    AutoModelForCausalLM = _MlStackNotInstalled("transformers")  # type: ignore[assignment,misc]
+    AutoTokenizer = _MlStackNotInstalled("transformers")  # type: ignore[assignment,misc]
 
 from distllm.config.settings import QuantizationSettings as QuantizationConfig
 from distllm.dist.fsdp import FSDPConfig, FSDPShard
@@ -25,7 +56,15 @@ def _get_trusted_models() -> set[str]:
 
 _TRUSTED_FROM_REGISTRY = _get_trusted_models()
 
-DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
+
+def _dtype_map() -> dict[str, Any]:
+    """Build the dtype map lazily: torch.float16 is evaluated on first use,
+    not at import, so this module loads on a torch-free install."""
+    return {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+    }
 
 
 def _find_attr(model: Any, candidates: list[str]) -> Any:
@@ -44,7 +83,7 @@ def _get_base_prefix(model: Any) -> str:
     return ""
 
 
-def build_quantization_config(quant_config: QuantizationConfig | None) -> "BitsAndBytesConfig | None":
+def build_quantization_config(quant_config: QuantizationConfig | None) -> BitsAndBytesConfig | None:
     """Build a BitsAndBytesConfig from QuantizationConfig dataclass."""
     if quant_config.method == "none":
         return None
@@ -57,7 +96,7 @@ def build_quantization_config(quant_config: QuantizationConfig | None) -> "BitsA
     if quant_config.method == "bnb_4bit":
         return BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=DTYPE_MAP.get(quant_config.bnb_4bit_compute_dtype, torch.float16),
+            bnb_4bit_compute_dtype=_dtype_map().get(quant_config.bnb_4bit_compute_dtype, torch.float16),
             bnb_4bit_quant_type=quant_config.bnb_4bit_quant_type,
             bnb_4bit_use_double_quant=quant_config.bnb_4bit_use_double_quant,
         )
@@ -164,7 +203,7 @@ class ModelPartitioner:
             revision=self.model_revision,
         )
 
-        torch_dtype = DTYPE_MAP.get(self.dtype, torch.float16)
+        torch_dtype = _dtype_map().get(self.dtype, torch.float16)
         quant_config = build_quantization_config(self.quantization_config) if self.quantization_config else None
 
         model_kwargs = {
@@ -254,7 +293,7 @@ class ModelPartitioner:
         )
 
         device = device or self.device
-        torch_dtype = DTYPE_MAP.get(self.dtype, torch.float16)
+        torch_dtype = _dtype_map().get(self.dtype, torch.float16)
 
         # Try selective safetensors loading first
         if self._try_load_selective(start_layer, end_layer, total_layers, device, torch_dtype, trust):
@@ -451,6 +490,7 @@ class ModelPartitioner:
             partial_model.load_state_dict(state_dict, strict=False, assign=True)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _extract_subset(self, full_model: Any, start_layer: int, end_layer: int, total_layers: int, device: str) -> None:

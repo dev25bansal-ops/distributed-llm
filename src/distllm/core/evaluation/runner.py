@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -16,29 +17,28 @@ from distllm.core.evaluation.constants import (
 )
 from distllm.core.evaluation.db import EvalDB
 from distllm.core.evaluation.formatters import (
+    PromptFormatter,
     _ArenaPromptFormatter,
     _HeimPromptFormatter,
     _MTBenchPromptFormatter,
-    PromptFormatter,
 )
 from distllm.core.evaluation.loaders import (
+    DatasetLoader,
     _ArenaLoader,
     _GSM8KLoader,
     _HumanEvalLoader,
     _MMLULoader,
     _MTBenchLoader,
-    DatasetLoader,
 )
 from distllm.core.evaluation.models import EvalReport, EvalResult, EvalSample
 from distllm.core.evaluation.report import ReportGenerator
 from distllm.core.evaluation.scorers import (
+    Scorer,
     _ArenaScorer,
     _ExactMatchScorer,
     _MTBenchScorer,
-    Scorer,
 )
-from distllm.core.evaluation.worker import _WorkerPool, _count_tokens
-
+from distllm.core.evaluation.worker import _count_tokens, _WorkerPool
 
 # ---------------------------------------------------------------------------
 # EvalRunner — public API

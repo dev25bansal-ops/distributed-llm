@@ -52,7 +52,7 @@ class StepProcessor:
     def process_step(
         scheduler,
         batch,
-        next_tokens: "torch.Tensor",
+        next_tokens: torch.Tensor,
         kv_caches: dict | None = None,
         decoded_tokens: list[str] | None = None,
     ) -> None:

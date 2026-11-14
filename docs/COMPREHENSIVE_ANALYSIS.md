@@ -1,3 +1,5 @@
+
+> **⚠️ HISTORICAL SNAPSHOT (2026-07-18)** — preserved for the audit trail; counts and findings predate the 2026-11-06 hygiene pass. Living docs: [UNIFIED.md](_map/UNIFIED.md) + the 00–11 MOCs.
 # DistLLM — Comprehensive Codebase Analysis
 
 > **Analysis date**: July 18, 2026
@@ -69,7 +71,7 @@ The competitive analysis is excellent — use it. DistLLM's moat is **consumer G
 
 - Ollama integration: "DistLLM Cluster for Ollama" — one command, instant multi-device
 - HuggingFace Spaces demo: One-click "try DistLLM with 2 machines"
-- PyPI package: `pip install distllm` must work cleanly
+- PyPI package: `pip install distributed-llm` must work cleanly
 - GitHub Actions CI: Must be green before shipping new features
 
 ---
@@ -292,7 +294,7 @@ Current config has 24+ sub-modules (`_model.py`, `_network.py`, `_cache.py`, etc
 
 | # | Addition | Priority | Effort | Description |
 |---|----------|----------|--------|-------------|
-| N01 | **PyPI package** | 🔴 P0 | 1 day | `pip install distllm` needs to work cleanly. Currently needs `src/` path hacks |
+| N01 | **PyPI package** | 🔴 P0 | 1 day | `pip install distributed-llm` needs to work cleanly. Currently needs `src/` path hacks |
 | N02 | **CI pipeline** | 🔴 P0 | 2 days | GitHub Actions: lint, type-check, test, benchmark on every PR. Currently no evidence of automated CI |
 | N03 | **Error documentation** | 🔴 P0 | 1 day | Every exception should have a help URL pointing to troubleshooting docs |
 | N04 | **Telemetry** | 🟡 P1 | 2 days | Opt-in anonymous usage stats to guide product decisions |

@@ -5,6 +5,7 @@ Features
 * prompt_toolkit PromptSession with persistent history (``~/.distllm/chat_history``)
 * Multi-line input: **Enter** inserts newline, **Meta+Enter** submits
 * SSE streaming via httpx displayed token-by-token with ``rich.live.Live``
+  (authenticated with the same resolved key as every other CLI command)
 * Final response rendered as Markdown via ``rich.markdown.Markdown``
 * Slash commands: ``/clear``, ``/model``, ``/temp``, ``/help``, ``/exit``
 * Token and timing summary after each response
@@ -18,8 +19,9 @@ import os
 import shlex
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import httpx
 from rich.console import Console
@@ -29,6 +31,8 @@ from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
+
+from distllm.cli.http_client import auth_headers
 
 # ---------------------------------------------------------------------------
 # prompt_toolkit -- optional dependency, graceful fallback
@@ -220,7 +224,10 @@ async def _stream_chat(
     if request_id:
         body["request_id"] = request_id
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(300.0, connect=10.0),
+        headers=auth_headers(),
+    ) as client:
         async with client.stream("POST", url, json=body) as response:
             response.raise_for_status()
             async for raw_line in response.aiter_lines():
@@ -295,6 +302,7 @@ async def _do_streaming_turn(
             try:
                 detail = e.response.text
             except Exception:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 detail = str(e)
             console.print(f"[red]API error ({e.response.status_code}):[/red] {detail}")
             return None

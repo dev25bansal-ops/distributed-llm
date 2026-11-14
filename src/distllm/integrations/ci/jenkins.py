@@ -15,8 +15,8 @@ import httpx
 
 from distllm.integrations.ci._common import (
     _DEFAULT_TIMEOUT,
-    _retry,
     BuildInfo,
+    _retry,
 )
 
 logger = logging.getLogger("distllm")
@@ -65,9 +65,9 @@ class JenkinsIntegration:
 
     def __exit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[Any],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any | None,
     ) -> None:
         self.close()
 
@@ -106,7 +106,7 @@ class JenkinsIntegration:
     def trigger_build(
         self,
         job: str,
-        params: Optional[dict[str, str]] = None,
+        params: dict[str, str] | None = None,
     ) -> int:
         """Trigger a parameterised Jenkins build.
 
@@ -177,7 +177,7 @@ class JenkinsIntegration:
     def get_build_status(
         self,
         job: str,
-        build_num: Optional[int] = None,
+        build_num: int | None = None,
     ) -> BuildInfo:
         """Query the status of a Jenkins build.
 
@@ -222,7 +222,7 @@ class JenkinsIntegration:
         self,
         job: str,
         path: str,
-        build_num: Optional[int] = None,
+        build_num: int | None = None,
     ) -> str:
         """Upload a local file as a build artifact *via the Jenkins CLI API*.
 

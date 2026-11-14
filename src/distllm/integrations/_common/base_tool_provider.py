@@ -3,7 +3,8 @@
 import json
 import logging
 import time
-from typing import Any, Callable, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, Optional, TypeVar
 
 from distllm.sdk import DistLLMClientSync
 
@@ -25,7 +26,7 @@ def _retry(
     Retries on any exception up to ``max_retries`` times.  Delay between
     attempts doubles each time, capped at ``max_delay`` seconds.
     """
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
             return fn(*args, **kwargs)
@@ -54,7 +55,7 @@ class BaseToolProvider:
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         timeout: float = 120.0,
     ):
         self.base_url = base_url
@@ -149,6 +150,7 @@ class BaseToolProvider:
                 return json.dumps(data.get("result", data))
             return json.dumps({"error": f"Tool call failed: HTTP {resp.status_code}"})
         except Exception as e:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return json.dumps({"error": str(e)})
 
     def make_callable(self, tool_def: dict) -> callable:

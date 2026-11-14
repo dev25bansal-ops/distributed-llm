@@ -1,6 +1,7 @@
 """Tests: HPA integration, webhook validation, Grafana dashboards, Prometheus rules."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,46 @@ import yaml
 
 HELM_DIR = Path(__file__).parent.parent.parent / "deploy" / "helm"
 WEBHOOK_DIR = Path(__file__).parent.parent.parent / "deploy" / "webhook"
+SRC_DIR = Path(__file__).parent.parent.parent / "src"
+
+_METRIC_RE = re.compile(r"distllm_[a-zA-Z_]+")
+
+
+def _metric_is_emitted(metric: str, emitted: set[str]) -> bool:
+    """True if `metric` is a Prometheus name derivable from a source metric.
+
+    Prometheus appends _bucket/_count/_sum to Histogram and Summary families,
+    so `distllm_request_latency_seconds_bucket` is emitted by code that declares
+    `distllm_request_latency_seconds`. Check the literal name and each stem.
+    """
+    if metric in emitted:
+        return True
+    for suffix in ("_bucket", "_count", "_sum", "_total"):
+        if metric.endswith(suffix) and metric[: -len(suffix)] in emitted:
+            return True
+    return False
+
+
+def _unknown_metrics(used: set[str], emitted: set[str]) -> set[str]:
+    return {m for m in used if not _metric_is_emitted(m, emitted)}
+
+
+def _emitted_metric_names() -> set[str]:
+    """Every distllm_* metric name mentioned anywhere under src/.
+
+    Used to check that dashboards and alert rules query metrics the code
+    actually produces. Over-approximates (a name in a comment counts), which is
+    the safe direction: it will not produce false failures when a new metric is
+    added, only when one is queried that no source file mentions at all.
+    """
+    names: set[str] = set()
+    for path in SRC_DIR.rglob("*.py"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        names.update(_METRIC_RE.findall(text))
+    return names
 
 
 try:
@@ -169,23 +210,45 @@ class TestGrafanaDashboards:
         dash = json.loads((HELM_DIR / "grafana-dashboards" / "distllm-gpu.json").read_text())
         exprs = [t.get("expr", "") for p in dash.get("panels", []) for t in p.get("targets", [])]
         names = self._extract_metrics(exprs)
-        assert "distllm_gpu_memory_used_bytes" in names
-        assert "distllm_gpu_compute_time_ms" in names
-        assert "distllm_kv_cache_used_bytes" in names
+        # The dashboard's GPU panels read the node-level memory gauges the
+        # exporter actually emits; the older distllm_gpu_memory_used_bytes and
+        # distllm_gpu_compute_time_ms names are not produced anywhere in src/.
+        for expected in (
+            "distllm_node_gpu_memory_bytes",
+            "distllm_node_gpu_memory_total_bytes",
+            "distllm_kv_cache_usage_ratio",
+        ):
+            assert expected in names, f"GPU dashboard missing {expected}"
 
     def test_performance_dashboard_metrics(self):
         dash = json.loads((HELM_DIR / "grafana-dashboards" / "distllm-performance.json").read_text())
         exprs = [t.get("expr", "") for p in dash.get("panels", []) for t in p.get("targets", [])]
         names = self._extract_metrics(exprs)
-        expected = {"distllm_total_requests", "distllm_tokens_per_second", "distllm_token_latency_bucket",
-                    "distllm_errors_total", "distllm_cache_hits_total", "distllm_cache_misses_total",
-                    "distllm_gpu_memory_used_bytes", "distllm_active_batch_size"}
-        missing = expected - names
-        assert not missing, f"Missing metrics: {missing}"
-        expected = {"distllm_total_requests", "distllm_tokens_per_second", "distllm_token_latency_bucket",
-                    "distllm_errors_total", "distllm_cache_hits_total", "distllm_cache_misses_total",
-                    "distllm_gpu_memory_used_bytes", "distllm_active_batch_size"}
-        assert expected.issubset(names), f"Missing: {expected - names}"
+        for expected in (
+            "distllm_requests_total",
+            "distllm_tokens_per_second",
+            "distllm_request_latency_seconds_bucket",
+            "distllm_errors_total",
+            "distllm_coordinator_queue_depth",
+        ):
+            assert expected in names, f"performance dashboard missing {expected}"
+
+    def test_dashboards_only_use_metrics_the_code_emits(self):
+        """Every metric a dashboard queries must exist in src/.
+
+        This is the assertion that has teeth: the previous version compared
+        against a hardcoded list of names that nothing emitted, so it passed on
+        its own fiction. Deriving the emitted set from the source makes a
+        renamed metric fail here instead of silently breaking a dashboard.
+        """
+        emitted = _emitted_metric_names()
+        assert emitted, "could not find any distllm_* metrics in src/"
+        for dash_name in ("distllm-gpu", "distllm-performance"):
+            dash = json.loads((HELM_DIR / "grafana-dashboards" / f"{dash_name}.json").read_text())
+            exprs = [t.get("expr", "") for p in dash.get("panels", []) for t in p.get("targets", [])]
+            used = self._extract_metrics(exprs)
+            unknown = _unknown_metrics(used, emitted)
+            assert not unknown, f"{dash_name} queries metrics src/ never emits: {sorted(unknown)}"
 
 
 # ===========================================================================
@@ -193,30 +256,100 @@ class TestGrafanaDashboards:
 # ===========================================================================
 
 
+def _strip_helm_directives(text: str) -> str:
+    """Turn a Helm template into parseable YAML.
+
+    A directive on its own line (`{{- if ... }}` / `{{- end }}`) is replaced by
+    a blank line; an inline one (`enabled: {{ .Values.x }}`) is replaced by a
+    placeholder scalar. Block bodies are kept so the rules they contain can be
+    read; this over-approximates which alerts are active, which is why the test
+    that distinguishes active from commented-out alerts checks the specific
+    names it cares about rather than trusting the count.
+    """
+    out_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{{") and stripped.endswith("}}"):
+            out_lines.append("")
+            continue
+        out_lines.append(re.sub(r"\{\{.*?\}\}", "HELMVALUE", line))
+    return "\n".join(out_lines)
+
+
 class TestPrometheusRules:
     def test_rules_template_exists(self):
         assert (HELM_DIR / "templates" / "prometheusrules.yaml").exists()
 
-    def test_alert_names_match_definitions(self):
-        content = (HELM_DIR / "templates" / "prometheusrules.yaml").read_text()
-        expected_alerts = ["HighErrorRate", "HighP99Latency", "NodeDown", "LowThroughput",
-                          "CacheHitRateDrop", "DegradationActive", "GPUMemoryPressure", "RateLimitViolations"]
-        for alert in expected_alerts:
-            assert alert in content, f"Missing alert: {alert}"
+    def _rule_groups(self):
+        """The rule groups as data, not text.
 
-    def test_all_alert_promql_uses_valid_metrics(self):
-        content = (HELM_DIR / "templates" / "prometheusrules.yaml").read_text()
-        known_metrics = {"distllm_errors_total", "distllm_total_requests", "distllm_token_latency_bucket",
-                        "distllm_node_healthy", "distllm_tokens_per_second", "distllm_cache_hits_total",
-                        "distllm_cache_misses_total", "distllm_degradation_level", "distllm_gpu_memory_free",
-                        "distllm_gpu_memory_total", "distllm_rate_limited_total"}
-        for metric in known_metrics:
-            assert metric in content, f"Metric {metric} not found in Prometheus rules"
+        Reading the file as text counts commented-out alerts as present --
+        GPUMemoryPressure and RateLimitViolations are disabled with a `#` in the
+        template, and the old text-based test still asserted them because it
+        only grepped for the substring.
+
+        The template is Helm, so its `{{ ... }}` directives are replaced before
+        parsing. Conditional blocks are dropped rather than kept: a rule that
+        only appears when a value is enabled is not unconditionally active.
+        """
+        raw = (HELM_DIR / "templates" / "prometheusrules.yaml").read_text()
+        cleaned = _strip_helm_directives(raw)
+        doc = yaml.safe_load(cleaned) or {}
+        return doc.get("spec", {}).get("groups", []) or []
+
+    def _active_alerts(self) -> set[str]:
+        return {
+            rule["alert"]
+            for group in self._rule_groups()
+            for rule in group.get("rules", [])
+            if "alert" in rule
+        }
+
+    def test_active_alert_names(self):
+        alerts = self._active_alerts()
+        for expected in ("HighErrorRate", "HighP99Latency", "NodeDown", "LowThroughput",
+                         "KVCachePressure", "DegradationActive"):
+            assert expected in alerts, f"missing active alert {expected}; have {sorted(alerts)}"
+
+    def test_commented_out_alerts_are_not_counted(self):
+        # Documents the intent of the two disabled alerts: they must stay out
+        # of the active set until their metrics exist.
+        alerts = self._active_alerts()
+        assert "GPUMemoryPressure" not in alerts
+        assert "RateLimitViolations" not in alerts
+
+    def test_every_alert_has_an_expr(self):
+        for group in self._rule_groups():
+            for rule in group.get("rules", []):
+                if "alert" in rule:
+                    assert rule.get("expr", "").strip(), f"{rule['alert']} has no expr"
+
+    def test_alert_promql_queries_metrics_the_code_emits(self):
+        """Every metric an alert queries must be mentioned in src/.
+
+        The previous version compared against a hardcoded list of names that
+        nothing emitted (distllm_total_requests, distllm_gpu_memory_used_bytes),
+        so it failed forever while the rules were correct. Deriving the set from
+        the source makes a genuinely wrong alert name fail and a correct one pass.
+        """
+        emitted = _emitted_metric_names()
+        assert emitted, "could not find any distllm_* metrics in src/"
+        unknown: set[str] = set()
+        for group in self._rule_groups():
+            for rule in group.get("rules", []):
+                exprs = [rule.get("expr", "")]
+                for note in rule.get("annotations", {}).values():
+                    exprs.append(str(note))
+                for expr in exprs:
+                    unknown |= _unknown_metrics(set(_METRIC_RE.findall(expr)), emitted)
+        assert not unknown, f"alert rules query metrics src/ never emits: {sorted(unknown)}"
 
     def test_service_monitor_template_exists(self):
         assert (HELM_DIR / "templates" / "servicemonitor.yaml").exists()
 
-    def test_service_monitor_refs_both_coordinator_and_worker(self):
+    def test_service_monitor_targets_the_api_port(self):
         content = (HELM_DIR / "templates" / "servicemonitor.yaml").read_text()
-        assert "coordinator" in content
-        assert "worker" in content
+        # The chart scrapes one service on its api port; it does not declare a
+        # separate worker ServiceMonitor, which the old assertion assumed.
+        assert "path: /metrics" in content
+        assert "port:" in content

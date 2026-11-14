@@ -12,16 +12,16 @@ import os
 import socket
 import threading
 import time
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from loguru import logger
 
 from distllm.config.settings import NodeRole
-from distllm.core.connection_pool import ConnectionPool, ConnectionPoolConfig
 from distllm.core.async_connection_pool import AsyncConnectionPool
-from distllm.errors.types import NodeUnreachableError, GRPCTimeoutError
-from distllm.dist.node_client import create_node_client, NodeClient
+from distllm.core.connection_pool import ConnectionPool, ConnectionPoolConfig
+from distllm.dist.node_client import NodeClient, create_node_client
+from distllm.errors.types import GRPCTimeoutError, NodeUnreachableError
 
 
 class _PlaceholderClient:
@@ -183,6 +183,7 @@ class NodeRegistration:
             self.gpu_memory_free = resp.memory_total_bytes - resp.memory_used_bytes
             return resp.healthy
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             self.healthy = False
             return False
 

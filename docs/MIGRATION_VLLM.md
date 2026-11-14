@@ -7,7 +7,7 @@ high-throughput single-node GPU serving. The client code you already wrote for v
 against DistLLM — you just point it at a different host.
 
 - DistLLM base URL: `http://localhost:8000/v1` (same `/v1` path vLLM uses)
-- `api_key` optional (use `--no-auth` for local dev)
+- `api_key` required (auth is always on; `--no-auth` was removed)
 - Same four OpenAI endpoints: `POST /v1/chat/completions`, `POST /v1/completions`,
   `POST /v1/embeddings`, `GET /v1/models`
 
@@ -16,8 +16,9 @@ against DistLLM — you just point it at a different host.
 A running DistLLM API server. With the Python package:
 
 ```bash
-pip install distllm
-distllm system api --model meta-llama/Llama-3.2-1B --local --no-auth
+pip install "distributed-llm[cli,self-hosted]"
+export API_KEY="choose-a-secret-value"
+distllm system api --model meta-llama/Llama-3.2-1B --local
 ```
 
 Or Docker Compose (recommended):
@@ -120,7 +121,7 @@ vLLM is typically configured via CLI flags at launch; DistLLM uses `config.yaml`
 | `--max-num-seqs N` | `vllm.max_num_seqs: N` | Concurrent sequences |
 | `--quantization awq` | `quantization.method: awq` (or `gptq`, `bnb_4bit`, `fp8`) | DistLLM supports BnB/GPTQ/AWQ/FP8 |
 | `--enforce-eager` | `vllm.enforce_eager: true` | Disable CUDA graphs |
-| `--api-key <key>` | `API_KEY` env var (or `--no-auth`) | DistLLM auth is bearer-token based |
+| `--api-key <key>` | `API_KEY` env var | DistLLM auth is bearer-token based |
 | `--port 8000` | `coordinator.api_port: 8000` | REST API port |
 | `--host 0.0.0.0` | `coordinator.host: 0.0.0.0` | Bind address |
 | `--served-model-name x` | `multi_model.models: {x: <hf-id>}` | Alias a model name; set `default_model` |
@@ -139,7 +140,7 @@ vLLM is typically configured via CLI flags at launch; DistLLM uses `config.yaml`
 - **Throughput profile**: Single-stream latency may differ; DistLLM wins on models that don't fit
   on one GPU by sharding across nodes.
 - **Auth**: vLLM often runs keyless; DistLLM in production expects `Authorization: Bearer <key>`
-  (or `--no-auth` for local dev).
+  (there is no no-auth mode).
 - **Limits**: Rate limits (`rate_limit` config) and context windows are GPU/cluster-bound, not
   fixed plan tiers.
 

@@ -3,18 +3,13 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
+  # /metrics is served by the coordinator's uvicorn app (distllm-api) on 8000.
+  # Workers (distllm-node) expose only their gRPC port and have no metrics
+  # endpoint, so there is no worker scrape job.
   - job_name: "distllm-coordinator"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["distllm-coordinator:8000"]
-
-  - job_name: "distllm-nodes"
-    metrics_path: "/metrics"
-    dns_sd_configs:
-      - names:
-          - "distllm-worker-headless"
-        type: "A"
-        port: 9091
 
   - job_name: "prometheus"
     static_configs:

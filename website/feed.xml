@@ -37,15 +37,15 @@
     </item>
     <item>
       <title>DistLLM v0.4.0 — Production Readiness</title>
-      <link>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.4.0</link>
-      <guid>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.4.0</guid>
+      <link>https://dev25bansal-ops.github.io/distributed-llm/changelog.html#release-040</link>
+      <guid>https://dev25bansal-ops.github.io/distributed-llm/changelog.html#release-040</guid>
       <pubDate>Fri, 16 May 2026 00:00:00 GMT</pubDate>
       <description>Graceful shutdown, structured errors, K8s probes, backpressure, YAML config, security hardening.</description>
     </item>
     <item>
       <title>DistLLM v0.3.0 — Security &amp; Features</title>
-      <link>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.3.0</link>
-      <guid>https://github.com/distributed-llm/distributed-llm/releases/tag/v0.3.0</guid>
+      <link>https://dev25bansal-ops.github.io/distributed-llm/changelog.html</link>
+      <guid>https://dev25bansal-ops.github.io/distributed-llm/changelog.html</guid>
       <pubDate>Wed, 14 May 2026 00:00:00 GMT</pubDate>
       <description>CORS, security headers, auth + rate limiting, LoRA adapters, prefix cache, continuous batching.</description>
     </item>

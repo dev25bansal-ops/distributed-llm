@@ -27,8 +27,8 @@ logger = logging.getLogger("distllm.spark")
 try:
     from pyspark.sql import DataFrame as SparkDataFrame
     from pyspark.sql import functions as F
+    from pyspark.sql.functions import PandasUDFType, pandas_udf
     from pyspark.sql.types import StringType, StructField, StructType
-    from pyspark.sql.functions import pandas_udf, PandasUDFType
 
     _SPARK_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -55,7 +55,8 @@ except ImportError:  # pragma: no cover
 
 # Optional: DistLLM SDK client
 try:
-    from distllm.sdk.client import DistLLMClient, RetryConfig as SDKRetryConfig
+    from distllm.sdk.client import DistLLMClient
+    from distllm.sdk.client import RetryConfig as SDKRetryConfig
 
     _CLIENT_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -180,11 +181,11 @@ class DistLLMSparkTransformer:
         self,
         api_url: str = "http://localhost:8000",
         model: str = "distributed-llm",
-        batch_size: Optional[int] = None,
+        batch_size: int | None = None,
         max_retries: int = _MAX_RETRIES,
         temperature: float = 0.7,
         max_tokens: int = 256,
-        client_kwargs: Optional[dict[str, Any]] = None,
+        client_kwargs: dict[str, Any] | None = None,
     ) -> None:
         if not _CLIENT_AVAILABLE:
             raise ImportError(
@@ -200,7 +201,7 @@ class DistLLMSparkTransformer:
         self._max_tokens = max_tokens
         self._client_kwargs = client_kwargs or {}
 
-        self._client: Optional[DistLLMClient] = None
+        self._client: DistLLMClient | None = None
         self._actual_batch_size: int = batch_size or _DEFAULT_BATCH_SIZE
         self._tuned = batch_size is not None  # skip tuning when user sets it
         self._total_retries: int = 0
@@ -217,7 +218,7 @@ class DistLLMSparkTransformer:
         df: SparkDataFrame,
         input_col: str,
         output_col: str = "prediction",
-        model: Optional[str] = None,
+        model: str | None = None,
         auto_tune: bool = True,
     ) -> SparkDataFrame:
         """Add an *output_col* column with LLM predictions to *df*.
@@ -251,7 +252,7 @@ class DistLLMSparkTransformer:
         df: SparkDataFrame,
         input_col: str,
         output_col: str = "prediction",
-        model: Optional[str] = None,
+        model: str | None = None,
         metrics: bool = True,
     ) -> SparkDataFrame:
         """Process DataFrame with explicit batching and detailed batch metrics.
@@ -365,8 +366,8 @@ class DistLLMSparkTransformer:
         stream_df: SparkDataFrame,
         input_col: str,
         output_col: str = "prediction",
-        model: Optional[str] = None,
-        checkpoint_location: Optional[str] = None,
+        model: str | None = None,
+        checkpoint_location: str | None = None,
         trigger_interval: str = _STREAMING_TRIGGER_INTERVAL,
     ) -> SparkDataFrame:
         """Return a streaming DataFrame with LLM predictions appended.
@@ -711,7 +712,7 @@ class SparkMLflowIntegration:
 
     def __init__(
         self,
-        tracking_uri: Optional[str] = None,
+        tracking_uri: str | None = None,
         experiment_name: str = "distllm-spark-batch",
     ) -> None:
         """Initialise the Spark MLflow integration.
@@ -726,7 +727,7 @@ class SparkMLflowIntegration:
         """
         self._experiment_name = experiment_name
         self._tracking_uri = tracking_uri
-        self._mlflow: Optional[MLflowIntegration] = None
+        self._mlflow: MLflowIntegration | None = None
 
         if _MLFLOW_AVAILABLE and MLflowIntegration is not None:
             self._mlflow = MLflowIntegration(tracking_uri=tracking_uri)
@@ -737,13 +738,13 @@ class SparkMLflowIntegration:
 
     def log_batch_run(
         self,
-        df: Optional[SparkDataFrame] = None,
-        metrics: Optional[BatchMetrics] = None,
-        model_name: Optional[str] = None,
-        params: Optional[dict[str, Any]] = None,
-        tags: Optional[dict[str, str]] = None,
-        experiment_name: Optional[str] = None,
-    ) -> Optional[str]:
+        df: SparkDataFrame | None = None,
+        metrics: BatchMetrics | None = None,
+        model_name: str | None = None,
+        params: dict[str, Any] | None = None,
+        tags: dict[str, str] | None = None,
+        experiment_name: str | None = None,
+    ) -> str | None:
         """Log a Spark batch run as an MLflow run.
 
         Logs row count, schema, metrics, and model provenance.
@@ -775,10 +776,10 @@ class SparkMLflowIntegration:
         self,
         df: SparkDataFrame,
         metrics: BatchMetrics,
-        model_name: Optional[str] = None,
-        params: Optional[dict[str, Any]] = None,
-        input_col: Optional[str] = None,
-    ) -> Optional[str]:
+        model_name: str | None = None,
+        params: dict[str, Any] | None = None,
+        input_col: str | None = None,
+    ) -> str | None:
         """Log a batch run including input-length statistics as additional metrics."""
         if self._mlflow is None:
             return None
@@ -821,11 +822,11 @@ class SparkMLflowIntegration:
     def log_streaming_query(
         self,
         query: Any,
-        metrics: Optional[BatchMetrics] = None,
-        model_name: Optional[str] = None,
-        params: Optional[dict[str, Any]] = None,
-        experiment_name: Optional[str] = None,
-    ) -> Optional[str]:
+        metrics: BatchMetrics | None = None,
+        model_name: str | None = None,
+        params: dict[str, Any] | None = None,
+        experiment_name: str | None = None,
+    ) -> str | None:
         """Log a Structured Streaming query progress as an MLflow run.
 
         Captures streaming query metadata (input rows/sec, processed rows/sec)
@@ -849,6 +850,7 @@ class SparkMLflowIntegration:
                     merged_params["streaming_processed_rows_per_second"] = progress.get("processedRowsPerSecond", 0)
                     merged_params["streaming_num_input_rows"] = progress.get("numInputRows", 0)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         merged_metrics = metrics.to_dict() if metrics else {}
@@ -894,6 +896,7 @@ def _schema_summary(schema: Any) -> str:
     try:
         return ", ".join(f"{f.name}:{f.dataType}" for f in schema.fields)
     except Exception:
+        # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
         return str(schema)[:200]
 
 

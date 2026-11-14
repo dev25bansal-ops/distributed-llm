@@ -1,0 +1,36 @@
+name: Generate protobuf modules
+description: >-
+  Compile proto/*.proto into src/distllm/dist/. node_pb2*.py are gitignored
+  build products (.gitignore), so a fresh checkout has no protobuf modules and
+  every test that imports distllm.dist fails at collection with
+  "ImportError: cannot import name 'node_pb2'". The Dockerfile already does
+  this; CI needs the same step.
+
+runs:
+  using: composite
+  steps:
+    - name: Install protoc toolchain
+      shell: bash
+      # grpcio-tools 1.85.1 emits gencode that requires a matching protobuf
+      # runtime. Installing the runtime here too keeps the generated modules
+      # loadable even in a job that does not install the full dependency lock.
+      run: pip install --quiet "grpcio-tools==1.85.1" "protobuf>=7.35,<8"
+
+    - name: Compile node.proto
+      shell: bash
+      run: |
+        python -m grpc_tools.protoc -I proto/ \
+          --python_out=src/distllm/dist/ \
+          --grpc_python_out=src/distllm/dist/ \
+          proto/node.proto
+        # grpcio-tools emits a flat `import node_pb2` in the _grpc module, which
+        # only resolves when distllm/dist is on sys.path. Callers import it as
+        # a package, so rewrite to the package-relative form.
+        # -i.bak (with the suffix), not bare -i: BSD sed on macOS runners
+        # requires an argument to -i and fails the step without one.
+        sed -i.bak 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+          src/distllm/dist/node_pb2_grpc.py
+        rm -f src/distllm/dist/node_pb2_grpc.py.bak
+        test -f src/distllm/dist/node_pb2.py
+        grep -q '^from distllm.dist import node_pb2 as node__pb2$' \
+          src/distllm/dist/node_pb2_grpc.py

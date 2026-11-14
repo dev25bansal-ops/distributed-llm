@@ -104,8 +104,8 @@ pub fn build_tray_menu(app: &tauri::AppHandle, running: bool) -> Result<Menu<tau
         app,
         "leave_cluster",
         "Leave Cluster",
-        true,
-        Some(!running),
+        running,
+        None::<&str>,
     )?;
 
     // Recent clusters submenu

@@ -1,11 +1,11 @@
 """CRD spec models for DistLLM operator resources."""
 
 from distllm.operator.crds.distributed_llm_cluster import (
+    CoordinatorSpec,
     DistributedLLMClusterSpec,
     ModelSpec,
-    CoordinatorSpec,
-    ResourceSpec,
     NodePoolSpec,
+    ResourceSpec,
 )
 
 __all__ = [

@@ -8,10 +8,10 @@ Provides:
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Any
 
 from loguru import logger
-
 
 # ── SSE parsing (existing) ───────────────────────────────────────────────
 

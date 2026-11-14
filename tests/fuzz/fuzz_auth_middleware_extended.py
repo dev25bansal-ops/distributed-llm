@@ -489,13 +489,25 @@ class TestRateLimiterBoundaries:
         assert wait > 0
 
     def test_lru_cap_does_not_grow_unbounded(self) -> None:
-        """The IP cap (``max_ips``) bounds memory under churn."""
+        """The key cap bounds memory under churn.
+
+        max_ips bounds tracked KEYS, and eviction is per shard (the sharding is
+        what removed the global lock), so the enforceable bound is
+        effective_max_keys, not max_ips exactly -- an exact global cap needs the
+        global lock this class exists to avoid. The regression this guards
+        against is the one that shipped: each shard carried the full max_ips, so
+        the real ceiling was 64x what the caller asked for.
+        """
         from distllm.api.middleware import _RateLimiter
-        rl = _RateLimiter(max_attempts=100, window_seconds=60, max_ips=16)
-        for i in range(200):
-            rl.record_attempt(f"10.0.0.{i % 256}")
-        # The internal dict must be bounded by max_ips.
-        assert len(rl._attempts) <= 16
+        rl = _RateLimiter(max_attempts=100, window_seconds=60, max_ips=6400)
+        for i in range(20_000):
+            rl.record_attempt(f"10.{i // 256}.{(i // 16) % 256}.{i % 256}")
+        tracked = sum(len(s) for s in rl._shard_attempts)
+        assert tracked <= rl.effective_max_keys, (
+            f"tracked {tracked} keys, effective cap {rl.effective_max_keys}"
+        )
+        # And it is not wildly under the budget either.
+        assert tracked > rl.effective_max_keys // 2
 
 
 # ---------------------------------------------------------------------------
@@ -525,8 +537,11 @@ class TestRateLimiterConcurrency:
             t.join(timeout=10.0)
         assert not [t for t in threads if t.is_alive()], "thread deadlocked"
         assert not errors
-        # 4 threads * 500 attempts == 2000 records
-        assert sum(len(v) for v in rl._attempts.values()) == 2000
+        # 4 threads * 500 attempts == 2000 attempts on ONE key. Eviction bounds
+        # the number of KEYS, never a key's history, so all 2000 timestamps must
+        # survive -- summed across the shards the refactor split _attempts into.
+        assert sum(len(dq) for shard in rl._shard_attempts
+                   for dq in shard.values()) == 2000
 
 
 if __name__ == "__main__":

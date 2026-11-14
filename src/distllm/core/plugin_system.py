@@ -38,10 +38,11 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -144,7 +145,7 @@ class PluginInstance:
 
 class PluginContext:
     """Context passed to plugin lifecycle methods."""
-    def __init__(self, plugin_system: "PluginSystem") -> None:
+    def __init__(self, plugin_system: PluginSystem) -> None:
         self.system = plugin_system
         self.data: dict[str, Any] = {}
         self.config: dict[str, Any] = {}
@@ -204,6 +205,7 @@ class PluginSystem:
                     )
                     metas.append(meta)
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
             return metas
         except ImportError:
@@ -506,13 +508,14 @@ class PluginSystem:
         # SECURITY (SEC-3): fail-closed — installation runs attacker-controlled
         # code in-process, so it requires an explicit operator opt-in and, when
         # a signing key is configured, a verified signed manifest.
+        import os
+
         from distllm.core.plugin_trust import (
             SIGNING_PUBKEY_ENV,
             PluginInstallRefused,
             enforce_install_allowed,
             verify_plugin_manifest,
         )
-        import os
 
         try:
             enforce_install_allowed(package_name)
@@ -551,7 +554,7 @@ class PluginSystem:
                 logger.error(f"Plugin installation failed: {result.stderr}")
                 return False
         except subprocess.TimeoutExpired:
-            logger.error(f"Plugin installation timed out after 120s")
+            logger.error("Plugin installation timed out after 120s")
             return False
         except Exception as e:
             logger.error(f"Plugin installation error: {e}")
@@ -595,8 +598,8 @@ class PluginSystem:
         Returns:
             List of plugin info dicts with 'name', 'version', 'summary'.
         """
-        import subprocess
         import json
+        import subprocess
 
         cmd = [sys.executable, "-m", "pip", "index", "versions", f"distllm-plugin-{query}"]
         try:
@@ -607,6 +610,7 @@ class PluginSystem:
                 if lines:
                     return [{"name": f"distllm-plugin-{query}", "versions": lines[0]}]
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         # Fallback: list installed distllm plugins
@@ -621,6 +625,7 @@ class PluginSystem:
                     if p["name"].startswith("distllm-plugin-")
                 ]
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
         return []

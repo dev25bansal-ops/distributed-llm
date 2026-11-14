@@ -745,6 +745,7 @@ class ChaosSimulator:
                 result = self.run_scenario(st, params)
                 scenario_results.append(result)
             except Exception:
+                # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                 continue
 
         if not scenario_results:

@@ -30,9 +30,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
+from distllm.backends.model_validation import resolve_trust_remote_code, validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
 
@@ -68,7 +71,7 @@ class ONNXNodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default",
         device: str = "auto",
         dtype: str = "float16",
         layer_start: int = 0,
@@ -79,6 +82,9 @@ class ONNXNodeAdapter(BackendAdapter):
         trust_remote_code: bool | None = None,
         **extra_kwargs: Any,
     ):
+        if model_name:
+            validate_model_name(model_name, allow_local_paths=True)
+        self._trust_remote_code = resolve_trust_remote_code(trust_remote_code)
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -89,7 +95,6 @@ class ONNXNodeAdapter(BackendAdapter):
         self._optimizer_level = optimizer_level
         self._extra_kwargs = extra_kwargs
 
-        self._session: ort.InferenceSession | None = None
         self._model = None
 
     def load_model(self) -> None:
@@ -237,3 +242,8 @@ class ONNXNodeAdapter(BackendAdapter):
             "xpu": 8,
         }
         return mapping.get(device_type, 1)
+
+
+# Backward compatibility alias
+OnnxBackend = ONNXNodeAdapter
+

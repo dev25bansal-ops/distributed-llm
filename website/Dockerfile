@@ -1,46 +1,20 @@
-# Multi-stage build for DistLLM website
-# Stage 1: Build with Vite
-FROM node:20-alpine AS builder
+# DistLLM website — static site, no build step.
+#
+# The pages ship as authored: every page references its own css/ and js/ paths
+# and there is no bundling, minification or asset hashing. GitHub Pages serves
+# the website/ directory verbatim, and this image does the same, so what you
+# test locally is byte-identical to what is deployed.
+#
+# .dockerignore excludes node_modules, tests/, package files and this
+# Dockerfile itself, so the COPY below is already just the served site.
+FROM nginx:alpine
 
-WORKDIR /app
-
-# Copy package files
-COPY package.json package-lock.json ./
-
-# Install dependencies
-RUN npm ci
-
-# Copy source files
-COPY . .
-
-# Build for production
-RUN npm run build
-
-# Stage 2: Serve with nginx
-FROM nginx:alpine AS production
-
-# Copy custom nginx config (production variant with HSTS, rate limiting, security headers)
 COPY nginx-production.conf /etc/nginx/conf.d/default.conf
+COPY . /usr/share/nginx/html/
 
-# Copy built files from builder stage
-COPY --from=builder /app/dist /usr/share/nginx/html
-
-# Copy static files that aren't processed by Vite
-COPY --from=builder /app/robots.txt /usr/share/nginx/html/
-COPY --from=builder /app/sitemap.xml /usr/share/nginx/html/
-COPY --from=builder /app/feed.xml /usr/share/nginx/html/
-COPY --from=builder /app/opensearch.xml /usr/share/nginx/html/
-COPY --from=builder /app/favicon.svg /usr/share/nginx/html/
-COPY --from=builder /app/manifest.json /usr/share/nginx/html/
-COPY --from=builder /app/CNAME /usr/share/nginx/html/
-COPY --from=builder /app/.htaccess /usr/share/nginx/html/
-
-# Add healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost/ || exit 1
 
-# Expose port
 EXPOSE 80
 
-# Start nginx
 CMD ["nginx", "-g", "daemon off;"]

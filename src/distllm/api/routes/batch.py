@@ -50,17 +50,23 @@ import math
 import socket
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, AsyncGenerator
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from pydantic import BaseModel, Field
 
-from loguru import logger
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 # ─── Router ────────────────────────────────────────────────────────────────
@@ -281,7 +287,16 @@ async def _store_delete(batch_id: str) -> None:
 
 # ─── Legacy synchronous batch endpoint ─────────────────────────────────────
 
-@router.post("", response_model=BatchResponse)
+@router.post(
+    "",
+    response_model=BatchResponse,
+    summary="Process multiple requests concurrently (legacy synchronous batch)",
+    responses={
+        422: ERR_ENTRY("Invalid batch payload (e.g. empty requests list, or more than 100 requests)", type_="invalid_request_error", code="invalid_request"),
+        501: ERR_ENTRY("Embedding requests are not yet supported in batch mode", type_="invalid_request_error", code="not_implemented"),
+        503: ERR_ENTRY("Coordinator not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def process_batch(batch: BatchRequest, request: Request):
     """Process multiple requests concurrently.
 
@@ -390,30 +405,85 @@ async def _process_single(
         )
 
 
+def _message_text(content: Any) -> str:
+    """Flatten a message's content to text (mirrors chat.py's ``_extract_text``).
+
+    Batch accepts raw request bodies, so ``content`` may be a string or a
+    multi-modal list of ``{"type": "text"|...,"text": ...}`` parts.  Only text
+    and image parts survive, exactly as in the chat route; an unknown part
+    (audio, file, ...) is dropped rather than inlined as raw dict repr, which
+    would leak JSON into the prompt and diverge from /v1/chat/completions.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif isinstance(item, dict) and item.get("type") == "image_url":
+                parts.append("[image]")
+        return " ".join(p for p in parts if p)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _build_chat_prompt(messages: list[dict], coordinator: Any) -> str:
+    """Render the whole conversation with the model's chat template.
+
+    Previously the batch path took only the last ``user`` message, which threw
+    away the system prompt and every prior turn.  This mirrors the chat route:
+    format through :class:`TemplateEngine` (which uses the tokenizer's
+    ``apply_chat_template`` when available) and fall back to a role-prefixed
+    join only if the template engine itself fails.
+    """
+    normalised = [
+        {"role": msg.get("role", "user"), "content": _message_text(msg.get("content"))}
+        for msg in messages
+    ]
+
+    try:
+        from distllm.prompts.engine import TemplateEngine
+
+        engine = TemplateEngine()
+        tokenizer = getattr(coordinator, "tokenizer", None)
+        if tokenizer is not None:
+            engine.set_tokenizer(tokenizer)
+        return engine.apply(normalised, add_generation_prompt=True)
+    except Exception:
+        return "\n".join(
+            f"{msg['role']}: {msg['content']}" for msg in normalised
+        )
+
+
 async def _process_chat(body: dict, coordinator: Any) -> dict:
     """Process a chat completion request."""
     messages = body.get("messages", [])
     if not messages:
         raise ValueError("messages is required")
 
-    # Extract the last user message as the prompt
-    prompt = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            prompt = msg.get("content", "")
-            break
+    # A conversation needs at least one user turn; a lone system prompt has
+    # nothing for the model to answer.
+    if not any(msg.get("role") == "user" for msg in messages):
+        raise ValueError("No user message found")
 
+    prompt = _build_chat_prompt(messages, coordinator)
     if not prompt:
         raise ValueError("No user message found")
 
     max_tokens = body.get("max_tokens", 128)
     temperature = body.get("temperature", 0.7)
+    top_p = body.get("top_p", 0.9)
+    top_k = body.get("top_k", 0)
 
     result = await asyncio.to_thread(
         coordinator.generate,
         prompt=prompt,
         max_new_tokens=max_tokens,
         temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
     )
 
     return {
@@ -460,7 +530,17 @@ async def _process_embedding(body: dict, coordinator: Any) -> dict:
 
 # ─── Background batch: submit ──────────────────────────────────────────────
 
-@router.post("/submit", response_model=BatchSubmitResponse, status_code=202)
+@router.post(
+    "/submit",
+    response_model=BatchSubmitResponse,
+    status_code=202,
+    summary="Submit a batch for background processing",
+    responses={
+        400: ERR_ENTRY("Invalid webhook_url (must be public HTTPS, no private/loopback targets)", type_="invalid_request_error", code="invalid_request"),
+        422: ERR_ENTRY("Invalid submission payload (e.g. empty items list, or more than 500 items)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Coordinator not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def submit_batch(batch_req: BatchSubmitRequest, request: Request) -> BatchSubmitResponse:
     """Submit a batch for background processing.
 
@@ -529,7 +609,14 @@ async def submit_batch(batch_req: BatchSubmitRequest, request: Request) -> Batch
 
 # ─── Background batch: status polling ──────────────────────────────────────
 
-@router.get("/{batch_id}/status", response_model=BatchStatusResponse)
+@router.get(
+    "/{batch_id}/status",
+    response_model=BatchStatusResponse,
+    summary="Poll the current status of a background batch",
+    responses={
+        404: ERR_ENTRY("Batch not found (or owned by a different API key)", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def get_batch_status(batch_id: str, request: Request) -> BatchStatusResponse:
     """Poll the current status of a background batch.
 
@@ -546,7 +633,13 @@ async def get_batch_status(batch_id: str, request: Request) -> BatchStatusRespon
 
 # ─── Background batch: SSE stream ──────────────────────────────────────────
 
-@router.get("/{batch_id}/stream")
+@router.get(
+    "/{batch_id}/stream",
+    summary="Server-Sent Events stream of batch item results",
+    responses={
+        404: ERR_ENTRY("Batch not found (or owned by a different API key)", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def stream_batch_results(batch_id: str, request: Request) -> StreamingResponse:
     """Server-Sent Events stream of batch item results.
 
@@ -693,7 +786,15 @@ async def _stream_events(
 
 # ─── Background batch: cancel ──────────────────────────────────────────────
 
-@router.post("/{batch_id}/cancel", response_model=BatchCancelResponse)
+@router.post(
+    "/{batch_id}/cancel",
+    response_model=BatchCancelResponse,
+    summary="Cancel an in-progress background batch",
+    responses={
+        400: ERR_ENTRY("Batch already completed, cancelled, or failed", type_="invalid_request_error", code="invalid_request"),
+        404: ERR_ENTRY("Batch not found (or owned by a different API key)", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def cancel_batch(batch_id: str, request: Request) -> BatchCancelResponse:
     """Cancel an in-progress background batch.
 

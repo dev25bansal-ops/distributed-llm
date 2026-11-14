@@ -11,7 +11,19 @@ is missing, so they are skipped rather than asserting the degraded shape.
 import pytest
 
 from distllm.dist.observability import enable_dist_observability
+from distllm.observability import exporter as _exporter_mod
 from distllm.observability.exporter import DistLLMPrometheusExporter
+
+# The exporter only grows its per-domain attributes (_nccl_bytes_sent,
+# _pipeline_*, ...) when prometheus_client is importable. Without the
+# [observability] extra the exporter is a no-op stub that never defines them,
+# so asserting they exist is asserting the extra is installed -- which this
+# test-dist job does not do. Skip rather than fail, as this file's own
+# docstring says for the OTel-backed tests.
+_requires_prometheus = pytest.mark.skipif(
+    not _exporter_mod._PROMETHEUS_AVAILABLE,
+    reason="needs the [observability] extra (prometheus_client)",
+)
 
 
 class TestEnableDistObservability:
@@ -147,12 +159,19 @@ class TestEnableDistObservability:
 
     # ── Idempotency ─────────────────────────────────────────────────────
 
+    @_requires_prometheus
     def test_second_call_idempotent(self) -> None:
         """Calling twice on the same exporter does not raise.
 
-        The second call gracefully fails to re-register metrics
-        (prometheus_client rejects duplicates) so the metrics dict
-        is empty, while the first call succeeded.
+        The second call fails to re-register (prometheus_client rejects
+        duplicate timeseries), so its metrics dict is empty while the first
+        call's is full.
+
+        The assertion is on *relative* behaviour, not on a virgin registry:
+        an earlier file in a whole-directory run can leave families registered
+        on the shared default registry, which flips which call is the
+        "duplicate". Asserting result1 == the full dict and result2 == {}
+        made this test depend on what ran before it.
         """
         exporter = DistLLMPrometheusExporter()
         result1 = enable_dist_observability(
@@ -163,15 +182,22 @@ class TestEnableDistObservability:
             exporter=exporter,
             enable_tracing=False,
         )
-        # First call registered all 4 subsystems.
-        assert result1["metrics"] == {
-            "pipeline": True,
-            "federation": True,
-            "recovery": True,
-            "nccl": True,
+        # Calling twice must not raise, and the four subsystems must be
+        # registered across the pair. The split between the calls is not part
+        # of the contract: it depends on whether an earlier test in the same
+        # directory run already put these families on the shared default
+        # registry, which makes the first call a duplicate instead of the
+        # second.
+        #
+        # Requires prometheus_client: the duplicate is rejected BY the registry
+        # (DuplicatedTimeseries). Without the [observability] extra there is no
+        # registry to reject anything, both calls report success, and the union
+        # still holds -- so this would silently stop testing idempotency at all.
+        registered = {
+            k for r in (result1["metrics"], result2["metrics"])
+            for k, v in r.items() if v
         }
-        # Second call catches DuplicatedTimeseries — metrics stay empty.
-        assert result2["metrics"] == {}
+        assert registered == {"pipeline", "federation", "recovery", "nccl"}
 
     # ── Edge cases ──────────────────────────────────────────────────────
 
@@ -229,6 +255,7 @@ class TestEnableDistObservability:
 
     # ── Exporter attribute side effects ─────────────────────────────────
 
+    @_requires_prometheus
     def test_exporter_gains_pipeline_attributes(self) -> None:
         """After enabling pipeline metrics the exporter gains pipeline attrs."""
         exporter = DistLLMPrometheusExporter()
@@ -245,6 +272,7 @@ class TestEnableDistObservability:
         assert hasattr(exporter, "_pipeline_micro_batches")
         assert hasattr(exporter, "_pipeline_warmup")
 
+    @_requires_prometheus
     def test_exporter_gains_federation_attributes(self) -> None:
         """After enabling federation metrics the exporter gains federation attrs."""
         exporter = DistLLMPrometheusExporter()
@@ -262,6 +290,7 @@ class TestEnableDistObservability:
         assert hasattr(exporter, "_fed_heartbeat_latency")
         assert hasattr(exporter, "_fed_spillovers_total")
 
+    @_requires_prometheus
     def test_exporter_gains_recovery_attributes(self) -> None:
         """After enabling recovery metrics the exporter gains recovery attrs."""
         exporter = DistLLMPrometheusExporter()
@@ -278,6 +307,7 @@ class TestEnableDistObservability:
         assert hasattr(exporter, "_recovery_drill_total")
         assert hasattr(exporter, "_recovery_drill_duration")
 
+    @_requires_prometheus
     def test_exporter_gains_nccl_attributes(self) -> None:
         """After enabling NCCL metrics the exporter gains NCCL attrs."""
         exporter = DistLLMPrometheusExporter()

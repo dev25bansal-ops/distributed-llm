@@ -126,3 +126,28 @@ class TestCliEdgeCases:
         """Path traversal in CLI args should be handled."""
         result = runner.invoke(app, ["model", "info", "../../../etc/passwd"])
         assert result.exit_code is not None
+
+
+def pytest_fuzz(n: int = 200) -> None:
+    """Plain iteration fuzz mode for environments without Hypothesis.
+
+    run_all.py calls this on every fuzz_*.py module. This file defined only
+    pytest test classes, so the sweep died with "module 'fuzz_cli_args' has no
+    attribute 'pytest_fuzz'" and the remaining harnesses never ran in CI.
+
+    Drives each command group with random arguments and asserts only that the
+    CLI terminates with an exit code. An unhandled exception escaping typer's
+    CliRunner raises instead of returning, so this catches crashes without
+    asserting on specific help text that legitimately changes.
+    """
+    groups = (["benchmark", "run"], ["config"], ["model"], ["cluster"], ["system"])
+
+    for _ in range(n):
+        prefix = random.choice(groups)
+        args = _random_args(4)
+        result = runner.invoke(app, prefix + args)
+        assert result.exit_code is not None, f"no exit code for {prefix + args}"
+
+        # Flags with no value attached are the common crash shape.
+        flag_result = runner.invoke(app, prefix + _random_flags()[:3])
+        assert flag_result.exit_code is not None

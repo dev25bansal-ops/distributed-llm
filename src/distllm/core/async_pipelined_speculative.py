@@ -43,15 +43,17 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-import torch
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
-
 
 # ── Ring Buffer ──────────────────────────────────────────────────────────────
 
@@ -193,7 +195,13 @@ class PipelinedSpeculativeDecoder:
         self._verifier = verifier
         self._num_candidates = num_candidates
         self._device = torch.device(device)
-        self._use_streams = use_cuda_streams and device.startswith("cuda")
+        # A "cuda" device string is not proof a GPU exists: on a CPU-only
+        # host (or with no visible device) allocating a Stream raises
+        # RuntimeError.  Fall back to the non-stream path instead.
+        _cuda_ready = torch.cuda.is_available()
+        self._use_streams = (
+            use_cuda_streams and device.startswith("cuda") and _cuda_ready
+        )
         self._eos_token_id = eos_token_id
 
         # Ring buffer for draft/verify decoupling
@@ -234,7 +242,7 @@ class PipelinedSpeculativeDecoder:
 
     # ── Public API ──────────────────────────────────────────────────────
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,

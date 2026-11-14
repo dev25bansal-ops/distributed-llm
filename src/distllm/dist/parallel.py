@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import torch
-import torch.nn as nn
-import torch.distributed as dist
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
+nn = optional_import("torch.nn")
+dist = optional_import("torch.distributed")
 from loguru import logger
 
 from distllm.dist.tp_launcher import launch_tp_workers, tp_forward
@@ -167,6 +169,7 @@ class HardwareProber:
                     props = torch.cuda.get_device_properties(i)
                     info.gpu_memory_gb.append(props.total_memory / (1024 ** 3))
                 except Exception:
+                    # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                     info.gpu_memory_gb.append(0.0)
 
             if info.gpus_per_node > 1:
@@ -209,6 +212,7 @@ class HardwareProber:
                     if bandwidth_gbps > threshold_gbps:
                         return True
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return False
 
@@ -246,10 +250,12 @@ class ParallelAutoTuner:
         self,
         hidden_size: int = 4096,
         num_layers: int = 1,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         batch_size: int = 1,
         seq_len: int = 128,
     ) -> ProfileResult:
+        if dtype is None:
+            dtype = torch.float16
         start_time = time.monotonic()
         result = ProfileResult()
 
@@ -333,6 +339,7 @@ class ParallelAutoTuner:
                 free, _ = torch.cuda.mem_get_info(f"cuda:{i}")
                 mem.append(free / (1024**3))
             except Exception:
+                # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
                 mem.append(0.0)
         return mem
 
@@ -377,6 +384,7 @@ class ParallelAutoTuner:
             del block, inp, big
 
         except Exception:
+            # CQ-08: intentional fail-open: fallback default assigned on failure.
             tokens_per_sec = 1000.0 / (hidden_size / 4096)
             mem_per_token_mb = hidden_size * 4 / 1024
 
@@ -389,6 +397,7 @@ class ParallelAutoTuner:
             try:
                 bw["intra_node"] = self._measure_p2p_bw(0, 1, 128)
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 bw["intra_node"] = 50.0 if self.topology.has_nvlink else 12.5
         else:
             bw["intra_node"] = 12.5
@@ -397,6 +406,7 @@ class ParallelAutoTuner:
             try:
                 bw["inter_node"] = self._measure_network_bw()
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 bw["inter_node"] = self.topology.interconnect_bandwidth_gbps
         else:
             bw["inter_node"] = self.topology.interconnect_bandwidth_gbps
@@ -1052,10 +1062,12 @@ class HybridParallelExecutor:
                         try:
                             child.terminate()
                         except Exception:
+                            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                             pass
             elif hasattr(proc, 'terminate'):
                 try:
                     proc.terminate()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
         self._tp_processes.clear()

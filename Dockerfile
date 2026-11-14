@@ -1,9 +1,9 @@
 # BUILDER stage — compile + install. This is the "dev" stage; the release stage is below.
 ARG CUDA_VERSION=12.8.0
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS builder
 
 ARG CUDA_VERSION
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 
 ENV CUDA_HOME=/usr/local/cuda
@@ -13,7 +13,7 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 ENV NCCL_ALGO=Ring
 ENV NCCL_PROTO=Simple
 
-# Install system deps for building
+# Install system deps for building.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
     python3-pip python3-setuptools python3-wheel \
@@ -22,34 +22,104 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
+# Pin the build toolchain. On 22.04 this had to *install* a newer
+# pip/setuptools: an old setuptools cannot read PEP 621 [project] metadata, and
+# with no setup.py or setup.cfg the build then silently produced an empty
+# UNKNOWN-0.0.0 wheel (961 bytes, no console scripts) whose runtime image had no
+# `distllm-api` binary at all. Floors: pip 23 (Metadata-Version 2.4),
+# setuptools 61 (PEP 621); the upper bound is the range this project is tested
+# against.
+#
+# On 24.04 (noble) the distro already ships pip 24.0 / setuptools 68.1.2, so
+# this upgrades nothing -- but it still fails unless both overrides are given,
+# and each has a different cause:
+#   --break-system-packages  PEP 668 marks noble's Python externally managed
+#                            and refuses any plain install.
+#   --ignore-installed       Debian's pip has no RECORD file, so pip cannot
+#                            uninstall it: "Cannot uninstall pip 24.0, RECORD
+#                            file not found. Hint: installed by debian."
+# Both are correct in a throwaway builder layer whose system Python IS the
+# target interpreter; neither belongs in a user-facing context.
+# The <82 upper bound was for Python 3.10 builds and is now the wrong shape:
+# it caps setuptools at a version whose vendored jaraco.context 5.3.0 and
+# wheel 0.45.1 carry HIGH advisories (CVE-2026-23949, CVE-2026-24049), and
+# CVE-2025-47273 against setuptools itself. trivy sees them because this venv
+# inherits the system interpreter's setuptools. pyproject already floors
+# setuptools at >=84.1.0, so honour that here instead of overriding it down.
+RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+    "pip>=23.0,<25" "setuptools>=84.1.0" "wheel>=0.48.0"
+
 WORKDIR /build
+
+# Interpreter for the whole image: a venv keeps one consistent layout (Debian
+# Python searches .../dist-packages while `pip --prefix` writes site-packages)
+# and we copy it wholesale to the runtime at this same absolute path.
+RUN python3 -m venv /install
+ENV PATH=/install/bin:${PATH}
 
 # Install PyTorch with CUDA support (pre-built wheel for speed)
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-# NCCL: install from system (already in cuda-devel image) and ensure NCCL headers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnccl-dev libnccl2 \
-    && rm -rf /var/lib/apt/lists/*
+# NCCL: already provided by the nvidia/cuda:*-devel base image (headers + libs).
+# Installing the distro libnccl-dev/libnccl2 changes held packages and makes
+# apt fail under -y ("Held packages were changed ... --allow-change-held-packages"),
+# so we rely on the base image's NCCL instead.
 
 # Install locked dependencies first (cached layer, pinning all transitive deps)
 COPY requirements.lock .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy project files and install the package itself (without re-resolving deps)
 COPY pyproject.toml .
 COPY README.md .
 COPY src/ src/
 COPY proto/ proto/
-RUN pip install --no-cache-dir --prefix=/install "./src" --no-deps
+# node_pb2*.py are gitignored build products (see .gitignore), so they are
+# absent from the build context and the installed package has no protobuf
+# modules -- the container then dies on `ImportError: cannot import name
+# 'node_pb2' from 'distllm.dist'`. Generate them exactly as `make proto` does.
+#
+# grpcio-tools emits a *flat* `import node_pb2 as node__pb2` in the _grpc file,
+# which only resolves when distllm/dist is on sys.path; imported as a package
+# it raises ModuleNotFoundError. Rewrite it to the package-relative form.
+RUN pip install --no-cache-dir grpcio-tools==1.85.1 \
+    && python -m grpc_tools.protoc -I proto/ \
+        --python_out=src/distllm/dist/ --grpc_python_out=src/distllm/dist/ \
+        proto/node.proto \
+    && sed -i 's/^import node_pb2 as node__pb2$/from distllm.dist import node_pb2 as node__pb2/' \
+        src/distllm/dist/node_pb2_grpc.py \
+    && test -f src/distllm/dist/node_pb2.py \
+    && grep -q '^from distllm.dist import node_pb2 as node__pb2$' src/distllm/dist/node_pb2_grpc.py
+# The package metadata (pyproject.toml) lives at the repo root, not in src/,
+# so install the current directory. PIP finds the distllm package under
+# src/ because pyproject sets package-dir = {"" = "src"}.
+#
+# Install the self-hosted extra too: core.coordinator imports transformers at
+# module scope, and requirements.lock does not carry it, so a bare install
+# produced an image that built fine and then died on
+# `ModuleNotFoundError: No module named 'transformers'` when the coordinator
+# started. torch is already installed from the CUDA index above and satisfies
+# the extra's requirement, so pip will not pull a second copy.
+RUN pip install --no-cache-dir "transformers>=4.48.0" \
+    "safetensors>=0.4.0" "huggingface-hub>=0.20.0" "sentencepiece>=0.1.99" \
+    "accelerate>=1.0.0" "nvidia-ml-py>=12.0"
+RUN pip install --no-cache-dir . --no-deps
+
+# Fail the build (not the container at runtime) if the package installed without
+# its console scripts. A metadata-parsing failure yields an empty wheel that
+# pip reports as success, and the image then starts with "distllm-api: not found".
+RUN test -x /install/bin/distllm-api \
+    && test -x /install/bin/distllm-coordinator \
+    && test -x /install/bin/distllm-node \
+    || { echo "ERROR: distllm console scripts missing from /install/bin"; ls -la /install/bin || true; exit 1; }
 
 # ==========================================================================
 # RUNTIME stage — minimal, no build deps, no dev packages
 # ==========================================================================
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04 AS runtime
 
 ARG CUDA_VERSION
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 ARG DISTLLM_VERSION=0.4.1
 
 LABEL org.opencontainers.image.source="https://github.com/distributed-llm/distributed-llm"
@@ -67,17 +137,25 @@ ENV NCCL_DEBUG=WARN
 
 WORKDIR /app
 
-# Install ONLY runtime dependencies (no build tools)
+# Install ONLY runtime dependencies (no build tools).
+#
+# The dist-upgrade belongs HERE, not only in the builder: this is a separate
+# FROM, so the builder's upgrade never reaches the image trivy scans. Putting it
+# only in the builder left openssl 3.0.13-0ubuntu3.4 and apt 2.7.14build2 in the
+# shipped layer -- exactly the three fixable HIGHs the gate reported after its
+# first pass (CVE-2026-45447, CVE-2026-84782, CVE-2026-109518).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
-    libnccl2 \
     curl ca-certificates \
+    && apt-get dist-upgrade -y \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the installed packages from builder
-COPY --from=builder /install /usr/local
+# Copy the venv at the SAME absolute path it was built at: pyvenv.cfg and the
+# console-script shebangs embed /install, so relocating it would break both.
+COPY --from=builder /install /install
+ENV PATH=/install/bin:${PATH}
 
 # Create non-root user
 RUN groupadd -r distllm && \
@@ -90,11 +168,11 @@ RUN chmod +x /app/docker-entrypoint.sh
 USER distllm
 
 # Default env for deployment
-ENV DISTLLM_NODE_ID=worker-0
-ENV DISTLLM_MODEL=meta-llama/Llama-3.2-1B
-ENV DISTLLM_START_LAYER=0
-ENV DISTLLM_END_LAYER=3
-ENV DISTLLM_TOTAL_LAYERS=8
+ENV DISTLLM_MODEL__NAME=meta-llama/Llama-3.2-1B
+ENV DISTLLM_MODEL__DTYPE=float16
+# A container must listen on all interfaces; the library default is
+# localhost, which is unreachable through a published port.
+ENV DISTLLM_COORDINATOR__HOST=0.0.0.0
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

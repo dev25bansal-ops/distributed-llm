@@ -12,10 +12,16 @@ def _get_module():
     import sys
     import types
 
-    # Stub merkle module dependency
-    merkle_mod = types.ModuleType("distllm.dist.merkle")
+    # Stub merkle module dependency — but only for the duration of the load.
+    # Leaving the stub in sys.modules poisons every later importer of the real
+    # distllm.dist.merkle (its MerkleTree was being served as None, so the
+    # next test that imported it for real got an AttributeError or a
+    # silently-broken digest), so the previous entry is saved and restored.
+    _merkle_key = "distllm.dist.merkle"
+    _prior_merkle = sys.modules.get(_merkle_key)
+    merkle_mod = types.ModuleType(_merkle_key)
     merkle_mod.MerkleTree = None
-    sys.modules["distllm.dist.merkle"] = merkle_mod
+    sys.modules[_merkle_key] = merkle_mod
 
     path = os.path.join("src", "distllm", "dist", "cache_digest.py")
     spec = importlib.util.spec_from_file_location("cache_digest", path)
@@ -27,7 +33,13 @@ def _get_module():
     mod.logger.info = lambda *a, **kw: None
     mod.logger.warning = lambda *a, **kw: None
 
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if _prior_merkle is None:
+            sys.modules.pop(_merkle_key, None)
+        else:
+            sys.modules[_merkle_key] = _prior_merkle
     return mod
 
 

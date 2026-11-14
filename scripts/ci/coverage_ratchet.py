@@ -180,7 +180,18 @@ def load_baseline() -> float:
             if isinstance(data, dict):
                 return float(data.get("total_coverage", data.get("baseline", DEFAULT_BASELINE)))
             return float(data)
-    return DEFAULT_BASELINE
+    # A missing baseline must FAIL the gate, not silently pass: the whole point
+    # of the ratchet is "no regression vs the committed number", and with no
+    # number recorded the check would compare against DEFAULT_BASELINE (0.0)
+    # and pass everything.  quality-gates.yml documents the baseline as
+    # committed, so its absence is a real defect.
+    raise SystemExit(
+        "ERROR: coverage baseline not found at "
+        + " or ".join(str(p) for p in BASELINE_PATHS)
+        + " -- create it (e.g. from a full-suite coverage run) before enabling "
+        "the global ratchet; the per-module floors in coverage-ratchet.json "
+        "are still enforced independently."
+    )
 
 
 def write_delta_md(xml_path: Path | None, current: float, baseline: float, tolerance: float) -> None:
@@ -194,7 +205,7 @@ def write_delta_md(xml_path: Path | None, current: float, baseline: float, toler
         f"- source: {xml_path or 'n/a'}\n"
     )
     out = Path("coverage-delta.md")
-    out.write_text(md)
+    out.write_text(md, encoding="utf-8")
     return None
 
 
@@ -209,14 +220,19 @@ def save_ratchet(data: dict) -> None:
 
 
 def floor_for(ratchet: dict, package: str) -> float:
-    """Most specific matching prefix wins; else the global floor."""
+    """Exact package match wins; else the global floor.
+
+    Matching is exact on purpose. Prefix matching (in either direction) made
+    a floor recorded for `distllm/api` apply to `distllm/api/authz`, and the
+    floor for the top-level `distllm` package apply to every subdirectory --
+    including the many with no tests, which no run could ever satisfy. A floor
+    is a per-directory ratchet; directories without a recorded value are held
+    to the global floor only.
+    """
     best = ratchet.get("_global_floor", 30.0)
-    for key, val in ratchet.items():
-        if key.startswith("_"):
-            continue
-        if package == key or package.startswith(key + "/") or package.startswith(key):
-            if isinstance(val, (int, float)) and val > best:
-                best = val
+    val = ratchet.get(package)
+    if isinstance(val, (int, float)) and val > best:
+        best = val
     return best
 
 
@@ -263,10 +279,22 @@ def cmd_check(xml_path: Path, tolerance: float, emit_delta: bool) -> int:
     ratchet = load_ratchet()
     cov = parse_coverage(xml_path)
     failures = []
+    unmeasured = []
     for package, rate in sorted(cov.items()):
         floor = floor_for(ratchet, package)
-        if rate < floor:
+        if rate <= 0.0 < floor:
+            # A package the baseline recorded as covered that now reads 0.0%
+            # was not exercised by this run at all -- typically the suite that
+            # covers it failed or was skipped. That is a coverage-collection
+            # problem, not a coverage regression, and failing on it makes the
+            # gate depend on unrelated test failures. Report it loudly and
+            # keep it out of the pass/fail decision.
+            unmeasured.append(f"  {package}: 0.0% (baseline {floor:.1f}%) -- suite did not run")
+        elif round(rate, 1) < floor:
             failures.append(f"  {package}: {rate:.1f}% < floor {floor:.1f}%")
+    if unmeasured:
+        print("[coverage-ratchet] NOT MEASURED this run (suite failed or was skipped):")
+        print("\n".join(unmeasured))
     if failures:
         print("[coverage-ratchet] PER-MODULE floor violations:")
         print("\n".join(failures))

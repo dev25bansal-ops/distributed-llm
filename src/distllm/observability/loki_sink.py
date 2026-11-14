@@ -10,7 +10,8 @@ import json
 import threading
 import time
 from collections import deque
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from loguru import logger
 
@@ -27,6 +28,7 @@ def _get_otel_labels() -> dict[str, str]:
                 "span_id": f"{ctx.span_id:016x}",
             }
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     return {}
 

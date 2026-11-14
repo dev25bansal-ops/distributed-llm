@@ -58,7 +58,20 @@ class TestLlamacppNodeAdapterConstruction:
         assert LlamacppNodeAdapter.display_name() == "llama.cpp"
 
     def test_is_available(self) -> None:
-        assert LlamacppNodeAdapter.is_available() is False
+        """is_available() reflects whether llama_cpp can actually be imported.
+
+        The old assertion was `is False`, which only held on a machine without
+        llama_cpp -- and CI installs the backends extra, so this failed there
+        on every run while passing here. Asserting the relationship instead of
+        a fixed value tests the contract and works in both environments.
+        """
+        try:
+            import llama_cpp  # noqa: F401
+
+            expected = True
+        except ImportError:
+            expected = False
+        assert LlamacppNodeAdapter.is_available() is expected
 
     def test_priority_for_cpu(self) -> None:
         assert LlamacppNodeAdapter.priority_for("cpu") == 8
@@ -81,9 +94,31 @@ class TestLlamacppNodeAdapterConstruction:
         assert adapter.state == BackendState.UNINITIALIZED
 
     def test_load_model_raises_import_error(self) -> None:
+        """Without llama_cpp the import fails; with it, the bad path does.
+
+        The old version assumed llama_cpp was absent and expected ImportError.
+        CI installs the backends extra, so llama_cpp was present, the import
+        succeeded, and the missing file surfaced as ValueError instead -- a test
+        that could only pass on a machine configured differently from CI.
+        """
         adapter = LlamacppNodeAdapter(model_path="/models/model.gguf")
-        with pytest.raises((ImportError, ModuleNotFoundError)):
-            adapter.load_model()
+        try:
+            import llama_cpp  # noqa: F401
+
+            installed = True
+        except ImportError:
+            installed = False
+
+        if installed:
+            # No llama_cpp model exists at that path. load_model wraps the
+            # ValueError in distllm's own ModelLoadError, so both are valid.
+            from distllm.errors.types import ModelLoadError
+
+            with pytest.raises((ValueError, RuntimeError, ModelLoadError)):
+                adapter.load_model()
+        else:
+            with pytest.raises((ImportError, ModuleNotFoundError)):
+                adapter.load_model()
 
     def test_forward_before_load_raises(self) -> None:
         adapter = LlamacppNodeAdapter(model_path="/models/model.gguf")

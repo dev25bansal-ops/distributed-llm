@@ -5,6 +5,11 @@ namespace: distllm-production
 
 resources:
   - ../base
+  # HPA + Prometheus-adapter ConfigMap + ServiceMonitor (production only; it
+  # needs prometheus-operator CRDs, dev/staging stay without them). Lives in
+  # this directory rather than ../ so default kustomize can load it --
+  # ArgoCD/Flux do not pass --load-restrictor.
+  - autoscaling.yaml
 
 patches:
   - path: coordinator-resource-patch.yaml
@@ -18,7 +23,7 @@ patches:
 
 images:
   - name: ghcr.io/distributed-llm/coordinator
-    newTag: "0.4.0"
+    newTag: "0.4.1"
 
 commonLabels:
   app.kubernetes.io/environment: production

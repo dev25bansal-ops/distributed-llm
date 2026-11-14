@@ -1,11 +1,12 @@
 """Tests for speculative batch decoding."""
 
-import torch
 from unittest.mock import MagicMock
-import pytest
 
-from distllm.core.speculative_decoder import SpeculativeDecoder
+import pytest
+import torch
+
 from distllm.core.batch_scheduler import ScheduledBatch, Sequence
+from distllm.core.speculative_decoder import SpeculativeDecoder
 
 
 class TestSpeculativeBatch:
@@ -292,3 +293,194 @@ class TestBatchSpeculationMultipleRequests:
         metrics = decoder.get_metrics()
         assert metrics["total_draft_tokens"] == 4
         assert metrics["total_accepted"] == 3
+
+
+class TestVerifyBatchEosKeepsResultPerSequence:
+    """Finding 513: an EOS hit ``break`` dropped that sequence's result.
+
+    The returned list was then shorter than the batch, so
+    ``torch.tensor([r[2] for r in results])`` produced too few next
+    tokens and ``scheduler.step`` indexed ``next_tokens[i]`` for every
+    sequence — IndexError, or silent token misalignment.
+    """
+
+    def test_eos_hit_still_appends_one_result_per_sequence(self):
+        decoder = SpeculativeDecoder(device="cpu")
+        tok = MagicMock()
+        tok.eos_token_id = 3
+
+        logits_list = [torch.zeros(1, 2, 16), torch.zeros(1, 2, 16)]
+        for i in (0, 1):
+            logits_list[i][0, 0, 3] = 10.0  # draft token 3 = EOS, accepted
+            logits_list[i][0, 1, 4] = 10.0
+
+        results = decoder.verify_batch([[3, 4], [3, 4]], logits_list, tok)
+
+        assert len(results) == 2, "one result per sequence even on EOS"
+        for accepted_count, accepted_tokens, next_token in results:
+            # The EOS is reported as the next token (callers append r[2]),
+            # not buried inside accepted_tokens where it could be
+            # double-emitted.
+            assert accepted_count == 0
+            assert accepted_tokens == []
+            assert next_token == 3
+
+    def test_no_eos_tokenizer_keeps_verifying_past_eos_id(self):
+        """A tokenizer without an int EOS must not trigger the cutoff."""
+        decoder = SpeculativeDecoder(device="cpu")
+        logits_list = [torch.zeros(1, 2, 16)]
+        logits_list[0][0, 0, 3] = 10.0
+        logits_list[0][0, 1, 4] = 10.0
+
+        results = decoder.verify_batch([[3, 4]], logits_list, None)
+        assert results[0][0] == 2
+        assert results[0][1] == [3, 4]
+
+
+class TestVerifyBatchRowGeometry:
+    """Finding 492: draft token 0 must be verified against its OWN row.
+
+    ``request_pipeline`` passes full per-sequence logits whose rows are
+    the fed positions; row ``span_length - 1`` predicts the first draft
+    token.  The pre-fix code verified draft token *i* against row *i* —
+    a prompt-interior distribution — so an endorsed draft was rejected
+    and the emitted next token came from the first prompt position.
+    """
+
+    def test_fallback_anchors_draft_zero_on_last_row(self):
+        """No span_lengths: a full prompt followed by one draft.
+
+        The draft is verified against the LAST row (the row that predicts
+        it) when the span is longer than the draft list.
+        """
+        decoder = SpeculativeDecoder(device="cpu")
+        L = torch.zeros(1, 4, 16)
+        L[0, :3, 9] = 10.0   # interior prompt rows favour 9
+        L[0, 3, 7] = 10.0    # the row predicting draft 7 endorses it
+
+        results = decoder.verify_batch([[7]], [L])
+
+        accepted_count, accepted_tokens, next_token = results[0]
+        assert accepted_count == 1
+        assert accepted_tokens == [7]
+        # No successor row for the next token inside the span.
+        assert next_token == -1
+
+    def test_span_lengths_anchor_first_draft_on_span_end(self):
+        """Explicit span_lengths: rows 0..L-1 are the fed span."""
+        decoder = SpeculativeDecoder(device="cpu")
+        L = torch.zeros(1, 5, 16)
+        L[0, :4, 9] = 10.0   # rows 0..3 (prompt span of 4)
+        L[0, 3, 7] = 10.0    # last span row predicts draft 7
+        L[0, 4, 4] = 10.0    # successor row predicts the NEXT token
+
+        results = decoder.verify_batch(
+            [[7]], [L], span_lengths=[4],
+        )
+
+        accepted_count, accepted_tokens, next_token = results[0]
+        assert accepted_count == 1
+        assert accepted_tokens == [7]
+        assert next_token == 4
+
+    def test_multiple_drafts_with_span_length(self):
+        """Draft chains advance one row per draft after the anchor."""
+        decoder = SpeculativeDecoder(device="cpu")
+        L = torch.zeros(1, 6, 16)
+        L[0, 2, 10] = 10.0   # span_length=3 -> row 2 verifies draft 0
+        L[0, 3, 11] = 10.0   # row 3 verifies draft 1
+        L[0, 4, 12] = 10.0   # row 4 verifies draft 2 (mismatch: draft=99)
+
+        results = decoder.verify_batch(
+            [[10, 11, 99]], [L], span_lengths=[3],
+        )
+
+        accepted_count, accepted_tokens, next_token = results[0]
+        assert accepted_count == 2
+        # Mismatch: accepted prefix + the target's correction at that row.
+        assert accepted_tokens == [10, 11, 12]
+        assert next_token == 12
+
+
+class TestVerifyBatchSampledMode:
+    """Finding 442: verify_batch ignored temperature and draft_logits.
+
+    With temperature > 0 the batch path must run rejection sampling from
+    the supplied draft logits (q <= 0 rejects) and sample — not argmax —
+    the correction token.
+    """
+
+    def test_zero_draft_probability_rejects(self):
+        """q=0 for the drafted token -> reject (Leviathan et al.)."""
+        decoder = SpeculativeDecoder(device="cpu")
+        L = torch.zeros(1, 1, 16)
+        L[0, 0, 5] = 10.0
+        # Draft distribution gives token 5 exactly zero mass: the verifier
+        # must reject it even though the target fully endorses it.
+        draft_logits = torch.zeros(1, 16)
+        draft_logits[0, 5] = -1e9  # exp(-1e9) underflows -> q(5) = 0.0
+        draft_logits[0, 6] = 10.0
+
+        results = decoder.verify_batch(
+            [[5]], [L], draft_logits_list=[draft_logits], temperature=1.0,
+        )
+        assert results[0][0] == 0
+
+    def test_greedy_unchanged_when_temperature_zero(self):
+        decoder = SpeculativeDecoder(device="cpu")
+        L = torch.zeros(1, 1, 16)
+        L[0, 0, 5] = 10.0
+
+        results = decoder.verify_batch([[5]], [L], temperature=0.0)
+        assert results[0][:2] == (1, [5])
+
+    def test_sampled_mode_draws_not_argmax_for_next_token(self):
+        """The correction token is sampled from the target row, not argmax.
+
+        Target successor row: tokens 1 and 2 split the mass 50/50 (all
+        other logits -1e9).  Over many trials the sampled next token must
+        take BOTH values; a greedy argmax would always return one of them.
+        """
+        decoder = SpeculativeDecoder(device="cpu")
+        draft_logits = torch.zeros(1, 16)
+        draft_logits[0, 5] = 10.0
+        torch.manual_seed(0)
+
+        seen = set()
+        for _ in range(200):
+            L = torch.full((1, 2, 16), -1e9)
+            L[0, 0, :] = -1e9
+            L[0, 0, 5] = 10.0  # row 0 = the row that predicts draft 5
+            L[0, 1, :] = -1e9
+            L[0, 1, 1] = 0.0   # successor row: 1 and 2 equally likely
+            L[0, 1, 2] = 0.0
+            results = decoder.verify_batch(
+                [[5]], [L], draft_logits_list=[draft_logits],
+                temperature=1.0, span_lengths=[1],
+            )
+            assert results[0][0] == 1
+            seen.add(results[0][2])
+        assert seen == {1, 2}, f"next token must be sampled, saw only {seen}"
+
+    def test_eagle_style_single_row_span(self):
+        """EAGLE passes ``logits[:, gen_pos-1:, :]``: row j verifies draft j.
+
+        span_lengths=[1] means the row verifying draft 0 is slice row 0
+        (shift 0), which must reproduce the historical row-j-verifies-
+        draft-j behaviour — and next_row after full acceptance lands on
+        the successor row already present in the slice.
+        """
+        decoder = SpeculativeDecoder(device="cpu")
+        L = torch.zeros(1, 4, 16)
+        L[0, 0, 10] = 10.0  # row 0 verifies draft 0
+        L[0, 1, 11] = 10.0  # row 1 verifies draft 1
+        L[0, 2, 12] = 10.0  # row 2 = successor after full acceptance
+        L[0, 3, 13] = 10.0
+
+        results = decoder.verify_batch(
+            [[10, 11]], [L], span_lengths=[1],
+        )
+        accepted_count, accepted_tokens, next_token = results[0]
+        assert accepted_count == 2
+        assert accepted_tokens == [10, 11]
+        assert next_token == 12

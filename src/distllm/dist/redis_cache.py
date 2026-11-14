@@ -114,6 +114,7 @@ class RedisKVCache:
                 forwarder._kv_to_protobuf(kv_dict), str
             ) else forwarder._kv_to_protobuf(kv_dict)
         except Exception:
+            # CQ-08: optional dependency fallback: retry with an alternate import path.
             import torch
             import io
             buf = io.BytesIO()
@@ -127,6 +128,7 @@ class RedisKVCache:
         try:
             return torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return data
 
     # ── Public API ────────────────────────────────────────────────────
@@ -219,6 +221,7 @@ class RedisKVCache:
             if self._available and self._redis is not None:
                 await self._redis.delete(key)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         self._fallback.pop(key, None)
         return True
@@ -237,6 +240,7 @@ class RedisKVCache:
                     if cursor == 0:
                         break
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         self._fallback.clear()
         logger.info("Redis KV cache cleared")

@@ -1,16 +1,17 @@
 """API middleware for distributed LLM inference."""
 
 import asyncio
-import os
-import sys
 import hmac
+import os
+import secrets
 import threading
 import time
 import uuid
-import secrets
 from collections import OrderedDict, defaultdict, deque
-from typing import Any, Callable, Optional
-from fastapi import Request, HTTPException
+from collections.abc import Callable
+from typing import Any, Optional
+
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -18,6 +19,13 @@ from starlette.responses import Response
 
 from distllm.api.errors import error_response
 from distllm.api.ip_utils import get_client_ip
+
+# Single source of truth for the SSO auth endpoints (also skipped by
+# SsoMiddleware).  They must be reachable WITHOUT a pre-existing API key:
+# users authenticate *here* (login redirect, code exchange, refresh, and
+# revoke-by-token-possession), so requiring an API key would make the
+# documented SSO flow unusable for the users who need it.
+from distllm.api.sso_middleware import AUTH_ROUTES as _SSO_AUTH_ROUTES
 from distllm.core.api_key_store import get_api_key_store, role_satisfies
 
 
@@ -63,11 +71,21 @@ class _RateLimiter:
 
     Each key stores up to ``max_attempts`` timestamps within a
     ``window_seconds`` sliding window.
+
+    Concurrency (PERF-06-RATELOCK): the tracked keys are striped across
+    ``_NUM_SHARDS`` buckets, each with its own lock.  A request touches
+    only the shard(s) its key hashes to, so unrelated clients no longer
+    serialise on one global lock.  Multi-key operations (``key_by="both"``)
+    acquire shard locks in ascending shard-id order, which makes lock
+    acquisition globally ordered and deadlock-free.
     """
 
     KEY_BY_IP = "ip"
     KEY_BY_API_KEY = "api_key"
     KEY_BY_BOTH = "both"
+
+    # Power-of-two shard count: shard = hash(key) & (_NUM_SHARDS - 1).
+    _NUM_SHARDS = 64
 
     def __init__(self, max_attempts: int = 30, window_seconds: int = 60,
                  max_ips: int = 10000, key_by: str = "ip"):
@@ -75,16 +93,61 @@ class _RateLimiter:
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
         self.max_ips = max_ips
+        # max_ips bounds the number of tracked KEYS. Eviction is per shard (the
+        # sharding is what removed the global lock), so there is no exact global
+        # cap -- but the per-shard cap must still let max_ips keys coexist.
+        #
+        # Uniform hashing is NOT enough here. With max_ips == shard count, the
+        # average is 1 key/shard and a plain ceil() gives 2, yet 100 keys over
+        # 64 shards still collide: measured occupancy was 14 empty / 20 with one
+        # / 30 with two, so a bare cap of 2 holds only 80 and evicts 20 live
+        # keys. For an attack-pinned key an eviction is a clean slate, and 21 of
+        # 100 flood IPs escaped the limit that way.
+        #
+        # Cap at 4x the mean so ordinary collisions fit (100 -> 7/shard -> 448).
+        # The 4x also bounds memory: at most 4*max_ips keys plus the slack in
+        # _per_shard_hard_max.
+        self._per_shard_max = max(4, -(-max_ips // self._NUM_SHARDS) * 4)
+        # Hard ceiling, per shard. _prune will not evict a key that is at
+        # max_attempts (that would reset an attacker's count), so a flood of
+        # distinct attacking keys can push a shard past _per_shard_max. This
+        # ceiling bounds that: past it, eviction resumes and takes the LRU
+        # attack-pinned key too. Four times the soft cap so a working set never
+        # reaches it -- a shard has to be almost entirely active attackers.
+        self._per_shard_hard_max = self._per_shard_max * 4
+        # What the limiter can actually hold, for callers and tests.
+        self.effective_max_keys = self._per_shard_max * self._NUM_SHARDS
         self._key_by = key_by if key_by in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH) else "ip"
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
-        self._access_order: OrderedDict[str, None] = OrderedDict()
-        self._lock = threading.Lock()
+        # Per-shard buckets: attempts map, LRU order map, and lock.
+        self._shard_attempts: list[dict[str, deque[float]]] = [
+            defaultdict(deque) for _ in range(self._NUM_SHARDS)
+        ]
+        self._shard_order: list[OrderedDict[str, None]] = [
+            OrderedDict() for _ in range(self._NUM_SHARDS)
+        ]
+        self._shard_locks: list[threading.Lock] = [
+            threading.Lock() for _ in range(self._NUM_SHARDS)
+        ]
+
+    def tracked_keys(self) -> int:
+        """Number of keys currently tracked, across all shards."""
+        return sum(len(s) for s in self._shard_attempts)
+
+    @staticmethod
+    def _shard_id(key: str) -> int:
+        """Return the shard index for *key* (stable across calls)."""
+        return hash(key) & (_RateLimiter._NUM_SHARDS - 1)
+
+    def _shards_for(self, keys: list[str]) -> list[int]:
+        """Return the unique shard ids for *keys*, ascending (lock order)."""
+        return sorted({self._shard_id(k) for k in keys})
 
     def reset(self) -> None:
         """Clear all tracked attempts (used between test cases)."""
-        with self._lock:
-            self._attempts.clear()
-            self._access_order.clear()
+        for shard in range(self._NUM_SHARDS):
+            with self._shard_locks[shard]:
+                self._shard_attempts[shard].clear()
+                self._shard_order[shard].clear()
 
     def set_key_by(self, mode: str) -> None:
         """Change rate limiting key mode at runtime.
@@ -92,9 +155,10 @@ class _RateLimiter:
         Args:
             mode: 'ip', 'api_key', or 'both'.
         """
-        with self._lock:
-            if mode in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH):
-                self._key_by = mode
+        # Single-word write; safe without the shard locks (immutable tuple
+        # membership check keeps the value well-formed).
+        if mode in (self.KEY_BY_IP, self.KEY_BY_API_KEY, self.KEY_BY_BOTH):
+            self._key_by = mode
 
     def _make_keys(self, ip: str, api_key: str | None = None) -> list[str]:
         """Generate rate limit keys based on current keying mode."""
@@ -107,30 +171,51 @@ class _RateLimiter:
             return keys
         return [f"ip:{ip}"]
 
-    def _prune(self, ip: str) -> None:
-        """Remove expired entries for *ip* and enforce the IP cap."""
+    def _prune(self, shard: int, key: str) -> None:
+        """Remove expired entries for *key* and enforce the IP cap.
+
+        Must be called while holding ``self._shard_locks[shard]``.  Works
+        on the single shard's attempts/order maps, so LRU eviction is
+        scoped per shard (each shard is capped at ``max_ips`` entries).
+        """
         now = time.time()
         cutoff = now - self.window_seconds
-        timestamps = self._attempts[ip]
+        timestamps = self._shard_attempts[shard][key]
         # Deque popleft is O(1) — much faster than list filter
         while timestamps and timestamps[0] <= cutoff:
             timestamps.popleft()
 
         # Remove empty entries
         if not timestamps:
-            del self._attempts[ip]
-            self._access_order.pop(ip, None)
+            del self._shard_attempts[shard][key]
+            self._shard_order[shard].pop(key, None)
             return
 
-        # Touch LRU order
-        self._access_order.pop(ip, None)
-        self._access_order[ip] = None
+        # Touch LRU order (O(1) move-to-end)
+        self._shard_order[shard].pop(key, None)
+        self._shard_order[shard][key] = None
 
-        # Enforce IP cap: evict LRU IP when over limit (O(1) with OrderedDict)
-        while len(self._attempts) > self.max_ips:
-            oldest_ip, _ = next(iter(self._access_order.items()))
-            del self._attempts[oldest_ip]
-            del self._access_order[oldest_ip]
+        # Enforce IP cap: evict LRU key when over limit (O(1) with OrderedDict).
+        # A key already at max_attempts is mid-attack, and evicting it resets
+        # its count to zero. Prefer evicting an idle key; see the hard ceiling
+        # below for why this cannot be absolute.
+        attempts = self._shard_attempts[shard]
+        order = self._shard_order[shard]
+        while len(attempts) > self._per_shard_max:
+            victim = next(
+                (k for k in order if len(attempts.get(k, ())) < self.max_attempts),
+                None,
+            )
+            if victim is None:
+                if len(attempts) <= self._per_shard_hard_max:
+                    # Every tracked key is at the limit and the shard is still
+                    # inside its hard ceiling: keep the attackers blocked.
+                    break
+                # Ceiling reached. Memory bound wins from here; evict the LRU
+                # regardless, which may hand one attacker a fresh count.
+                victim = next(iter(order))
+            del attempts[victim]
+            del order[victim]
 
     def is_rate_limited(self, ip: str, api_key: str | None = None) -> bool:
         """Return True if the key has exceeded the rate limit.
@@ -139,13 +224,19 @@ class _RateLimiter:
             ip: Client IP address.
             api_key: Optional API key for dual-keyed rate limiting.
         """
-        with self._lock:
-            keys = self._make_keys(ip, api_key)
-            for key in keys:
-                self._prune(key)
-                if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
-                    return True
-            return False
+        keys = self._make_keys(ip, api_key)
+        for shard in self._shards_for(keys):
+            with self._shard_locks[shard]:
+                for key in keys:
+                    if self._shard_id(key) != shard:
+                        continue
+                    self._prune(shard, key)
+                    if (
+                        key in self._shard_attempts[shard]
+                        and len(self._shard_attempts[shard][key]) >= self.max_attempts
+                    ):
+                        return True
+        return False
 
     def retry_after(self, ip: str, api_key: str | None = None) -> int:
         """Return the number of seconds until the rate limit resets.
@@ -154,30 +245,123 @@ class _RateLimiter:
             ip: Client IP address.
             api_key: Optional API key for dual-keyed rate limiting.
         """
-        with self._lock:
-            now = time.time()
-            keys = self._make_keys(ip, api_key)
-            max_wait = 0
-            for key in keys:
-                if key in self._attempts and len(self._attempts[key]) >= self.max_attempts:
-                    oldest = min(self._attempts[key])
-                    wait = max(1, int(self.window_seconds - (now - oldest)))
-                    max_wait = max(max_wait, wait)
-            return max_wait
+        keys = self._make_keys(ip, api_key)
+        now = time.time()
+        max_wait = 0
+        for shard in self._shards_for(keys):
+            with self._shard_locks[shard]:
+                attempts = self._shard_attempts[shard]
+                for key in keys:
+                    if self._shard_id(key) != shard:
+                        continue
+                    self._prune(shard, key)
+                    if key in attempts and len(attempts[key]) >= self.max_attempts:
+                        oldest = min(attempts[key])
+                        wait = max(1, int(self.window_seconds - (now - oldest)))
+                        max_wait = max(max_wait, wait)
+        return max_wait
 
     def record_attempt(self, ip: str, api_key: str | None = None) -> None:
         """Record a failed auth attempt."""
-        with self._lock:
-            keys = self._make_keys(ip, api_key)
-            for key in keys:
-                self._attempts[key].append(time.time())
-                self._prune(key)
+        keys = self._make_keys(ip, api_key)
+        for shard in self._shards_for(keys):
+            with self._shard_locks[shard]:
+                attempts = self._shard_attempts[shard]
+                for key in keys:
+                    if self._shard_id(key) != shard:
+                        continue
+                    attempts[key].append(time.time())
+                    self._prune(shard, key)
+
+    def allow(self, ip: str, api_key: str | None = None) -> bool:
+        """Alias for :meth:`try_consume` (check + record, atomic per shard)."""
+        return self.try_consume(ip, api_key)
+
+    def try_consume(self, ip: str, api_key: str | None = None) -> bool:
+        """Atomically check the limit and record one attempt.
+
+        Returns True if the attempt was recorded (request may proceed),
+        False if the key is already at the limit.
+
+        The whole check+record sequence happens under shard lock(s), so
+        concurrent callers cannot both pass the ``is_rate_limited`` check
+        and then both call ``record_attempt`` (TOCTOU over-admission).
+        Callers that historically did
+        ``if not limiter.is_rate_limited(...): limiter.record_attempt(...)``
+        should use ``try_consume`` (or its ``allow`` alias) instead.
+
+        Multi-key operations acquire shard locks in ascending shard-id
+        order, which makes lock acquisition globally ordered and
+        deadlock-free.
+        """
+        keys = self._make_keys(ip, api_key)
+        shards = self._shards_for(keys)
+        for shard in shards:
+            self._shard_locks[shard].acquire()
+        try:
+            for shard in shards:
+                attempts = self._shard_attempts[shard]
+                for key in keys:
+                    if self._shard_id(key) != shard:
+                        continue
+                    self._prune(shard, key)
+                    if key in attempts and len(attempts[key]) >= self.max_attempts:
+                        return False
+            for shard in shards:
+                attempts = self._shard_attempts[shard]
+                for key in keys:
+                    if self._shard_id(key) != shard:
+                        continue
+                    attempts[key].append(time.time())
+                    self._prune(shard, key)
+            return True
+        finally:
+            for shard in reversed(shards):
+                self._shard_locks[shard].release()
+
+def _api_key_file_path() -> str:
+    """Return the file used to persist an auto-generated API key.
+
+    Defaults to ``.distllm/api_key`` (git-ignored) and can be overridden
+    with the ``DISTLLM_KEY_FILE`` environment variable.
+    """
+    return os.environ.get("DISTLLM_KEY_FILE") or os.path.join(".distllm", "api_key")
+
+
+def _persist_api_key(path: str, key: str) -> bool:
+    """Write *key* to *path* with owner-only (0600) permissions.
+
+    Returns True on success. Never raises: a persistence failure must not
+    take the server down. The failure is logged without the key (the key
+    stays valid for the running process; operators can pin a known key via
+    the ``API_KEY`` environment variable).
+    """
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(key + "\n")
+        # Re-assert 0600 in case the file pre-existed with broader bits.
+        # On Windows os.chmod only toggles the read-only bit; harmless there.
+        os.chmod(path, 0o600)
+        return True
+    except OSError as exc:
+        logger.error(
+            f"Could not persist the generated API key to {path}: {exc}. "
+            "The key remains active only for this process; set API_KEY in "
+            "the environment to pin a known key."
+        )
+        return False
+
 
 def _get_or_generate_api_key() -> str | None:
     """Get API_KEY from env, or generate one if not set.
 
-    If API_KEY is not set, generates a secure random key and logs it.
-    This ensures auth is never disabled by default in production.
+    If API_KEY is not set, generates a secure random key, persists it to an
+    owner-only (0600) file (``DISTLLM_KEY_FILE`` or ``.distllm/api_key``),
+    and logs only a fingerprint. The full key is never written to stdout or
+    to the logger, so it cannot leak into log files, aggregators, or CI
+    captures. This ensures auth is never disabled by default in production.
     """
     api_key = os.environ.get("API_KEY")
     if api_key:
@@ -194,21 +378,23 @@ def _get_or_generate_api_key() -> str | None:
     # SECURITY: Log a fingerprint, not the full key. Full keys in logs = credential leak.
     # Logs are written to disk, captured by log aggregators, and visible in CI output.
     fingerprint = _safe_key_fingerprint(generated_key)
+    key_file = _api_key_file_path()
+    persisted = _persist_api_key(key_file, generated_key)
+    if persisted:
+        retrieval = (
+            f"The full key was written to {key_file} with owner-only (0600) "
+            "permissions. Read it from that file, set API_KEY=<key> in your "
+            "environment, and restart."
+        )
+    else:
+        retrieval = (
+            "The key could not be persisted to disk. Set API_KEY=<key> in "
+            "your environment and restart."
+        )
     logger.warning(
         f"API_KEY not set. Generated a secure random API key.\n"
         f"Key fingerprint: {fingerprint}\n"
-        "The full key is printed once to stdout (NOT via the logger), so it is "
-        "not persisted in log files, aggregators, or CI. Set API_KEY=<key> in "
-        "your environment and restart."
-    )
-    # Surface the one-time key on stdout only — never through the logger, so the
-    # secret is not written to disk logs or captured by log aggregators.
-    print(
-        "\nGenerated API key (shown once — do NOT paste into logs/screenshots/CI):\n"
-        f"{generated_key}\n"
-        "Set API_KEY=<key> in your environment and restart.\n",
-        file=sys.stdout,
-        flush=True,
+        f"{retrieval}"
     )
     return generated_key
 
@@ -220,10 +406,11 @@ _rate_limit_key_by = os.environ.get("DISTLLM_RATE_LIMIT_KEY_BY", "both")
 if _rate_limit_key_by not in ("ip", "api_key", "both"):
     _rate_limit_key_by = "both"
 _rate_limiter = _RateLimiter(max_attempts=30, window_seconds=60, key_by=_rate_limit_key_by)
-# O-13: no import-time side effect. The auto-generation (and its one-time
-# stdout key print) previously ran at module import — polluting stderr for
-# every library consumer and embedding generated keys into CI captures.
-# It now runs lazily on first server use (lifespan startup / middleware).
+# O-13: no import-time side effect. The auto-generation (and its key
+# write to .distllm/api_key) previously ran at module import — polluting
+# stderr for every library consumer and embedding generated keys into CI
+# captures. It now runs lazily on first server use (lifespan startup /
+# middleware).
 _auto_key_resolved = False
 
 
@@ -295,6 +482,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/metrics",
             "/api/v1/ha/heartbeat",
         ):
+            return await call_next(request)
+
+        # SSO auth endpoints (/v1/auth/login, token, refresh, revoke) are
+        # exempt: they are the entry points of the SSO flow and must be
+        # reachable without an API key (SsoMiddleware skips them too; each
+        # route performs its own state/token validation).
+        if request.url.path in _SSO_AUTH_ROUTES:
             return await call_next(request)
 
         # OPTIONS (CORS preflight) is intentionally allowed without auth.
@@ -499,8 +693,9 @@ class RequestRateLimitMiddleware(BaseHTTPMiddleware):
 # ── ContentModerationMiddleware ──────────────────────────────────────────
 
 import enum as _enum
-from distllm.security.content_moderation.pipeline import ContentModerationPipeline
+
 from distllm.security.content_moderation.base import ModerationResult
+from distllm.security.content_moderation.pipeline import ContentModerationPipeline
 
 
 class ModerationAction(str, _enum.Enum):
@@ -607,7 +802,7 @@ class ContentModerationMiddleware(BaseHTTPMiddleware):
         body_bytes = None
         try:
             body_bytes = await request.body()
-        except Exception:
+        except Exception:  # nosec B110
             pass
         if not body_bytes:
             return None
@@ -696,6 +891,7 @@ class ContentModerationMiddleware(BaseHTTPMiddleware):
             # Replace output text with redacted version.
             new_body = self._replace_output_text(payload, result.redacted_text)
             import json as _json
+
             from starlette.responses import Response as _Response
             response = _Response(
                 content=_json.dumps(new_body),

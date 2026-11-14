@@ -3,7 +3,7 @@
 **Pool GPUs from every device you own to run models no single machine can handle.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 You have a gaming PC with an RTX 4090. Your laptop has an RTX 4060. Your friend has a desktop with an RTX 3080. None of you can run Llama 3.1 70B alone. **Together, you can.**
 
@@ -81,19 +81,19 @@ pip install -e ".[dev]"
 
 - **Pipeline parallelism** — split any HuggingFace model across N devices
 - **Auto-discovery** — mDNS/zeroconf device finding on LAN
-- **10 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch, Triton, NIM, MLX, WebGPU
+- **12 backends** — vLLM, llama.cpp, TensorRT-LLM, ExLlamaV2, ONNX, PyTorch, Triton, NIM, MLX, WebGPU, Ollama, TGI
 - **Auth plugin** — JWT authentication + RBAC role-based access control
 - **Health watchdog** — continuous node health monitoring with auto circuit-breaking
-- **Semantic caching** — deduplicate repeated prompts with embedding similarity
+- **Semantic caching** — deduplicate repeated prompts with embedding similarity (opt-in: `DISTLLM_SEMANTIC_CACHE=1`, off by default)
 - **Token streaming** — `generate_stream()` for real-time token-by-token responses
 - **Config validation** — cross-field validation catches invalid combinations at load time
 - **Circuit breaker** — graduated backpressure for load shedding
 - **Auto-partitioning** — hardware-aware DP solver for optimal layer assignment
 - **Node recovery** — checkpoint-based recovery when nodes disconnect
 - **Straggler detection** — statistical outlier detection for slow nodes
-- **Dynamic rebalancing** — redistribute layers when nodes join/leave
-- **P2P KV cache gossip** — CRDT-based cache sharing between nodes
-- **Wide-area support** — token accumulation for internet-scale inference
+- **Dynamic rebalancing** — redistribute layers when nodes join/leave (opt-in: `enable_rebalancing`, off by default)
+- **P2P KV cache gossip** — CRDT-based cache sharing between nodes (opt-in: `gossip.enabled`, off by default)
+- **Wide-area support** — token accumulation for internet-scale inference (opt-in: `WIDE_AREA_ENABLED=true`, off by default)
 - **Quantization** — 4-bit/8-bit to fit larger models on consumer GPUs
 - **OpenAI-compatible API** — use any OpenAI client to send requests
 - **Full observability** — Prometheus metrics, OTel tracing, structured logging
@@ -171,13 +171,13 @@ GPT-2, GPT-Neo, Llama 2/3, Mistral, Mixtral, Qwen2.5, Phi, DeepSeek, StableLM, P
 
 ## Roadmap
 
-- **v0.4.x** (current): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache, RBAC auth, 10 backends
-- **Planned**: 
-  - **mDNS auto-discovery** (in progress — CLI supports `--discover`)
+- **v0.7.x** (current — 0.7.0 in-tree, 0.6.2.2 on PyPI): Pipeline parallelism across LAN devices, auto-partitioning via hardware-aware DP solver, health watchdog, semantic cache (opt-in), RBAC auth, 12 backends, speculative decoding, mDNS auto-discovery, and NAT traversal (STUN/TURN/ICE in `dist/nat.py` + `dist/ice_transport.py`)
+- **Planned**:
   - **GPU marketplace reputation system**
-  - **Speculative decoding & distributed draft models**
   - **Privacy-preserving split inference with differential privacy**
-- **2027**: Federated clusters, cross-internet NAT traversal, incentive systems
+  - **Federated clusters and incentive systems** (2027). NAT traversal is no longer on this list: STUN/TURN/ICE already ship (see above).
+
+> Full canonical project map: [`docs/_map/UNIFIED.md`](docs/_map/UNIFIED.md) — single entry point for architecture, modules, API, ops, security, and the hygiene log.
 
 ## Contributing
 

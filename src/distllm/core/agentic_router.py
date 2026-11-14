@@ -32,13 +32,15 @@ import os
 import random
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import, resolve_class
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
-
 
 # ── Routing decision schema ──────────────────────────────────────────────
 
@@ -711,7 +713,10 @@ class DPOTrainer:
         return self._train_count
 
 
-class LoRALinear(torch.nn.Module):
+_NnModule = resolve_class("torch.nn", "Module")
+
+
+class LoRALinear(_NnModule):
     """LoRA adapter wrapping a frozen ``nn.Linear`` layer.
 
     Adds a low-rank decomposition ``A @ B`` that is trained while the

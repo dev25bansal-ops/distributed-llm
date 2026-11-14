@@ -33,15 +33,21 @@ class DistLLMToolProvider(BaseToolProvider):
         return tools
 
     def _build_crew_tool(self, tool_def: dict, BaseTool) -> Any:
-        name = tool_def.get("name", "unknown")
-        desc = tool_def.get("description", "")
+        # Bind to distinct names before the class body. A class-body annotation
+        # like `name: str = name` makes `name` local to the class namespace, so
+        # the right-hand side cannot see the enclosing function's variable and
+        # raises NameError: name 'name' is not defined. That only fired when
+        # there was at least one tool to build, which is why 16 crewai tests
+        # passed and these two always failed.
+        tool_name = tool_def.get("name", "unknown")
+        tool_desc = tool_def.get("description", "")
         provider = self
 
         class _DynamicTool(BaseTool):
-            name: str = name
-            description: str = desc
+            name: str = tool_name
+            description: str = tool_desc
 
             def _run(self_inner, **kwargs: Any) -> str:
-                return provider.call_tool(name, **kwargs)
+                return provider.call_tool(tool_name, **kwargs)
 
         return _DynamicTool()

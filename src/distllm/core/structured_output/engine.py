@@ -11,7 +11,12 @@ from typing import Any
 from loguru import logger
 
 from distllm.core.structured_output.config import StructuredOutputConfig
-from distllm.core.structured_output.validator import SchemaValidator, OutputRepairer, ValidationResult, RepairResult
+from distllm.core.structured_output.validator import (
+    OutputRepairer,
+    RepairResult,
+    SchemaValidator,
+    ValidationResult,
+)
 
 
 @dataclass

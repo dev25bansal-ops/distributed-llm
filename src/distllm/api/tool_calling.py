@@ -12,7 +12,9 @@ Tool execution:
 
 from __future__ import annotations
 
+import functools
 import json
+import re
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -157,54 +159,99 @@ class ToolCallingEngine:
         return calls if parallel else calls[:1]
 
     def execute_tool_calls(self, calls, timeout_s: float = 30.0):
-        """Execute tool calls using registered handlers."""
+        """Execute tool calls using registered handlers.
+
+        All calls are submitted to one shared bounded executor up front so
+        parallel tool calls of a single assistant turn actually run
+        concurrently. Results are returned in submission order; each call keeps
+        its own ``timeout_s`` deadline.
+        """
         import concurrent.futures as _cf
 
-        results = []
-        for call in calls:
+        from .tool_executor import get_tool_executor
+
+        if not calls:
+            return []
+
+        executor = get_tool_executor()
+        pending: list[tuple[int, str, str, Any]] = []  # (index, tool_call_id, name, future)
+        results: list[dict | None] = [None] * len(calls)
+
+        for index, call in enumerate(calls):
             func = call.get("function", {})
             name = func.get("name", "")
             args = func.get("arguments", {})
             tool_call_id = call.get("id", f"call_{uuid.uuid4().hex[:24]}")
 
             handler = self._registered_tools.get(name)
-            if handler:
-                try:
-                    if isinstance(args, dict):
-                        invoke = lambda: handler(**args)
-                    elif isinstance(args, str):
-                        parsed_args = json.loads(args)
-                        invoke = lambda: handler(**parsed_args)
-                    else:
-                        invoke = lambda: handler(args)
-
-                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                        fut = _pool.submit(invoke)
-                        result = fut.result(timeout=timeout_s)
-
-                    results.append({
-                        "tool_call_id": tool_call_id,
-                        "role": "tool",
-                        "content": str(result),
-                    })
-                except _cf.TimeoutError:
-                    results.append({
-                        "tool_call_id": tool_call_id,
-                        "role": "tool",
-                        "content": f"Error executing tool '{name}': timed out after {timeout_s}s",
-                    })
-                except Exception as e:
-                    results.append({
-                        "tool_call_id": tool_call_id,
-                        "role": "tool",
-                        "content": f"Error executing tool '{name}': {e}",
-                    })
-            else:
-                results.append({
+            if not handler:
+                results[index] = {
                     "tool_call_id": tool_call_id,
                     "role": "tool",
                     "content": f"Tool '{name}' is not registered. Available tools: {list(self._registered_tools.keys())}",
-                })
+                }
+                continue
+
+            try:
+                if isinstance(args, dict):
+                    invoke = functools.partial(handler, **args)
+                elif isinstance(args, str):
+                    parsed_args = json.loads(args)
+                    invoke = functools.partial(handler, **parsed_args)
+                else:
+                    invoke = functools.partial(handler, args)
+            except Exception as e:
+                # CQ-08: tool failure is recorded in the results payload (visible to the LLM); other tool calls still run.
+                results[index] = {
+                    "tool_call_id": tool_call_id,
+                    "role": "tool",
+                    "content": f"Error executing tool '{name}': {e}",
+                }
+                continue
+
+            try:
+                future = executor.submit(invoke)
+            except RuntimeError:
+                # Pool was shut down underneath us; fall back to inline.
+                try:
+                    results[index] = {
+                        "tool_call_id": tool_call_id,
+                        "role": "tool",
+                        "content": str(invoke()),
+                    }
+                except Exception as inline_e:
+                    # CQ-08: tool failure is recorded in the results payload (visible to the LLM); other tool calls still run.
+                    results[index] = {
+                        "tool_call_id": tool_call_id,
+                        "role": "tool",
+                        "content": f"Error executing tool '{name}': {inline_e}",
+                    }
+                continue
+            pending.append((index, tool_call_id, name, future))
+
+        for index, tool_call_id, name, future in pending:
+            try:
+                result = future.result(timeout=timeout_s)
+                results[index] = {
+                    "tool_call_id": tool_call_id,
+                    "role": "tool",
+                    "content": str(result),
+                }
+            except _cf.TimeoutError:
+                future.cancel()
+                results[index] = {
+                    "tool_call_id": tool_call_id,
+                    "role": "tool",
+                    "content": f"Error executing tool '{name}': timed out after {timeout_s}s",
+                }
+            except Exception as e:
+                # CQ-08: tool failure is recorded in the results payload (visible to the LLM); other tool calls still run.
+                results[index] = {
+                    "tool_call_id": tool_call_id,
+                    "role": "tool",
+                    "content": f"Error executing tool '{name}': {e}",
+                }
+
         return results
 
     def should_continue_after_tool_calls(self, calls, results) -> bool:

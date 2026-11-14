@@ -11,12 +11,12 @@ from loguru import logger
 from distllm.security.content_moderation.base import (
     _DEFAULT_TOXICITY_MODEL,
     _DEFAULT_TOXICITY_THRESHOLD,
+    ToxicResult,
     _KeywordBackend,
     _lazy_import,
     _ONNXBackend,
     _TextClassifierBackend,
     _TransformersBackend,
-    ToxicResult,
 )
 
 

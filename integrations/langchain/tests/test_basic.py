@@ -90,7 +90,7 @@ def test_tool_provider_defaults():
     from distllm_langchain.tools import DistLLMToolProvider
 
     provider = DistLLMToolProvider(base_url="http://localhost:8000")
-    tools = provider._default_tools()
+    tools = provider.default_tools()
     assert len(tools) == 3
     names = [t["name"] for t in tools]
     assert "distllm_chat" in names

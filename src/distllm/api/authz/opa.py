@@ -27,19 +27,77 @@ the SAME rules; see ``_python_evaluate`` for the canonical mapping.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import tempfile
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import httpx
+
 # ── Detection of the OPA binary ────────────────────────────────────────────
 OPA_BIN = os.environ.get("OPA_BIN") or shutil.which("opa")
 OPA_SERVER_URL = os.environ.get("OPA_SERVER_URL", "").rstrip("/")
 OPA_AVAILABLE = bool(OPA_BIN or OPA_SERVER_URL)
+
+# ── Persistent HTTP client pool (OPA server backend) ────────────────────────
+# A module-level, lazily-initialised httpx client with keep-alive connection
+# pooling.  Previously every authorize() call opened a fresh urllib connection
+# (TCP + TLS handshake ~30-150 ms); with the pool a warm call is <1 ms.
+_OPA_HTTP_TIMEOUT = float(os.environ.get("OPA_HTTP_TIMEOUT", "5"))
+_opa_client: httpx.Client | None = None
+_opa_async_client: httpx.AsyncClient | None = None
+_opa_client_lock = threading.Lock()
+_opa_async_lock = threading.Lock()
+
+
+def _get_opa_client() -> httpx.Client:
+    """Return the shared, pooled httpx.Client for the OPA server backend."""
+    global _opa_client
+    if _opa_client is None:
+        with _opa_client_lock:
+            if _opa_client is None:
+                _opa_client = httpx.Client(
+                    timeout=_OPA_HTTP_TIMEOUT,
+                    limits=httpx.Limits(max_connections=16, max_keepalive_connections=16),
+                )
+    return _opa_client
+
+
+async def _get_opa_async_client() -> httpx.AsyncClient:
+    """Return the shared, pooled httpx.AsyncClient (lazy, await-safe init)."""
+    global _opa_async_client
+    if _opa_async_client is None:
+        async with _opa_async_lock:
+            if _opa_async_client is None:
+                _opa_async_client = httpx.AsyncClient(
+                    timeout=_OPA_HTTP_TIMEOUT,
+                    limits=httpx.Limits(max_connections=16, max_keepalive_connections=16),
+                )
+    return _opa_async_client
+
+
+def _close_opa_clients() -> None:
+    """Close pooled clients (idempotent; used by tests / shutdown hooks)."""
+    global _opa_client, _opa_async_client
+    with _opa_client_lock:
+        if _opa_client is not None:
+            _opa_client.close()
+            _opa_client = None
+    # AsyncClient.close() must be called from a running loop; close() is sync
+    # in httpx, so calling it here is safe even without an event loop.
+    if _opa_async_client is not None:
+        # CQ-08: teardown close may fail when the loop is already gone; the
+        # client is process-global and recreated lazily, so a failed close is
+        # benign and must not raise during shutdown.
+        with contextlib.suppress(RuntimeError, OSError):
+            _opa_async_client.close()
+        _opa_async_client = None
 
 
 # ── Decision contract ──────────────────────────────────────────────────────
@@ -107,9 +165,12 @@ _DEFAULT_POLICY_DICT: dict[str, Any] = {
 _lock = threading.Lock()
 _loaded_policy: dict[str, Any] | None = None
 _loaded_rego: str | None = None
+# Path of the cached Rego file used by the OPA binary backend (written on
+# first eval, invalidated by load_policy).
+_rego_cache_path: str | None = None
 
 
-def load_policy(path: Optional[str] = None) -> dict[str, Any]:
+def load_policy(path: str | None = None) -> dict[str, Any]:
     """Load the authorization policy from a JSON file (or use the default).
 
     The file format mirrors :data:`_DEFAULT_POLICY_DICT`.  Returns the loaded
@@ -123,7 +184,7 @@ def load_policy(path: Optional[str] = None) -> dict[str, Any]:
     Returns:
         The active policy dict.
     """
-    global _loaded_policy, _loaded_rego
+    global _loaded_policy, _loaded_rego, _rego_cache_path
     if path and os.path.exists(path):
         with open(path, "r", encoding="utf-8") as fh:
             policy = json.load(fh)
@@ -132,6 +193,9 @@ def load_policy(path: Optional[str] = None) -> dict[str, Any]:
     with _lock:
         _loaded_policy = policy
         _loaded_rego = DEFAULT_REGO
+        # Policy text is constant for the default, but a caller may have
+        # patched DEFAULT_REGO; force a rewrite of the cached file.
+        _rego_cache_path = None
     return policy
 
 
@@ -194,52 +258,79 @@ def _python_evaluate(data: dict[str, Any]) -> Decision:
 
 
 # ── OPA binary / server backends ───────────────────────────────────────────
-def _opa_binary_evaluate(data: dict[str, Any]) -> Optional[Decision]:
+def _write_rego_file(rego: str) -> str:
+    """Write ``rego`` to a reusable temp file; returns the path."""
+    global _rego_cache_path
+    if _rego_cache_path and os.path.exists(_rego_cache_path):
+        return _rego_cache_path
+    fd, path = tempfile.mkstemp(suffix=".rego", prefix="distllm_authz_")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(rego)
+    _rego_cache_path = path
+    return path
+
+
+def _opa_binary_evaluate(data: dict[str, Any]) -> Decision | None:
+    """Evaluate via the local ``opa`` binary.
+
+    The policy is written once and cached; the input document is passed on
+    stdin (``--stdin-input``) so no per-call temp files are created.
+    """
     if not OPA_BIN:
         return None
     rego = _loaded_rego or DEFAULT_REGO
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            rego_path = os.path.join(tmp, "policy.rego")
-            input_path = os.path.join(tmp, "input.json")
-            with open(rego_path, "w", encoding="utf-8") as fh:
-                fh.write(rego)
-            with open(input_path, "w", encoding="utf-8") as fh:
-                json.dump(data, fh)
-            result = subprocess.run(
-                [OPA_BIN, "eval", "--format", "json", "--data", rego_path,
-                 "--input", input_path, "data.distllm.authz.allow"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode != 0:
-                return None
-            payload = json.loads(result.stdout)
-            # opa eval returns {"result": [{"expressions": [{"value": <bool>}]}]}
-            exprs = payload.get("result", [{}])[0].get("expressions", [])
-            allow = bool(exprs[0].get("value")) if exprs else False
-            return Decision(allow, "opa policy evaluation", "opa")
-    except Exception:
+        rego_path = _write_rego_file(rego)
+        proc = subprocess.run(
+            [OPA_BIN, "eval", "--format", "json", "--data", rego_path,
+             "--stdin-input", "data.distllm.authz.allow"],
+            input=json.dumps(data).encode("utf-8"),
+            capture_output=True,
+            timeout=10,
+        )  # nosec B603 B607
+        if proc.returncode != 0:
+            return None
+        payload = json.loads(proc.stdout.decode("utf-8"))
+        # opa eval returns {"result": [{"expressions": [{"value": <bool>}]}]}
+        exprs = payload.get("result", [{}])[0].get("expressions", [])
+        allow = bool(exprs[0].get("value")) if exprs else False
+        return Decision(allow, "opa policy evaluation", "opa")
+    except Exception:  # nosec B110
         return None
 
 
-def _opa_server_evaluate(data: dict[str, Any]) -> Optional[Decision]:
+def _opa_server_evaluate(data: dict[str, Any]) -> Decision | None:
+    """Evaluate via the OPA server REST API over a pooled keep-alive connection."""
     if not OPA_SERVER_URL:
         return None
     try:
-        import urllib.request
-
-        url = f"{OPA_SERVER_URL}/v1/data/distllm/authz"
-        req = urllib.request.Request(
-            url,
-            data=json.dumps({"input": data}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        resp = _get_opa_client().post(
+            f"{OPA_SERVER_URL}/v1/data/distllm/authz",
+            json={"input": data},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-            payload = json.loads(resp.read().decode("utf-8"))
+        resp.raise_for_status()
+        payload = resp.json()
         allow = bool(payload.get("result", {}).get("allow", False))
         return Decision(allow, "opa server evaluation", "opa")
-    except Exception:
+    except Exception:  # nosec B110
+        return None
+
+
+async def _opa_server_evaluate_async(data: dict[str, Any]) -> Decision | None:
+    """Async variant of :func:`_opa_server_evaluate` using the pooled AsyncClient."""
+    if not OPA_SERVER_URL:
+        return None
+    try:
+        client = await _get_opa_async_client()
+        resp = await client.post(
+            f"{OPA_SERVER_URL}/v1/data/distllm/authz",
+            json={"input": data},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        allow = bool(payload.get("result", {}).get("allow", False))
+        return Decision(allow, "opa server evaluation", "opa")
+    except Exception:  # nosec B110
         return None
 
 
@@ -268,6 +359,28 @@ def authorize(data: dict[str, Any]) -> Decision:
     return _python_evaluate(data)
 
 
+async def authorize_async(data: dict[str, Any]) -> Decision:
+    """Async :func:`authorize` for event-loop callers.
+
+    Same resolution order; the OPA server hop uses the pooled
+    ``httpx.AsyncClient`` so no per-call connection is opened, and the OPA
+    binary hop runs the subprocess off-thread via ``asyncio.to_thread``.
+    """
+    if _loaded_policy is None:
+        load_policy()
+
+    if OPA_BIN:
+        decision = await asyncio.to_thread(_opa_binary_evaluate, data)
+        if decision is not None:
+            return decision
+    if OPA_SERVER_URL:
+        decision = await _opa_server_evaluate_async(data)
+        if decision is not None:
+            return decision
+
+    return _python_evaluate(data)
+
+
 class OPAClient:
     """Thin wrapper exposing the authorization API as an object.
 
@@ -289,7 +402,7 @@ class OPAClient:
     def authorize(self, data: dict[str, Any]) -> Decision:
         return authorize(data)
 
-    def load_policy(self, path: Optional[str] = None) -> dict[str, Any]:
+    def load_policy(self, path: str | None = None) -> dict[str, Any]:
         return load_policy(path)
 
 

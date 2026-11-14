@@ -13,6 +13,7 @@ from typing import Callable
 from unittest.mock import patch
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 from distllm.cli.main import app
@@ -276,3 +277,281 @@ class TestClusterStatus:
 
         assert result.exit_code == 0, result.output
         assert "500" in result.output
+
+
+# ── One key precedence across the whole cluster CLI ────────────────────────
+
+
+class TestClusterKeyPrecedence:
+    """Audit finding: one CLI, two env orders.
+
+    ``cluster join`` registration read ``API_KEY`` first while
+    ``_admin_headers`` / ``resolve_api_key`` read ``DISTLLM_API_KEY`` first,
+    so with both vars set to different values (the v0.3->v0.4 migration the
+    docs describe) join and list-nodes sent different keys to the same
+    server. All three paths must resolve through one precedence:
+    ``API_KEY`` > ``DISTLLM_API_KEY`` > key file.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_key_env(self, tmp_path, monkeypatch):
+        for var in ("API_KEY", "DISTLLM_API_KEY", "DISTLLM_KEY_FILE"):
+            monkeypatch.delenv(var, raising=False)
+        self.key_file = tmp_path / "api_key"
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(self.key_file))
+
+    def test_admin_headers_match_shared_resolution_with_both_env_vars(self, monkeypatch):
+        from distllm.cli.cluster import _admin_headers
+        from distllm.cli.http_client import resolve_api_key
+
+        monkeypatch.setenv("API_KEY", "sk-a")
+        monkeypatch.setenv("DISTLLM_API_KEY", "sk-b")
+
+        # And no divergence: the same request key everywhere.
+        assert _admin_headers()["Authorization"] == f"Bearer {resolve_api_key()}"
+        assert resolve_api_key() == "sk-a"
+
+    def test_admin_headers_fall_back_to_the_key_file(self):
+        from distllm.cli.cluster import _admin_headers
+
+        self.key_file.write_text("sk-from-file\n", encoding="utf-8")
+
+        assert _admin_headers() == {"Authorization": "Bearer sk-from-file"}
+
+    def test_admin_headers_distllm_api_key_alone(self, monkeypatch):
+        from distllm.cli.cluster import _admin_headers
+
+        monkeypatch.setenv("DISTLLM_API_KEY", "sk-b")
+
+        assert _admin_headers() == {"Authorization": "Bearer sk-b"}
+
+    def test_join_registration_sends_the_same_key_as_admin_commands(self, monkeypatch):
+        """The registration POST must carry exactly the key `_admin_headers` uses."""
+        import socket as socket_mod
+        from unittest.mock import MagicMock
+
+        from distllm.cli import cluster as cluster_mod
+
+        monkeypatch.setenv("API_KEY", "sk-a")
+        monkeypatch.setenv("DISTLLM_API_KEY", "sk-b")
+
+        captured: dict = {}
+
+        class _FakeSocket:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def settimeout(self, _):
+                pass
+
+            def connect_ex(self, addr):
+                return 0  # worker port open — skip the 60s poll
+
+            def close(self):
+                pass
+
+        class _FakeProc:
+            pid = 4242
+            stdout = None
+
+            def __init__(self):
+                import io
+
+                self.stdout = io.StringIO("")
+
+        monkeypatch.setattr(socket_mod, "socket", _FakeSocket)
+        monkeypatch.setattr(cluster_mod.subprocess, "Popen", lambda *a, **k: _FakeProc())
+
+        def _fake_post(url, json=None, headers=None, timeout=None):
+            captured["url"] = str(url)
+            captured["headers"] = headers or {}
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = ""
+            return resp
+
+        monkeypatch.setattr(cluster_mod.httpx, "post", _fake_post)
+
+        cluster_mod._cluster_join(
+            coordinator_host="10.9.9.9",
+            coordinator_port=50050,
+            node_id="w1",
+            start_layer=0,
+            end_layer=1,
+            total_layers=2,
+            listen_port=50051,
+            device="cpu",
+            model="test-model",
+        )
+
+        assert captured["url"].endswith("/admin/v1/nodes/register")
+        assert captured["headers"].get("Authorization") == "Bearer sk-a", (
+            "join registration must resolve the same key _admin_headers sends"
+        )
+
+    def test_join_registration_reads_the_key_file(self, monkeypatch):
+        """Default file-only deployment: the registration POST authenticates."""
+        import socket as socket_mod
+        from unittest.mock import MagicMock
+
+        from distllm.cli import cluster as cluster_mod
+
+        self.key_file.write_text("sk-from-file\n", encoding="utf-8")
+
+        captured: dict = {}
+
+        class _FakeSocket:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def settimeout(self, _):
+                pass
+
+            def connect_ex(self, addr):
+                return 0
+
+            def close(self):
+                pass
+
+        class _FakeProc:
+            pid = 4242
+
+            def __init__(self):
+                import io
+
+                self.stdout = io.StringIO("")
+
+        monkeypatch.setattr(socket_mod, "socket", _FakeSocket)
+        monkeypatch.setattr(cluster_mod.subprocess, "Popen", lambda *a, **k: _FakeProc())
+
+        def _fake_post(url, json=None, headers=None, timeout=None):
+            captured["headers"] = headers or {}
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = ""
+            return resp
+
+        monkeypatch.setattr(cluster_mod.httpx, "post", _fake_post)
+
+        cluster_mod._cluster_join(
+            coordinator_host="10.9.9.9",
+            coordinator_port=50050,
+            node_id="w2",
+            start_layer=0,
+            end_layer=1,
+            total_layers=2,
+            listen_port=50051,
+            device="cpu",
+            model="test-model",
+        )
+
+        assert captured["headers"].get("Authorization") == "Bearer sk-from-file"
+
+
+# ── cluster leave / drain port defaults ────────────────────────────────────
+#
+# `cluster leave` and `cluster drain` call the REST admin routes
+# (/admin/v1/nodes/...), which live on the API port (8000 by default), but
+# leave defaulted to 50050 — the gRPC port. Against a default `cluster
+# start` the command could never work, and against an idle port it ended in
+# a raw WinError instead of the friendly admin-path message. The default
+# must match the REST port the route actually lives on.
+
+
+class TestClusterLeavePortDefaults:
+    def test_leave_defaults_to_the_rest_port(self):
+        """No --port on the CLI means port 8000, where /admin/v1 lives."""
+        result = runner.invoke(app, ["cluster", "leave", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "default: 8000" in result.output, (
+            "cluster leave talks to the REST admin routes; its --port default "
+            "must be the REST port"
+        )
+        assert "default: 50050" not in result.output
+
+    def test_leave_zero_config_hits_admin_routes_on_8000(self, monkeypatch):
+        """The zero-config invocation must reach /admin/v1/nodes/{id} on :8000."""
+        monkeypatch.delenv("DISTLLM_API_KEY", raising=False)
+        monkeypatch.delenv("API_KEY", raising=False)
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.method == "DELETE":
+                return httpx.Response(
+                    200,
+                    json={"status": "ok", "node_id": "w1", "message": "gone"},
+                )
+            return httpx.Response(
+                200,
+                json={"status": "ok", "node_id": "w1", "message": "draining"},
+            )
+
+        with patch("distllm.cli.cluster.httpx.Client", _patched_client(handler)):
+            result = runner.invoke(app, ["cluster", "leave", "w1"])
+
+        assert result.exit_code == 0, result.output
+        assert seen, "leave must actually call the coordinator"
+        assert all(r.url.port == 8000 for r in seen), (
+            f"expected the REST port; got {[r.url for r in seen]}"
+        )
+        assert seen[0].url.path == "/admin/v1/nodes/w1/drain"
+        assert seen[-1].url.path == "/admin/v1/nodes/w1"
+        assert seen[-1].method == "DELETE"
+
+    def test_leave_drains_then_deregisters(self, monkeypatch):
+        """Leave must fully remove the node, not just flag it draining."""
+        monkeypatch.delenv("DISTLLM_API_KEY", raising=False)
+        monkeypatch.delenv("API_KEY", raising=False)
+        seen: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, request.url.path))
+            return httpx.Response(
+                200, json={"status": "ok", "node_id": "w1", "message": "ok"},
+            )
+
+        with patch("distllm.cli.cluster.httpx.Client", _patched_client(handler)):
+            result = runner.invoke(app, ["cluster", "leave", "w1"])
+
+        assert result.exit_code == 0, result.output
+        assert seen == [
+            ("POST", "/admin/v1/nodes/w1/drain"),
+            ("DELETE", "/admin/v1/nodes/w1"),
+        ]
+        assert "left the cluster" in result.output
+
+    def test_leave_reports_unregistered_node(self, monkeypatch):
+        """404 on drain is the friendly 'not registered' path, not a traceback."""
+        monkeypatch.delenv("DISTLLM_API_KEY", raising=False)
+        monkeypatch.delenv("API_KEY", raising=False)
+
+        with patch(
+            "distllm.cli.cluster.httpx.Client",
+            _patched_client(
+                lambda req: httpx.Response(404, json={"detail": "Node not found"})
+            ),
+        ):
+            result = runner.invoke(app, ["cluster", "leave", "ghost"])
+
+        assert result.exit_code == 0, result.output
+        assert "not registered" in result.output
+
+    def test_drain_also_talks_to_rest_port(self, monkeypatch):
+        monkeypatch.delenv("DISTLLM_API_KEY", raising=False)
+        monkeypatch.delenv("API_KEY", raising=False)
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                200, json={"status": "ok", "node_id": "w1", "message": "draining"},
+            )
+
+        with patch("distllm.cli.cluster.httpx.Client", _patched_client(handler)):
+            result = runner.invoke(app, ["cluster", "drain", "w1"])
+
+        assert result.exit_code == 0, result.output
+        assert seen[0].url.port == 8000
+        assert seen[0].url.path == "/admin/v1/nodes/w1/drain"

@@ -32,8 +32,9 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -117,6 +118,8 @@ class RayFaultTolerance:
         # State replication
         self._replicated_state: dict[str, Any] = {}
         self._on_state_change: Callable[[dict], None] | None = None
+        # Optional external quorum authority; see set_split_brain_detector().
+        self._split_brain_detector: Any | None = None
 
         # Heartbeat transport used to actively probe peer liveness. Defaults
         # to an HTTP POST to each peer's ``/api/v1/ha/heartbeat`` endpoint.
@@ -155,13 +158,24 @@ class RayFaultTolerance:
             self._leader_id = None
 
     def add_peer(self, peer_id: str, host: str, port: int) -> None:
-        """Register a peer coordinator."""
+        """Register a peer coordinator.
+
+        The peer starts *unconfirmed* (``online=False``, ``last_seen=0``):
+        seeding it alive meant a freshly started coordinator counted every
+        configured peer as reachable for a full election window without a
+        single heartbeat, so a node restarting inside a partition could see
+        a phantom majority, self-elect, and accept writes while the real
+        leader was still serving — two leaders, both taking writes. The
+        election round probes peers *before* counting quorum, so a genuinely
+        reachable peer is confirmed in the first round; a never-contacted
+        one no longer counts.
+        """
         with self._lock:
             self._peers[peer_id] = {
                 "host": host,
                 "port": port,
-                "last_seen": time.monotonic(),
-                "online": True,
+                "last_seen": 0.0,
+                "online": False,
             }
             # Track initial cluster size for quorum computation
             self._initial_cluster_size = max(self._initial_cluster_size, len(self._peers) + 1)
@@ -195,13 +209,77 @@ class RayFaultTolerance:
         with self._lock:
             return self._leader_id
 
+    def has_quorum(self) -> bool:
+        """Return True when this node can see a majority of the initial cluster.
+
+        Uses the *fixed* initial membership, not the current peer set, for the
+        same reason the election does: a partitioned minority must not be able
+        to shrink the denominator until it is a majority of itself.
+        """
+        with self._lock:
+            return self._has_quorum_unlocked()
+
+    def _has_quorum_unlocked(self) -> bool:
+        """Quorum check for callers already holding ``self._lock``."""
+        alive = 1 + sum(
+            1 for info in self._peers.values() if info.get("online", False)
+        )
+        quorum = (self._initial_cluster_size // 2) + 1
+        if self._split_brain_detector is not None:
+            try:
+                # An explicit detector (e.g. an external lease/lock authority)
+                # can veto even when our own peer view says we have quorum.
+                if not self._split_brain_detector.quorum_check():
+                    return False
+            except Exception:
+                return False
+        return alive >= quorum
+
+    def set_split_brain_detector(self, detector: Any | None) -> None:
+        """Install an external quorum authority (any object with quorum_check())."""
+        self._split_brain_detector = detector
+
+    def can_accept_writes(self) -> bool:
+        """True when this node may accept writes without risking split-brain."""
+        return self.is_leader() and self.has_quorum()
+
     def replicate_state(self, key: str, value: Any) -> None:
         """Replicate a state value to standby coordinators.
 
-        Called by the leader to replicate state changes.
-        Standbys receive state via handle_heartbeat_request.
+        Called by the leader to replicate state changes. Standbys receive state
+        via handle_heartbeat_request.
+
+        Refuses and steps down when this leader can no longer see a quorum.
+        Without this fence the election path protects against two leaders while
+        the write path does not, so a leader that lost contact with its peers
+        kept accepting writes -- and a healed partition could then hold two
+        divergent state histories, which is the split brain the election logic
+        exists to prevent.
         """
         with self._lock:
+            # The fence applies to every node, not only deployments that
+            # installed an external detector, and not only leaders: with no
+            # split_brain_detector set (nothing in the production wiring sets
+            # one), a leader that had lost contact with its quorum still
+            # stored writes — and so did any non-leader asked to replicate.
+            # A node that cannot see a quorum must not diverge its state
+            # history, and a leader in that position must step down. A
+            # detector, when present, still gets its veto inside
+            # _has_quorum_unlocked().
+            if not self._has_quorum_unlocked():
+                if self._state == CoordinatorState.LEADER:
+                    logger.warning(
+                        f"{self._id}: refusing state write, quorum lost — "
+                        "stepping down to avoid split-brain"
+                    )
+                    self._state = CoordinatorState.FOLLOWER
+                    self._leader_id = None
+                else:
+                    logger.warning(
+                        f"{self._id}: refusing state write, no quorum "
+                        "(not leader and cannot confirm a majority)"
+                    )
+                return
             self._replicated_state[key] = value
 
     def get_replicated_state(self) -> dict[str, Any]:
@@ -242,15 +320,22 @@ class RayFaultTolerance:
                 peer_info["online"] = True
 
             # Raft: if sender has higher term, update our term and become follower
-            if term > self._current_term:
+            term_advanced = term > self._current_term
+            if term_advanced:
                 self._current_term = term
                 self._voted_for = None
                 if self._state == CoordinatorState.LEADER:
                     logger.info(f"{self._id}: Stepping down, {sender_id} has higher term {term}")
                 self._state = CoordinatorState.FOLLOWER
 
-            # If sender claims to be leader and has lower ID, follow
-            if sender_id < self._id:
+            # Leadership belief used to gate replicated state below. A
+            # heartbeat carrying a *new* term can only come from a node that
+            # participated in that election, so it identifies the sender as
+            # the leader for the new term; at equal terms the lowest-ID
+            # tie-break applies. An equal-term probe from a plain follower (or
+            # a stale probe from a demoted ex-leader at an old term) never
+            # changes the belief.
+            if term_advanced or (sender_id < self._id and term >= self._current_term):
                 if self._state == CoordinatorState.LEADER:
                     logger.info(
                         f"{self._id}: Stepping down, {sender_id} has lower ID"
@@ -258,8 +343,21 @@ class RayFaultTolerance:
                     self._state = CoordinatorState.FOLLOWER
                 self._leader_id = sender_id
 
-            # Apply replicated state from leader
-            if state and self._state == CoordinatorState.FOLLOWER:
+            # Apply replicated state from the *recognized leader only*. The
+            # old code applied any sender's state whenever this node was a
+            # FOLLOWER — no leader check, no term check, plain dict.update —
+            # so a demoted ex-leader (or a follower whose copy was stale)
+            # regressed standbys' state with its old copy on its next probe.
+            # State is accepted only from the node this heartbeat establishes
+            # as the leader (recorded above when its ID is lower at an
+            # equal-or-higher term, or already on record), and never from a
+            # sender behind the current term.
+            if (
+                state
+                and self._state == CoordinatorState.FOLLOWER
+                and sender_id == self._leader_id
+                and term >= self._current_term
+            ):
                 self._replicated_state.update(state)
                 if self._on_state_change:
                     try:
@@ -343,7 +441,15 @@ class RayFaultTolerance:
                 payload = {
                     "coordinator_id": self._id,
                     "term": self._current_term,
-                    "state": dict(self._replicated_state),
+                    # Only a leader has authoritative state to offer. Attaching
+                    # it on every node let follower-to-follower probes carry
+                    # stale copies of cluster state around the ring, which any
+                    # receiving standby would apply (see handle_heartbeat_request).
+                    "state": (
+                        dict(self._replicated_state)
+                        if self._state == CoordinatorState.LEADER
+                        else {}
+                    ),
                 }
             resp = self._heartbeat_transport(peer_id, info["host"], info["port"], payload)
             with self._lock:
@@ -361,6 +467,21 @@ class RayFaultTolerance:
                                 f"{self._id}: Stepping down, {peer_id} reports term {peer_term}"
                             )
                         self._state = CoordinatorState.FOLLOWER
+                    # Learn the current leader from the peer's response so a
+                    # follower can recognize leader-pushed state even when the
+                    # leader's ID is higher than its own (the lower-ID rule
+                    # alone cannot establish that belief). A demoted node must
+                    # not overwrite it with its own stale view.
+                    resp_leader = resp.get("leader_id")
+                    if not resp_leader and resp.get("state") == "leader":
+                        resp_leader = peer_id
+                    if (
+                        resp_leader
+                        and resp_leader != self._id
+                        and resp.get("term", 0) >= self._current_term
+                        and self._state != CoordinatorState.LEADER
+                    ):
+                        self._leader_id = resp_leader
             return True
         except Exception as e:  # noqa: BLE001 - transport failures are expected
             logger.debug(f"{self._id}: heartbeat probe to {peer_id} failed: {e}")
@@ -393,7 +514,7 @@ class RayFaultTolerance:
             # from the quorum.
             for pid, info in self._peers.items():
                 if now - info["last_seen"] > self._election_timeout_s:
-                    if info.get("online", True):
+                    if info.get("online", False):
                         logger.info(f"{self._id}: Peer {pid} timed out, marking offline")
                     info["online"] = False
 
@@ -404,7 +525,7 @@ class RayFaultTolerance:
                 + [
                     pid
                     for pid, info in self._peers.items()
-                    if info.get("online", True)
+                    if info.get("online", False)
                 ]
             )
             total_alive = len(alive_ids)

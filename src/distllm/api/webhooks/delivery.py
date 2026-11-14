@@ -7,16 +7,19 @@ queuing, and thread-safe in-memory storage.
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import hashlib
 import hmac
 import json
 import time
 import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -125,6 +128,13 @@ def _build_payload(event: str, data: dict[str, Any]) -> dict[str, Any]:
 _RETRY_DELAYS = [1.0, 2.0, 4.0, 8.0, 16.0]
 _MAX_RETRIES = len(_RETRY_DELAYS)
 
+# Bounded concurrency for concurrent fan-out of slow webhook deliveries.
+# Each delivery is a blocking httpx.post (up to 30s timeout); running them
+# sequentially means one slow endpoint stalls every later subscriber and
+# dispatch latency grows as sum(per-hook latency).  A bounded thread pool
+# runs them in parallel so wall-clock is ~max(latency) instead of sum.
+_DEFAULT_MAX_CONCURRENT_DELIVERIES = 10
+
 
 class UnsafeWebhookURLError(ValueError):
     """Raised when a webhook URL fails the SSRF safety check.
@@ -157,6 +167,8 @@ class WebhookManager:
         *,
         http_client: httpx.AsyncClient | None = None,
         clock: Callable[[], float] | None = None,
+        max_concurrent_deliveries: int = _DEFAULT_MAX_CONCURRENT_DELIVERIES,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self._lock = RLock()
         self._registrations: dict[str, WebhookRegistration] = {}
@@ -164,6 +176,13 @@ class WebhookManager:
         self._dead_letter_queue: list[WebhookDelivery] = []
         self._client = http_client or httpx.AsyncClient(timeout=30.0)
         self._clock = clock or _now_ts
+        if max_concurrent_deliveries < 1:
+            raise ValueError("max_concurrent_deliveries must be >= 1")
+        self._max_concurrent_deliveries = max_concurrent_deliveries
+        # One shared pool per manager bounds total in-flight POSTs.  Use a
+        # lazily-created pool so plain register/list callers pay nothing.
+        self._executor = executor
+        self._owns_executor = executor is None
 
     # ------------------------------------------------------------------
     # Registration
@@ -234,9 +253,101 @@ class WebhookManager:
         with self._lock:
             return self._registrations.get(webhook_id)
 
+    def _get_executor(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=self._max_concurrent_deliveries,
+                thread_name_prefix="webhook-delivery",
+            )
+        return self._executor
+
+    def close(self) -> None:
+        """Shut down the delivery executor (call on app teardown).
+
+        Safe to call multiple times or when the pool was never created.
+        A non-owned (injected) executor is left untouched.
+        """
+        if self._owns_executor and self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
+
+    def _run_deliveries_concurrently(
+        self,
+        items: list[tuple[WebhookDelivery, WebhookRegistration, bytes]],
+    ) -> None:
+        """Run each (delivery, reg, body) fan-out item concurrently.
+
+        Items run on a bounded thread pool (default 10 in flight) instead of
+        inline in the dispatch caller.  This is the PERF-03 fix: N slow hooks
+        no longer sum their latencies — wall time is ~max(latency) under the
+        concurrency bound, not Σ(latency).
+
+        Results merge as each completes; delivery logs/DLQ stay thread-safe
+        via ``self._lock`` in :meth:`_submit_delivery`, so concurrent
+        completion order only affects log ordering, not correctness.
+        """
+        if not items:
+            return
+        if len(items) == 1:
+            delivery, reg, body = items[0]
+            self._submit_delivery(delivery, reg, body)
+            return
+        executor = self._get_executor()
+        futures = [
+            executor.submit(self._submit_delivery, delivery, reg, body)
+            for delivery, reg, body in items
+        ]
+        for fut in futures:
+            # Propagate unexpected exceptions instead of silently swallowing
+            # them; expected delivery failures are captured in the delivery
+            # record by _submit_delivery itself.
+            fut.result()
+
+    async def dispatch_async(
+        self,
+        event: str,
+        data: dict[str, Any],
+    ) -> list[str]:
+        """Async variant of :meth:`dispatch` that fans out concurrently.
+
+        Use from async producers/event loops: the blocking per-hook POSTs run
+        on the thread pool instead of blocking the event loop, and wall-clock
+        for N slow hooks is ~max(latency) (bounded), not Σ(latency).
+
+        Returns the matched webhook IDs (same contract as :meth:`dispatch`).
+        """
+        payload = _build_payload(event, data)
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+        with self._lock:
+            matched = [
+                reg
+                for reg in self._registrations.values()
+                if reg.is_active and reg.matches(event)
+            ]
+
+        items: list[tuple[WebhookDelivery, WebhookRegistration, bytes]] = []
+        for reg in matched:
+            delivery = WebhookDelivery(
+                id=uuid.uuid4().hex,
+                webhook_id=reg.id,
+                event=event,
+                payload=payload,
+                attempt=1,
+                status=WebhookDeliveryStatus.PENDING,
+            )
+            items.append((delivery, reg, body))
+
+        if items:
+            # Offload the whole bounded fan-out so the event loop never blocks
+            # on a 30s-timeout POST.
+            await asyncio.to_thread(self._run_deliveries_concurrently, items)
+
+        return [reg.id for reg in matched]
 
     def dispatch(
         self,
@@ -263,6 +374,7 @@ class WebhookManager:
                 if reg.is_active and reg.matches(event)
             ]
 
+        items: list[tuple[WebhookDelivery, WebhookRegistration, bytes]] = []
         for reg in matched:
             delivery = WebhookDelivery(
                 id=uuid.uuid4().hex,
@@ -272,7 +384,11 @@ class WebhookManager:
                 attempt=1,
                 status=WebhookDeliveryStatus.PENDING,
             )
-            self._submit_delivery(delivery, reg, body)
+            items.append((delivery, reg, body))
+
+        # Bounded-concurrency fan-out: slow hooks run in parallel on a shared
+        # thread pool; dispatch wall time is ~max(latency), not Σ(latency).
+        self._run_deliveries_concurrently(items)
 
         return [reg.id for reg in matched]
 
@@ -383,6 +499,7 @@ class WebhookManager:
 
             self._delivery_log = remaining
 
+        items: list[tuple[WebhookDelivery, WebhookRegistration, bytes]] = []
         for d in to_retry:
             reg = self.get(d.webhook_id)
             if reg is None or not reg.is_active:
@@ -403,7 +520,9 @@ class WebhookManager:
                 status=WebhookDeliveryStatus.PENDING,
             )
             body = json.dumps(d.payload, separators=(",", ":")).encode("utf-8")
-            self._submit_delivery(new_delivery, reg, body)
+            items.append((new_delivery, reg, body))
+
+        self._run_deliveries_concurrently(items)
 
         return len(to_retry)
 
@@ -426,6 +545,7 @@ class WebhookManager:
             requeued = list(self._dead_letter_queue)
             self._dead_letter_queue.clear()
 
+        items: list[tuple[WebhookDelivery, WebhookRegistration, bytes]] = []
         for d in requeued:
             reg = self.get(d.webhook_id)
             if reg is None or not reg.is_active:
@@ -439,7 +559,9 @@ class WebhookManager:
                 status=WebhookDeliveryStatus.PENDING,
             )
             body = json.dumps(d.payload, separators=(",", ":")).encode("utf-8")
-            self._submit_delivery(new_delivery, reg, body)
+            items.append((new_delivery, reg, body))
+
+        self._run_deliveries_concurrently(items)
 
         return len(requeued)
 

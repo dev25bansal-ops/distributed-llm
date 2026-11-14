@@ -49,8 +49,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
@@ -726,6 +728,7 @@ class RemoteDraftModel:
                     result = self._extract_from_completions(data)
                     break
                 except Exception as e:
+                    # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                     last_error = e
                     if attempt < self._config.max_retries:
                         base_delay = min(0.1 * (2 ** attempt), max_delay)
@@ -870,7 +873,7 @@ class DistributedSpeculativeDecoder:
 
         raise RuntimeError("No draft model available")
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,
@@ -1291,9 +1294,14 @@ class DistributedSpeculativeDecoder:
             # M-02: shared kernel (single source of truth). acceptance_prob
             # above is min(1, p/q) or the uniform fallback; accept_token
             # recomputes the identical decision from the raw inputs.
+            # Row is prefix_len + i, matching the inline p above and the
+            # greedy path: prefix_len is already the causally-shifted index
+            # (prefix.shape[1] - 1), so subtracting another 1 made every
+            # sampled acceptance decision read the previous position's
+            # distribution.
             if not accept_token(
                 target_logits,
-                prefix_len + i - 1,
+                prefix_len + i,
                 int(draft_tokens[0, i].item()),
                 draft_prob=(float(torch.exp(torch.tensor(draft_logprobs[i])).item())
                             if draft_logprobs is not None and i < len(draft_logprobs) else None),
@@ -1352,8 +1360,11 @@ class DistributedSpeculativeDecoder:
         for i in range(batch_size):
             plen = prefix_lens[i]
             dlen = draft_lens[i]
-            # Extract logits for this request's draft tokens
-            req_logits = target_logits[i:i+1, plen - 1:plen + dlen - 1, :]
+            # Full-sequence logits, not a pre-shifted slice: _verify_tokens
+            # applies the causal shift itself (row prefix_len + i), and a
+            # slice starting at plen-1 made its defensive cap
+            # (rows - prefix_len) collapse to 0, rejecting every draft token.
+            req_logits = target_logits[i:i+1, :plen + dlen, :]
             req_draft = draft_tokens_list[i]
             req_logprobs = draft_logprobs_list[i]
 

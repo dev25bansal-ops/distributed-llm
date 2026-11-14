@@ -24,15 +24,24 @@ distllm system run --coordinator-host 192.168.1.100 --port 50051
 distllm system run --coordinator-host 192.168.1.100 --port 50052
 distllm system run --coordinator-host 192.168.1.100 --port 50053
 ```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — `distllm system run`
+> (src/distllm/cli/main.py:357) accepts --model/--local/--config/--port/
+> --dtype/--max-tokens/--temperature/--prompt/--debug only; it has no
+> --coordinator-host option. Worker nodes are started with the
+> `distllm-node` console script (distllm.dist.worker:main), which takes
+> --node-id/--model/--start-layer/--end-layer/--total-layers/--port/
+> --coordinator-host/--coordinator-port (src/distllm/config/resolver.py:82).
 
 ### Optimization
 
 ```bash
 # Enable overlap pipeline (2-4x throughput)
-export DISTLLM_ENABLE_PIPELINE_OVERLAP=true
+# config.yaml: hybrid_parallel.pp_overlap: true (default true)
+# Env var: DISTLLM__HYBRID_PARALLEL__PP_OVERLAP=true
 
 # Enable continuous batching
-export DISTLLM_MAX_BATCH_SIZE=8
+# config.yaml: batching.max_batch_size: 32 (default)
+# Env var: DISTLLM__BATCHING__MAX_BATCH_SIZE=8
 ```
 
 ### Monitoring
@@ -75,6 +84,13 @@ load_balancer:
 
 ### Auto-Scaling
 
+The AutoScaler in src/distllm/dist/autoscaler.py is config-driven
+(min_workers, max_workers, scale_up_threshold, scale_down_threshold,
+cooldown_seconds, poll_interval_seconds constructor args); the coordinator
+reads the poll interval from DISTLLM_AUTOSCALER_INTERVAL_S
+(src/distllm/core/coordinator.py:1206). There is no DISTLLM_AUTOSCALE_* env var.
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06)
 ```bash
 # Enable autoscaling
 export DISTLLM_AUTOSCALE_ENABLED=true
@@ -90,9 +106,9 @@ export DISTLLM_AUTOSCALE_TARGET_UTILIZATION=70
 ### Kubernetes Deployment
 
 ```yaml
-# kustomize/production/kustomization.yaml
+# deploy/kustomize/production/kustomization.yaml
 resources:
-  - ../../deploy/inference
+  - ../base
 patches:
   - target:
       kind: Deployment
@@ -128,7 +144,7 @@ spec:
     - type: Pods
       pods:
         metric:
-          name: distllm_queue_depth
+          name: distllm_coordinator_queue_depth
         target:
           type: AverageValue
           averageValue: "10"
@@ -139,11 +155,11 @@ spec:
 ```bash
 # Region 1: US East
 kubectl config use-context us-east
-kubectl apply -k kustomize/production/
+kubectl apply -k deploy/kustomize/production/
 
 # Region 2: EU West
 kubectl config use-context eu-west
-kubectl apply -k kustomize/production/
+kubectl apply -k deploy/kustomize/production/
 ```
 
 ---
@@ -175,6 +191,7 @@ kubectl apply -k kustomize/production/
 
 ### Cost Optimization
 
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06)
 ```bash
 # Use spot instances for workers
 export DISTLLM_SPOT_INSTANCES=true
@@ -187,6 +204,11 @@ export DISTLLM_CARBON_AWARE=true
 export DISTLLM_COST_TRACKING=true
 ```
 
+Nearest real mechanisms (no env vars):
+- `cost.spot_preference` in config.yaml (CostSettings, src/distllm/config/_deployment.py:70)
+- Carbon-aware migration via DISTLLM_CARBON_API_KEY / DISTLLM_CARBON_THRESHOLD
+  (src/distllm/core/carbon_migration.py:37,41 and src/distllm/core/coordinator.py:1409)
+
 ### Performance at Scale
 
 | Nodes | Expected Throughput | Latency (P99) |
@@ -195,6 +217,8 @@ export DISTLLM_COST_TRACKING=true
 | 16 | 80 tok/s | 200ms |
 | 50 | 200 tok/s | 100ms |
 | 100+ | 500+ tok/s | 50ms |
+
+(Values above are unsourced estimates, not benchmark results.)
 
 ---
 
@@ -206,10 +230,12 @@ export DISTLLM_COST_TRACKING=true
 
 **Solution**:
 ```bash
-# Enable coordinator HA
-export DISTLLM_HA_ENABLED=true
-export DISTLLM_HA_PEERS="coord-2:50050,coord-3:50050"
+# Enable coordinator HA via DISTLLM_HA_SECRET (src/distllm/core/ha_coordinator.py:59)
+export DISTLLM_HA_SECRET=<shared-secret>
+export DISTLLM_FEDERATION_PEERS="coord-2:50050,coord-3:50050"
 ```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — no DISTLLM_HA_ENABLED or
+> DISTLLM_HA_PEERS env var exists.
 
 ### Network Saturation
 
@@ -217,18 +243,29 @@ export DISTLLM_HA_PEERS="coord-2:50050,coord-3:50050"
 
 **Solution**:
 ```bash
-# Enable QUIC for WAN
-export DISTLLM_WAN_TRANSPORT=quic
-
-# Enable compression
-export DISTLLM_GRPC_COMPRESSION=gzip
+# QUIC transport is available in src/distllm/dist/p2p/quic_transport.py
+# (auto-selected via get_optimal_transport when aioquic is installed).
+# There is no DISTLLM_WAN_TRANSPORT / DISTLLM_GRPC_COMPRESSION env var.
 ```
+Neither variable exists. QUIC is selected automatically by
+`get_optimal_transport()` when `aioquic` is installed; there is no
+`DISTLLM_GRPC_COMPRESSION` setting and no compression env var. The WAN settings
+that do exist use the `WIDE_AREA_` prefix (e.g. `WIDE_AREA_ENABLED`,
+`WIDE_AREA_TRANSPORT`), defined in `distllm/dist/config.py`.
 
 ### Memory Pressure
 
 **Symptom**: OOM errors, KV cache evictions
 
 **Solution**:
+```bash
+# Defragmentation is the defragmentation config section:
+# config.yaml: defragmentation.enabled: true
+# Env var: DISTLLM__DEFRAGMENTATION__ENABLED=true
+```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — no DISTLLM_KV_CACHE_QUANT_BITS
+> or DISTLLM_DEFRAG_ENABLED env var exists. KV cache quantization has no
+> config/env mechanism; defrag is the defragmentation config section.
 ```bash
 # Enable KV cache quantization
 export DISTLLM_KV_CACHE_QUANT_BITS=8
@@ -243,6 +280,13 @@ export DISTLLM_DEFRAG_ENABLED=true
 
 **Solution**:
 ```bash
+# Straggler detection is always-on via StragglerDetector
+# (src/distllm/core/coordinator.py:132); threshold comes from the
+# straggler_threshold config field (default 1.5,
+# src/distllm/config/_parallelism.py:115), not an env var.
+```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06)
+```bash
 # Enable straggler detection
 export DISTLLM_STRAGGLER_DETECTION=true
 export DISTLLM_STRAGGLER_THRESHOLD=2.0
@@ -254,6 +298,23 @@ export DISTLLM_STRAGGLER_THRESHOLD=2.0
 
 ### Key Metrics
 
+Real metric names (Prometheus, src/distllm/observability/exporter.py):
+
+```bash
+# Cluster throughput
+distllm_tokens_per_second
+
+# Per-node latency
+distllm_node_latency_p99_ms
+
+# Queue depth
+distllm_coordinator_queue_depth
+
+# Error rate
+distllm_errors_total
+```
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the names below do not exist:
 ```bash
 # Cluster throughput
 distllm_metrics_tokens_per_second_total

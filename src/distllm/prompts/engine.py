@@ -4,7 +4,7 @@ Supports built-in templates (ChatML, Llama-2/3, Mistral, etc.),
 tokenizer.apply_chat_template() fallback, and custom template registration.
 """
 
-from typing import Callable
+from collections.abc import Callable
 
 from loguru import logger
 

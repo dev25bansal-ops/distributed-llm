@@ -26,8 +26,9 @@ import os
 import time
 from loguru import logger
 
-import torch
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
 # ---------------------------------------------------------------------------
 # Optional QUIC transport (preferred when aioquic is available)
 # ---------------------------------------------------------------------------

@@ -15,7 +15,9 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 from transformers import AutoTokenizer
 
@@ -161,6 +163,7 @@ class SubsystemManager:
             temps = bs.get_active_temperatures()
             return sum(temps) / len(temps) if temps else None
         except Exception:
+            # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
             return None
 
     def _get_paged_backends(self) -> list[Any]:
@@ -432,6 +435,7 @@ class SubsystemManager:
                 try:
                     await coord._async_shutdown.wait()
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
                 finally:
                     if on_stop:

@@ -35,12 +35,12 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
-
 
 # Minimum supported versions (kept in sync with pyproject.toml)
 MIN_PYTHON = (3, 10)
@@ -276,6 +276,7 @@ def _pip_install(pkg: str) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, "pip install timed out (300s)"
     except Exception as e:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False, f"pip install error: {e}"
 
 
@@ -299,6 +300,7 @@ def _clean_hf_cache() -> tuple[bool, str]:
         shutil.rmtree(path, ignore_errors=True)
         return True, f"freed {total / 1e9:.1f} GB by cleaning {path}"
     except Exception as e:
+        # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
         return False, f"clean error: {e}"
 
 
@@ -353,7 +355,7 @@ def attempt_fixes(results: list[CheckResult], console: Console) -> list[CheckRes
 # ── CLI entry point ────────────────────────────────────────────────────────
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="distllm-cli doctor",
         description="Check the local environment for DistLLM.",
@@ -401,4 +403,4 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())

@@ -68,7 +68,7 @@ from loguru import logger
 
 _OTEL_AVAILABLE = False
 try:
-    from opentelemetry.sdk.trace.export import SpanExportResult, SpanExporter
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
     _OTEL_AVAILABLE = True
 except ImportError:
@@ -304,6 +304,7 @@ class DatadogMetricsExporter:
             socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
             return True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def close(self) -> None:
@@ -891,6 +892,9 @@ class DatadogMetricsExporter:
         """
         try:
             # Import OTel protobuf and gRPC dependencies.
+            from collections import defaultdict
+
+            import grpc
             from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
                 ExportMetricsServiceRequest,
             )
@@ -900,9 +904,6 @@ class DatadogMetricsExporter:
             from opentelemetry.proto.common.v1 import common_pb2
             from opentelemetry.proto.metrics.v1 import metrics_pb2
             from opentelemetry.proto.resource.v1 import resource_pb2
-
-            import grpc
-            from collections import defaultdict
         except ImportError:
             logger.debug("OTLP gRPC exporter not installed; dropping metric batch")
             return
@@ -974,6 +975,7 @@ class DatadogMetricsExporter:
         them via gRPC to the configured OTLP endpoint.
         """
         try:
+            import grpc
             from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
                 ExportTraceServiceRequest,
             )
@@ -983,10 +985,7 @@ class DatadogMetricsExporter:
             from opentelemetry.proto.common.v1 import common_pb2
             from opentelemetry.proto.resource.v1 import resource_pb2
             from opentelemetry.proto.trace.v1 import trace_pb2
-
             from opentelemetry.trace import StatusCode
-
-            import grpc
         except ImportError:
             logger.debug("OTLP gRPC exporter not installed; dropping trace batch")
             return

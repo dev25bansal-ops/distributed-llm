@@ -95,7 +95,7 @@ ERROR: No matching distribution found for torch
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 # Then install DistLLM
-pip install distllm
+pip install distributed-llm
 ```
 
 **Prevention:** Pin the PyTorch index URL in your `requirements.txt`:
@@ -121,7 +121,7 @@ error: Microsoft Visual C++ 14.0 or greater is required
 pip install grpcio --only-binary=:all:
 ```
 
-**Prevention:** Use Python 3.10-3.12 on Windows (best wheel coverage). Alternatively, install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+**Prevention:** Use Python 3.11-3.13 on Windows (best wheel coverage). Alternatively, install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ---
 
@@ -140,8 +140,12 @@ pip install grpcio --only-binary=:all:
 python -m site --user-scripts
 
 # Add that directory to PATH, or run via module
-python -m distllm.cli --help
+python -m distllm.cli.main --help
 ```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — there is no cli/__main__.py;
+> `python -m distllm.cli.main` works only if the package is importable.
+> The installed entry point is the `distllm` console script
+> (pyproject.toml [project.scripts]: distllm = "distllm.cli.main:main").
 
 **Prevention:** Use a virtual environment (`python -m venv .venv`) so scripts land in a predictable location.
 
@@ -166,7 +170,7 @@ source .venv-clean/bin/activate  # Linux/macOS
 
 # Install with locked requirements
 pip install -r requirements.lock
-pip install distllm
+pip install distributed-llm
 ```
 
 **Prevention:** Always use `pip install -r requirements.lock` in production. Generate the lock file with `pip freeze > requirements.lock`.
@@ -195,12 +199,17 @@ nvidia-smi
 # If another process is using the GPU, kill it or wait
 
 # Step 2: Use quantization to reduce memory footprint
-export DISTLLM_QUANTIZATION_BITS=4    # INT4: ~75% savings
-# or
-export DISTLLM_QUANTIZATION_BITS=8    # INT8: ~50% savings
+# Quantization is configured via config.yaml quantization.method
+# ("none" | "bnb_4bit" | "bnb_8bit" | "gptq" | "awq" | "fp8",
+# src/distllm/config/_model.py:64) or the API server's --quantization flag.
+# Env var: DISTLLM__QUANTIZATION__METHOD=bnb_8bit
+# There is no DISTLLM_QUANTIZATION_BITS env var.
 
 # Step 3: Enable CPU offloading for KV cache
-export DISTLLM_CPU_OFFLOAD=true
+# KV offload is a runtime feature of the KV cache manager
+# (offload_to_cpu, src/distllm/core/kv_cache.py:277) and tiered defrag
+# compaction (defragmentation.tiered_compaction in config.yaml).
+# There is no DISTLLM_CPU_OFFLOAD env var.
 
 # Step 4: Reduce layers assigned to this node
 # In config.yaml, narrow the layer range:
@@ -214,7 +223,10 @@ distllm --model meta-llama/Llama-3.1-70B --nodes node0:50051:0:15 node1:50052:16
 **Prevention:**
 - Check the [Model Compatibility Matrix](MODEL_COMPATIBILITY.md) for VRAM requirements before deploying.
 - Use `distllm model info <model>` to see estimated memory per node.
-- Set `DISTLLM_QUANTIZATION_BITS=8` as a safe default for production.
+- Set `quantization.method: bnb_8bit` in config.yaml as a safe default for production.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the doc's original
+> `DISTLLM_QUANTIZATION_BITS=8` default does not exist (0 hits in src/ and
+> config.yaml).
 
 ---
 
@@ -275,11 +287,14 @@ pip install sentencepiece
 # is embedded in the model file — no separate tokenizer needed
 
 # Step 4: For models with tokenizer in a subdirectory
-export DISTLLM_TOKENIZER_SUBFOLDER="custom_tokenizer"
+# There is no DISTLLM_TOKENIZER_SUBFOLDER env var.
+# Set tokenizer subfolder via config.yaml model.* settings instead.
 distllm model load org/model
 ```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_TOKENIZER_SUBFOLDER
+> has 0 hits in src/ and config.yaml.
 
-**Prevention:** Install the full dependency set: `pip install distllm[all]`.
+**Prevention:** Install the full dependency set: `pip install distributed-llm[all]`.
 
 ---
 
@@ -336,13 +351,18 @@ huggingface-cli delete-cache --model org/model
 rm -rf ~/.cache/huggingface/hub/models--org--model
 
 # Step 2: Re-download
-distllm model download org/model
+# There is no `distllm model download` subcommand — `distllm model` only
+# supports list/info/load/unload (src/distllm/cli/main.py:454-487).
+# Use huggingface-cli instead:
+huggingface-cli download org/model
 
 # Step 3: Verify integrity
 python -c "from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('org/model')"
 ```
 
-**Prevention:** Use `DISTLLM_DOWNLOAD_RESUME=true` (default) to resume interrupted downloads.
+**Prevention:** Downloads resume automatically via huggingface_hub.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_DOWNLOAD_RESUME has
+> 0 hits in src/ and config.yaml; there is no such flag to set.
 
 ---
 
@@ -366,8 +386,11 @@ grpc._channel._InactiveRpcError: <InactiveRpcError of RPC that terminated with: 
 # Step 1: Check if the worker process is running
 ssh user@192.168.1.11 "ps aux | grep distllm-node"
 
-# Step 2: If not running, start it
-distllm-node --node-id node_1 --coordinator coordinator:50051 --port 50051 --model meta-llama/Llama-3.1-8B
+# Step 2: If not running, start it (the `distllm-node` console script maps
+# to distllm.dist.worker:main, pyproject.toml [project.scripts])
+distllm-node --node-id node_1 --model meta-llama/Llama-3.1-8B \
+  --start-layer 0 --end-layer 15 --total-layers 32 \
+  --coordinator-host coordinator --coordinator-port 50050 --port 50051
 
 # Step 3: Test network connectivity
 nc -zv 192.168.1.11 50051
@@ -420,13 +443,19 @@ ssh user@192.168.1.12 "nvidia-smi"
 iperf3 -c 192.168.1.12 -t 10
 
 # Step 4: Enable gRPC compression to reduce payload size
-export DISTLLM_GRPC_COMPRESSION=gzip
+# Compression is the compression config section (CompressionSettings,
+# src/distllm/config/_network.py); there is no DISTLLM_GRPC_COMPRESSION env var.
+# Env var: DISTLLM__COMPRESSION__<FIELD>=... (see config reference)
 
 # Step 5: Enable activation quantization to shrink tensor transfers
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_ACTIVATION_QUANT_BITS
+# > has 0 hits in src/ and config.yaml; no such mechanism exists.
 export DISTLLM_ACTIVATION_QUANT_BITS=8
 
-# Step 6: For WAN links, switch to QUIC transport
-export DISTLLM_WAN_TRANSPORT=quic
+# Step 6: For WAN links, QUIC is selected automatically by
+# get_optimal_transport() when aioquic is installed (dist/p2p/quic_transport.py).
+# There is no DISTLLM_WAN_TRANSPORT variable; the WAN settings that do exist use
+# the WIDE_AREA_ prefix, e.g. WIDE_AREA_ENABLED / WIDE_AREA_TRANSPORT.
 ```
 
 **Prevention:**
@@ -452,14 +481,17 @@ or inference produces garbled/incorrect output after a few tokens.
 distllm cluster status
 # Check that model_name, total_layers, and dtype match on every node
 
-# Step 2: If mismatched, restart all nodes with consistent config
-distllm cluster restart --all
+# Step 2: If mismatched, restart the workers with consistent config.
+# There is no `distllm cluster restart`; leave and re-join each worker, or
+# restart the worker processes directly (systemd, k8s, docker compose).
+distllm cluster leave
+distllm cluster join --coordinator <coordinator-host> --port 50050
 
 # Step 3: Clear KV cache on all nodes
 curl -X POST http://coordinator:8000/admin/cache/clear
 
 # Step 4: Verify KV cache consistency
-curl http://coordinator:8000/v1/metrics | grep kv_cache
+curl http://coordinator:8000/metrics | grep kv_cache
 ```
 
 **Prevention:**
@@ -481,13 +513,18 @@ CircuitBreakerError: Circuit breaker open for node node_1 after 5 failures, reco
 **Fix:**
 ```bash
 # Step 1: Check why the node is failing
-distllm system logs --node node_1 --tail 50
+distllm system logs stream --component node_1 --lines 50
 
 # Step 2: Check GPU health on that node
 ssh user@node-1 "nvidia-smi"
 
-# Step 3: If the node is healthy now, manually reset the circuit breaker
-distllm cluster reset-circuit-breaker node_1
+# Step 3: If the node is healthy now, the breaker clears on its own once its
+# cooldown elapses -- no reset subcommand exists (`distllm cluster --help`
+# lists status/scale/drain/rebalance/start/join/leave/list-nodes/deploy/
+# autopsy). Confirm the state and, if it is still open, restart that worker.
+distllm cluster status
+# The metrics endpoint reports the breaker state per node:
+curl http://coordinator:8000/metrics | grep circuit_breaker
 
 # Step 4: If the node is unhealthy, drain it and redistribute
 distllm cluster drain node_1
@@ -527,7 +564,9 @@ export DISTLLM_MAX_TENSOR_BYTES=8589934592  # 8 GB
 cd proto && python -m grpc_tools.protoc -I. --python_out=../src/distllm/dist/ --grpc_python_out=../src/distllm/dist/ node.proto
 ```
 
-**Prevention:** Always deploy the same DistLLM version across all nodes. Use `distllm cluster version-check` before rolling upgrades.
+**Prevention:** Always deploy the same DistLLM version across all nodes. There
+is no `distllm cluster version-check` subcommand; compare `distllm --version`
+on each host before a rolling upgrade.
 
 ---
 
@@ -555,6 +594,11 @@ distllm cluster status
 distllm cluster start
 
 # Step 4: If at capacity, increase batch size or add nodes
+# Batching is the batching config section (BatchingSettings,
+# src/distllm/config/_parallelism.py:122): max_batch_size (default 32).
+# Env var: DISTLLM__BATCHING__MAX_BATCH_SIZE=32
+# There is no DISTLLM_MAX_BATCH_SIZE / DISTLLM_MAX_NUM_SEQS env var
+# (vLLM's max_num_seqs is config.yaml vllm.max_num_seqs, default 256).
 export DISTLLM_MAX_BATCH_SIZE=32
 export DISTLLM_MAX_NUM_SEQS=512
 
@@ -564,7 +608,9 @@ kubectl describe pod distllm-coordinator-xxxxx
 
 **Prevention:**
 - Set appropriate `readinessProbe` values so Kubernetes doesn't route traffic before the coordinator is ready.
-- Monitor `distllm_requests_queued` and scale workers when the queue depth is sustained above threshold.
+- Monitor `distllm_coordinator_queue_depth` (real metric, src/distllm/observability/exporter.py:86) and scale workers when the queue depth is sustained above threshold.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the doc's original
+> `distllm_requests_queued` does not exist.
 
 ---
 
@@ -581,7 +627,7 @@ Headers include: `Retry-After: 12`, `X-RateLimit-Remaining: 0`
 **Fix:**
 ```bash
 # Step 1: Check current rate limit configuration
-curl http://coordinator:8000/v1/metrics | grep rate_limit
+curl http://coordinator:8000/metrics | grep rate_limit
 
 # Step 2: If limits are too low, increase them in config.yaml
 # api:
@@ -629,7 +675,7 @@ for attempt in range(5):
 **Fix:**
 ```bash
 # Step 1: Check if the request is still queued
-curl http://coordinator:8000/v1/metrics | grep requests_queued
+curl http://coordinator:8000/metrics | grep requests_queued
 
 # Step 2: Increase the API timeout
 # config.yaml
@@ -637,6 +683,12 @@ curl http://coordinator:8000/v1/metrics | grep requests_queued
 #   timeout_seconds: 120.0   # was 30.0
 
 # Step 3: For long-context requests, enable chunked prefill
+# Chunked prefill is the chunked_prefill config section
+# (ChunkedPrefillSettings, src/distllm/config/_parallelism.py:135):
+# config.yaml: chunked_prefill.enabled: true (default), chunked_prefill.chunk_size: 512
+# Env var: DISTLLM__CHUNKED_PREFILL__ENABLED=true
+# Env var: DISTLLM__CHUNKED_PREFILL__CHUNK_SIZE=512
+# There is no DISTLLM_CHUNKED_PREFILL / DISTLLM_CHUNKED_PREFILL_CHUNK_SIZE env var.
 export DISTLLM_CHUNKED_PREFILL=true
 export DISTLLM_CHUNKED_PREFILL_CHUNK_SIZE=512
 
@@ -653,7 +705,11 @@ done
 
 **Prevention:**
 - Set `pipeline.timeout_seconds` based on your P99 latency + buffer.
-- Use `DISTLLM_CHUNKED_PREFILL=true` for long prompts.
+- Use `DISTLLM__CHUNKED_PREFILL__ENABLED=true` for long prompts.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the doc's original
+> `DISTLLM_CHUNKED_PREFILL=true` env var does not exist; the real form is
+> DISTLLM__CHUNKED_PREFILL__ENABLED (nested delimiter __,
+> src/distllm/config/settings.py:175-176).
 - Monitor `distllm_request_duration_seconds` histogram.
 
 ---
@@ -675,13 +731,14 @@ echo $API_KEY
 # Step 2: Test with curl
 curl -H "Authorization: Bearer $API_KEY" http://coordinator:8000/v1/models
 
-# Step 3: If no key is set, either set one or disable auth
-export API_KEY="your-secret-key"
-# Or disable auth for development:
-distllm system api --model <model> --local --no-auth
+# Step 3: If no key is set, set one -- there is no way to disable auth
+export API_KEY="your-secret-value"
+distllm system api --model <model> --local
 
-# Step 4: Check the key store for the hash
-distllm config list-keys
+# Step 4: Confirm the key is configured (no `config list-keys` subcommand
+# exists; config subcommands are setup/validate/reference/openapi/webhook/
+# quota/backup). `validate` reports the effective auth settings.
+distllm config validate
 
 # Step 5: If using the cluster key for gRPC auth, ensure it matches on all nodes
 echo $DISTLLM_CLUSTER_KEY
@@ -740,26 +797,43 @@ ping -c 10 node-1
 iperf3 -c node-1
 
 # Step 3: Check pipeline metrics
-curl http://coordinator:8000/v1/metrics
+curl http://coordinator:8000/metrics
 
 # Step 4: Enable overlap pipeline (2-4x throughput)
+# pipeline overlap is hybrid_parallel.pp_overlap (default true):
+# Env var: DISTLLM_HYBRID_PARALLEL__PP_OVERLAP=true
 export DISTLLM_ENABLE_PIPELINE_OVERLAP=true
 
-# Step 5: For WAN links, use QUIC transport
-export DISTLLM_WAN_TRANSPORT=quic
+# Step 5: For WAN links, QUIC is auto-selected by get_optimal_transport() when
+# aioquic is installed (dist/p2p/quic_transport.py). There is no
+# DISTLLM_WAN_TRANSPORT variable; WAN settings use the WIDE_AREA_ prefix.
 
 # Step 6: Enable Flash Attention
+# Flash attention is applied programmatically (apply_flash_attention_to_model,
+# src/distllm/dist/flash_attention.py:149) using the flash_attn package;
+# there is no DISTLLM_FLASH_ATTENTION env var.
 export DISTLLM_FLASH_ATTENTION=true
 
 # Step 7: Enable CUDA Graph capture
+# CUDA graph capture is the cuda_graph config section
+# (CudaGraphSettings, src/distllm/config/_performance.py:14):
+# config.yaml: cuda_graph.enabled: true (default false)
+# Env var: DISTLLM__CUDA_GRAPH__ENABLED=true
 export DISTLLM_CUDA_GRAPH=true
 
 # Step 8: Increase batch size
+# batching.max_batch_size in config.yaml (BatchingSettings,
+# src/distllm/config/_parallelism.py:122); env var
+# DISTLLM__BATCHING__MAX_BATCH_SIZE=16
 export DISTLLM_MAX_BATCH_SIZE=16
 ```
 
 **Prevention:**
-- Always enable `DISTLLM_ENABLE_PIPELINE_OVERLAP=true` in production.
+- Always enable `DISTLLM__HYBRID_PARALLEL__PP_OVERLAP=true` in production.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the doc's original
+> `DISTLLM_ENABLE_PIPELINE_OVERLAP=true` env var does not exist; pp_overlap
+> defaults to true (src/distllm/config/_parallelism.py:73) so normally no
+> action is needed.
 - Use `distllm benchmark run --model <model>` to establish baseline performance.
 - Monitor `distllm_tokens_per_second` in Grafana.
 
@@ -774,14 +848,24 @@ export DISTLLM_MAX_BATCH_SIZE=16
 **Fix:**
 ```bash
 # Step 1: Enable chunked prefill
+# chunked_prefill config section (ChunkedPrefillSettings,
+# src/distllm/config/_parallelism.py:135); env vars
+# DISTLLM__CHUNKED_PREFILL__ENABLED=true / DISTLLM__CHUNKED_PREFILL__CHUNK_SIZE=512
 export DISTLLM_CHUNKED_PREFILL=true
 export DISTLLM_CHUNKED_PREFILL_CHUNK_SIZE=512
 
 # Step 2: Enable prefix caching for repeated system prompts
+# prefix_cache config section (PrefixCacheSettings,
+# src/distllm/config/_cache.py:16): prefix_cache.enabled (default true),
+# prefix_cache.max_entries (default 1024). Env vars:
+# DISTLLM__PREFIX_CACHE__ENABLED=true
+# DISTLLM__PREFIX_CACHE__MAX_ENTRIES=1000
 export DISTLLM_PREFIX_CACHE_ENABLED=true
 export DISTLLM_PREFIX_CACHE_MAX_ENTRIES=1000
 
 # Step 3: Use Sarathi-Serve pressure adaptation
+# SarathiPolicy scheduler (src/distllm/core/advanced_scheduling/policy.py:39);
+# no DISTLLM_SARATHI_* env var exists.
 export DISTLLM_SARATHI_PRESSURE_ADAPTATION=true
 ```
 
@@ -796,24 +880,42 @@ export DISTLLM_SARATHI_PRESSURE_ADAPTATION=true
 **Fix:**
 ```bash
 # Step 1: Enable KV cache quantization
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_KV_CACHE_QUANT_BITS
+# > has 0 hits; no KV-cache quantization env/config mechanism exists.
 export DISTLLM_KV_CACHE_QUANT_BITS=8   # INT8 (50% savings)
 # or
 export DISTLLM_KV_CACHE_QUANT_BITS=4   # INT4 (75% savings)
 
 # Step 2: Enable PagedAttention
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_PAGED_ATTENTION has
+# > 0 hits; paged attention is always-on in the block pool
+# > (src/distllm/dist/block_pool.py) and configurable only via
+# > DISTLLM_PAGED_NUM_BLOCKS (src/distllm/core/inference_engine.py:229).
 export DISTLLM_PAGED_ATTENTION=true
 
 # Step 3: Enable defragmentation
+# defragmentation config section (DefragmentationSettings,
+# src/distllm/config/_cache.py:97): defragmentation.enabled/policy/
+# interval_seconds. Env vars: DISTLLM__DEFRAGMENTATION__ENABLED=true
+# DISTLLM__DEFRAGMENTATION__POLICY=balanced
 export DISTLLM_DEFRAG_ENABLED=true
 export DISTLLM_DEFRAG_POLICY=balanced
 
 # Step 4: Reduce max sequence length
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_MAX_SEQ_LEN has
+# > 0 hits in src/ and config.yaml.
 export DISTLLM_MAX_SEQ_LEN=2048
 
 # Step 5: Enable CPU offloading for KV cache
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_CPU_OFFLOAD has
+# > 0 hits; real mechanism is KV cache offload_to_cpu
+# > (src/distllm/core/kv_cache.py:277) / defrag tiered_compaction.
 export DISTLLM_CPU_OFFLOAD=true
 
 # Step 6: Reduce max concurrent sequences
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_MAX_NUM_SEQS has
+# > 0 hits; nearest real setting is config.yaml vllm.max_num_seqs
+# > (default 256, config.yaml vllm section).
 export DISTLLM_MAX_NUM_SEQS=128   # was 256
 ```
 
@@ -828,17 +930,27 @@ export DISTLLM_MAX_NUM_SEQS=128   # was 256
 **Fix:**
 ```bash
 # Step 1: Identify the straggler node
-curl http://coordinator:8000/v1/metrics | grep node_latency
+curl http://coordinator:8000/metrics | grep node_latency
 
 # Step 2: Use QUIC transport for WAN (no head-of-line blocking)
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_WAN_TRANSPORT has
+# > 0 hits; real QUIC transport is src/distllm/dist/p2p/quic_transport.py.
 export DISTLLM_WAN_TRANSPORT=quic
 
 # Step 3: Enable straggler detection and recovery
 # The coordinator will automatically bypass slow nodes
+# StragglerDetector is always-on (src/distllm/core/coordinator.py:132);
+# threshold is the straggler_threshold config field (default 1.5,
+# src/distllm/config/_parallelism.py:115) — no env var.
 export DISTLLM_STRAGGLER_DETECTION=true
 export DISTLLM_STRAGGLER_THRESHOLD_MS=5000
 
 # Step 4: Use priority aging to prevent request starvation
+# Aging is implemented in BatchScheduler constructor params
+# aging_enabled / aging_interval_s (src/distllm/core/batch_scheduler.py:79-81);
+# the priority config section enables queue levels:
+# config.yaml: priority.enabled: true
+# Env var: DISTLLM__PRIORITY__ENABLED=true
 export DISTLLM_PRIORITY_AGING_ENABLED=true
 export DISTLLM_PRIORITY_AGING_INTERVAL=30
 ```
@@ -860,19 +972,33 @@ torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 256.00 MiB
 **Fix:**
 ```bash
 # Step 1: Reduce batch size
+# batching config section (BatchingSettings,
+# src/distllm/config/_parallelism.py:122); env vars
+# DISTLLM__BATCHING__MAX_BATCH_SIZE=4
+# vllm.max_num_seqs in config.yaml for the vLLM backend
 export DISTLLM_MAX_BATCH_SIZE=4
 export DISTLLM_MAX_NUM_SEQS=32
 
 # Step 2: Enable KV cache quantization
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_KV_CACHE_QUANT_BITS
+# > has 0 hits; no such mechanism exists.
 export DISTLLM_KV_CACHE_QUANT_BITS=8
 
 # Step 3: Reduce max sequence length
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_MAX_SEQ_LEN has
+# > 0 hits in src/ and config.yaml.
 export DISTLLM_MAX_SEQ_LEN=2048
 
 # Step 4: Enable memory defragmentation
+# defragmentation config section (DefragmentationSettings,
+# src/distllm/config/_cache.py:97); env var
+# DISTLLM__DEFRAGMENTATION__ENABLED=true
 export DISTLLM_DEFRAG_ENABLED=true
 
 # Step 5: Use model quantization
+# > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — `distllm model load` has no
+# > --quantization flag (src/distllm/cli/main.py:475); set
+# > config.yaml quantization.method instead (src/distllm/config/_model.py:64).
 distllm model load llama-3-70b --quantization int4
 
 # Step 6: Split the model across more nodes
@@ -885,8 +1011,13 @@ kill -9 <PID>
 
 **Prevention:**
 - Set `DISTLLM_DEFRAG_ENABLED=true` by default.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the real form is
+> DISTLLM__DEFRAGMENTATION__ENABLED=true (defragmentation config section,
+> src/distllm/config/_cache.py:97).
 - Use `nvidia-smi --query-gpu=memory.used,memory.total --format=csv -l 5` to monitor memory continuously.
 - Set `DISTLLM_MAX_SEQ_LEN` to a reasonable limit for your use case.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_MAX_SEQ_LEN has 0 hits
+> in src/ and config.yaml.
 
 ---
 
@@ -1131,10 +1262,14 @@ kubectl set resources deployment distllm-coordinator --limits=memory=32Gi
 #   limits:
 #     memory: 32Gi
 
-# Step 4: Enable KV cache quantization to reduce memory
+# Step 4: Enable memory defragmentation to reduce memory
 # In ConfigMap:
-# DISTLLM_KV_CACHE_QUANT_BITS: "8"
+# DISTLLM__DEFRAGMENTATION__ENABLED: "true"
 ```
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the doc's original
+> `DISTLLM_KV_CACHE_QUANT_BITS: "8"` has 0 hits in src/ and config.yaml;
+> the real form is DISTLLM__DEFRAGMENTATION__ENABLED (defragmentation
+> config section, src/distllm/config/_cache.py:97).
 
 ---
 
@@ -1331,10 +1466,13 @@ kill -HUP $(pgrep -f "distllm.*coordinator")
 # or restart the container/pod
 
 # Step 3: For self-signed certs, regenerate
-distllm security cert create --hostname my-cluster.example.com --days 365
+distllm security cert create my-cluster.example.com --dir certs/
 ```
 
-**Prevention:** Automate renewal with certbot's systemd timer or cron job. Monitor `distllm_tls_cert_expiry_seconds`.
+**Prevention:** Automate renewal with certbot's systemd timer or cron job.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — no TLS cert expiry metric
+> exists; the real metrics are distllm_node_health /
+> distllm_coordinator_active_requests (src/distllm/observability/exporter.py).
 
 ---
 
@@ -1389,19 +1527,26 @@ distllm cluster status --federation
 curl http://cluster-a-seed:50060/health
 curl http://cluster-b-seed:50060/health
 
-# Step 3: Check the gossip protocol state
-curl http://coordinator:8000/admin/federation/gossip-state
+# Step 3: Check the cluster's own view of its nodes
+distllm cluster status
+distllm cluster list-nodes
 
-# Step 4: Force re-join if a cluster is isolated
-distllm cluster federation rejoin --seed cluster-a:50060
+# Step 4: There is no `distllm cluster federation` command group, and no
+# /admin/federation/* endpoint. The /v1/federated/* API that does exist covers
+# federated *fine-tuning rounds* (nodes, rounds, stats, versions), not
+# cross-cluster routing. To re-join an isolated cluster, re-run join on it:
+distllm cluster join --coordinator <seed-host> --port 50050
 
-# Step 5: If split-brain occurred, pick a leader and reconcile
-distllm cluster federation resolve --leader cluster-a
+# Step 5: Split-brain is resolved by draining the stale side rather than by a
+# federation command:
+distllm cluster drain <node-id>
 ```
 
 **Prevention:**
 - Use at least 3 seed nodes for fault tolerance.
-- Monitor `distllm_federation_peer_count` and alert if it drops.
+- Monitor `distllm_node_health` (real metric, src/distllm/observability/exporter.py:53) and alert if it drops.
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — the doc's original
+> `distllm_federation_peer_count` does not exist.
 - Set `federation.heartbeat_interval_seconds` to a value appropriate for your network latency.
 
 ---
@@ -1457,13 +1602,15 @@ distllm system logs --component federation --tail 100
 **Fix:**
 ```bash
 # Step 1: Verify model versions match across clusters
-distllm cluster status --federation | grep model
+distllm cluster status
 
-# Step 2: Check the routing table
-curl http://coordinator:8000/admin/federation/routes
+# Step 2: There is no federation routing table endpoint or --federation flag;
+# `cluster status` reports the models the connected cluster knows about. If two
+# clusters serve different models, that is expected -- route to the right
+# coordinator rather than expecting one to know the other's models.
 
-# Step 3: Force a routing table refresh
-distllm cluster federation refresh-routes
+# Step 3: To confirm a specific worker's model, read it from that node:
+curl http://<worker-host>:<worker-port>/health
 
 # Step 4: If models are intentionally different, use model-specific routing
 # config.yaml
@@ -1497,10 +1644,10 @@ distllm config validate
 
 ```bash
 # Recent logs
-distllm system logs --tail 100
+distllm system logs stream --lines 100
 
 # Logs for a specific node
-distllm system logs --node node_1 --tail 100
+distllm system logs stream --component node_1 --lines 100
 
 # Logs for a specific component
 distllm system logs --component coordinator --tail 100
@@ -1545,7 +1692,7 @@ grpcurl -plaintext coordinator:50050 grpc.health.v1.Health/Check
 curl http://coordinator:8000/health
 
 # Metrics
-curl http://coordinator:8000/v1/metrics
+curl http://coordinator:8000/metrics
 
 # Network bandwidth test
 iperf3 -c node-1 -t 10
@@ -1588,11 +1735,14 @@ kubectl get nodes -o json | jq '.items[].status.allocatable["nvidia.com/gpu"]'
 ## Getting Help
 
 1. Run `distllm system doctor` for automated diagnostics.
-2. Search [GitHub Issues](https://github.com/distributed-llm/distributed-llm/issues).
-3. Ask in [GitHub Discussions](https://github.com/distributed-llm/distributed-llm/discussions).
+2. Search [GitHub Issues](https://github.com/dev25bansal-ops/distributed-llm/issues).
+3. Ask in [GitHub Discussions](https://github.com/dev25bansal-ops/distributed-llm/discussions).
 4. Join [Discord](https://discord.gg/distllm).
 5. When filing an issue, include:
    - `distllm --version`
    - `distllm system doctor` output
    - `nvidia-smi` output
    - Relevant logs with `DISTLLM_LOG_LEVEL=DEBUG`
+   > ⚠️ UNVERIFIED (hygiene pass 2026-11-06) — DISTLLM_LOG_LEVEL has 0 hits
+   > in src/ (only docker-compose.gpu.yml / docker-compose.pro.yml pass it
+   > through from the shell's LOG_LEVEL).

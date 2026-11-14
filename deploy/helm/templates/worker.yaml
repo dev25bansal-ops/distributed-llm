@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-worker
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  serviceName: {{ include "distllm-operator.fullname" . }}-worker-headless
+  # One replica, because every worker gets the same --start-layer/--end-layer
+  # from .Values.worker below (0-31 by default). Two pods claiming the same
+  # range violates the no-overlap invariant the code declares
+  # (core/topology_registry.validate_assignment, "the overlap invariant lives
+  # in exactly one place"), and coordinator.py's failure path only makes sense
+  # when nodes hold disjoint stages. Scale out by giving each replica a
+  # distinct range, not by raising this number.
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+        app.kubernetes.io/component: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      volumes:
+        - name: cache-storage
+          emptyDir: {}
+      containers:
+        - name: worker
+          image: "{{ .Values.controller.defaultWorkerImage }}"
+          # distllm-node takes its config as CLI flags (--node-id/--model/
+          # --start-layer are required). The entrypoint routes on
+          # DISTLLM_ROLE=worker|node. Node identity comes from the pod name
+          # via the downward API, so each replica registers uniquely.
+          env:
+            - name: DISTLLM_ROLE
+              value: worker
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          args:
+            - --node-id
+            - $(POD_NAME)
+            - --model
+            - {{ required "model.name must be set (--set model.name=<hf-id>)" .Values.model.name | quote }}
+            - --coordinator-host
+            - {{ include "distllm-operator.fullname" . }}-coordinator
+            - --coordinator-port
+            - "{{ .Values.network.coordinatorGrpcPort }}"
+            - --port
+            - "{{ .Values.network.workerGrpcPort }}"
+            - --start-layer
+            - "{{ .Values.worker.startLayer }}"
+            - --end-layer
+            - "{{ .Values.worker.endLayer }}"
+            - --total-layers
+            - "{{ .Values.worker.totalLayers }}"
+            - --dtype
+            - {{ .Values.model.dtype | default "float16" | quote }}
+            - --model-cache-dir
+            - /var/cache/distllm
+            {{- if not .Values.tls.enabled }}
+            - --insecure
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.network.workerGrpcPort }}
+              name: grpc
+          volumeMounts:
+            - name: cache-storage
+              mountPath: /var/cache/distllm
+          resources: {{- toYaml .Values.defaultResources.worker | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.network.workerGrpcPort }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.network.workerGrpcPort }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep {{ .Values.controller.workerGracePeriodSeconds }}"]
+      terminationGracePeriodSeconds: {{ add .Values.controller.workerGracePeriodSeconds 10 }}
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distllm-operator.fullname" . }}-worker-headless
+  labels: {{- include "distllm-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "distllm-operator.name" . }}
+    app.kubernetes.io/component: worker
+  ports:
+    - port: {{ .Values.network.workerGrpcPort }}
+      name: grpc
+  clusterIP: None

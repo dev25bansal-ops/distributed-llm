@@ -6,6 +6,7 @@ CPU-only for most tests; CUDA for device-specific operations.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from distllm.dist.attention import BlockPool, PagedAttentionManager
@@ -62,3 +63,44 @@ class TestBlockPoolOnCuda:
         bp = BlockPool(num_blocks=64, block_size=16, num_layers=4, num_heads=8, head_dim=64, device='cuda')
         assert bp.num_blocks == 64
         assert bp.free_count == 64
+
+
+class TestExplicitBlockBudget:
+    """Regression: audit 2026-11-13 attention.py finding.
+
+    PagedAttentionManager did not expose auto_expand, so BlockPool always
+    doubled (+64 min) past an explicitly configured num_blocks — an
+    operator's DISTLLM_PAGED_NUM_BLOCKS could never be a hard memory
+    ceiling. auto_expand now defaults to False on the manager.
+    """
+
+    def test_manager_pool_does_not_expand_past_explicit_budget(self):
+        mgr = PagedAttentionManager(
+            num_blocks=4, block_size=2, num_layers=1,
+            num_heads=1, head_dim=2, device="cpu",
+        )
+        ids = [mgr.pool.allocate_block() for _ in range(4)]
+        assert all(i is not None for i in ids)
+        # 5th allocation must fail (None) rather than silently growing.
+        assert mgr.pool.allocate_block() is None
+        assert mgr.pool.num_blocks == 4
+
+    def test_manager_opt_in_auto_expand_still_works(self):
+        mgr = PagedAttentionManager(
+            num_blocks=4, block_size=2, num_layers=1,
+            num_heads=1, head_dim=2, device="cpu",
+            auto_expand=True,
+        )
+        for _ in range(4):
+            assert mgr.pool.allocate_block() is not None
+        assert mgr.pool.allocate_block() is not None  # expanded on demand
+        assert mgr.pool.num_blocks > 4
+
+    def test_create_sequence_raises_instead_of_auto_expanding(self):
+        mgr = PagedAttentionManager(
+            num_blocks=1, block_size=2, num_layers=1,
+            num_heads=1, head_dim=2, device="cpu",
+        )
+        mgr.create_sequence("a")  # takes the only block
+        with pytest.raises(RuntimeError, match="No free blocks"):
+            mgr.create_sequence("b")

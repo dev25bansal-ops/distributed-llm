@@ -190,7 +190,13 @@ class TestMemorySoak:
             try:
                 for i in range(100):
                     rid = f"w{worker_id}-req-{i}"
-                    manager.create(rid)
+                    # create() grew four shape arguments (num_layers,
+                    # batch_size, num_heads, head_dim). The test's subject is
+                    # deadlock-freedom under concurrent create/get/delete, not
+                    # the cache layout, so any valid shape will do.
+                    manager.create(
+                        rid, num_layers=2, batch_size=1, num_heads=4, head_dim=32,
+                    )
                     manager.get(rid)
                     manager.delete(rid)
             except Exception as e:

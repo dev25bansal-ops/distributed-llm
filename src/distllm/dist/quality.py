@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 class QualityTier(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"

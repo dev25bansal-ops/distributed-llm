@@ -44,12 +44,30 @@ _DEFAULT_BASE_URL = "http://localhost:8000"
 _DEFAULT_API_KEY = "not-needed"
 
 
-def _resolve_base_url(base_url: Optional[str] = None) -> str:
+def _resolve_base_url(base_url: str | None = None) -> str:
     return base_url or os.getenv("DISTLLM_API_BASE", _DEFAULT_BASE_URL)
 
 
-def _resolve_api_key(api_key: Optional[str] = None) -> str:
-    return api_key or os.getenv("DISTLLM_API_KEY", _DEFAULT_API_KEY)
+def _resolve_api_key(api_key: str | None = None) -> str:
+    """Resolve the API key for an adapter client.
+
+    Explicit argument wins; otherwise use the one shared precedence every
+    DistLLM client uses (``API_KEY`` > ``DISTLLM_API_KEY`` > key file) so an
+    adapter authenticates against the same server the CLI talks to. Only when
+    no key is configured anywhere does the historical ``"not-needed"``
+    placeholder remain (an unsecured/legacy endpoint).
+    """
+    if api_key:
+        return api_key
+    try:
+        from distllm.core.api_key_store import resolve_api_key
+
+        resolved = resolve_api_key()
+    except Exception:
+        # Standalone import (tests load this file directly, outside the
+        # package): fall back to the env vars only.
+        resolved = os.getenv("API_KEY") or os.getenv("DISTLLM_API_KEY")
+    return resolved or _DEFAULT_API_KEY
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +77,7 @@ def _resolve_api_key(api_key: Optional[str] = None) -> str:
 
 def get_openai_client(
     base_url: str = "http://localhost:8000",
-    api_key: str = "not-needed",
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Get a sync OpenAI-compatible client pointing to DistLLM.
@@ -83,7 +101,7 @@ def get_openai_client(
 
 def get_async_openai_client(
     base_url: str = "http://localhost:8000",
-    api_key: str = "not-needed",
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Get an async OpenAI-compatible client pointing to DistLLM.
@@ -112,7 +130,7 @@ def get_async_openai_client(
 
 def get_langchain_llm(
     base_url: str = "http://localhost:8000",
-    api_key: str = "not-needed",
+    api_key: str | None = None,
     model: str = "distributed-llm",
     **kwargs: Any,
 ) -> Any:
@@ -141,7 +159,7 @@ def get_langchain_llm(
 
 def get_llamaindex_llm(
     base_url: str = "http://localhost:8000",
-    api_key: str = "not-needed",
+    api_key: str | None = None,
     model: str = "distributed-llm",
     **kwargs: Any,
 ) -> Any:
@@ -169,7 +187,7 @@ def get_llamaindex_llm(
 
 def get_haystack_generator(
     base_url: str = "http://localhost:8000",
-    api_key: str = "not-needed",
+    api_key: str | None = None,
     model: str = "distributed-llm",
     **kwargs: Any,
 ) -> Any:
@@ -204,8 +222,8 @@ def get_haystack_generator(
 
 
 def get_agno_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Return an Agno ``OpenAIChat`` subclass pointed at a DistLLM endpoint.
@@ -219,7 +237,8 @@ def get_agno_client(
         DistLLM base URL.  Defaults to ``DISTLLM_API_BASE`` env var or
         ``http://localhost:8000``.
     api_key : str, optional
-        API key.  Defaults to ``DISTLLM_API_KEY`` env var or ``"not-needed"``.
+        API key.  Defaults to the shared resolution: ``API_KEY`` /
+        ``DISTLLM_API_KEY`` env var, then the persisted key file.
     **kwargs
         Additional arguments forwarded to ``OpenAIChat``.
 
@@ -246,8 +265,8 @@ def get_agno_client(
 
 
 def get_autogpt_config(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Return a configuration dictionary for an AutoGPT agent.
@@ -352,7 +371,6 @@ FRAMEWORK_COMPAT = {
         "class": "OpenAIChat",
         "adapter": get_agno_client,
         "features": ["agents", "tools", "rag", "multi-modal"],
-        "example": "examples/agno_example.py",
     },
 }
 
@@ -365,7 +383,7 @@ def list_frameworks() -> list[dict]:
             "package": info["package"],
             "class": info["class"],
             "features": info["features"],
-            "example": info["example"],
+            "example": info.get("example"),
         }
         for name, info in FRAMEWORK_COMPAT.items()
     ]

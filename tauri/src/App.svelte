@@ -20,7 +20,7 @@
   import { settingsStore } from "./lib/stores";
   import { joinCluster, updateTrayStatus, addRecentCluster, checkForUpdates, installUpdate, initNotifications, notify } from "./lib/api";
   import { clusterStore } from "./lib/stores";
-  import { listen } from "@tauri-apps/api/event";
+  import { listenEvent } from "./lib/transport";
   import { onDestroy, onMount } from "svelte";
   import type { Page } from "./lib/types";
 
@@ -31,18 +31,17 @@
   // 5.1: Show onboarding wizard on first launch
   let showWizard = $state(!localStorage.getItem("distllm_onboarded"));
 
-  const unlisten = listen<string>("navigate", (e) => {
-    traySource = e.payload;
-    if (e.payload === "create_cluster" || e.payload === "join_cluster") {
+  const unlisten = listenEvent<string>("navigate", (payload) => {
+    traySource = payload;
+    if (payload === "create_cluster" || payload === "join_cluster") {
       currentPage = "cluster";
-    } else if (e.payload === "show") {
+    } else if (payload === "show") {
       currentPage = "dashboard";
     }
   });
 
   // 5.8: Handle deep link connect events from tray recent clusters and protocol handler
-  const unlistenDeepLink = listen<string>("deep-link-connect", (e) => {
-    const url = e.payload;
+  const unlistenDeepLink = listenEvent<string>("deep-link-connect", (url) => {
     // Parse distllm://connect/<host>:<port>/<invite_code>
     const match = url.match(/^distllm:\/\/connect\/([^:/]+):(\d+)\/(.+)$/);
     if (match) {
@@ -192,8 +191,7 @@
   });
 
   // ── Error event handling ──────────────────────────────────────
-  const unlistenProcessCrashed = listen<string>("process-crashed", async (e) => {
-    const processName = e.payload;
+  const unlistenProcessCrashed = listenEvent<string>("process-crashed", async (processName) => {
     toastStore.error(`${processName} process crashed unexpectedly`);
     const settings = settingsStore.getSnapshot();
     if (settings.notifications.errors) {
@@ -203,7 +201,7 @@
     }
   });
 
-  const unlistenClusterStopped = listen("cluster-stopped", async () => {
+  const unlistenClusterStopped = listenEvent("cluster-stopped", async () => {
     previousNodeCount = 0;
     const settings = settingsStore.getSnapshot();
     if (settings.notifications.clusterEvents && settings.notifications.native) {

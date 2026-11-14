@@ -136,26 +136,45 @@ class TestMetricsPlugin:
 
 
 class TestPluginSystem:
-    """Tests for core/plugin_system.py integration with plugins."""
+    """Tests for core/plugin_system.py integration with plugins.
+
+    These two tests used to call ``ps.register("test", mock_plugin)`` -- a name
+    string and an instance -- and then ``ps.get(name)``. None of those exist:
+    register() takes a plugin CLASS and optional metadata, there is no get()
+    (it is get_plugin()), and start/stop are fleet-wide (start_all/stop_all),
+    not per-name. Every call sat behind an ``if hasattr`` guard, so on a
+    PluginSystem missing those methods the tests passed without asserting
+    anything; where register() DID exist they called it with the wrong shape
+    and failed with TypeError: 'str' object is not callable. Written against
+    the real API and asserting real state.
+    """
 
     def test_plugin_registry(self):
-        from distllm.core.plugin_system import PluginSystem
+        from distllm.core.plugin_system import PluginBase, PluginSystem
+
+        class SamplePlugin(PluginBase):
+            pass
 
         ps = PluginSystem()
-        if hasattr(ps, "register"):
-            mock_plugin = MagicMock()
-            ps.register("test", mock_plugin)
-            if hasattr(ps, "get"):
-                assert ps.get("test") is mock_plugin
+        assert ps.register(SamplePlugin) is True
+        registered = ps.get_plugin(SamplePlugin().name())
+        assert registered is not None
+        assert registered.cls is SamplePlugin
+        assert [p.cls for p in ps.list_plugins()] == [SamplePlugin]
 
     def test_plugin_lifecycle(self):
-        from distllm.core.plugin_system import PluginSystem
+        from distllm.core.plugin_system import PluginBase, PluginSystem
+
+        started: list[str] = []
+
+        class LifecyclePlugin(PluginBase):
+            def on_start(self, context):
+                started.append(self.name())
 
         ps = PluginSystem()
-        if hasattr(ps, "register"):
-            mock_plugin = MagicMock()
-            ps.register("test", mock_plugin)
-            if hasattr(ps, "start"):
-                ps.start("test")
-            if hasattr(ps, "stop"):
-                ps.stop("test")
+        ps.register(LifecyclePlugin)
+        assert ps.load_all() == 1
+        assert ps.init_all() == 1
+        assert ps.start_all() == 1
+        assert started == [LifecyclePlugin().name()]
+        assert ps.stop_all() == 1

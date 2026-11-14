@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.github.com https://pypistats.org https://hub.docker.com; object-src 'none'; base-uri 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Changelog — DistLLM</title>
     <meta name="description" content="Release notes and changelog for DistLLM versions.">
@@ -21,14 +21,14 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root{--bg:#050505;--surface:#0c0c0c;--card:#111113;--border:#1c1c1e;--text:#ededed;--text-secondary:#a0a0a0;--dim:#767676;--green:#00e676;--green-bg:rgba(0,230,118,0.06);--green-bd:rgba(0,230,118,0.18);--red:#ef4444;--amber:#f59e0b;--radius:12px;--radius-sm:8px;--font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
+        :root{--bg:#1c1c1c;--surface:#262626;--card:#2a2a2a;--card-hover:#303030;--border:#383838;--border-hover:#4a4a4a;--text:#f1f1ef;--text-secondary:#c4c4be;--dim:#9a9b96;--muted:#9a9b96;--green:#8fa68e;--green-dim:#7a9179;--green-glow:rgba(143,166,142,0.14);--green-bg:rgba(143,166,142,0.08);--green-bd:rgba(143,166,142,0.28);--red:#c97b6e;--amber:#c9a26e;--blue:#7e93ad;--field-1:#c8c5ba;--field-1-ink:#1c1c1c;--radius:6px;--radius-sm:4px;--font-sans:'Archivo',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace}
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:var(--font-sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
         a{color:inherit;text-decoration:none}
         .skip-link{position:absolute;top:-100%;left:16px;background:var(--green);color:#000;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;z-index:9999}.skip-link:focus{top:8px}
-        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(5,5,5,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+        .nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(28,28,28,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
         .nav-in{max-width:1100px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
         .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-0.5px}.logo b{color:var(--green)}
         .logo-icon{width:28px;height:28px;background:var(--green);color:#000;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
@@ -48,13 +48,13 @@
         .release-badge{font-size:10px;font-weight:600;padding:3px 10px;border-radius:100px;text-transform:uppercase;letter-spacing:0.5px}
         .badge-latest{color:var(--green);background:var(--green-bg);border:1px solid var(--green-bd)}
         .badge-breaking{color:var(--red);background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2)}
-        .release h3{font-size:17px;font-weight:700;margin-bottom:12px}
-        .release h4{font-size:13px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.5px;margin-top:20px;margin-bottom:8px}
+        .release h2{font-size:17px;font-weight:700;margin-bottom:12px}
+        .release h3{font-size:13px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.5px;margin-top:20px;margin-bottom:8px}
         .release ul{padding-left:20px;margin-bottom:8px}
         .release li{font-size:14px;color:var(--text-secondary);line-height:1.8;margin-bottom:2px}
         .release code{background:var(--surface);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono)}
         .migration{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-top:12px}
-        .migration h5{font-size:13px;font-weight:600;margin-bottom:8px;color:var(--amber)}
+        .migration h4{font-size:13px;font-weight:600;margin-bottom:8px;color:var(--amber)}
         .migration p,.migration code{font-size:13px}
         footer{border-top:1px solid var(--border);margin-top:80px}
         .ft-bottom{max-width:1100px;margin:0 auto;padding:24px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
@@ -97,12 +97,28 @@
 
             <div class="release">
                 <div class="release-head">
-                    <span class="release-ver">v0.4.0</span>
-                    <span class="release-date">2026-05-28</span>
+                    <span class="release-ver">v0.6.2.2</span>
+                    <span class="release-date">2026-11-09</span>
                     <span class="release-badge badge-latest">Latest</span>
                 </div>
-                <h3>Production Readiness</h3>
-                <h4>Highlights</h4>
+                <h2>CLI &amp; API Correctness</h2>
+                <h3>Highlights</h3>
+                <ul>
+                    <li>CLI and API fixes from the live laptop test: path agreement between client and server, authentication for every command, unreachable routes repaired</li>
+                    <li>OpenAI-compatible surface verified end-to-end</li>
+                    <li>Observability extra no longer required to start the API server</li>
+                    <li>Interactive <code>distllm shell</code> REPL with sessions and <code>@file</code> context</li>
+                    <li>Published to PyPI as <code>distributed-llm</code> 0.6.2.2</li>
+                </ul>
+            </div>
+
+            <div class="release" id="release-040">
+                <div class="release-head">
+                    <span class="release-ver">v0.4.0</span>
+                    <span class="release-date">2026-05-28</span>
+                </div>
+                <h2>Production Readiness</h2>
+                <h3>Highlights</h3>
                 <ul>
                     <li>Graceful shutdown with in-flight request draining</li>
                     <li>Structured error responses with error codes and request IDs</li>
@@ -121,8 +137,8 @@
                     <span class="release-date">2026-05-14</span>
                     <span class="release-badge badge-breaking">Breaking</span>
                 </div>
-                <h3>Security &amp; Features</h3>
-                <h4>Highlights</h4>
+                <h2>Security &amp; Features</h2>
+                <h3>Highlights</h3>
                 <ul>
                     <li>API key authentication with scoped permissions</li>
                     <li>Rate limiting with token bucket algorithm</li>
@@ -131,14 +147,14 @@
                     <li>Continuous batching for higher throughput</li>
                     <li>CORS and security headers middleware</li>
                 </ul>
-                <h4>Breaking Changes</h4>
+                <h3>Breaking Changes</h3>
                 <ul>
                     <li>API now requires authentication by default (pass <code>--no-auth</code> to disable)</li>
                     <li>Config file format changed from TOML to YAML</li>
                     <li>Default port changed from <code>8080</code> to <code>8000</code></li>
                 </ul>
                 <div class="migration">
-                    <h5>Migration Guide</h5>
+                    <h4>Migration Guide</h4>
                     <p>1. Rename <code>config.toml</code> to <code>config.yaml</code> or run <code>distllm config migrate</code><br>
                     2. Update port references: <code>8080</code> → <code>8000</code><br>
                     3. Generate an API key: <code>distllm auth create-key --name default</code><br>
@@ -151,8 +167,8 @@
                     <span class="release-ver">v0.2.0</span>
                     <span class="release-date">2026-04-20</span>
                 </div>
-                <h3>Multi-Node Support</h3>
-                <h4>Highlights</h4>
+                <h2>Multi-Node Support</h2>
+                <h3>Highlights</h3>
                 <ul>
                     <li>Multi-node pipeline parallelism across LAN</li>
                     <li>mDNS auto-discovery for worker nodes</li>
@@ -168,8 +184,8 @@
                     <span class="release-ver">v0.1.0</span>
                     <span class="release-date">2026-03-15</span>
                 </div>
-                <h3>Initial Release</h3>
-                <h4>Highlights</h4>
+                <h2>Initial Release</h2>
+                <h3>Highlights</h3>
                 <ul>
                     <li>Single-node inference with OpenAI-compatible API</li>
                     <li>HuggingFace model loading via <code>AutoModel</code></li>

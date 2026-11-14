@@ -6,7 +6,6 @@ from typing import Any
 
 from loguru import logger
 
-
 __all__ = ["build_rope_scaling_config", "apply_rope_scaling"]
 
 

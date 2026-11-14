@@ -95,9 +95,18 @@ class TestReadiness:
 
     def test_not_ready_when_no_healthy_nodes(self, coordinator):
         coordinator.nodes = {"node1": {}, "node2": {}}
+        # health_check() returns a status envelope whose per-node map lives
+        # under "nodes". The previous mock returned a bare node map, which the
+        # handler's old (buggy) .values()/.get("healthy") code happened to
+        # accept -- but the real server returns this envelope, and the flat
+        # form made /ready a 500 once a node was registered.
         coordinator.health_check = MagicMock(return_value={
-            "node1": {"healthy": False},
-            "node2": {"healthy": False},
+            "status": "degraded",
+            "num_nodes": 2,
+            "nodes": {
+                "node1": {"healthy": False},
+                "node2": {"healthy": False},
+            },
         })
         resp = TestClient(app).get("/ready")
         assert resp.status_code == 503
@@ -158,12 +167,22 @@ class TestListModels:
 
 
 class TestUpdateParams:
+    """Mid-stream steering endpoint.
+
+    Regression context: ``ParamUpdateChannel.update()`` returns None (it is
+    not a status signal), so the route used to 404 for every *live* request.
+    Worse, it forwarded ``None`` for unset fields, which ``setattr`` wrote
+    into the live params, and the next sampling step crashed comparing None
+    against int/float. These tests drive a real channel, not a mock.
+    """
+
     @pytest.fixture(autouse=True)
     def setup(self, coordinator):
+        from distllm.core.param_update_channel import ParamUpdateChannel
+
         original = g.coordinator
         g.coordinator = coordinator
-        coordinator._param_update_channel = MagicMock()
-        coordinator._param_update_channel.update = MagicMock()
+        coordinator._param_update_channel = ParamUpdateChannel()
         yield
         g.coordinator = original
 
@@ -177,11 +196,8 @@ class TestUpdateParams:
         return client
 
     def test_update_params_success(self, coordinator):
-        updated = MagicMock()
-        updated.temperature = 0.8
-        updated.top_p = 0.95
-        updated.top_k = 50
-        coordinator._param_update_channel.update.return_value = updated
+        channel = coordinator._param_update_channel
+        channel.register("req-123")
 
         client = self._authed_client()
         resp = client.post(
@@ -194,17 +210,69 @@ class TestUpdateParams:
         assert data["temperature"] == 0.8
         assert data["top_p"] == 0.95
         assert data["top_k"] == 50
+        # The live params really changed.
+        live = channel.get("req-123")
+        assert (live.temperature, live.top_p, live.top_k) == (0.8, 0.95, 50)
 
-    def test_update_params_completed_request(self, coordinator):
-        coordinator._param_update_channel.update.return_value = None
+    def test_partial_update_does_not_null_unset_fields(self, coordinator):
+        """A {temperature} payload must not write None into top_p/top_k.
+
+        Regression: the next sampling step then raised
+        ``TypeError: '>' not supported between 'NoneType' and 'int'`` and the
+        client's own steering call truncated its stream.
+        """
+        channel = coordinator._param_update_channel
+        channel.register("req-partial")
 
         client = self._authed_client()
         resp = client.post(
-            "/v1/update-params/req-999",
+            "/v1/update-params/req-partial",
+            json={"temperature": 0.3},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["temperature"] == 0.3
+        # Defaults for the untouched fields, never None.
+        assert data["top_p"] == 0.9
+        assert data["top_k"] == 0
+        live = channel.get("req-partial")
+        assert live.temperature == 0.3
+        assert live.top_p == 0.9
+        assert live.top_k == 0
+
+        # And the sampling path can still use the params (this exact call
+        # raised TypeError when top_p/top_k had been nulled).
+        import torch
+
+        from distllm.core.token_generator import TokenGenerator
+
+        TokenGenerator().sample(
+            torch.randn(1, 16),
+            temperature=live.temperature,
+            top_p=live.top_p,
+            top_k=live.top_k,
+        )
+
+    def test_update_params_completed_request(self, coordinator):
+        client = self._authed_client()
+        resp = client.post(
+            "/v1/update-params/req-999",  # never registered
             json={"temperature": 0.5},
         )
         assert resp.status_code == 404
         assert "not found or already completed" in resp.json()["error"]["message"]
+
+    def test_update_params_live_request_is_not_404(self, coordinator):
+        """A registered (in-flight) id must not 404 — the old None-return bug."""
+        channel = coordinator._param_update_channel
+        channel.register("chatcmpl-live123")
+
+        client = self._authed_client()
+        resp = client.post(
+            "/v1/update-params/chatcmpl-live123",
+            json={"temperature": 0.3},
+        )
+        assert resp.status_code == 200, resp.text
 
     def test_update_params_no_coordinator(self):
         original = g.coordinator
@@ -245,3 +313,31 @@ class TestMetrics:
             assert "distllm_coordinator_loaded 0" in resp.text
         finally:
             g.coordinator = original
+
+    def test_metrics_serves_gauges_without_observability_extra(self):
+        """A wired-but-stub exporter must not blank the response.
+
+        The server always sets state.metrics_exporter, so a minimal install
+        (no prometheus_client) reaches the exporter branch with an object
+        whose generate_metrics() returns b"". Choosing that branch on the
+        object alone would serve an empty body and drop every gauge that
+        /metrics formats by hand -- the exact regression this pins.
+        """
+        from distllm.observability import exporter as exporter_mod
+
+        stub = MagicMock()
+        stub.generate_metrics.return_value = b""
+        original_coord = g.coordinator
+        original_flag = exporter_mod._PROMETHEUS_AVAILABLE
+        g.coordinator.metrics_exporter = stub
+        exporter_mod._PROMETHEUS_AVAILABLE = False
+        try:
+            resp = TestClient(app).get("/metrics")
+            assert resp.status_code == 200
+            assert "distllm_service_up 1" in resp.text
+            assert "distllm_coordinator_loaded 1" in resp.text
+        finally:
+            exporter_mod._PROMETHEUS_AVAILABLE = original_flag
+            g.coordinator = original_coord
+            g.coordinator.metrics_exporter = None
+

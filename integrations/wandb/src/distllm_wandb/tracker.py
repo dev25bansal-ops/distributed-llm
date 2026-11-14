@@ -65,10 +65,17 @@ def _ensure_nvml() -> bool:
         _NVM_INITIALISED = True
         try:
             import pynvml  # type: ignore[import-untyped]
-
+        except ImportError:
+            return _NVM_AVAILABLE
+        try:
             pynvml.nvmlInit()
             _NVM_AVAILABLE = True
-        except (ImportError, RuntimeError, OSError):
+        except pynvml.NVMLError:
+            # The documented "no driver / no device" path. NVMLError subclasses
+            # Exception directly -- not RuntimeError or OSError -- so the
+            # generic tuple this used to catch missed it entirely and a
+            # GPU-less host got an exception out of a function whose contract
+            # is to return False.
             pass
     return _NVM_AVAILABLE
 

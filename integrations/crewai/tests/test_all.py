@@ -310,9 +310,16 @@ def test_tool_provider_builds_crew_tools():
     ):
         tools = provider.get_tools()
 
-    assert isinstance(tools, list)
-    assert len(tools) >= 1
-    # Exercise the dynamically built tool's run path (mocked HTTP).
-    result = tools[0]._run(foo="bar")
+        assert isinstance(tools, list)
+        assert len(tools) >= 1
+        # _run must be called INSIDE the patch block: the tool makes a live HTTP
+        # POST when invoked, and outside the block it reaches localhost:8000,
+        # which is not running in CI -- "[Errno 111] Connection refused".
+        result = tools[0]._run(foo="bar")
+
     assert isinstance(result, str)
-    assert '"result": "ok"' in result
+    # call_tool unwraps `result` when the server returns {"result": ...} and
+    # JSON-encodes it: {"result": "ok"} -> '"ok"'. The old assertion expected
+    # the raw envelope, which the code has never returned -- it was masked until
+    # the mock was fixed, because the test failed one line earlier.
+    assert result == '"ok"'

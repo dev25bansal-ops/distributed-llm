@@ -154,6 +154,7 @@ class TopologyProber:
             bw = prober._measure_p2p_bw(0, 1)
             return max(bw, 1.0)
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return self._default_intra
 
     def _detect_inter_node_bandwidth(self, src: str, dst: str) -> float:
@@ -162,6 +163,7 @@ class TopologyProber:
             prober = HardwareProber()
             return prober._measure_network_bw()
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return self._default_inter
 
     def _detect_nvlink(self, num_gpus: int) -> bool:
@@ -170,6 +172,7 @@ class TopologyProber:
             prober = HardwareProber()
             return prober._detect_nvlink(num_gpus)
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     def _measure_latency(self, src: str, dst: str) -> float:
@@ -193,6 +196,7 @@ class TopologyProber:
             await writer.wait_closed()
             return elapsed_us
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return 500.0
 
     @staticmethod

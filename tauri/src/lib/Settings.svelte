@@ -23,9 +23,11 @@
     },
     pythonPath: "",
     apiEndpoint: "",
+    apiKey: "",
     updateServerUrl: "https://releases.distributed-llm.dev",
   });
   let error = $state<string | null>(null);
+  const themes: AppSettings["theme"][] = ["dark", "light", "auto"];
   let unsubscribe: (() => void) | undefined;
 
   // Update check state
@@ -141,9 +143,9 @@
   <!-- Appearance -->
   <Card title="Appearance">
     <div class="form-row">
-      <label class="form-label">Theme</label>
+      <span class="form-label" aria-hidden="true">Theme</span>
       <div class="theme-options">
-        {#each ["dark", "light", "auto"] as theme (theme)}
+        {#each themes as theme (theme)}
           <button
             class="theme-btn"
             class:selected={settings.theme === theme}
@@ -167,6 +169,16 @@
         placeholder="http://localhost:8000"
       />
       <span class="field-hint">Override the default coordinator API URL</span>
+    </div>
+    <div class="form-row">
+      <label class="form-label" for="set-api-key">API Key</label>
+      <Input
+        id="set-api-key"
+        type="password"
+        bind:value={settings.apiKey}
+        placeholder="Bearer token for the coordinator"
+      />
+      <span class="field-hint">Sent as the Authorization header (required in browser mode)</span>
     </div>
     <div class="form-row">
       <label class="form-label" for="set-grafana">Grafana URL</label>

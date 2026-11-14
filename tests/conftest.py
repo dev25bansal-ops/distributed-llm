@@ -75,6 +75,25 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "observability: marks tests for observability modules")
     config.addinivalue_line("markers", "fuzz: marks fuzz tests")
 
+
+def pytest_collection_modifyitems(config, items):
+    """Skip @pytest.mark.gpu tests when CUDA is unavailable.
+
+    The marker was registered but nothing acted on it -- it was a label, not a
+    gate. Every GitHub runner has CPU-only torch, so GPU tests hardcoding
+    device="cuda" failed on all four matrix jobs: 3 in test_defrag_integration,
+    4 in test_backends, plus the CUDA path in the defrag stress suite. A test
+    that needs hardware the machine does not have should skip, not fail; a red
+    there hides the real failures beside it.
+    """
+    if torch is not None and torch.cuda.is_available():
+        return
+    skip = pytest.mark.skip(reason="requires CUDA; no GPU available on this runner")
+    for item in items:
+        if "gpu" in item.keywords:
+            item.add_marker(skip)
+
+
 import pytest
 
 try:
@@ -147,11 +166,14 @@ def mock_coordinator(mock_tokenizer, monkeypatch):
         coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
         coord.total_layers = 12
 
-        # Mock local partitioner
-        coord.local_partitioner = MagicMock()
+        # Mock local partitioner. Coordinator.local_partitioner is a
+        # read-only property delegating to the inference engine, so set it
+        # on the engine (the property's backing store).
+        mock_partitioner = MagicMock()
         mock_model = MagicMock()
         mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-        coord.local_partitioner.full_model = mock_model
+        mock_partitioner.full_model = mock_model
+        coord._inference_engine.local_partitioner = mock_partitioner
 
         return coord
     finally:
@@ -179,10 +201,11 @@ def mock_coordinator_with_scheduler(mock_tokenizer, monkeypatch):
         coord.model_info = {"num_layers": 12, "hidden_size": 768, "num_attention_heads": 12}
         coord.total_layers = 12
 
-        coord.local_partitioner = MagicMock()
+        mock_partitioner = MagicMock()
         mock_model = MagicMock()
         mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-        coord.local_partitioner.full_model = mock_model
+        mock_partitioner.full_model = mock_model
+        coord._inference_engine.local_partitioner = mock_partitioner
 
         return coord
     finally:
@@ -498,10 +521,11 @@ def coordinator_with_speculative(mock_tokenizer):
         coord.tokenizer = mock_tokenizer
         coord.num_assistant_tokens = 3
 
-        coord.local_partitioner = MagicMock()
+        mock_partitioner = MagicMock()
         mock_model = MagicMock()
         mock_model.parameters.side_effect = lambda: iter([torch.randn(10, 10)])
-        coord.local_partitioner.full_model = mock_model
+        mock_partitioner.full_model = mock_model
+        coord._inference_engine.local_partitioner = mock_partitioner
 
         # Mock draft model
         coord.draft_model = MagicMock()

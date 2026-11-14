@@ -14,15 +14,15 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from distllm.config.settings import ChatRouterSettings
     from distllm.core.learning_router import LearningRouter
 
 from loguru import logger
-
 
 # SEC-5: ReDoS hardening for operator-configured routing regexes. Routing
 # rules are not user-supplied, but a misconfigured rule could still hang the
@@ -44,7 +44,7 @@ def _regex_is_safe(pattern: str) -> bool:
     return _NESTED_QUANTIFIER.search(pattern) is None
 
 
-def _safe_regex_search(pattern: str, text: str) -> "re.Match[str] | None":
+def _safe_regex_search(pattern: str, text: str) -> re.Match[str] | None:
     """Bounded, screened ``re.search``; returns None on unsafe/invalid patterns."""
     if not _regex_is_safe(pattern):
         return None
@@ -960,6 +960,7 @@ class ModelRouter:
                         regions=available_regions,
                     )
                 except Exception:
+                    # CQ-08: intentional fail-open: fallback default assigned on failure.
                     region = available_regions[0] if available_regions else ""
             else:
                 region = available_regions[0] if available_regions else ""

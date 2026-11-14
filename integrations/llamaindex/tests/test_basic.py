@@ -97,15 +97,17 @@ def test_stream_chat_mocked():
     mock_chunks = [
         {"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]},
         {"choices": [{"delta": {"content": " world"}, "finish_reason": None}]},
+        # The SDK filters empty content (client.py chat_completions_stream), so a
+        # real stream never delivers the empty finish_reason terminator; the
+        # adapter must still skip it safely if a mock does.
         {"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]},
     ]
 
     with patch.object(llm._client, "chat_completions_stream", return_value=iter(mock_chunks)):
         chunks = list(llm.stream_chat([ChatMessage(role=MessageRole.USER, content="Hi")]))
-        assert len(chunks) == 3
+        assert len(chunks) == 2
         assert chunks[0].delta == "Hello"
         assert chunks[1].delta == " world"
-        assert chunks[2].delta == ""  # final chunk with finish_reason
 
 
 def test_embeddings_init():
@@ -150,7 +152,7 @@ def test_tool_provider_defaults():
     from distllm_llamaindex.tools import DistLLMToolProvider
 
     provider = DistLLMToolProvider(base_url="http://localhost:8000")
-    tools = provider._default_tools()
+    tools = provider.default_tools()
     assert len(tools) == 3
     names = [t["name"] for t in tools]
     assert "distllm_chat" in names

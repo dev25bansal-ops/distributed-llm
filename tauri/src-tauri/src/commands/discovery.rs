@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use mdns_sd::{ServiceDaemon, ServiceInfo};
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
@@ -21,7 +21,7 @@ pub struct DiscoveredService {
 
 struct DiscoveryState {
     mdns: Option<ServiceDaemon>,
-    receiver: Option<mdns_sd::Receiver>,
+    receiver: Option<mdns_sd::Receiver<ServiceEvent>>,
     services: Vec<DiscoveredService>,
 }
 
@@ -67,41 +67,51 @@ pub async fn start_discovery(app: tauri::AppHandle) -> Result<(), AppError> {
             if let Some(recv) = receiver {
                 // Try to receive without blocking
                 match recv.try_recv() {
-                    Ok(mdns_sd::Event::ServiceFound(info)) => {
+                    Ok(ServiceEvent::ServiceResolved(info)) => {
+                        // ServiceResolved carries the full ServiceInfo: host,
+                        // port and TXT properties all arrive here. ServiceFound
+                        // only carries (service_type, fullname).
+                        let mut props = HashMap::new();
+                        for prop in info.get_properties().iter() {
+                            props.insert(prop.key().to_string(), prop.val_str().to_string());
+                        }
+                        let addr = info
+                            .get_addresses_v4()
+                            .iter()
+                            .next()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|| info.get_hostname().to_string());
                         let svc = DiscoveredService {
                             name: info.get_fullname().to_string(),
-                            host: info.get_hostname().to_string(),
+                            host: addr,
                             port: info.get_port(),
-                            properties: HashMap::new(),
+                            properties: props,
                             discovered_at: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_millis() as u64,
                         };
                         let mut s = DISCOVERY.lock().unwrap();
-                        // Deduplicate
-                        if !s.services.iter().any(|x| x.host == svc.host && x.port == svc.port) {
-                            s.services.push(svc);
-                            let _ = app_handle.emit("discovery-updated", ());
+                        let existing = s
+                            .services
+                            .iter_mut()
+                            .find(|x| x.name == svc.name || (x.host == svc.host && x.port == svc.port));
+                        match existing {
+                            Some(slot) => *slot = svc,
+                            None => s.services.push(svc),
                         }
-                        // Put receiver back
+                        let _ = app_handle.emit("discovery-updated", ());
                         s.receiver = Some(recv);
                     }
-                    Ok(mdns_sd::Event::ServiceResolved(info)) => {
-                        // Update existing service with resolved addresses
+                    Ok(ServiceEvent::ServiceRemoved(_service_type, fullname)) => {
                         let mut s = DISCOVERY.lock().unwrap();
-                        let addr = info.get_addresses().iter().next().map(|a| a.to_string());
-                        if let Some(addr) = addr {
-                            if let Some(svc) = s.services.iter_mut().find(|x| x.port == info.get_port()) {
-                                svc.host = addr;
-                            }
-                        }
+                        s.services.retain(|x| x.name != fullname);
                         s.receiver = Some(recv);
                     }
-                    Ok(mdns_sd::Event::ServiceRemoved(info)) => {
+                    Ok(_) => {
+                        // SearchStarted / SearchStopped / ServiceFound — no
+                        // service details to record; put the receiver back.
                         let mut s = DISCOVERY.lock().unwrap();
-                        let name = info.get_fullname();
-                        s.services.retain(|x| x.name != name);
                         s.receiver = Some(recv);
                     }
                     Err(_) => {

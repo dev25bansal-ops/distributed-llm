@@ -175,3 +175,48 @@ class TestStats:
         assert stats["total_lookups"] == 2
         assert stats["cross_model_hits"] == 1
         assert stats["cross_model_hit_rate"] == 0.5
+
+
+class TestAudit2026Regression:
+    """Regression tests for audit 2026-11-13 findings."""
+
+    def test_store_copies_caller_token_buffer(self):
+        """Mutating the caller's token buffer after store() must not change
+        the entry — a serving loop reuses one buffer across requests, and
+        keeping the reference made the sibling guard compare against the
+        mutated list, returning KV for a DIFFERENT request's prompt.
+        """
+        s = CrossModelPrefixSharing(default_ttl=3600)
+        s.register_model("b")
+        s.register_model("x", base_model="b", shared_layers=4)
+        s.register_model("y", base_model="b", shared_layers=4)
+
+        t = [1, 2]
+        s.store("x", t, "KV-FOR-1-2")
+        t[:] = [9, 8]  # caller reuses the buffer
+
+        # The entry still describes prompt [1,2] — must NOT satisfy [9,8].
+        assert s.lookup("y", [9, 8]) is None
+        entry = s.lookup("y", [1, 2])
+        assert entry is not None
+        assert entry.token_ids == [1, 2]
+        assert entry.kv_data == "KV-FOR-1-2"
+
+    def test_lookup_clamps_shared_layers_to_querying_model(self):
+        """A returned entry must not advertise more shared layers than the
+        querying model shares; consumers slice KV by entry.shared_layers.
+        """
+        s = CrossModelPrefixSharing(default_ttl=3600)
+        s.register_model("base")
+        s.register_model("big", base_model="base", shared_layers=80)
+        s.register_model("small", base_model="base", shared_layers=70)
+
+        s.store("big", [5, 6], "KV-80")
+        entry = s.lookup("small", [5, 6])
+        assert entry is not None
+        assert entry.shared_layers == 70, (
+            f"small shares 70 layers but entry reports {entry.shared_layers}"
+        )
+        # The cached entry itself keeps its source value for the source
+        # model's own lookups.
+        assert s.lookup("big", [5, 6]).shared_layers == 80

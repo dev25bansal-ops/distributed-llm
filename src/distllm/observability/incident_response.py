@@ -20,6 +20,7 @@ and post-incident review:
 
 from __future__ import annotations
 
+import builtins
 import dataclasses
 import threading
 import time
@@ -98,7 +99,7 @@ class Runbook:
         steps = Runbook().get(RunbookScenario.NODE_FAILURE)
     """
 
-    _SCENARIOS: Dict[RunbookScenario, List[RunbookStep]] = {
+    _SCENARIOS: dict[RunbookScenario, list[RunbookStep]] = {
         RunbookScenario.NODE_FAILURE: [
             RunbookStep(title="Verify node connectivity", command="ping -c 5 <node_ip>",
                         expected_result="0% packet loss", verification="ping returns successfully"),
@@ -171,28 +172,28 @@ class Runbook:
         ],
     }
 
-    def __init__(self, extra_scenarios: Optional[Dict[str, List[RunbookStep]]] = None) -> None:
-        self._scenarios: Dict[str, List[RunbookStep]] = {k.value: list(v) for k, v in self._SCENARIOS.items()}
+    def __init__(self, extra_scenarios: dict[str, list[RunbookStep]] | None = None) -> None:
+        self._scenarios: dict[str, list[RunbookStep]] = {k.value: list(v) for k, v in self._SCENARIOS.items()}
         if extra_scenarios:
             self._scenarios.update(extra_scenarios)
 
-    def get(self, scenario: str) -> List[RunbookStep]:
+    def get(self, scenario: str) -> list[RunbookStep]:
         """Return the runbook steps for *scenario*, or empty list."""
         return list(self._scenarios.get(scenario, []))
 
     @property
-    def scenarios(self) -> List[str]:
+    def scenarios(self) -> list[str]:
         """Return all registered scenario names."""
         return list(self._scenarios.keys())
 
-    def add_scenario(self, name: str, steps: List[RunbookStep]) -> None:
+    def add_scenario(self, name: str, steps: list[RunbookStep]) -> None:
         """Register a custom scenario."""
         self._scenarios[name] = list(steps)
 
     def to_markdown(self, scenario: str) -> str:
         """Render a scenario as a Markdown runbook document."""
         steps = self._scenarios.get(scenario, [])
-        lines: List[str] = [f"# Runbook: {scenario.replace('_', ' ').title()}", "", "## Steps", ""]
+        lines: list[str] = [f"# Runbook: {scenario.replace('_', ' ').title()}", "", "## Steps", ""]
         for i, step in enumerate(steps, start=1):
             lines.extend([f"### {i}. {step.title}", "", "**Command:**", "", "```bash", step.command, "```",
                           "", f"**Expected Result:** {step.expected_result}", "",
@@ -231,10 +232,10 @@ class OnCallSchedule:
         sched.escalate(incident)
     """
 
-    def __init__(self, notification_callback: Optional[callable] = None,
-                 escalation_callback: Optional[callable] = None) -> None:
+    def __init__(self, notification_callback: callable | None = None,
+                 escalation_callback: callable | None = None) -> None:
         self._lock = threading.Lock()
-        self._entries: List[OnCallEntry] = []
+        self._entries: list[OnCallEntry] = []
         self._notification_callback = notification_callback or self._default_notify
         self._escalation_callback = escalation_callback or self._default_escalate
 
@@ -263,7 +264,7 @@ class OnCallSchedule:
         with self._lock:
             self._entries[:] = [e for e in self._entries if e is not entry]
 
-    def get_current_oncall(self, at: Optional[datetime] = None) -> Optional[str]:
+    def get_current_oncall(self, at: datetime | None = None) -> str | None:
         """Return the name of the currently on-call engineer, or ``None``."""
         now = _ensure_tz(at) if at is not None else datetime.now(timezone.utc)
         with self._lock:
@@ -272,18 +273,18 @@ class OnCallSchedule:
                     return entry.name
         return None
 
-    def get_oncall_at(self, dt: datetime) -> Optional[str]:
+    def get_oncall_at(self, dt: datetime) -> str | None:
         """Return the engineer on call at a specific time."""
         return self.get_current_oncall(at=dt)
 
-    def notify(self, incident: "Incident", message: str = "") -> None:
+    def notify(self, incident: Incident, message: str = "") -> None:
         """Page the currently on-call engineer about *incident*."""
         name = self.get_current_oncall() or "unattached"
         text = message or f"Incident {incident.id}: {incident.title} [{incident.severity.value}]"
         self._notification_callback(name, text)
 
-    def escalate(self, incident: "Incident", minutes_without_ack: int = 15,
-                 at: Optional[datetime] = None) -> bool:
+    def escalate(self, incident: Incident, minutes_without_ack: int = 15,
+                 at: datetime | None = None) -> bool:
         """Escalate if *incident* has not been acknowledged within *minutes_without_ack*.
 
         Returns ``True`` if escalation was triggered.
@@ -299,12 +300,12 @@ class OnCallSchedule:
         return True
 
     @property
-    def entries(self) -> List[OnCallEntry]:
+    def entries(self) -> list[OnCallEntry]:
         """Return a snapshot of all schedule entries."""
         with self._lock:
             return list(self._entries)
 
-    def is_covered(self, at: Optional[datetime] = None) -> bool:
+    def is_covered(self, at: datetime | None = None) -> bool:
         """Check whether any engineer is on call at *at*."""
         return self.get_current_oncall(at=at) is not None
 
@@ -338,17 +339,17 @@ class Incident:
     severity: IncidentSeverity
     status: IncidentStatus = IncidentStatus.FIRING
     created_at: datetime = dataclasses.field(default_factory=lambda: datetime.now(timezone.utc))
-    acknowledged_at: Optional[datetime] = None
-    mitigated_at: Optional[datetime] = None
-    resolved_at: Optional[datetime] = None
-    source_alert: Optional[str] = None
-    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    acknowledged_at: datetime | None = None
+    mitigated_at: datetime | None = None
+    resolved_at: datetime | None = None
+    source_alert: str | None = None
+    metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Status transitions
     # ------------------------------------------------------------------
 
-    def acknowledge(self, at: Optional[datetime] = None) -> None:
+    def acknowledge(self, at: datetime | None = None) -> None:
         """Mark as acknowledged.
 
         Raises:
@@ -359,7 +360,7 @@ class Incident:
         self.status = IncidentStatus.ACKNOWLEDGED
         self.acknowledged_at = _ensure_tz(at) if at is not None else datetime.now(timezone.utc)
 
-    def mitigate(self, at: Optional[datetime] = None) -> None:
+    def mitigate(self, at: datetime | None = None) -> None:
         """Mark as mitigated (auto-acknowledges if still firing).
 
         Raises:
@@ -373,7 +374,7 @@ class Incident:
         self.status = IncidentStatus.MITIGATED
         self.mitigated_at = _ensure_tz(at) if at is not None else datetime.now(timezone.utc)
 
-    def resolve(self, at: Optional[datetime] = None) -> None:
+    def resolve(self, at: datetime | None = None) -> None:
         """Mark as resolved (auto-acknowledges and auto-mitigates if earlier steps skipped).
 
         Raises:
@@ -397,21 +398,21 @@ class Incident:
     # ------------------------------------------------------------------
 
     @property
-    def mtta(self) -> Optional[timedelta]:
+    def mtta(self) -> timedelta | None:
         """Mean Time To Acknowledge (created_at -> acknowledged_at)."""
         if self.acknowledged_at is None:
             return None
         return _ensure_tz(self.acknowledged_at) - _ensure_tz(self.created_at)
 
     @property
-    def mttr(self) -> Optional[timedelta]:
+    def mttr(self) -> timedelta | None:
         """Mean Time To Resolve (created_at -> resolved_at)."""
         if self.resolved_at is None:
             return None
         return _ensure_tz(self.resolved_at) - _ensure_tz(self.created_at)
 
     @property
-    def time_to_mitigate(self) -> Optional[timedelta]:
+    def time_to_mitigate(self) -> timedelta | None:
         """Time from creation to mitigation."""
         if self.mitigated_at is None:
             return None
@@ -443,18 +444,18 @@ class IncidentManager:
         manager.check_sla(inc)  # timedelta if breached, None otherwise
     """
 
-    def __init__(self, oncall_schedule: Optional[OnCallSchedule] = None,
+    def __init__(self, oncall_schedule: OnCallSchedule | None = None,
                  sla_mtta_critical_minutes: float = 15.0,
                  sla_mtta_high_minutes: float = 30.0) -> None:
         self._lock = threading.Lock()
-        self._incidents: Dict[str, Incident] = {}
+        self._incidents: dict[str, Incident] = {}
         self._oncall_schedule = oncall_schedule
         self._sla_mtta_critical_minutes = sla_mtta_critical_minutes
         self._sla_mtta_high_minutes = sla_mtta_high_minutes
 
     def create(self, title: str, severity: IncidentSeverity,
-               source_alert: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-               incident_id: Optional[str] = None) -> Incident:
+               source_alert: str | None = None, metadata: dict[str, Any] | None = None,
+               incident_id: str | None = None) -> Incident:
         """Create a new incident.
 
         Auto-notifies the on-call engineer for critical severity.
@@ -467,16 +468,16 @@ class IncidentManager:
             self._oncall_schedule.notify(inc)
         return inc
 
-    def get(self, incident_id: str) -> Optional[Incident]:
+    def get(self, incident_id: str) -> Incident | None:
         """Retrieve an incident by ID, or ``None``."""
         with self._lock:
             return self._incidents.get(incident_id)
 
-    def list(self, severity: Optional[IncidentSeverity] = None,
-             status: Optional[IncidentStatus] = None,
-             source_alert: Optional[str] = None,
-             since: Optional[datetime] = None,
-             until: Optional[datetime] = None) -> List[Incident]:
+    def list(self, severity: IncidentSeverity | None = None,
+             status: IncidentStatus | None = None,
+             source_alert: str | None = None,
+             since: datetime | None = None,
+             until: datetime | None = None) -> builtins.list[Incident]:
         """List incidents with optional filters, newest first."""
         with self._lock:
             results = list(self._incidents.values())
@@ -495,9 +496,9 @@ class IncidentManager:
         results.sort(key=lambda i: i.created_at, reverse=True)
         return results
 
-    def update(self, incident_id: str, title: Optional[str] = None,
-               severity: Optional[IncidentSeverity] = None,
-               metadata: Optional[Dict[str, Any]] = None) -> Optional[Incident]:
+    def update(self, incident_id: str, title: str | None = None,
+               severity: IncidentSeverity | None = None,
+               metadata: dict[str, Any] | None = None) -> Incident | None:
         """Update mutable fields on an existing incident, or ``None``."""
         with self._lock:
             inc = self._incidents.get(incident_id)
@@ -511,7 +512,7 @@ class IncidentManager:
                 inc.metadata.update(metadata)
             return inc
 
-    def check_sla(self, incident: Incident) -> Optional[timedelta]:
+    def check_sla(self, incident: Incident) -> timedelta | None:
         """Check if *incident* breached its MTTA SLA.
 
         Critical SLA: *sla_mtta_critical_minutes* (default 15 min).
@@ -532,7 +533,7 @@ class IncidentManager:
         return None if mtta <= threshold else mtta - threshold
 
     @property
-    def average_mtta(self) -> Optional[timedelta]:
+    def average_mtta(self) -> timedelta | None:
         """Average MTTA across all acknowledged/resolved incidents."""
         with self._lock:
             values = [i.mtta for i in self._incidents.values() if i.mtta is not None]
@@ -541,7 +542,7 @@ class IncidentManager:
         return timedelta(seconds=sum(v.total_seconds() for v in values) / len(values))
 
     @property
-    def average_mttr(self) -> Optional[timedelta]:
+    def average_mttr(self) -> timedelta | None:
         """Average MTTR across all resolved incidents."""
         with self._lock:
             values = [i.mttr for i in self._incidents.values() if i.mttr is not None]
@@ -609,7 +610,7 @@ class Postmortem:
     @classmethod
     def generate_template(cls, incident: Incident) -> Postmortem:
         """Create a pre-filled postmortem from an incident's lifecycle."""
-        timeline: List[TimelineEntry] = [
+        timeline: list[TimelineEntry] = [
             TimelineEntry(time=incident.created_at,
                           description=f"Incident created: {incident.title} (severity={incident.severity.value})"),
         ]
@@ -622,8 +623,8 @@ class Postmortem:
         return cls(title=f"Postmortem: {incident.title}", incident_id=incident.id, timeline=timeline)
 
     def __init__(self, title: str, incident_id: str, summary: str = "",
-                 timeline: Optional[List[TimelineEntry]] = None, root_cause: str = "",
-                 action_items: Optional[List[ActionItem]] = None, lessons_learned: str = "") -> None:
+                 timeline: list[TimelineEntry] | None = None, root_cause: str = "",
+                 action_items: list[ActionItem] | None = None, lessons_learned: str = "") -> None:
         self.title = title
         self.incident_id = incident_id
         self.summary = summary
@@ -637,7 +638,7 @@ class Postmortem:
 
         Sections: Summary, Timeline, Root Cause, Action Items, Lessons Learned.
         """
-        lines: List[str] = [
+        lines: list[str] = [
             f"# {self.title}", "",
             f"**Incident ID:** {self.incident_id}",
             f"**Date:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", "",
@@ -683,9 +684,9 @@ class IncidentResponseConfig:
         sla_mtta_high_minutes: MTTA SLA for high incidents (default 30).
     """
     escalation_minutes: int = 15
-    auto_create_rules: Dict[str, bool] = dataclasses.field(
+    auto_create_rules: dict[str, bool] = dataclasses.field(
         default_factory=lambda: {"critical": True, "high": True, "medium": False, "low": False})
-    notification_channels: List[NotificationChannel] = dataclasses.field(
+    notification_channels: list[NotificationChannel] = dataclasses.field(
         default_factory=lambda: [NotificationChannel.PAGERDUTY, NotificationChannel.SLACK, NotificationChannel.LOG])
     sla_mtta_critical_minutes: float = 15.0
     sla_mtta_high_minutes: float = 30.0
@@ -707,12 +708,12 @@ class IncidentResponseConfigurator:
     """
 
     def __init__(self, escalation_minutes: int = 15,
-                 auto_create_rules: Optional[Dict[str, bool]] = None,
-                 notification_channels: Optional[List[NotificationChannel]] = None,
+                 auto_create_rules: dict[str, bool] | None = None,
+                 notification_channels: list[NotificationChannel] | None = None,
                  sla_mtta_critical_minutes: float = 15.0,
                  sla_mtta_high_minutes: float = 30.0,
-                 runbook: Optional[Runbook] = None,
-                 oncall_schedule: Optional[OnCallSchedule] = None) -> None:
+                 runbook: Runbook | None = None,
+                 oncall_schedule: OnCallSchedule | None = None) -> None:
         self.config = IncidentResponseConfig(
             escalation_minutes=escalation_minutes,
             auto_create_rules=auto_create_rules or {"critical": True, "high": True, "medium": False, "low": False},
@@ -731,9 +732,9 @@ class IncidentResponseConfigurator:
         return self.config.auto_create_rules.get(severity, False)
 
     def create_postmortem(self, incident: Incident, summary: str = "",
-                          timeline: Optional[List[TimelineEntry]] = None,
+                          timeline: list[TimelineEntry] | None = None,
                           root_cause: str = "",
-                          action_items: Optional[List[str]] = None,
+                          action_items: list[str] | None = None,
                           lessons_learned: str = "") -> Postmortem:
         """Convenience method to generate a postmortem from an incident."""
         pm = Postmortem.generate_template(incident)
@@ -745,7 +746,7 @@ class IncidentResponseConfigurator:
         pm.lessons_learned = lessons_learned
         return pm
 
-    def escalate_if_needed(self, incident: Incident, at: Optional[datetime] = None) -> bool:
+    def escalate_if_needed(self, incident: Incident, at: datetime | None = None) -> bool:
         """Escalate an unacknowledged incident if escalation grace period has passed."""
         return self.oncall.escalate(incident, minutes_without_ack=self.config.escalation_minutes, at=at)
 

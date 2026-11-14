@@ -82,9 +82,9 @@ class TestThresholdSensitivity:
     """Measures sensitivity of detection thresholds."""
 
     @pytest.mark.parametrize("multiplier,expected_detect", [
-        (1.2, True),    # very sensitive — should detect small deviation
-        (2.0, True),    # moderately sensitive
-        (5.0, False),   # very insensitive — 5x threshold unlikely
+        (1.2, True),    # threshold 10 * 1.2 = 12 ms; n3 p95 = 30 ms -> slow
+        (2.0, True),    # threshold 10 * 2.0 = 20 ms; n3 p95 = 30 ms -> slow
+        (5.0, False),   # threshold 10 * 5.0 = 50 ms; n3 p95 = 30 ms -> healthy
     ])
     def test_threshold_sensitivity(self, multiplier, expected_detect):
         d = StragglerDetector(
@@ -98,6 +98,16 @@ class TestThresholdSensitivity:
             d.record_latency("n2", 10)
         for _ in range(5):
             d.record_latency("n3", 30)  # 3x baseline
+
+        # Detection requires ``consecutive_threshold`` consecutive slow checks:
+        # check() increments ``consecutive_slow`` on a slow reading and only sets
+        # ``is_straggler`` once it reaches the threshold
+        # (src/distllm/dist/straggler.py:577-581).  One check() can therefore
+        # never flag with consecutive_threshold=2.
+        first = d.check()
+        assert not any(r.node_id == "n3" for r in first), (
+            "first slow check must not flag yet (1 of 2 consecutive)"
+        )
 
         reports = d.check()
         detected = any(r.node_id == "n3" for r in reports)

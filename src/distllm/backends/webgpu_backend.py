@@ -54,7 +54,9 @@ import os
 import time
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.backends.protocol import BackendAdapter
@@ -211,12 +213,15 @@ class WebGPUNodeAdapter(BackendAdapter):
         **kwargs: Any,
     ) -> str:
         """Generate via browser workers."""
-        if not self._ready_workers:
-            return "[WebGPU: no workers connected]"
-        worker_id = self._ready_workers[0]
-        logger.debug(f"[WebGPU] Generating via worker {worker_id}")
-        # In production: send prompt via WebRTC, stream tokens back
-        return f"[WebGPU generation via {worker_id}]"
+        # SECURITY/CORRECTNESS: the WebRTC dispatch is a placeholder.  Returning
+        # a fabricated string would silently corrupt inference, so fail loudly
+        # instead of serving garbage — same contract as _forward_via_workers.
+        raise NotImplementedError(
+            "WebGPU worker dispatch is a placeholder — generate() cannot be "
+            "served without real WebRTC dispatch. Remove the WebGPU backend "
+            "from the candidate list until real WebRTC dispatch is implemented. "
+            f"(prompt={prompt[:80]!r}…, ready_workers={self._ready_workers!r})"
+        )
 
     def shutdown(self) -> None:
         """Disconnect all workers and release resources."""

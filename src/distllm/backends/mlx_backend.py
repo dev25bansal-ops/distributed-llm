@@ -17,9 +17,12 @@ import importlib
 import logging
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
+from distllm.backends.model_validation import validate_model_name
 from distllm.backends.protocol import BackendAdapter
 from distllm.errors import ModelLoadError
 
@@ -44,6 +47,7 @@ class MLXNodeAdapter(BackendAdapter):
         quant_bits: int = 0,
         **kwargs: Any,
     ):
+        validate_model_name(model_name)
         self.model_name = model_name
         self._max_kv_size = max_kv_size
         self._quant_bits = quant_bits
@@ -61,7 +65,7 @@ class MLXNodeAdapter(BackendAdapter):
             quant = "q4_0" if self._quant_bits == 4 else None
             self._model, self._tokenizer = mlx_load(
                 self.model_name,
-                tokenizer_config={"trust_remote_code": self._extra_kwargs.get("trust_remote_code", False)},
+                tokenizer_config={"trust_remote_code": bool(self._extra_kwargs.get("trust_remote_code", False))},
             )
             logger.info(f"[MLX] Model loaded: {self.model_name}")
         except ImportError as e:
@@ -175,6 +179,7 @@ class MLXNodeAdapter(BackendAdapter):
             import mlx.core
             return mlx.core.metal.is_available()
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     # ── Metadata classmethods ─────────────────────────────────────────────

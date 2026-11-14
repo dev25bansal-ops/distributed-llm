@@ -5,6 +5,7 @@
 """
 
 import warnings
+
 warnings.warn(
     "distllm.core.straggler_detector is deprecated. "
     "Import from distllm.dist.straggler instead.",

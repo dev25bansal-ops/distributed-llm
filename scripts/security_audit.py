@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -65,15 +66,35 @@ class SecurityAuditor:
             )
             if result.returncode != 0:
                 try:
-                    vulns = json.loads(result.stdout)
-                    for vuln in vulns:
-                        self._findings.append(AuditFinding(
-                            severity="high",
-                            category="dependency",
-                            title=f"Vulnerable dependency: {vuln.get('name', 'unknown')}",
-                            description=vuln.get("description", ""),
-                            recommendation=f"Update to version {vuln.get('fixed_version', 'latest')}",
-                        ))
+                    data = json.loads(result.stdout)
+                    # pip-audit >= 2 emits {"dependencies": [{"name": ...,
+                    # "vulns": [...]}]}; older versions emitted a bare list of
+                    # vulnerability dicts. Handle both shapes.
+                    if isinstance(data, dict):
+                        deps = data.get("dependencies", [])
+                        for dep in deps:
+                            for v in dep.get("vulns", []) or []:
+                                self._findings.append(AuditFinding(
+                                    severity="high",
+                                    category="dependency",
+                                    title=f"Vulnerable dependency: {dep.get('name', 'unknown')}",
+                                    description=v.get("description") or v.get("id", ""),
+                                    recommendation=(
+                                        f"Update to version {v.get('fix_versions') or 'latest'}"
+                                        f" (advisory {v.get('id', '')})"
+                                    ),
+                                ))
+                    elif isinstance(data, list):
+                        for vuln in data:
+                            if not isinstance(vuln, dict):
+                                continue
+                            self._findings.append(AuditFinding(
+                                severity="high",
+                                category="dependency",
+                                title=f"Vulnerable dependency: {vuln.get('name', 'unknown')}",
+                                description=vuln.get("description", ""),
+                                recommendation=f"Update to version {vuln.get('fixed_version', 'latest')}",
+                            ))
                 except json.JSONDecodeError:
                     pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -90,18 +111,42 @@ class SecurityAuditor:
             (r'(?i)(api[_-]?key|secret|password|token)\s*=\s*["\'][^"\']{8,}["\']', "hardcoded_secret"),
             (r'(?i)bearer\s+[a-zA-Z0-9]{20,}', "hardcoded_bearer"),
             (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----', "private_key"),
-            (r'(?i)aws[_-]?(access[_-]?key|secret[_-]?key)', "aws_credentials"),
+            # A literal `aws_(access|secret)_key` assignment (value excluded --
+            # these are usually named in comments/config keys, not hardcoded).
+            (r'(?i)aws[_-]?(access[_-]?key|secret[_-]?key)\s*[=:]\s*'
+             r'["\'][A-Za-z0-9/+=]{16,}["\']', "aws_credentials"),
         ]
 
         src_dir = self._root / "src"
         if not src_dir.exists():
             return
 
+        # Values that look like secrets-named placeholders, not secrets.
+        placeholder_re = re.compile(
+            r'(?i)^(?:\[?redacted\]?|none|null|true|false|changeme|change-me|'
+            r'not-needed|notneeded|dummy|test|example|sample|'
+            r'your[_-]?(?:api[_-]?)?key|xxx+|placeholder|.*\.\.\..*|<.*>|\$\{.*\}|'
+            r'env\..*|os\.environ.*|'
+            r'my[_-][a-z0-9-]+|[\w-]*cluster-wide-[\w-]+|nvapi-\w*\.\.\.)$'
+        )
+
         for py_file in src_dir.rglob("*.py"):
             try:
                 content = py_file.read_text(encoding="utf-8")
                 for pattern, category in secret_patterns:
                     for match in re.finditer(pattern, content):
+                        matched_text = match.group(0)
+                        line_start = content.rfind("\n", 0, match.start()) + 1
+                        line_text = content[line_start:content.find("\n", match.start())]
+                        stripped = line_text.strip()
+                        # Skip comments and docstring-ish examples.  A match
+                        # inside a comment is documentation, not a live secret.
+                        if stripped.startswith("#"):
+                            continue
+                        # Extract the assigned value, if any, for placeholder checks.
+                        val_match = re.search(r'["\']([^"\']*)["\']\s*$', matched_text)
+                        if val_match and placeholder_re.match(val_match.group(1).strip()):
+                            continue
                         line_num = content[:match.start()].count("\n") + 1
                         self._findings.append(AuditFinding(
                             severity="critical",
@@ -141,7 +186,20 @@ class SecurityAuditor:
         middleware = self._root / "src" / "distllm" / "api" / "middleware.py"
         if middleware.exists():
             content = middleware.read_text(encoding="utf-8")
-            if "PYTEST_CURRENT_TEST" in content and "auth" in content.lower():
+            # Look for an actual env-var *read* (os.environ/only-if-not-set) in
+            # executable code, not a mention inside a comment or docstring.
+            # `middleware.py` documents that the old PYTEST_CURRENT_TEST bypass
+            # was REMOVED, so a bare substring hit here is a permanent false
+            # positive.
+            code_lines = [
+                ln for ln in content.splitlines()
+                if "PYTEST_CURRENT_TEST" in ln and not ln.lstrip().startswith("#")
+            ]
+            live = [
+                ln for ln in code_lines
+                if re.search(r'(environ(?:\.get)?\s*[\[(]|getenv\s*\()', ln)
+            ]
+            if live:
                 self._findings.append(AuditFinding(
                     severity="high",
                     category="auth",
@@ -233,10 +291,23 @@ class SecurityAuditor:
 
 def main():
     import argparse
+
+    # Finding text (file paths, descriptions) can contain non-ASCII; the
+    # Windows console defaults to cp1252 and would crash the report printer.
+    if hasattr(sys.stdout, "reconfigure"):
+        # Best-effort: a console that refuses reconfiguration is not a reason
+        # to abort the audit; the report just falls back to the default codec.
+        with contextlib.suppress(ValueError, OSError):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="DistLLM Security Audit")
-    parser.add_argument("--fix", action="store_true", help="Auto-fix where possible")
+    parser.add_argument("--fix", action="store_true",
+                        help="(accepted for compatibility; auto-fix is not implemented)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
+
+    if args.fix:
+        print("NOTE: --fix is not implemented; no changes will be made.", file=sys.stderr)
 
     auditor = SecurityAuditor()
     findings = auditor.run_all()

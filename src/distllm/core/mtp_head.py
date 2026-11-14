@@ -24,11 +24,14 @@ Compared to a single Linear layer (SelfSpeculativeDecoder):
 from __future__ import annotations
 
 import math
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import, resolve_class
+
+torch = optional_import("torch")
+nn = optional_import("torch.nn")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 from distllm.core.spec_verify import accept_token, eos_cutoff
@@ -78,7 +81,10 @@ class MTPConfig:
         self.device = device
 
 
-class MTPEmbedding(nn.Module):
+_NnModule = resolve_class("torch.nn", "Module")
+
+
+class MTPEmbedding(_NnModule):
     """Embeds target model hidden states into the MTP head space.
 
     Projects from the target model's ``hidden_size`` to the MTP head's
@@ -116,7 +122,7 @@ class MTPEmbedding(nn.Module):
         return self.layer_norm(h)
 
 
-class MTPTransformerLayer(nn.Module):
+class MTPTransformerLayer(_NnModule):
     """Single transformer decoder layer for the MTP head.
 
     Uses causal self-attention so each position can only attend to
@@ -159,7 +165,7 @@ class MTPTransformerLayer(nn.Module):
         return x
 
 
-class MTPHead(nn.Module):
+class MTPHead(_NnModule):
     """Multi-Token Prediction head with transformer decoder layers.
 
     Takes the target model's last hidden state and predicts K future
@@ -228,7 +234,7 @@ class MTPHead(nn.Module):
         # Independent output heads
         return [head(h[:, i, :]) for i, head in enumerate(self.output_heads)]
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self, hidden_state: torch.Tensor,
     ) -> tuple[torch.Tensor, list[float]]:
@@ -318,7 +324,7 @@ class MTPDecoder:
             "total_proposed": 0,
         }
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,

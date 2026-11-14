@@ -29,6 +29,19 @@ from distllm.api.rate_limit_middleware import RateLimitMiddleware
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _trust_testclient_proxy(monkeypatch):
+    """Let X-Forwarded-For identify the client, as a real proxy would.
+
+    get_client_ip (HIGH fix M2) fails closed: forwarded headers are ignored
+    unless the immediate peer is in DISTLLM_TRUSTED_PROXIES. TestClient's peer
+    is "testclient", so without this every request keys on the same address
+    and per-client tests collapse. Trusting the test peer is the test
+    equivalent of standing behind a reverse proxy.
+    """
+    monkeypatch.setenv("DISTLLM_TRUSTED_PROXIES", "testclient,127.0.0.1,::1")
+
+
 def _make_app_with_limiter(
     limiter: RateLimiter,
     enabled: bool = True,

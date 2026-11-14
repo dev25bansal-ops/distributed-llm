@@ -40,7 +40,28 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-import torch
+
+# torch is an optional dependency ([self-hosted] extra), and this module is
+# imported eagerly by security/__init__.py, which api/ imports on its startup
+# path. An unguarded import here therefore made the whole API package — and
+# the distllm-api console script — fail to import on any install without the
+# ML stack. Every use of torch in this file is inside a method body (and
+# `from __future__ import annotations` keeps the annotations lazy), so the
+# import is deferred: module load succeeds, and touching torch at runtime
+# raises a message that names the fix instead of an AttributeError.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for model watermarking. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
+
 from loguru import logger
 
 # cryptography is required for signing/verification
@@ -48,7 +69,10 @@ try:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
+    from cryptography.hazmat.primitives.asymmetric.utils import (
+        decode_dss_signature,
+        encode_dss_signature,
+    )
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
     HAS_CRYPTOGRAPHY = True
@@ -333,6 +357,7 @@ class WeightWatermark:
                 if hasattr(module, "_distllm_watermark"):
                     raw = module._distllm_watermark  # type: ignore[union-attr]
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         if raw is None:

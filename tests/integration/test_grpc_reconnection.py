@@ -506,17 +506,26 @@ class TestTimeoutHandling:
 class TestRequestLayerWeightsIntegration:
     """Integration tests for the request_layer_weights helper."""
 
-    def test_weight_transfer_success(self):
+    def test_weight_transfer_success(self, monkeypatch):
         """Successful weight transfer returns bytes."""
-        # Arrange
+        # Arrange: a fixed cluster key, so this exercises the authenticated
+        # path a real secured cluster uses rather than depending on whatever
+        # DISTLLM_CLUSTER_KEY happens to be in the ambient environment.
+        monkeypatch.setenv("DISTLLM_CLUSTER_KEY", "unit-test-cluster-key")
         _make_mock_channel()
+        payload = b"\x00" * 100
         mock_stub = MagicMock()
         mock_resp = MagicMock()
         mock_resp.success = True
-        mock_resp.state_dict_bytes = b"\x00" * 100
+        mock_resp.state_dict_bytes = payload
         mock_resp.error_message = ""
         mock_call = MagicMock()
-        mock_call.trailing_metadata.return_value = []
+        from distllm.dist.node_client import compute_weights_hmac
+
+        tag = compute_weights_hmac("unit-test-cluster-key", payload, "model", 0, 6)
+        mock_call.trailing_metadata.return_value = [
+            ("x-weights-hmac-sha256", tag),
+        ]
         mock_stub.TransferWeights.with_call.return_value = (mock_resp, mock_call)
 
         with patch("distllm.dist.node_client.create_node_client") as mock_create:
@@ -530,7 +539,7 @@ class TestRequestLayerWeightsIntegration:
             result = request_layer_weights("localhost", 50051, "model", 0, 6)
 
             # Assert
-            assert result == b"\x00" * 100
+            assert result == payload
             mock_client.close.assert_called_once()
 
     def test_weight_transfer_failure_returns_none(self):
@@ -602,16 +611,33 @@ class TestRequestLayerWeightsIntegration:
             # Assert
             assert result is None
 
-    def test_streaming_weight_transfer_success(self):
+    def test_streaming_weight_transfer_success(self, monkeypatch):
         """Streaming transfer collects chunks into a single bytes buffer."""
-        # Arrange
+        # Arrange: signed with a fixed key so the authenticated streaming path
+        # is what runs, independent of the ambient DISTLLM_CLUSTER_KEY.
+        monkeypatch.setenv("DISTLLM_CLUSTER_KEY", "unit-test-cluster-key")
         mock_stub = MagicMock()
         # F-049 integrity fields: ordered, total declared, final flagged.
         chunk1 = MagicMock(success=True, state_dict_bytes=b"chunk1-", error_message="",
                            chunk_index=0, total_chunks=2, is_final_chunk=False)
         chunk2 = MagicMock(success=True, state_dict_bytes=b"chunk2", error_message="",
                            chunk_index=1, total_chunks=2, is_final_chunk=True)
-        mock_stub.TransferWeightsStream.return_value = iter([chunk1, chunk2])
+        from distllm.dist.node_client import compute_weights_hmac
+
+        tag = compute_weights_hmac(
+            "unit-test-cluster-key", b"chunk1-chunk2", "model", 0, 6,
+        )
+
+        class _SignedStream:
+            """Iterator that also exposes the RPC's trailing metadata."""
+
+            def __iter__(self):
+                return iter([chunk1, chunk2])
+
+            def trailing_metadata(self):
+                return [("x-weights-hmac-sha256", tag)]
+
+        mock_stub.TransferWeightsStream.return_value = _SignedStream()
 
         with patch("distllm.dist.node_client.create_node_client") as mock_create:
             mock_client = MagicMock()

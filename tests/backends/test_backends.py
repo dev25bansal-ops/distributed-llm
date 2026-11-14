@@ -174,6 +174,7 @@ class TestPagedAttention:
             num_layers=32,
             num_heads=32,
             head_dim=128,
+            device="cpu",
         )
         assert pam is not None
 
@@ -186,6 +187,7 @@ class TestPagedAttention:
             num_layers=2,
             num_heads=2,
             head_dim=64,
+            device="cpu",
         )
         block_ids = pam.allocate_sequence("seq-1", num_tokens=32)
         assert len(block_ids) == 2  # 32 tokens / 16 per block = 2 blocks
@@ -202,6 +204,7 @@ class TestPagedAttention:
             num_layers=2,
             num_heads=2,
             head_dim=64,
+            device="cpu",
         )
         pam.allocate_sequence("seq-1", num_tokens=48)  # 3 blocks
         with pytest.raises(RuntimeError, match="Not enough"):
@@ -216,6 +219,7 @@ class TestPagedAttention:
             num_layers=2,
             num_heads=2,
             head_dim=64,
+            device="cpu",
         )
         pam.allocate_sequence("src", num_tokens=32)
         pam.copy_on_write("src", "dst")
@@ -235,6 +239,7 @@ class TestPagedAttention:
             num_layers=2,
             num_heads=2,
             head_dim=64,
+            device="cpu",
         )
         pam.allocate_sequence("seq-1", num_tokens=32)
         swapped = pam.swap_blocks_to_cpu("seq-1")

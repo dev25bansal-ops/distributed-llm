@@ -1,15 +1,45 @@
 """Structured output package for constrained generation."""
 
+from __future__ import annotations
+
 import string
 import threading
 
-import torch
 from loguru import logger
 
-from distllm.core.structured_output.engine import StructuredOutputEngine, GenerationResult
 from distllm.core.structured_output.config import StructuredOutputConfig
-from distllm.core.structured_output.validator import SchemaValidator, OutputRepairer, ValidationResult, RepairResult
-from distllm.core.structured_output.streaming import BufferedAccumulator, PartialJSONParser, StructuredStreamHandler, PartialResult
+from distllm.core.structured_output.engine import GenerationResult, StructuredOutputEngine
+from distllm.core.structured_output.streaming import (
+    BufferedAccumulator,
+    PartialJSONParser,
+    PartialResult,
+    StructuredStreamHandler,
+)
+from distllm.core.structured_output.validator import (
+    OutputRepairer,
+    RepairResult,
+    SchemaValidator,
+    ValidationResult,
+)
+
+
+# torch is an optional dependency ([self-hosted] extra). This package is
+# imported by the chat route on the API startup path, so an unguarded import
+# here made `import distllm.api` fail on torch-free installs. `from __future__
+# import annotations` above keeps the torch.Tensor annotations lazy; the
+# import is therefore deferred and only bites where tensors are actually built.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for structured (JSON-constrained) output. "
+            "Install the ML stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 
 class JSONSchemaConstraint:

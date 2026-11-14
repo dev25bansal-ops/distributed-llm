@@ -5,11 +5,13 @@ coordinator and other components depend on abstractions rather than
 concrete implementations, enabling testability and flexibility.
 """
 
+from __future__ import annotations
+
 from typing import Any, Protocol, runtime_checkable
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 @runtime_checkable
 class INodeClient(Protocol):
     """Interface for a gRPC client connecting to a worker node."""

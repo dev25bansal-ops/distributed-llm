@@ -23,7 +23,7 @@ on:
         default: "512"
 
 env:
-  PYTHON_VERSION: "3.10"
+  PYTHON_VERSION: "3.11"
   BENCHMARK_MODEL: ${{ github.event.inputs.model || 'roneneldan/TinyStories-1M' }}
   MAX_TOKENS: ${{ github.event.inputs.tokens || '512' }}
 

@@ -9,14 +9,64 @@ existing call sites and tests continue to work unchanged.
 
 from __future__ import annotations
 
-import torch
+import inspect
 import uuid
 from typing import TYPE_CHECKING, Protocol
+
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 
 if TYPE_CHECKING:
     from distllm.core.inference_engine import InferenceEngine
 
 from distllm.core.spec_verify import accept_token
+
+
+def _crop_past_cache(past, keep: int) -> None:
+    """Trim a KV cache to its first *keep* entries across transformers 4.x/5.x.
+
+    ``DynamicCache.crop`` changed contract between major versions:
+
+    - transformers>=5: ``crop(tokens_to_remove)`` removes *abs(n)* entries;
+      a positive value raises ``ValueError`` ("Calling `crop` with a positive
+      value ... is not supported. Please use a negative integer ...").
+    - transformers 4.x: ``crop(max_length)`` kept the first *max_length*
+      entries (absolute target length).
+
+    Discriminate on the parameter name — deterministic across both real
+    classes and duck-typed test caches.  Unknown signatures keep the legacy
+    absolute call: that is the only semantics this call site was written
+    against, and the earlier branches cover the actively supported versions.
+    """
+    try:
+        params = inspect.signature(past.crop).parameters
+    except (TypeError, ValueError):  # builtins / C-level callables
+        params = {}
+    keep = int(keep)
+    if "tokens_to_remove" in params:
+        # transformers>=5 relative semantics: pass the negative delta.
+        get_len = getattr(past, "get_seq_length", None)
+        if not callable(get_len):
+            # No way to compute a relative delta. crop(0) is a documented
+            # no-op under these semantics, and a positive value would raise,
+            # so this is the only safe call. Real DynamicCache objects always
+            # expose get_seq_length().
+            past.crop(0)
+            return
+        current = int(get_len())
+        to_remove = current - keep
+        if to_remove > 0:
+            past.crop(-to_remove)
+        elif to_remove < 0:
+            # keep > current: nothing to truncate; positive values are
+            # rejected by this generation of the API, so do not call it.
+            return
+        else:
+            past.crop(0)
+    else:
+        # Legacy absolute-length semantics (transformers 4.x and mocks).
+        past.crop(keep)
 
 
 class EngineContext(Protocol):
@@ -67,7 +117,7 @@ class PromptLookupStrategy:
     made it dramatically slower than plain generation.
     """
 
-    def __init__(self, engine: "InferenceEngine") -> None:
+    def __init__(self, engine: InferenceEngine) -> None:
         self._engine = engine
         # How many recent tokens to use as the lookup key (n-gram size).
         self._ngram_size: int = 6
@@ -271,7 +321,7 @@ class PromptLookupStrategy:
                         # prefix_len + accepted).
                         if past is not None:
                             if hasattr(past, "crop"):
-                                past.crop(prefix_len + accepted)
+                                _crop_past_cache(past, prefix_len + accepted)
                             else:
                                 # Bug C-04 fix: legacy tuple-of-tensors caches
                                 # have no .crop(). Previously the guard above

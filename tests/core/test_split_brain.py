@@ -5,7 +5,7 @@ Covers:
 - Heartbeat recording and failure counting
 - Partition detection (check_partition / is_partitioned)
 - Alive/partitioned peer queries
-- Fencing tokens (increment, should_accept_request)
+- Fencing tokens (increment, should_accept_request, durability/restart)
 - Combined quorum + fence (fence_request)
 - quorum_check
 - stats()
@@ -24,6 +24,19 @@ bootstrap_fake_packages()
 _sb = load_module("distllm/core/split_brain.py")
 SplitBrainDetector = _sb.SplitBrainDetector
 PeerState = _sb.PeerState
+
+
+@pytest.fixture(autouse=True)
+def _isolated_fence_state(tmp_path, monkeypatch):
+    """Keep the durable fence-token files inside the test.
+
+    SplitBrainDetector persists its fencing token per cluster id (by design:
+    a restart must not reset the counter). Without isolation, token state
+    would leak between tests that reuse cluster ids like ``c1`` and between
+    separate pytest runs.
+    """
+    monkeypatch.setenv("DISTLLM_FENCE_STATE_DIR", str(tmp_path))
+    yield
 
 
 # ======================================================================
@@ -265,6 +278,93 @@ class TestFencingTokens:
     def test_should_accept_request_initial(self):
         d = SplitBrainDetector(cluster_id="c1")
         assert d.should_accept_request(0) is True  # 0 >= 0
+
+
+# ======================================================================
+# Fence-token durability and cross-node comparability
+# ======================================================================
+
+
+class TestFenceTokenDurability:
+    """Regression: the token counter used to be a bare in-process int.
+
+    A restart reset it to 0, so a fenced-out leader's old token (which the
+    old `>=` check admitted at the reset value) became valid again on every
+    rolling deploy; and no node ever exchanged its token, so a token issued
+    at one node could not be ordered against another node's counter.
+    """
+
+    def test_stale_token_not_accepted_after_restart(self):
+        """The audit's exact check: a token superseded before the restart
+        must not be re-admitted by the restarted detector."""
+        d = SplitBrainDetector("a", ["b"], quorum_size=1)
+        d.increment_fence_token()
+        stale = d.get_fence_token()
+
+        d2 = SplitBrainDetector("a", ["b"], quorum_size=1)  # same cluster=state file
+
+        assert d2.should_accept_request(stale) is False, (
+            "a restart re-admitted a fenced-out leader's stale token"
+        )
+
+    def test_token_survives_restart(self):
+        d = SplitBrainDetector("c9", quorum_size=1)
+        d.increment_fence_token()
+        d.increment_fence_token()
+        assert d.get_fence_token() == 2
+
+        d2 = SplitBrainDetector("c9", quorum_size=1)
+
+        assert d2.get_fence_token() == 2
+
+    def test_new_token_after_restart_is_accepted(self):
+        """A restart must not brick admission: once the authority issues a
+        new token, that token is valid at the restarted node."""
+        d = SplitBrainDetector("c9b", quorum_size=1)
+        d.increment_fence_token()
+
+        d2 = SplitBrainDetector("c9b", quorum_size=1)
+        fresh = d2.increment_fence_token()
+
+        assert d2.should_accept_request(fresh) is True
+        assert d2.should_accept_request(fresh - 1) is False
+
+    def test_observe_merges_token_across_nodes(self):
+        """Token at node X must order above every token issued earlier at
+        node Y once they exchange it."""
+        y = SplitBrainDetector("y", quorum_size=1)
+        y.increment_fence_token()  # y's token is 1
+
+        # Node x, a different cluster state, observed token 3 from a peer.
+        x = SplitBrainDetector("x", quorum_size=1, fence_state_path="")
+        x.observe_fence_token(3)
+
+        assert x.get_fence_token() == 3
+        assert y.should_accept_request(3) is True  # 3 > 1: newer wins
+        # y's old token 1 is now stale at x.
+        assert x.should_accept_request(1) is False
+
+    def test_heartbeat_piggybacks_token(self):
+        d = SplitBrainDetector("hb", ["p1"], quorum_size=1)
+        d.heartbeat("p1", fence_token=5)
+        assert d.get_fence_token() == 5
+        assert d._peers["p1"].fence_token == 5
+
+    def test_persistence_can_be_disabled(self):
+        """fence_state_path="" keeps the old pure in-process behaviour for
+        callers that manage durability themselves."""
+        d = SplitBrainDetector("nofile", quorum_size=1, fence_state_path="")
+        d.increment_fence_token()
+        assert d.get_fence_token() == 1
+        d2 = SplitBrainDetector("nofile", quorum_size=1, fence_state_path="")
+        assert d2.get_fence_token() == 0
+
+    def test_corrupt_state_file_tolerated(self, tmp_path):
+        path = tmp_path / "corrupt.json"
+        path.write_text("{not json")
+        d = SplitBrainDetector("corrupt", quorum_size=1, fence_state_path=path)
+        assert d.get_fence_token() == 0
+        assert d.increment_fence_token() == 1
 
 
 # ======================================================================

@@ -1,8 +1,8 @@
 """Failover decision engine for distributed-llm health service."""
 
-from typing import Callable
+from collections.abc import Callable
 
-from distllm.health.state import NodeState, HealthRecord
+from distllm.health.state import HealthRecord, NodeState
 
 
 class FailoverEngine:

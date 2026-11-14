@@ -125,6 +125,7 @@ class QuantBenchmarker:
                     benchmark_time_s=time.time() - t0,
                 )
             except Exception as e:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 suite.results[method_name] = QuantBenchmarkResult(
                     method=method_name,
                     gpu_id=gpu_id,
@@ -181,6 +182,7 @@ class QuantBenchmarker:
             flops = 2 * dim ** 3 * self._ITERATIONS
             return round(flops / elapsed_s / 1e12, 2)
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 0.0
 
     def _bench_int8_matmul(self, gpu_id: int) -> tuple[float, bool]:
@@ -218,6 +220,7 @@ class QuantBenchmarker:
             tflops = round(flops / elapsed_s / 1e12, 2)
             return tflops, True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return 0.0, False
 
     def _bench_int4_matmul(self, gpu_id: int) -> tuple[float, bool]:
@@ -253,6 +256,7 @@ class QuantBenchmarker:
             tflops = round(flops / elapsed_s / 1e12, 2)
             return tflops, True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return 0.0, False
 
     def _bench_fp8_matmul(self, gpu_id: int) -> tuple[float, bool]:
@@ -293,6 +297,7 @@ class QuantBenchmarker:
             tflops = round(flops / elapsed_s / 1e12, 2)
             return tflops, True
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return 0.0, False
 
     def _estimate_memory_reduction(self, method: str) -> float:
@@ -326,6 +331,7 @@ class QuantBenchmarker:
                 return torch.cuda.get_device_name(gpu_id)
             return f"GPU-{gpu_id}"
         except Exception:
+            # CQ-08: intentional fail-open: fallback value returned on failure; callers handle it.
             return f"GPU-{gpu_id}"
 
     def _device_count(self) -> int:
@@ -343,6 +349,7 @@ class QuantBenchmarker:
             if device and device.type == "cuda":
                 torch.cuda.synchronize()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
     def _make_timer(self, device: Any) -> Any:
@@ -354,6 +361,7 @@ class QuantBenchmarker:
                 start.record()
                 return ("cuda", start)
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
         return ("time", time.time())
 
@@ -370,4 +378,5 @@ class QuantBenchmarker:
                 return timer.elapsed_time(end) / 1000.0
             return time.time() - timer
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 1.0

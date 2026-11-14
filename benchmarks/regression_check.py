@@ -31,6 +31,9 @@ def load_json(path: str) -> dict:
 
 
 def save_json(data: dict, path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -63,7 +66,6 @@ def run_benchmarks(
     names = benchmark_names or [
         "throughput-small", "latency-ttft", "latency-itl",
         "memory-efficiency", "kv-cache-hit-rate", "spec-accept-rate",
-        "defrag-frag-ratio", "defrag-compaction-speed", "defrag-memory-recovery",
     ]
 
     results = {}
@@ -76,7 +78,7 @@ def run_benchmarks(
             sys.executable, str(runner),
             "--benchmark", name,
             "--model", model,
-            "--json", output_path,
+            "--output", output_path,
         ]
         if num_nodes > 1:
             cmd.extend(["--nodes", str(num_nodes)])
@@ -236,31 +238,42 @@ def main():
                         help="Model to benchmark")
     parser.add_argument("--output", default="benchmarks/results/current.json",
                         help="Output path for benchmark results")
-    parser.add_argument("--flamegraph", default=None,
-                        help="Generate flame graph from cProfile .stats file")
+    parser.add_argument("--flamegraph", nargs="?", const="", default=None,
+                        help="Generate flame graph from cProfile .stats file "
+                             "(bare flag = skip, no stats file given)")
     parser.add_argument("--output-flamegraph", default="flame.svg",
                         help="Output path for flame graph SVG")
     parser.add_argument("--update-baseline", action="store_true",
                         help="Update baseline with current results")
     parser.add_argument("--tolerance", type=float, default=10.0,
-                        help="Default tolerance percentage (default: 10%)")
+                        help="Default tolerance percentage (default: 10%%)")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Alias for --tolerance; values <= 1.0 are read as a "
+                             "fraction (0.10 = 10%%), larger values as a percentage")
     parser.add_argument("--git-aware", action="store_true",
                         help="Only check benchmarks affected by git diff")
 
     args = parser.parse_args()
 
-    # Flame graph generation mode
+    if args.threshold is not None:
+        args.tolerance = args.threshold * 100.0 if args.threshold <= 1.0 else args.threshold
+
+    # Flame graph generation mode (only when a .stats path was supplied)
     if args.flamegraph:
         generate_flame_graph(args.flamegraph, args.output_flamegraph)
         return
+    elif args.flamegraph == "":
+        print("NOTE: --flamegraph given without a .stats file; skipping flame graph.")
 
     # Check if we need to run benchmarks
+    did_run = False
     if args.run and args.current is None:
         print("Running benchmarks...")
         results = run_benchmarks(
             model=args.model,
             output_path=args.output,
         )
+        did_run = True
         current_path = args.output
         save_json({"metrics": results}, current_path)
         print(f"Results saved to {current_path}")
@@ -273,6 +286,26 @@ def main():
     # Load baseline
     baseline_path = args.baseline
     if not os.path.exists(baseline_path):
+        # Bootstrap: a --run that produced clean results may seed the baseline
+        # (the missing-baseline error below has always told users to do this,
+        # but nothing actually wrote the file).
+        if did_run:
+            current = load_json(current_path)
+            failed = [
+                name for name, val in current.get("metrics", {}).items()
+                if isinstance(val, dict) and "error" in val
+            ]
+            if failed:
+                print(
+                    f"ERROR: Baseline not found at {baseline_path} and the "
+                    f"--run produced failed benchmarks ({', '.join(failed)}); "
+                    "not seeding a baseline from a failed run.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            save_json(current, baseline_path)
+            print(f"Seeded baseline at {baseline_path} from this run.")
+            sys.exit(0)
         print(f"ERROR: Baseline not found at {baseline_path}. "
               f"Run with --run to create one.", file=sys.stderr)
         sys.exit(1)

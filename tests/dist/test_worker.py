@@ -640,6 +640,94 @@ class TestValidateStateDictKeys:
 
 
 # ---------------------------------------------------------------------------
+# WorkerNode -- coordinator registration auth (audit finding: worker 401'd)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerCoordinatorAuth:
+    """Worker registration/ready calls must authenticate like every CLI client.
+
+    Audit finding: ``_register_with_coordinator`` / ``_notify_coordinator_ready``
+    sent ``Bearer <cluster_key>`` (which the API key store does not accept) or
+    only env ``API_KEY``/``DISTLLM_API_KEY`` — never the coordinator key file —
+    so with the default file-only key both calls 401'd: a directly-started
+    worker never registered and its ready signal never landed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_key_env(self, monkeypatch, tmp_path):
+        for var in ("API_KEY", "DISTLLM_API_KEY", "DISTLLM_KEY_FILE", "DISTLLM_API_PORT"):
+            monkeypatch.delenv(var, raising=False)
+        self.key_file = tmp_path / "api_key"
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(self.key_file))
+
+    @staticmethod
+    def _node() -> WorkerNode:
+        return WorkerNode(
+            node_id="auth-node",
+            model_name="m",
+            start_layer=0,
+            end_layer=1,
+            total_layers=2,
+            port=50051,
+        )
+
+    def _capture_posts(self, monkeypatch) -> list[dict]:
+        import httpx as real_httpx
+
+        calls: list[dict] = []
+
+        def fake_post(url, *, json=None, headers=None, timeout=None):
+            calls.append({"url": str(url), "headers": headers or {}})
+            return real_httpx.Response(200, json={"ok": True})
+
+        monkeypatch.setattr(real_httpx, "post", fake_post)
+        return calls
+
+    def test_register_prefers_resolved_key_from_file(self, monkeypatch):
+        self.key_file.write_text("sk-coordinator\n", encoding="utf-8")
+        calls = self._capture_posts(monkeypatch)
+
+        self._node()._register_with_coordinator(None)
+
+        assert calls and calls[0]["url"].endswith("/admin/v1/nodes/register")
+        assert calls[0]["headers"].get("Authorization") == "Bearer sk-coordinator"
+
+    def test_ready_notification_prefers_resolved_key_from_file(self, monkeypatch):
+        self.key_file.write_text("sk-coordinator\n", encoding="utf-8")
+        calls = self._capture_posts(monkeypatch)
+
+        self._node()._notify_coordinator_ready(None)
+
+        assert calls and calls[0]["url"].endswith("/admin/v1/nodes/auth-node/ready")
+        assert calls[0]["headers"].get("Authorization") == "Bearer sk-coordinator"
+
+    def test_env_api_key_wins_over_cluster_key(self, monkeypatch):
+        """Explicit env key outranks the gRPC cluster secret the API store
+        does not accept as an HTTP key."""
+        monkeypatch.setenv("API_KEY", "sk-env")
+        calls = self._capture_posts(monkeypatch)
+
+        self._node()._register_with_coordinator("cluster-secret")
+
+        assert calls[0]["headers"]["Authorization"] == "Bearer sk-env"
+
+    def test_cluster_key_is_last_resort_fallback(self, monkeypatch):
+        calls = self._capture_posts(monkeypatch)
+
+        self._node()._register_with_coordinator("cluster-secret")
+
+        assert calls[0]["headers"]["Authorization"] == "Bearer cluster-secret"
+
+    def test_no_credential_anywhere_sends_no_header(self, monkeypatch):
+        calls = self._capture_posts(monkeypatch)
+
+        self._node()._register_with_coordinator(None)
+
+        assert "Authorization" not in calls[0]["headers"]
+
+
+# ---------------------------------------------------------------------------
 # Module-level smoke: ensure the module imports key public names
 # ---------------------------------------------------------------------------
 

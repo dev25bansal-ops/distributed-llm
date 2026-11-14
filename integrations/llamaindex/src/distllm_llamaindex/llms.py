@@ -33,6 +33,28 @@ def _resolve_max_tokens(value: Optional[int], default: Optional[int], fallback: 
     return fallback
 
 
+def _stream_delta(chunk: Any) -> str:
+    """Extract the text delta from one streamed chat chunk.
+
+    The SDK yields plain strings; older builds and mocks yield OpenAI-shaped
+    dicts. A string chunk carries the assistant delta for a chat stream.
+    """
+    if isinstance(chunk, str):
+        return chunk
+    if isinstance(chunk, dict):
+        return chunk.get("choices", [{}])[0].get("delta", {}).get("content", "") or ""
+    return ""
+
+
+def _stream_text(chunk: Any) -> str:
+    """Extract the text from one streamed completion chunk."""
+    if isinstance(chunk, str):
+        return chunk
+    if isinstance(chunk, dict):
+        return chunk.get("choices", [{}])[0].get("text", "") or ""
+    return ""
+
+
 def _to_chat_message(msg: ChatMessage) -> dict[str, Any]:
     role = _ROLE_MAP.get(msg.role, str(msg.role))
     d: dict = {"role": role, "content": msg.content or ""}
@@ -183,8 +205,7 @@ class DistLLM(LLM):
     def stream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> Generator[ChatResponse, None, None]:
         payload = self._build_chat_payload(messages, **kwargs)
         for chunk in self._client.chat_completions_stream(**payload):
-            delta = chunk if isinstance(chunk, dict) else {}
-            content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            content = _stream_delta(chunk)
             if not content:
                 continue
             yield ChatResponse(
@@ -195,8 +216,7 @@ class DistLLM(LLM):
     async def astream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponseAsyncGen:
         payload = self._build_chat_payload(messages, **kwargs)
         async for chunk in self._async_client.chat_completions_stream(**payload):
-            delta = chunk if isinstance(chunk, dict) else {}
-            content = delta.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            content = _stream_delta(chunk)
             if not content:
                 continue
             yield ChatResponse(
@@ -219,8 +239,7 @@ class DistLLM(LLM):
     def stream_complete(self, prompt: str, formatted: bool = False, **kwargs: Any) -> Generator[CompletionResponse, None, None]:
         payload = self._build_completion_payload(prompt, **kwargs)
         for chunk in self._client.completions_stream(**payload):
-            delta = chunk if isinstance(chunk, dict) else {}
-            text = delta.get("choices", [{}])[0].get("text", "")
+            text = _stream_text(chunk)
             if not text:
                 continue
             yield CompletionResponse(text=text, delta=text)
@@ -228,8 +247,7 @@ class DistLLM(LLM):
     async def astream_complete(self, prompt: str, formatted: bool = False, **kwargs: Any) -> CompletionResponseAsyncGen:
         payload = self._build_completion_payload(prompt, **kwargs)
         async for chunk in self._async_client.completions_stream(**payload):
-            delta = chunk if isinstance(chunk, dict) else {}
-            text = delta.get("choices", [{}])[0].get("text", "")
+            text = _stream_text(chunk)
             if not text:
                 continue
             yield CompletionResponse(text=text, delta=text)

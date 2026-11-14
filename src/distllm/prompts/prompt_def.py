@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-
 __all__ = ["SystemPromptDef", "_reg", "_PROMPTS", "register_prompt"]
 
 

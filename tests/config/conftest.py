@@ -14,6 +14,11 @@ def config_fixture() -> DistLLMSettings:
 
 @pytest.fixture
 def mock_env_vars(monkeypatch: Any) -> None:
-    """Set DISTLLM__ prefixed env vars for config tests."""
-    monkeypatch.setenv("DISTLLM__MODEL__NAME", "env-test-model")
-    monkeypatch.setenv("DISTLLM__MODEL__DTYPE", "bfloat16")
+    """Set env vars that the config actually reads.
+
+    pydantic-settings is configured with env_prefix='DISTLLM_' + delimiter='__',
+    so the working name is DISTLLM_MODEL__NAME (single underscore after the
+    prefix). The old DISTLLM__MODEL__NAME double form is silently ignored.
+    """
+    monkeypatch.setenv("DISTLLM_MODEL__NAME", "env-test-model")
+    monkeypatch.setenv("DISTLLM_MODEL__DTYPE", "bfloat16")

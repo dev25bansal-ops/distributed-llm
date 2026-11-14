@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { InferenceMetrics } from "../types";
+  import type { InferenceMetrics } from "./types";
 
   let { metrics, streaming }: { metrics: InferenceMetrics | null; streaming: boolean } = $props();
 </script>

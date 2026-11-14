@@ -16,6 +16,18 @@ cert_app = typer.Typer(help="Manage TLS certificates")
 console = Console()
 
 
+def _format_expiry(value) -> str:
+    """Render a certificate expiry as a date rather than a raw epoch.
+
+    ``not_after`` is a Unix timestamp; printing 1825626058.49 told the user
+    nothing about when the certificate actually expires.
+    """
+    try:
+        return datetime.datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(value)
+
+
 @cert_app.command("create")
 def cert_create(
     common_name: str = typer.Argument(..., help="Domain name"),
@@ -29,7 +41,7 @@ def cert_create(
     console.print(f"[green]Certificate created:[/] {common_name}")
     console.print(f"  Path: {info.cert_path}")
     console.print(f"  Key:  {info.key_path}")
-    console.print(f"  Expires: {info.not_after}")
+    console.print(f"  Expires: {_format_expiry(info.not_after)}")
     console.print(f"  SANs: {', '.join(info.subject_alt_names)}")
 
 

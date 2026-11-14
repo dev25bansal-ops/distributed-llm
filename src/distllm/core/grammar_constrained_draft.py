@@ -16,10 +16,10 @@ via an optional ``grammar`` argument (opt-in, no behavior change when absent).
 
 from __future__ import annotations
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 def mask_draft_logits(
     logits: torch.Tensor,
     grammar_mask: torch.Tensor,
@@ -88,4 +88,5 @@ class GrammarConstrainedDraftPolicy:
             try:
                 fn(token_id)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass

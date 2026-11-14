@@ -12,7 +12,7 @@ aliases:
 
 **Covers the transverse support packages of `src/distllm/`:** `observability/`, `health/`, `cache/`, `cloud/`, `errors/`, `utils/`, `terraform/`, `verification/`, `benchmarks/`, plus the in-repo `dashboard/` (see [[08 Frontends]] for the web UI surface).
 
-## `observability/` — telemetry backbone (20 files, ~11.7K LOC)
+## `observability/` — telemetry backbone (20 files, ~11.8K LOC)
 
 | file | LOC | purpose |
 |------|-----|---------|
@@ -104,3 +104,5 @@ aliases:
 
 ## Tests
 `tests/observability/`, `tests/health/`, `tests/cache/` (`test_cross_cluster_prefix_index`), `tests/cloud/` (`test_spot_orchestrator` 849 LOC), `tests/errors/`, `tests/utils/`.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

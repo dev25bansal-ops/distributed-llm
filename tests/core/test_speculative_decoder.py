@@ -3,6 +3,7 @@
 import importlib.util
 import os
 
+import pytest
 import torch
 
 
@@ -177,3 +178,79 @@ class TestSpeculativeDecoder:
         assert stats["draft_calls"] == 0
         assert stats["target_calls"] == 0
         assert stats["accepted"] == 0
+
+
+class TestDraftProbabilityMatchesSampler:
+    """Finding 257: q must come from the top-k masked distribution.
+
+    ``_draft_forward`` sampled the token from the top-k masked
+    (renormalized) softmax but recorded q from the UNMASKED softmax, so
+    rejection sampling ran min(1, p/q) against the wrong q and
+    over-accepted (top_k=1 drafts were accepted as if q were the unmasked
+    mass).
+    """
+
+    @classmethod
+    def setup_class(cls):
+        cls.mod = _get_module()
+        cls.SD = cls.mod.SpeculativeDecoder
+
+    def test_recorded_q_is_one_when_top_k_is_one(self):
+        VOC = 8
+        # Unmasked softmax: token 7 has mass 0.3 (spread over the rest).
+        def draft_fn(input_ids, **kwargs):
+            out = torch.zeros(1, input_ids.shape[1], VOC)
+            out[0, -1, 7] = torch.log(torch.tensor(0.3))
+            for t in range(7):
+                out[0, -1, t] = torch.log(torch.tensor(0.7 / 7))
+            return out
+
+        d = self.SD(target_forward=lambda x: torch.randn(1, 1, VOC),
+                     draft_forward=draft_fn,
+                     num_candidates=1, top_k=1, temperature=1.0, device="cpu")
+        tokens, logprobs = d._draft_forward(torch.tensor([[1, 2, 3]]), 1)
+
+        # top_k=1 => the sampler ALWAYS proposes the argmax (token 7), so the
+        # true proposal probability is 1.0; the pre-fix code recorded 0.3.
+        assert tokens[0, 0].item() == 7
+        assert logprobs[0] == pytest.approx(1.0, abs=1e-5)
+
+    def test_acceptance_rate_matches_exact_sampling(self):
+        """With q=1 (top_k=1), acceptance must be ~p_target, not 1.0."""
+        VOC = 64
+        p_target = 0.7
+
+        def draft_fn(input_ids, **kwargs):
+            out = torch.zeros(1, input_ids.shape[1], VOC)
+            out[0, -1, 7] = 4.0  # always drafted (top_k=1)
+            return out
+
+        def target_fn(input_ids, **kwargs):
+            # Direct log-space construction: softmax gives p(token 7) = 0.7.
+            out = torch.full(
+                (1, input_ids.shape[1], VOC),
+                float(torch.log(torch.tensor((1.0 - p_target) / (VOC - 1)))),
+            )
+            out[0, :, 7] = float(torch.log(torch.tensor(p_target)))
+            return out
+
+        d = self.SD(target_forward=target_fn, draft_forward=draft_fn,
+                     num_candidates=1, top_k=1, temperature=1.0, device="cpu")
+        torch.manual_seed(0)
+        accepts = 0
+        trials = 500
+        prompt = torch.tensor([[1, 2, 3]])
+        for _ in range(trials):
+            draft_tokens, draft_logprobs = d._draft_forward(prompt, 1)
+            full = torch.cat([prompt, draft_tokens], dim=1)
+            logits = target_fn(full)
+            if d._verify_tokens(
+                prompt, full, draft_tokens, logits,
+                draft_logprobs=draft_logprobs,
+            ) == 1:
+                accepts += 1
+        rate = accepts / trials
+        # Exact speculative sampling: acceptance ~ min(1, p/q) = 0.7.
+        assert 0.55 <= rate <= 0.85, (
+            f"acceptance rate {rate:.2f} should track p=0.70, not 1.0"
+        )

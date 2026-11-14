@@ -15,11 +15,14 @@ Standard operating procedures for DistLLM cluster operations.
 # 1. Check current model version
 distllm model list --json
 
-# 2. Rollback to previous version (if using model version manager)
-curl -X POST http://localhost:8000/admin/v1/models/rollback
+# 2. Roll back to a previous model version: unload the current
+#    model, then load the known-good one (no /admin/v1/models/rollback
+#    route exists — see src/distllm/api/routes/admin.py)
+distllm model unload <model-id>
+distllm model load <known-good-model-id>
 
 # 3. Or load a specific known-good model
-distllm deploy --hf meta-llama/Llama-2-70b --nodes 4 --wait
+distllm cluster deploy meta-llama/Llama-2-70b --nodes 4 --wait
 
 # 4. Verify health
 curl http://localhost:8000/health | jq '.status'
@@ -35,13 +38,14 @@ distllm benchmark run --num-prompts 3 --max-tokens 10
 **Steps**:
 ```bash
 # 1. Restore from backup
-distllm backup list
-distllm backup restore <backup-id>
+distllm config backup list
+distllm config backup restore <backup-id>
 
 # 2. Or manually revert config.yaml
 git checkout HEAD~1 -- config.yaml
 
-# 3. Hot-reload config (no restart needed)
+# 3. Hot-reload config (no restart needed; SIGHUP handler registered by
+#    the API server lifespan — src/distllm/api/server_lifespan.py:86-150)
 kill -HUP $(pgrep -f distllm-api)
 
 # 4. Verify
@@ -102,7 +106,7 @@ distllm-node --coordinator coordinator:50050 --port 50053 \
 curl http://localhost:8000/admin/v1/nodes | jq '.nodes | length'
 
 # 3. Rebalance layers (if needed)
-curl -X POST http://localhost:8000/admin/v1/nodes/rebalance
+distllm cluster rebalance
 ```
 
 ### Removing a Worker Node (Graceful Drain)
@@ -140,7 +144,7 @@ kill $(pgrep -f "distllm-node.*{node_id}")
 ### Memory OOM
 
 1. Check KV cache usage: `curl http://localhost:8000/metrics | grep kv_cache`
-2. Enable defragmentation: `distllm defrag run`
+2. Enable defragmentation: `distllm system defrag run`
 3. Reduce KV cache: `export DISTLLM_KV_CACHE_QUANT_BITS=8`
 4. Reduce batch size: `curl -X PATCH http://localhost:8000/v1/scheduler/config -d '{"max_batch_size": 8}'`
 5. If persistent: Add nodes or use smaller model
@@ -162,7 +166,7 @@ kill $(pgrep -f "distllm-node.*{node_id}")
 
 ```bash
 # 1. Create backup
-distllm backup create --type full
+distllm config backup create
 
 # 2. Drain all nodes
 for node in $(curl -s http://localhost:8000/admin/v1/nodes | jq -r '.nodes[].node_id'); do
@@ -185,7 +189,7 @@ distllm config validate
 docker compose up -d  # or systemctl start distllm-*
 
 # 8. Verify
-distllm doctor
+distllm system doctor
 curl http://localhost:8000/health
 ```
 
@@ -193,16 +197,19 @@ curl http://localhost:8000/health
 
 ```bash
 # 1. Generate new certificates
-distllm security cert generate --cn coordinator.example.com
+distllm security cert create coordinator.example.com
 
 # 2. Distribute to all nodes
 for node in node1 node2 node3; do
   scp certs/coordinator.* $node:/etc/distllm/tls/
 done
 
-# 3. Reload (no restart needed)
-kill -HUP $(pgrep -f distllm-api)
-kill -HUP $(pgrep -f distllm-node)
+# 3. Restart all services so they load the new certificates (TLS certs are
+#    read at startup — src/distllm/dist/worker.py:560-565; the SIGHUP handler
+#    on distllm-api only reloads scheduler config, and distllm-node installs
+#    no SIGHUP handler, so kill -HUP would terminate it)
+docker compose down  # or systemctl stop distllm-*
+docker compose up -d  # or systemctl start distllm-*
 
 # 4. Verify TLS
 openssl s_client -connect coordinator:50050 -servername coordinator

@@ -33,13 +33,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
 from distllm.core.spec_verify import accept_token
 from distllm.dashboard.verification_history import compute_logit_cosine
 
@@ -49,6 +53,30 @@ COSINE_THRESHOLD = 0.999
 # across hardware / dtype noise (NaN/Inf are rejected by the hasher).
 ROUND_NDIGITS = 4
 
+
+def _writable_data_dir() -> Path:
+    """Per-user directory for the appended run history (never site-packages)."""
+    override = os.environ.get("DISTLLM_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":  # pragma: no cover - platform branch
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return Path(base) / "distllm"
+    if sys.platform == "darwin":  # pragma: no cover - platform branch
+        return Path.home() / "Library" / "Application Support" / "distllm"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return (
+        Path(xdg).expanduser() / "distllm" if xdg else Path.home() / ".local" / "share" / "distllm"
+    )
+
+
+# The registry the harness READS: the baseline evidence shipped inside the
+# package (correctness_registry.jsonl is package data) unless overridden.
+# Writing there is wrong -- an installed package lives in site-packages, which
+# is read-only for the app user, and appending machine-specific runs would
+# churn the committed evidence -- so ``record()`` appends to a per-user file
+# (see _writable_data_dir() and DeterminismRegistry) unless the caller passed
+# an explicit path or set DISTLLM_REGISTRY_PATH.
 DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parent / "correctness_registry.jsonl"
 
 
@@ -157,9 +185,7 @@ def run_pair(
     cosine = compute_logit_cosine(draft_logits, target_logits)
     dhash = determinism_hash_for_pair(draft_logits, target_logits, decision, ndigits)
 
-    passed = (cosine is not None and cosine >= COSINE_THRESHOLD) and (
-        token_exact_match == 1
-    )
+    passed = (cosine is not None and cosine >= COSINE_THRESHOLD) and (token_exact_match == 1)
     return PairResult(
         index=0,
         logit_cosine_sim=cosine if cosine is not None else 0.0,
@@ -265,10 +291,38 @@ class DeterminismRegistry:
 
     Replay reads the most recent matching record back and asserts that a fresh
     run with the same seed produces an identical ``determinism_hash``.
+
+    With no explicit path, reads consult the shipped baseline evidence
+    (``DEFAULT_REGISTRY_PATH``, package data) *and* the per-user run history
+    (``_writable_data_dir()/correctness_registry.jsonl``, the write target);
+    new runs are appended only to the per-user file, so recording works on
+    read-only system installs and the committed evidence is never mutated.
+    ``DISTLLM_REGISTRY_PATH`` overrides both sides with a single file.
     """
 
-    def __init__(self, path: str | Path = DEFAULT_REGISTRY_PATH):
-        self.path = Path(path)
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        write_path: str | Path | None = None,
+    ):
+        override = os.environ.get("DISTLLM_REGISTRY_PATH")
+        if path is None and write_path is None and override:
+            path = write_path = Path(override)
+        if path is None:
+            self.path = (
+                Path(write_path)
+                if write_path is not None
+                else _writable_data_dir() / "correctness_registry.jsonl"
+            )
+            self.read_paths: list[Path] = [DEFAULT_REGISTRY_PATH]
+            if self.path.resolve() != DEFAULT_REGISTRY_PATH.resolve():
+                self.read_paths.append(self.path)
+        else:
+            self.path = Path(path)
+            self.read_paths = [self.path]
+            if write_path is not None and Path(write_path) not in self.read_paths:
+                self.read_paths.append(Path(write_path))
 
     def record(
         self,
@@ -308,35 +362,47 @@ class DeterminismRegistry:
         seq_len: int,
         perturb: float,
     ) -> dict[str, Any] | None:
-        """Return the most recent record matching the seed tuple, or ``None``."""
+        """Return the most recent record matching the seed tuple, or ``None``.
+
+        "Most recent" is the last matching line across the read paths, with
+        the per-user history (later in ``read_paths``) taking precedence over
+        the shipped baseline.
+        """
         match = None
-        if not self.path.exists():
-            return None
-        with self.path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                rec = json.loads(line)
-                if (
-                    rec.get("seed") == int(seed)
-                    and rec.get("n_pairs") == int(n_pairs)
-                    and rec.get("vocab") == int(vocab)
-                    and rec.get("seq_len") == int(seq_len)
-                    and rec.get("perturb") == float(perturb)
-                ):
-                    match = rec
+        for path in self.read_paths:
+            if not path.exists():
+                continue
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    if (
+                        rec.get("seed") == int(seed)
+                        and rec.get("n_pairs") == int(n_pairs)
+                        and rec.get("vocab") == int(vocab)
+                        and rec.get("seq_len") == int(seq_len)
+                        and rec.get("perturb") == float(perturb)
+                    ):
+                        match = rec
         return match
 
     def all_records(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
         out: list[dict[str, Any]] = []
-        with self.path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
+        seen: set[Path] = set()
+        for path in self.read_paths:
+            resolved = path.resolve() if path.exists() else path
+            if resolved in seen:  # pragma: no cover - defensive de-dup
+                continue
+            seen.add(resolved)
+            if not path.exists():
+                continue
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        out.append(json.loads(line))
         return out
 
 
@@ -375,11 +441,12 @@ def replay_from_seed(
         ``None`` when no matching record exists).
     """
     if registry is None:
-        registry = DeterminismRegistry(registry_path or DEFAULT_REGISTRY_PATH)
+        # No explicit path -> default resolution: shipped baseline + per-user
+        # history (see DeterminismRegistry).  Passing DEFAULT_REGISTRY_PATH
+        # explicitly would silently ignore runs this install recorded.
+        registry = DeterminismRegistry(registry_path) if registry_path else DeterminismRegistry()
 
-    battery = build_consistent_battery(
-        seed, n_pairs, vocab, seq_len=seq_len, perturb=perturb
-    )
+    battery = build_consistent_battery(seed, n_pairs, vocab, seq_len=seq_len, perturb=perturb)
     results = run_battery(battery, pos=pos)
     new_hash = aggregate_determinism_hash(results)
 

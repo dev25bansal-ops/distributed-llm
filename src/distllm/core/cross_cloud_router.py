@@ -23,12 +23,12 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 if TYPE_CHECKING:
-    from distllm.core.pricing_providers import PricingManager, InstancePricing
+    from distllm.core.pricing_providers import InstancePricing, PricingManager
 
 
 # GPU type → (instance_types, memory_gb, gpu_count) quick-lookup
@@ -251,6 +251,7 @@ class CarbonIntensityProvider:
             try:
                 self._http_client.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._http_client = None
 
@@ -307,7 +308,7 @@ class CarbonIntensityProvider:
             if zone is None:
                 return self._get_static(region)
             resp = client.get(
-                f"https://api.electricitymap.org/v3/carbon-intensity/latest",
+                "https://api.electricitymap.org/v3/carbon-intensity/latest",
                 params={"zone": zone},
                 headers={"auth-token": token},
             )
@@ -473,7 +474,7 @@ class CrossCloudRouter:
         self,
         carbon_provider: CarbonProvider = CarbonProvider.STATIC,
         carbon_api_cache_ttl: int = 300,
-        pricing_manager: "PricingManager | None" = None,
+        pricing_manager: PricingManager | None = None,
         expand_regions: bool = True,
         latency_tracker: Any = None,
     ):
@@ -579,10 +580,18 @@ class CrossCloudRouter:
         updated = 0
         for p in live_prices:
             for provider in self._providers:
+                # An empty provider region means "not region-expanded": with
+                # expand_regions=False _init_default_providers creates one
+                # provider per instance type and leaves region="". Requiring an
+                # exact match then made this loop unreachable in that mode --
+                # live pricing always carries a real region, so it never
+                # applied. Treat "" as region-agnostic instead.
                 if (provider.name == p.provider
                         and provider.instance_type == p.instance_type
-                        and provider.region == p.region):
+                        and (not provider.region or provider.region == p.region)):
                     provider.price_per_hour = p.on_demand_price
+                    if not provider.region:
+                        provider.region = p.region
                     provider.spot_price = p.spot_price if p.spot_price > 0 else p.on_demand_price * _SPOT_DISCOUNT.get(p.provider, 0.3)
                     provider.gpu_type = p.gpu_type or provider.gpu_type
                     provider.gpu_count = p.gpu_count or provider.gpu_count

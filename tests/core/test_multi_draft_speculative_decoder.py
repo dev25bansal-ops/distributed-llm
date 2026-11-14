@@ -250,6 +250,57 @@ class TestMultiDraftSpeculativeDecoder:
         assert stats["total_proposed"] > 0
         assert stats["acceptance_rate"] > 0
 
+    def test_rejected_round_is_not_counted_as_accepted(self):
+        """Finding 1016: acceptance stats must count real draft accepts.
+
+        A round whose consensus draft is REJECTED (or absent) emits a
+        target-fallback/correction token.  ``accepted = generated.shape[1]
+        - prompt_len`` counted every emitted token as an accepted draft,
+        so a run with zero real acceptances reported acceptance_rate 1.0
+        and misled the adaptive-speculation / auto-disable consumers.
+        """
+        V = 16
+
+        def target_fn(input_ids, **kw):
+            # Target always wants 9; the drafts always propose 5 -> every
+            # drafted token is rejected in every round.
+            out = torch.zeros(1, input_ids.shape[1], V)
+            out[0, :, 9] = 10.0
+            return out
+
+        def draft_fn(input_ids, **kw):
+            out = torch.zeros(1, input_ids.shape[1], V)
+            out[0, -1, 5] = 10.0
+            return out
+
+        d = self.MD(target_forward=target_fn,
+                     draft_forwards=[draft_fn, draft_fn],
+                     num_candidates=2, temperature=0)
+        out = d.generate(torch.tensor([[1, 2]]), max_new_tokens=2)
+        stats = d.stats
+
+        # The draft is proposed (consensus_len > 0) every round...
+        assert stats["total_proposed"] > 0
+        # ...but never accepted by the target.
+        assert stats["accepted"] == 0
+        assert stats["acceptance_rate"] == 0.0
+        # Sanity: tokens were still emitted (target fallback + correction).
+        assert out.shape[1] > 2
+
+    def test_full_consensus_round_counts_its_acceptances(self):
+        """Sanity on the fixed accumulator: real accepts still count."""
+        d = self.MD(target_forward=_identity_target,
+                     draft_forwards=[lambda x: _always_logit(10),
+                                     lambda x: _always_logit(10)],
+                     num_candidates=2, temperature=0)
+        d.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        stats = d.stats
+        assert stats["accepted"] > 0
+        assert stats["accepted"] <= stats["total_proposed"]
+        # One target forward at most per accepted-token round: the old
+        # formulation could report accepted > total_proposed.
+        assert 0.0 <= stats["acceptance_rate"] <= 1.0
+
 
 def test_module_has_multi_draft():
     mod = _get_module()

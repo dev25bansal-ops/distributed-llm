@@ -25,13 +25,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from distllm.cli.http_client import client_for
+
 
 def show_status(host: str, port: int, console: Console):
     """Show cluster status and node health."""
     base_url = f"http://{host}:{port}"
 
     try:
-        with httpx.Client() as client:
+        with client_for(host, port, timeout=10.0) as client:
             # Health check
             response = client.get(f"{base_url}/health", timeout=10.0)
             response.raise_for_status()
@@ -48,7 +50,7 @@ def show_status(host: str, port: int, console: Console):
             metrics_text = metrics_response.text
 
         # Display health
-        console.print(f"\n[bold blue]Cluster Status[/bold blue]\n")
+        console.print("\n[bold blue]Cluster Status[/bold blue]\n")
 
         status_table = Table(title="System Health")
         status_table.add_column("Metric", style="cyan")
@@ -64,17 +66,17 @@ def show_status(host: str, port: int, console: Console):
                 status_table.add_row(f"Node: {node_id}", healthy)
                 if "memory_used" in node_info and node_info.get("memory_total", 0) > 0:
                     mem_pct = node_info["memory_used"] / node_info["memory_total"] * 100
-                    status_table.add_row(f"  Memory", f"{mem_pct:.1f}%")
+                    status_table.add_row("  Memory", f"{mem_pct:.1f}%")
 
         console.print(status_table)
 
         # Display models
-        console.print(f"\n[bold]Available Models:[/bold]")
+        console.print("\n[bold]Available Models:[/bold]")
         for model_data in models.get("data", []):
             console.print(f"  • {model_data['id']}")
 
         # Display key metrics
-        console.print(f"\n[bold]Metrics:[/bold]")
+        console.print("\n[bold]Metrics:[/bold]")
         for line in metrics_text.split("\n")[:10]:  # Show first 10 metrics
             if line and not line.startswith("#"):
                 console.print(f"  {line}")
@@ -83,6 +85,7 @@ def show_status(host: str, port: int, console: Console):
         console.print(f"[red]Error:[/red] Could not connect to {base_url}")
         console.print("Is the API server running?")
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         console.print(f"[red]Error:[/red] {e}")
 
 
@@ -107,21 +110,23 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with client_for(host, port, timeout=timeout) as client:
             # /health — coordinator liveness
             try:
                 health_resp = client.get(f"{base_url}/health")
                 health_resp.raise_for_status()
                 health = health_resp.json()
             except Exception:
+                # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                 summary["line"] = (
                     f"DOWN  coordinator={host}:{port}  (health endpoint unreachable)"
                 )
                 return json.dumps(summary)
 
-            # /v1/cluster/nodes — node roster (path varies; try common forms)
+            # Node roster. /api/cluster/nodes is the live route; /admin/v1/nodes
+            # is the admin alias. /v1/cluster/nodes and /v1/nodes never existed.
             nodes: list[dict[str, Any]] = []
-            for path in ("/v1/cluster/nodes", "/admin/v1/nodes", "/v1/nodes"):
+            for path in ("/api/cluster/nodes", "/admin/v1/nodes"):
                 try:
                     nodes_resp = client.get(f"{base_url}{path}")
                     if nodes_resp.status_code == 200:
@@ -132,6 +137,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
                             nodes = data
                         break
                 except Exception:
+                    # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                     continue
 
             # /v1/models — model count
@@ -143,6 +149,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
                     if isinstance(models_data, dict):
                         models = list(models_data.get("data", []))
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
             healthy_nodes = sum(
@@ -192,6 +199,7 @@ def fetch_one_line_summary(host: str, port: int, timeout: float = 3.0) -> str:
         summary["line"] = f"DOWN  coordinator={host}:{port}  (connection refused)"
         return json.dumps(summary)
     except Exception as e:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         summary["line"] = f"DOWN  coordinator={host}:{port}  ({e})"
         return json.dumps(summary)
 

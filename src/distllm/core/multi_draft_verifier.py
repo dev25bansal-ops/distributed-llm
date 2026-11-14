@@ -15,13 +15,16 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import no_grad, optional_import
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
-from distllm.core.spec_verify import accept_token, eos_cutoff
+from distllm.core.spec_verify import accept_token, eos_cutoff, prefix_len
 
 
 class MultiDraftVerifier:
@@ -66,7 +69,7 @@ class MultiDraftVerifier:
         s["acceptance_rate"] = total_accepted / max(s["total_proposed"], 1)
         return s
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,
@@ -302,7 +305,7 @@ class TreeMultiDraftVerifier:
         s["acceptance_rate"] = s["total_accepted"] / max(s["total_proposed"], 1)
         return s
 
-    @torch.no_grad()
+    @no_grad()
     def generate(
         self,
         input_ids: torch.Tensor,

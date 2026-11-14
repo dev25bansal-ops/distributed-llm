@@ -6,16 +6,66 @@ plus helpers for recording TTFT (time-to-first-token) events.
 
 from __future__ import annotations
 
-from contextlib import contextmanager, asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from typing import Any
 
 from loguru import logger
-from opentelemetry import trace
 
-_tracer = trace.get_tracer("distllm.generation")
+try:  # the SDK lives in the [observability] extra
+    from opentelemetry import trace
+except ImportError:  # pragma: no cover - exercised on every default install
+    trace = None
+
+
+class _NoOpSpan:
+    """Stands in for a real span when the SDK is absent.
+
+    Every helper here is a context manager that yields a span, and callers do
+    use the yielded object (record_ttft, link_to_parent_node). Returning None
+    would turn a missing extra into an AttributeError in the request path, so
+    the stand-in absorbs the calls instead.
+    """
+
+    def set_attribute(self, *_args, **_kwargs):
+        return None
+
+    def add_event(self, *_args, **_kwargs):
+        return None
+
+    def record_exception(self, *_args, **_kwargs):
+        return None
+
+    def set_status(self, *_args, **_kwargs):
+        return None
+
+    def end(self):
+        return None
+
+
+class _NoOpTracer:
+    """A tracer that starts no-op spans but keeps every signature identical."""
+
+    def start_as_current_span(self, _name, attributes=None, links=None, **_kwargs):
+        return _NoOpSpanContext()
+
+    def start_span(self, _name, attributes=None, links=None, **_kwargs):
+        return _NoOpSpan()
+
+
+class _NoOpSpanContext:
+    def __enter__(self):
+        return _NoOpSpan()
+
+    def __exit__(self, *_exc):
+        return False
+
+
+_tracer = (
+    trace.get_tracer("distllm.generation") if trace is not None else _NoOpTracer()
+)
 
 
 @contextmanager
@@ -206,6 +256,9 @@ def create_linked_span(
     Returns:
         A new Span with a link to the parent.
     """
+    if trace is None:
+        return _NoOpSpan()
+
     from opentelemetry.trace import Link, SpanContext, TraceFlags
 
     try:

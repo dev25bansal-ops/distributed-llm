@@ -13,6 +13,13 @@ from __future__ import annotations
 import pytest
 
 
+# These drive a live Tauri dev server (http://localhost:1420) through the
+# pytest-playwright `page` fixture. Neither the server nor pytest-playwright is
+# present in the default test environment, so without this marker the whole
+# module hard-fails (7 errors) inside the normal suite. Keep it in the e2e lane.
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
+
+
 class TestTauriFrontend:
     """E2E tests for the Tauri desktop app frontend."""
 

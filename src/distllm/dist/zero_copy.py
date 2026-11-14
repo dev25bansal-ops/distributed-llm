@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.dist.nccl import NcclTransport
@@ -148,6 +150,7 @@ class RDMAManager:
             )
             return result.returncode == 0
         except Exception:
+            # CQ-08: intentional fail-open: return False on failure; callers treat False as 'not available/enabled'.
             return False
 
     @property
@@ -328,4 +331,5 @@ class ZeroCopyTransferEngine:
             try:
                 self._nccl_transport.shutdown()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass

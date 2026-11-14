@@ -149,6 +149,7 @@ class BudgetComputer:
         self,
         base_budget: int,
         paged_attention_mgr: object | None,
+        max_budget: int | None = None,
     ) -> int:
         """Auto-scale token budget from 32K-128K based on available GPU memory.
 
@@ -158,11 +159,15 @@ class BudgetComputer:
         Args:
             base_budget: The raw token budget from configuration.
             paged_attention_mgr: Optional PagedAttention manager for pool info.
+            max_budget: Optional hard ceiling.  Callers that pass an
+                explicitly-configured budget use it here so an operator value
+                above the default 131072 cap is honored rather than silently
+                clamped; the cap only applies when no ceiling is given.
 
         Returns:
-            Adjusted token budget capped at 128K.
+            Adjusted token budget capped at ``max_budget`` (default 128K).
         """
-        budget = min(base_budget, 131072)
+        budget = min(base_budget, max_budget if max_budget is not None else 131072)
         if paged_attention_mgr is not None:
             # Try to get precise block-level info from the pool
             pool = getattr(paged_attention_mgr, 'pool', None)

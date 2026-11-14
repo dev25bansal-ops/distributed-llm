@@ -23,6 +23,7 @@ try:
     import tiktoken
     _tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
 except (ImportError, Exception):
+    # CQ-08: optional dependency: tiktoken is a C3 accuracy optimization only; the len//4 heuristic remains the fallback.
     pass
 
 

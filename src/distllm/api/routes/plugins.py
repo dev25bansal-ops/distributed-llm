@@ -20,6 +20,11 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
+from ..errors import FeatureDisabledError, error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 # Plugin management is admin-only: install/unload/toggle change what code
@@ -35,9 +40,9 @@ def _require_plugin_system() -> Any:
     """Return the coordinator's plugin system or raise 503."""
     plugin_sys = getattr(g, "coordinator", None)
     if plugin_sys is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Coordinator not available — plugins require a loaded model",
+        raise FeatureDisabledError(
+            "plugins",
+            "Coordinator not available — plugins require a loaded model",
         )
     return plugin_sys
 
@@ -87,7 +92,16 @@ PLUGIN_DOCS: dict[str, dict[str, str]] = {
 
 # ── Endpoints ──────────────────────────────────────────────────────────
 
-@router.get("", response_model=PluginListResponse)
+@router.get(
+    "",
+    response_model=PluginListResponse,
+    summary="List all installed plugins with their status",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Coordinator not available — plugins require a loaded model", type_="service_unavailable", code="503"),
+    },
+)
 async def list_plugins():
     """List all installed plugins with their status."""
     plugin_sys = _require_plugin_system()
@@ -112,7 +126,14 @@ async def list_plugins():
     return PluginListResponse(plugins=plugins, total=len(plugins))
 
 
-@router.get("/registry")
+@router.get(
+    "/registry",
+    summary="List all available plugins (built-in + discovered)",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+    },
+)
 async def plugin_registry():
     """List all available plugins (built-in + discovered)."""
     return {
@@ -121,7 +142,17 @@ async def plugin_registry():
     }
 
 
-@router.get("/{plugin_name}", response_model=PluginInfo)
+@router.get(
+    "/{plugin_name}",
+    response_model=PluginInfo,
+    summary="Get details of a specific plugin",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        404: ERR_ENTRY("Plugin not found or plugin system not initialized", type_="invalid_request_error", code="not_found"),
+        503: ERR_ENTRY("Coordinator not available — plugins require a loaded model", type_="service_unavailable", code="503"),
+    },
+)
 async def get_plugin(plugin_name: str):
     """Get details of a specific plugin."""
     plugin_sys = _require_plugin_system()
@@ -155,7 +186,15 @@ async def get_plugin(plugin_name: str):
     raise HTTPException(status_code=404, detail=f"Plugin '{plugin_name}' not found")
 
 
-@router.post("/{plugin_name}/enable", response_model=PluginActionResponse)
+@router.post(
+    "/{plugin_name}/enable",
+    response_model=PluginActionResponse,
+    summary="Enable a plugin",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+    },
+)
 async def enable_plugin(plugin_name: str):
     """Enable a plugin."""
     # Check if it's a built-in that can be enabled via env var
@@ -175,7 +214,15 @@ async def enable_plugin(plugin_name: str):
     )
 
 
-@router.post("/{plugin_name}/disable", response_model=PluginActionResponse)
+@router.post(
+    "/{plugin_name}/disable",
+    response_model=PluginActionResponse,
+    summary="Disable a plugin",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+    },
+)
 async def disable_plugin(plugin_name: str):
     """Disable a plugin."""
     return PluginActionResponse(

@@ -116,6 +116,9 @@ class _FakeCrossModel:
             return None
         class _E: pass
         e = _E(); e.source_model = src
+        # A real SharedCacheEntry carries the KV payload; warm_start only
+        # reports CROSS_MODEL when something is actually reusable.
+        e.kv_data = f"KV-from-{src}"
         return e
 
 

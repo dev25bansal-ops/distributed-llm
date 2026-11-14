@@ -3,14 +3,14 @@
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..api_state import g
-from distllm.api.auth_deps import require_role
-from distllm.api.errors import error_response_from_request, error_openapi_entry
 from distllm.api import server as _server_state
+from distllm.api.auth_deps import require_role
+from distllm.api.errors import error_openapi_entry, error_response_from_request
 
+from ..api_state import g
 
 router = APIRouter(tags=["system"])
 
@@ -303,9 +303,16 @@ async def readiness_check(request: Request):
 
     # Check if at least one node is healthy (for distributed mode)
     if coord.nodes:
+        # health_check() returns a status envelope, not a node_id -> status
+        # map: {"status", "num_nodes", ..., "nodes": {node_id: {...}}}. Calling
+        # .get("healthy") on its top-level values raised AttributeError as soon
+        # as any node was registered, making /ready a 500.
         node_health = coord.health_check()
-        healthy_nodes = sum(1 for h in node_health.values() if h.get("healthy"))
-        if healthy_nodes == 0:
+        nodes = node_health.get("nodes", {}) if isinstance(node_health, dict) else {}
+        healthy_nodes = sum(
+            1 for h in nodes.values() if isinstance(h, dict) and h.get("healthy")
+        )
+        if nodes and healthy_nodes == 0:
             return error_response_from_request(503, "Service Unavailable", "No healthy nodes available", "health_error", request)
 
     return {"status": "ready"}
@@ -406,12 +413,16 @@ def _get_health_plugin():
         if inst and inst.instance is not None:
             return inst.instance
     except (AttributeError, Exception):
+        # CQ-08: fail-open: optional health plugin absent -> treated as no health data.
         pass
     return None
 
 
+# `{model_id:path}` lets the id contain "/" -- every real HuggingFace id is
+# "org/name", and a plain {model_id} matched only the first segment, so the
+# route 404'd for every model this server actually loads.
 @router.post(
-    "/v1/models/{model_id}/warmup",
+    "/v1/models/{model_id:path}/warmup",
     summary="Warm up a model (CUDA graphs, caches)",
     description="Send dummy tokens through the model to warm CUDA graphs, kernel caches, and memory pools before production traffic arrives."
                 " This reduces first-token latency (TTFT) for subsequent requests. Restricted to model-admin or higher.",
@@ -437,6 +448,7 @@ async def warmup_model(model_id: str, request: Request):
         )
         return {"status": "ok", "model": model_id, "warmup_tokens": warmup_tokens, "length": len(result)}
     except Exception as e:
+        # CQ-08: failure is returned to the caller as a 503 with str(e); nothing is swallowed.
         return error_response_from_request(503, "Warmup Failed", str(e), "warmup_error", request)
 
 
@@ -464,7 +476,14 @@ async def warmup_model(model_id: str, request: Request):
 )
 async def metrics():
     """Prometheus-compatible metrics endpoint."""
-    from prometheus_client import generate_latest
+    try:
+        from prometheus_client import generate_latest
+    except ImportError:
+        # prometheus_client is the [observability] extra. Only the API-registry
+        # exposition below needs it -- every coordinator gauge on this route is
+        # formatted by hand -- so the route still serves, just without the
+        # request-layer RED families.
+        generate_latest = None
 
     coord = g.coordinator
     mon = g.monitor
@@ -476,6 +495,8 @@ async def metrics():
         # coordinator gauges. NOTE: production wiring gives the coordinator
         # this *same* exporter instance; _merge_expositions guarantees the
         # combined response exposes each family exactly once regardless.
+        if generate_latest is None:
+            return ""
         api_exporter = getattr(g, "metrics_exporter", None)
         api_registry = getattr(api_exporter, "registry", None)
         return generate_latest(api_registry).decode("utf-8") if api_registry is not None else ""
@@ -493,8 +514,14 @@ async def metrics():
         # JSON-encode the text and send application/json.
         return Response(content=body, media_type=PROMETHEUS_MEDIA_TYPE)
 
-    # Use Prometheus exporter if available
-    if coord.metrics_exporter:
+    # Use Prometheus exporter if available. The server always wires an
+    # exporter into the coordinator (server.py sets state.metrics_exporter),
+    # but without the [observability] extra it is a stub whose
+    # generate_metrics() returns b"" -- so gating on the object alone would
+    # serve an empty body instead of the hand-formatted gauges below.
+    from distllm.observability import exporter as _exporter_mod
+
+    if coord.metrics_exporter and _exporter_mod._PROMETHEUS_AVAILABLE:
         coord.metrics_exporter.populate_gauges(coordinator=coord)
         # Render the API registry AFTER populate_gauges: the shared-instance
         # wiring means this render already includes the refreshed coordinator
@@ -587,14 +614,31 @@ async def update_generation_params(request_id: str, params: ParamUpdateRequest):
 
     puc = getattr(coord, '_param_update_channel', None)
     if puc is None:
-        return {"status": "error", "detail": "param_update_channel not available"}
-    updated = puc.update(
-        request_id,
-        temperature=params.temperature if params.temperature is not None else None,
-        top_p=params.top_p if params.top_p is not None else None,
-        top_k=params.top_k if params.top_k is not None else None,
-    )
+        raise HTTPException(
+            status_code=503, detail="param_update_channel not available"
+        )
+    # Only forward the fields the caller actually set. Passing None for unset
+    # fields used to overwrite the live params (GenerationParams.update does a
+    # bare setattr), so the next sampling step compared None against int/float
+    # and the stream died mid-flight (token_generator.py top_k/top_p checks).
+    updates = {
+        name: value
+        for name, value in (
+            ("temperature", params.temperature),
+            ("top_p", params.top_p),
+            ("top_k", params.top_k),
+        )
+        if value is not None
+    }
+    # ParamUpdateChannel.update() returns None; it is not a status signal.
+    # Look the params up directly to distinguish "unknown request" (404) from
+    # "updated" (200).
+    if puc.get(request_id) is None:
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found or already completed")
+    puc.update(request_id, **updates)
+    updated = puc.get(request_id)
     if updated is None:
+        # Unregistered between the lookup and the update: the stream ended.
         raise HTTPException(status_code=404, detail=f"Request {request_id} not found or already completed")
 
     return {

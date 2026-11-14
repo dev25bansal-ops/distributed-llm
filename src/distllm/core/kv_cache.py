@@ -1,13 +1,32 @@
 """KV cache management for distributed LLM inference."""
 
+from __future__ import annotations
+
 import asyncio
 import threading
 import time
 from collections import defaultdict
 
 import numpy as np
-import torch
 from loguru import logger
+
+
+# torch is an [self-hosted]-extra dependency; this module is imported by
+# dist/node_service.py and core/cache_manager.py on startup paths (the node
+# server and the coordinator). Without this guard those guards upstream were
+# decorative: importing them pulled this module's hard import straight in.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for KV cache operations. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 # Quantization range constants
 FP8_E4M3_MAX: float = 448.0   # Max representable value in FP8 E4M3 format
@@ -215,7 +234,7 @@ class KVCache:
             self.cache = list(cache)
             self.num_layers = len(cache)
 
-    def slice(self, layer_start: int, layer_end: int) -> "KVCache":
+    def slice(self, layer_start: int, layer_end: int) -> KVCache:
         """E13: Create a new KVCache with a slice of layers for partial reuse.
 
         Args:
@@ -234,7 +253,7 @@ class KVCache:
             new_cache._quant_fp8 = self._quant_fp8
         return new_cache
 
-    def to(self, device: str) -> "KVCache":
+    def to(self, device: str) -> KVCache:
         """Move cache to device, preserving quantization state."""
         new_cache = KVCache()
         with self._lock:
@@ -471,7 +490,11 @@ class KVCache:
         """Enable KV cache quantization.
 
         Args:
-            bits: Target bit width (4 or 8). Ignored if use_fp8=True.
+            bits: Target bit width (4 or 8). Selects the quantization range
+                ([-7, 7] for 4-bit, [-127, 127] for 8-bit). Ignored if
+                use_fp8=True. Storage is always int8 (1 byte/elem); bits=4
+                does NOT pack two values per byte, so memory usage is
+                int8-equivalent (2x vs fp16), not 4x.
             use_fp8: Use FP8 E4M3 quantization for 2x capacity vs fp16.
         """
         with self._lock:
@@ -503,6 +526,10 @@ class KVCache:
         Note:
             Creates a temporary copy during compression so that an OOM or
             CUDA error mid-compression leaves the original cache intact.
+
+            "int4" denotes the quantization *range* ([-7, 7]), not packed
+            4-bit storage: values are stored one-per-byte in int8 slots, so
+            compressed_bytes is int8-equivalent (2x vs fp16), not 4x.
         """
         import torch as _torch
 
@@ -584,6 +611,12 @@ class KVCache:
             }
 
         if method == "int4":
+            # NOTE: INT4 here means the quantization *range* ([-7, 7], 4-bit
+            # signed), NOT packed 4-bit storage. Each element is stored in a
+            # full int8 slot (1 byte/elem), so memory usage is int8-equivalent
+            # (2x vs fp16), NOT the 4x a packed-nibble layout would give.
+            # The reported ratio/savings_pct below reflect the real int8
+            # storage, not a packed-4-bit figure.
             with self._lock:
                 try:
                     compressed_cache = []
@@ -633,7 +666,10 @@ class KVCache:
         """Update KV cache for a layer with optional quantization.
 
         Uses pre-allocated slicing to avoid O(n²) torch.cat overhead.
-        Falls back to dynamic growth when max_seq_len is not set.
+        Without max_seq_len the buffer grows dynamically per append.  With
+        max_seq_len the pre-allocated buffer serves appends up to that
+        bound; an append past the bound reallocates (2x) and logs a
+        WARNING so an exceeded bound is observable (data is preserved).
 
         Args:
             layer_idx: Layer index.
@@ -676,6 +712,15 @@ class KVCache:
             # Overflow: grow buffer by 2x to reduce future reallocations
             # This avoids repeated torch.cat calls that fragment GPU memory
             new_max = max(self._max_seq_len or 0, cur_len + new_len) * 2
+            # An explicit max_seq_len is a caller-visible bound: when
+            # overflow forces the buffer past it, say so — the previous
+            # silent replace meant code passing max_seq_len as a memory
+            # cap got several times the memory with no signal.
+            logger.warning(
+                f"KVCache layer {layer_idx}: exceeded max_seq_len "
+                f"{self._max_seq_len} ({cur_len}+{new_len} tokens); "
+                f"reallocating buffer to {new_max} slots"
+            )
             expanded_k = torch.zeros(
                 (*old_k.shape[:2], new_max, old_k.shape[-1]),
                 dtype=old_k.dtype, device=old_k.device,

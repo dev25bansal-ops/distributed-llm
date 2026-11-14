@@ -222,6 +222,7 @@ def quota_import(
         with open(filepath) as f:
             data = json.load(f)
     except Exception as e:
+        # CQ-08: failure is surfaced via console output; not propagated.
         console.print(f"[red]Failed to load file:[/] {e}")
         return
 

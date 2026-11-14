@@ -1,12 +1,24 @@
-"""Kuberentes operator controller for DistributedLLMCluster.
+"""Kubernetes operator controller for DistributedLLMCluster — ALPHA, log-only.
 
-Watches ``DistributedLLMCluster`` CRs and reconciles the desired state
-(coordinator + worker StatefulSets, Services, HPAs) to match the spec.
+Watches ``DistributedLLMCluster`` CRs and reports the desired state
+(coordinator + worker StatefulSets, Services, HPAs) that a reconciliation
+*would* apply.
 
-This controller is designed to be deployed as a Deployment in the
-same cluster it manages.  It uses the Kubernetes API via ``lightkube``
-or ``pykube-ng`` — no ``kopf`` or ``kubernetes`` SDK dependencies
-required (lightkube preferred for minimal size).
+**This is not yet a reconciler.** ``_list_crs`` only returns the cluster
+described by the ``DISTLLM_CR_SAMPLE`` environment variable (empty otherwise),
+and ``_ensure_coordinator`` / ``_ensure_worker_pool`` / ``_update_status`` log
+their intent without calling the Kubernetes API — the lightkube calls are
+written in comments, not executed. Deploying the chart's operator therefore
+runs a pod that reports and changes nothing.
+
+What that means in practice: the Docker, Compose, Helm and Kustomize install
+paths do not depend on it and are unaffected. Only a user who applies a
+``DistributedLLMCluster`` CR and expects the operator to build their cluster is
+affected, and for them this path is alpha.
+
+Intended to run as a Deployment in the cluster it manages, using ``lightkube``
+(no ``kopf`` or ``kubernetes`` SDK dependency). See the module's issue notes
+before advertising the CRD path as supported.
 
 Usage:
     # Run locally (dev):
@@ -41,8 +53,8 @@ class DistLLMOperator:
         sync_period: int = 300,
         max_concurrent: int = 3,
         dry_run: bool = False,
-        default_coordinator_image: str = "ghcr.io/distributed-llm/coordinator:0.4.0",
-        default_worker_image: str = "ghcr.io/distributed-llm/worker:0.4.0",
+        default_coordinator_image: str = "ghcr.io/distributed-llm/coordinator:0.4.1",
+        default_worker_image: str = "ghcr.io/distributed-llm/worker:0.4.1",
     ):
         self.sync_period = sync_period
         self.max_concurrent = max_concurrent
@@ -189,8 +201,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="DistLLM Kubernetes Operator")
     parser.add_argument("--sync-period", type=int, default=300, help="Reconciliation interval")
     parser.add_argument("--dry-run", action="store_true", help="Log actions without applying")
-    parser.add_argument("--default-coordinator-image", default="ghcr.io/distributed-llm/coordinator:0.4.0")
-    parser.add_argument("--default-worker-image", default="ghcr.io/distributed-llm/worker:0.4.0")
+    parser.add_argument("--default-coordinator-image", default="ghcr.io/distributed-llm/coordinator:0.4.1")
+    parser.add_argument("--default-worker-image", default="ghcr.io/distributed-llm/worker:0.4.1")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")

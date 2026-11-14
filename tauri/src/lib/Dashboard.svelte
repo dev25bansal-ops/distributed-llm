@@ -4,7 +4,7 @@
   import { clusterStore, logStore } from "./stores";
   import { Card, ErrorBanner, StatusDot, Skeleton } from "./ui";
   import type { ClusterStatus, GpuInfo, SystemInfo } from "./types";
-  import { listen } from "@tauri-apps/api/event";
+  import { listenEvent, isTauri, apiBaseUrl } from "./transport";
   import OllamaConfig from "./OllamaConfig.svelte";
 
   let { grafanaToggle = 0 }: { grafanaToggle?: number } = $props();
@@ -56,8 +56,8 @@
     });
 
     // 3.5: Listen for process crash events from health monitor
-    unlistenCrash = await listen<string>("process-crashed", (e) => {
-      const msg = `${e.payload} process crashed unexpectedly. The cluster may be unavailable.`;
+    unlistenCrash = await listenEvent<string>("process-crashed", (processName) => {
+      const msg = `${processName} process crashed unexpectedly. The cluster may be unavailable.`;
       error = msg;
       logStore.error("dashboard", msg);
       updateTrayStatus(false, 0);
@@ -78,6 +78,11 @@
   });
 
   async function autoDetectCoordinator() {
+    // Browser mode: cluster status comes from the HTTP transport via the
+    // cluster store (health + /admin/v1/nodes); the Tauri-only auto-join flow
+    // below cannot work here (joinCluster is BrowserUnsupportedError), and
+    // probing a hard-coded 127.0.0.1:8000 only produces a console error.
+    if (!isTauri()) return;
     try {
       logStore.info("dashboard", "Auto-detecting coordinator on localhost:8000");
       const detected = await checkCoordinator("127.0.0.1", 8000);
@@ -118,9 +123,13 @@
   <div class="dashboard-header">
     <h1 class="page-title">Dashboard</h1>
     <div class="coordinator-status">
-      {#if coordinatorDetected}
+      {#if coordinatorDetected || cluster?.running}
         <StatusDot variant="green" />
-        <span>Coordinator detected on localhost:8000</span>
+        <span>
+          {coordinatorDetected
+            ? "Coordinator detected on localhost:8000"
+            : `Coordinator connected at ${cluster?.coordinator_addr || apiBaseUrl() || window.location.origin}`}
+        </span>
       {:else}
         <StatusDot variant="red" />
         <span>No coordinator detected</span>

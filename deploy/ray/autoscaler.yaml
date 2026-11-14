@@ -72,8 +72,12 @@ head_setup_commands:
   - pip install -e /home/ubuntu/distributed-llm  # Install project
 
 # File mounts
+# NOTE: the left side is the remote cluster path; the right side is the LOCAL
+# checkout path that Ray syncs from. It must be set to your machine's checkout
+# (Ray resolves it locally, so a Windows host may use e.g. D:/distributed-llm).
+# Keep it relative or override per-operator rather than committing a machine path.
 file_mounts:
-  /home/ubuntu/distributed-llm: D:\distributed-llm
+  /home/ubuntu/distributed-llm: .
 
 # Custom startup commands
 head_start_ray_commands:

@@ -38,7 +38,6 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-
 # ── Hardware detection ─────────────────────────────────────────────────────
 
 def _detect_hardware() -> dict[str, Any]:
@@ -63,6 +62,11 @@ def _detect_hardware() -> dict[str, Any]:
         import torch  # noqa: F811
 
         info["cuda_available"] = torch.cuda.is_available()
+        # pip installs the CPU-only torch wheel by default, so cuda_available is
+        # False on a machine that does have a GPU. Record which case this is;
+        # the wizard and quickstart use it to give the right advice instead of
+        # silently recommending CPU-sized models.
+        info["torch_cpu_build"] = "+cpu" in getattr(torch, "__version__", "")
         if info["cuda_available"]:
             info["gpu_count"] = torch.cuda.device_count()
             props = torch.cuda.get_device_properties(0)
@@ -70,6 +74,7 @@ def _detect_hardware() -> dict[str, Any]:
             info["gpu_memory_gb"] = round(props.total_memory / 1e9, 1)
     except ImportError:
         info["cuda_available"] = False
+        info["torch_cpu_build"] = False
 
     return info
 
@@ -105,40 +110,101 @@ def _build_hardware_table(info: dict[str, Any]) -> Table:
 
 # ── Model recommendation ───────────────────────────────────────────────────
 
-_MODEL_TIERS: list[tuple[float, float, list[dict[str, str]]]] = [
-    (0, 8, [
-        {"id": "meta-llama/Llama-3.2-1B", "name": "Llama 3.2 1B"},
-        {"id": "microsoft/Phi-3-mini-4k-instruct", "name": "Phi-3 Mini"},
-        {"id": "Qwen/Qwen2.5-1.5B-Instruct", "name": "Qwen 2.5 1.5B"},
-        {"id": "google/gemma-2-2b", "name": "Gemma 2 2B"},
-    ]),
-    (8, 16, [
-        {"id": "meta-llama/Llama-3.1-8B", "name": "Llama 3.1 8B"},
-        {"id": "mistralai/Mistral-7B-v0.3", "name": "Mistral 7B"},
-        {"id": "google/gemma-2-9b", "name": "Gemma 2 9B"},
-    ]),
-    (16, 24, [
-        {"id": "meta-llama/Llama-3-70b", "name": "Llama 3 70B (4-bit)"},
-        {"id": "mistralai/Mixtral-8x7B-v0.1", "name": "Mixtral 8x7B"},
-    ]),
-    (24, float("inf"), [
-        {"id": "meta-llama/Llama-3.1-70B", "name": "Llama 3.1 70B"},
-        {"id": "Qwen/Qwen2.5-72B-Instruct", "name": "Qwen 2.5 72B"},
-    ]),
+# Used only when the catalogs cannot be reached (offline install, air-gapped
+# box). Every entry is a real Hugging Face repository id. The table this
+# replaced picked models by VRAM bucket alone, so a 16 GB card was offered a
+# 70B model it cannot hold; ranking by actual parameter count fixes that.
+_OFFLINE_FALLBACK: list[str] = [
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "meta-llama/Llama-3.2-3B-Instruct",
+    "Qwen/Qwen2.5-1.5B-Instruct",
+    "Qwen/Qwen2.5-3B-Instruct",
+    "google/gemma-2-2b-it",
+    "microsoft/Phi-3.5-mini-instruct",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "Qwen/Qwen2.5-7B-Instruct",
 ]
 
+# Rough parameter counts for the fallback, so it can still be ranked when the
+# API is unreachable. Real counts come from the catalog when it is available.
+_FALLBACK_PARAMS: dict[str, int] = {
+    "meta-llama/Llama-3.2-1B-Instruct": 1_240_000_000,
+    "meta-llama/Llama-3.2-3B-Instruct": 3_210_000_000,
+    "Qwen/Qwen2.5-1.5B-Instruct": 1_540_000_000,
+    "Qwen/Qwen2.5-3B-Instruct": 3_090_000_000,
+    "google/gemma-2-2b-it": 2_610_000_000,
+    "microsoft/Phi-3.5-mini-instruct": 3_820_000_000,
+    "meta-llama/Llama-3.1-8B-Instruct": 8_030_000_000,
+    "Qwen/Qwen2.5-7B-Instruct": 7_620_000_000,
+}
 
-def _recommend_models(info: dict[str, Any]) -> list[dict[str, str]]:
-    """Return the list of recommended models for the detected GPU memory."""
-    gpu_mem = info["gpu_memory_gb"]
-    for lo, hi, models in _MODEL_TIERS:
-        if lo <= gpu_mem < hi:
-            return models
-    # Fallback: CPU-only, recommend tiny models
-    return [
-        {"id": "roneneldan/TinyStories-1M", "name": "TinyStories 1M (CPU)"},
-        {"id": "microsoft/Phi-3-mini-4k-instruct", "name": "Phi-3 Mini (CPU)"},
-    ]
+
+def _hardware_profile(info: dict[str, Any]) -> Any:
+    """Convert the wizard's hardware dict into a recommend.HardwareProfile."""
+    from distllm.models.recommend import HardwareProfile
+
+    return HardwareProfile(
+        gpu_memory_gb=float(info.get("gpu_memory_gb") or 0.0),
+        gpu_count=int(info.get("gpu_count") or 0),
+        gpu_name=str(info.get("gpu_name") or ""),
+        ram_gb=float(info.get("ram_gb") or 0.0),
+        cpu_cores=int(info.get("cpu_cores") or 0),
+    )
+
+
+def _recommend_models(
+    info: dict[str, Any], query: str = "", limit: int = 8
+) -> list[dict[str, str]]:
+    """Recommend models that actually fit this machine.
+
+    Queries the live catalogs (Hugging Face, Ollama) and ranks by real
+    parameter counts, falling back to a small built-in list when the network
+    is unavailable so onboarding still completes offline.
+    """
+    from distllm.models.catalog import search_huggingface
+    from distllm.models.recommend import rank
+
+    hardware = _hardware_profile(info)
+
+    candidates: list[tuple[str, int]] = []
+    try:
+        found = search_huggingface(query, limit=40)
+        candidates = [(c.model_id, c.params) for c in found if c.params]
+    except Exception:  # network, DNS, rate limit -- fall through to offline
+        candidates = []
+
+    offline = False
+    if not candidates:
+        offline = True
+        candidates = [(m, _FALLBACK_PARAMS.get(m, 0)) for m in _OFFLINE_FALLBACK]
+
+    fits, too_big = rank(candidates, hardware, max_results=limit)
+
+    out: list[dict[str, str]] = []
+    for fit in fits:
+        label = f"{fit.model_id}  ({fit.total_gb:.1f} GB"
+        if fit.notes:
+            label += f", {fit.notes[0]}"
+        label += ")"
+        out.append({"id": fit.model_id, "name": label})
+
+    # Show what the machine *cannot* run, with the quantization that would
+    # work -- more useful than silently hiding it.
+    for fit in too_big[:2]:
+        hint = next((n for n in fit.notes if "quantization" in n), "too large for this device")
+        out.append({
+            "id": fit.model_id,
+            "name": f"{fit.model_id}  ({fit.total_gb:.1f} GB, {hint})",
+        })
+
+    if offline:
+        out.insert(0, {
+            "id": "",
+            "name": "[offline: showing built-in list — check your connection]",
+        })
+        out = [o for o in out if o["id"]]
+
+    return out
 
 
 def _build_model_table(
@@ -266,6 +332,7 @@ def _download_model(model_id: str, console: Console) -> bool:
                 if total_bytes > 0:
                     progress.update(task, total=total_bytes)
             except Exception:
+                # CQ-08: intentional fail-open: fallback default assigned on failure.
                 total_bytes = 0
 
             progress.update(task, description=f"[cyan]Downloading {model_id}...")
@@ -291,6 +358,7 @@ def _download_model(model_id: str, console: Console) -> bool:
             console.print(f"[red]Network error downloading model: {exc}[/red]")
             return False
         except Exception as exc:
+            # CQ-08: failure is recorded/handled inline (caller-visible or cleanup); not propagated.
             progress.remove_task(task)
             console.print(f"[red]Unexpected error: {exc}[/red]")
             return False
@@ -379,6 +447,36 @@ WELCOME_ART = r"""
                                           |___/
 [/bold cyan]
 """
+
+
+def _print_join_guidance(console: Console, coordinator_port: int) -> None:
+    """Print the "join additional nodes" panel and rule."""
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
+
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+    except OSError:
+        ip = "127.0.0.1"
+
+    join_cmd = f"distllm cluster join --coordinator {ip}:{coordinator_port}"
+
+    console.print(
+        Panel(
+            f"[bold]Join Additional Nodes[/bold]\n\n"
+            f"To add more GPU-equipped machines to your cluster, run this command "
+            f"on each machine:\n\n"
+            f"  [bold cyan]{join_cmd}[/bold cyan]\n\n"
+            f"The coordinator will automatically assign model layers to each "
+            f"worker based on available memory.\n\n"
+            f"[dim]Tip:[/dim] If you are on the same LAN, try auto-discovery:\n"
+            f"  [bold cyan]distllm cluster join --discover[/bold cyan]",
+            title="Scaling Your Cluster",
+            border_style="blue",
+        )
+    )
+    console.print()
 
 
 def run_onboard(
@@ -585,10 +683,13 @@ def run_onboard(
         default=True,
     )
 
+    coordinator_started = False
+
     if start_now:
         console.print()
         console.print("[yellow]Starting coordinator...[/yellow]")
         try:
+            from distllm.cli.coordinator_serve import start_coordinator
             from distllm.core.coordinator import Coordinator
 
             c = Coordinator(
@@ -602,16 +703,26 @@ def run_onboard(
                 try:
                     c.load_local_model()
                 except Exception as exc:
+                    # CQ-08: failure is surfaced via console output; not propagated.
                     console.print(
                         f"[yellow]Could not load model locally: {exc}\n"
                         "Will start coordinator and wait for remote workers.[/yellow]"
                     )
 
-            c.start()
-            console.print(
-                f"[green]Coordinator started on port {coordinator_port}.\n"
-                f"API available at http://localhost:{api_port}.[/green]"
-            )
+            # Start non-blocking; the wizard still has guidance to print
+            # below, so the blocking wait happens after the farewell —
+            # Ctrl+C stops the coordinator and exits.
+            start_rc = start_coordinator(c)
+            if start_rc is None:
+                coordinator_started = True
+                console.print(
+                    f"[green]Coordinator started on port {coordinator_port}.\n"
+                    f"API available at http://localhost:{api_port}.[/green]"
+                )
+            else:
+                console.print(
+                    f"[red]Coordinator failed to start (exit code {start_rc}).[/red]"
+                )
         except ImportError as exc:
             console.print(
                 f"[red]Could not start coordinator: {exc}\n"
@@ -619,47 +730,48 @@ def run_onboard(
                 f'"{selected_model["id"]}" --port {coordinator_port}[/bold][/red]'
             )
         except Exception as exc:
+            # CQ-08: failure is surfaced via console output; not propagated.
             console.print(
                 f"[red]Failed to start coordinator: {exc}\n"
                 f"Run manually: [bold]distllm cluster start --model "
                 f'"{selected_model["id"]}" --port {coordinator_port}[/bold][/red]'
             )
 
-    # ── Guide for joining additional nodes ──────────────────────────────────
-    console.print()
-    console.print(Rule(style="dim"))
-    console.print()
-
+    # ── Guide for joining additional nodes + farewell, then serve ───────────
+    # Everything after the coordinator starts is under one KeyboardInterrupt
+    # guard: a Ctrl+C during the guidance or the blocking wait stops the
+    # coordinator cleanly instead of dying with a traceback.
     try:
-        ip = socket.gethostbyname(socket.gethostname())
-    except OSError:
-        ip = "127.0.0.1"
+        _print_join_guidance(console=console, coordinator_port=coordinator_port)
 
-    join_cmd = f"distllm cluster join --coordinator {ip}:{coordinator_port}"
-
-    console.print(
-        Panel(
-            f"[bold]Join Additional Nodes[/bold]\n\n"
-            f"To add more GPU-equipped machines to your cluster, run this command "
-            f"on each machine:\n\n"
-            f"  [bold cyan]{join_cmd}[/bold cyan]\n\n"
-            f"The coordinator will automatically assign model layers to each "
-            f"worker based on available memory.\n\n"
-            f"[dim]Tip:[/dim] If you are on the same LAN, try auto-discovery:\n"
-            f"  [bold cyan]distllm cluster join --discover[/bold cyan]",
-            title="Scaling Your Cluster",
-            border_style="blue",
+        # ── Farewell ────────────────────────────────────────────────────────
+        console.print()
+        console.print(
+            "[bold green]Setup complete.[/bold green] "
+            "Your DistLLM cluster is ready. "
+            "Run [bold]distllm --help[/bold] to explore all commands.\n"
         )
-    )
-    console.print()
 
-    # ── Farewell ────────────────────────────────────────────────────────────
-    console.print()
-    console.print(
-        "[bold green]Setup complete.[/bold green] "
-        "Your DistLLM cluster is ready. "
-        "Run [bold]distllm --help[/bold] to explore all commands.\n"
-    )
+        # ── Keep serving (blocking) ─────────────────────────────────────────
+        # The coordinator was started non-blocking above; now that all
+        # guidance is printed, stay in the foreground until Ctrl+C so the
+        # process does not exit out from under a coordinator it brought up.
+        if coordinator_started:
+            from distllm.cli.coordinator_serve import wait_and_shutdown
+
+            console.print(
+                f"[dim]Coordinator is serving on port {coordinator_port}. "
+                "Press Ctrl+C to stop it.[/dim]"
+            )
+            wait_and_shutdown(c)
+    except KeyboardInterrupt:
+        if coordinator_started:
+            from distllm.cli.coordinator_serve import shutdown_coordinator
+
+            console.print("\n[yellow]Interrupted — stopping coordinator.[/yellow]")
+            shutdown_coordinator(c)
+        else:
+            console.print()
 
 
 def main() -> None:

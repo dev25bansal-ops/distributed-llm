@@ -17,10 +17,10 @@ class AppState:
     """Manages shared application state — single source of truth."""
 
     def __init__(self):
-        self.coordinator: "Coordinator | None" = None
-        self.monitor: "SystemMonitor | None" = None
+        self.coordinator: Coordinator | None = None
+        self.monitor: SystemMonitor | None = None
         self.startup_time: float = time.time()
-        self.metrics_exporter: "DistLLMPrometheusExporter | None" = None
+        self.metrics_exporter: DistLLMPrometheusExporter | None = None
         self.ws_broadcast_task = None
         self.verify_plugins: bool = False
 

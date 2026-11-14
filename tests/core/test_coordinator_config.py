@@ -214,8 +214,55 @@ class TestCoordinatorConfigFromSettings:
         assert cfg.model_name == "test-model"
 
     def test_from_settings_override_unknown_key(self):
-        """Override for a key that doesn't exist should be silently ignored."""
-        settings = self._make_settings()
-        cfg = CoordinatorConfig.from_settings(settings, nonexistent="value")
+        """Override for a key that doesn't exist raises (was silently ignored).
 
-        assert cfg.model_name == "test-model"
+        Silently dropping a typo'd override (e.g. ``max_batchsize`` instead
+        of ``max_batch_size``) meant the intended change never took effect
+        and nothing signalled it — the constructor path is the strict one.
+        """
+        settings = self._make_settings()
+        with pytest.raises(TypeError, match="max_batchsize"):
+            CoordinatorConfig.from_settings(settings, max_batchsize=999)
+
+    def test_from_settings_copies_prefix_cache_and_chunked_prefill(self):
+        """Configured prefix-cache/chunked-prefill settings must reach the
+        CoordinatorConfig instead of being replaced by its defaults.
+
+        Repro of the audit finding: real DistLLMSettings with
+        ``prefix_cache={'enabled': True, 'max_entries': 5000}`` used to come
+        out of from_settings as enabled=False / max_entries=256, silently.
+        """
+
+        class _Pc:
+            enabled = True
+            max_entries = 5000
+            min_prefix_len = 8
+            radix_tree_enabled = False
+
+        class _Cp:
+            enabled = True
+            chunk_size = 2048
+
+        settings = self._make_settings()
+        settings.prefix_cache = _Pc()
+        settings.chunked_prefill = _Cp()
+
+        cfg = CoordinatorConfig.from_settings(settings)
+        assert cfg.prefix_cache_enabled is True
+        assert cfg.prefix_cache_max_entries == 5000
+        assert cfg.prefix_cache_min_prefix_len == 8
+        assert cfg.radix_tree_cache_enabled is False
+        assert cfg.chunked_prefill_enabled is True
+        assert cfg.chunked_prefill_chunk_size == 2048
+
+    def test_from_settings_override_is_validated(self):
+        """Overrides pass through pydantic: out-of-range/invalid values raise
+        exactly like the direct constructor, instead of being setattr'd in."""
+        settings = self._make_settings()
+        with pytest.raises(ValueError):
+            CoordinatorConfig.from_settings(settings, port=99999)
+        with pytest.raises(ValueError):
+            CoordinatorConfig.from_settings(settings, dtype="int4")
+        # A valid override still applies.
+        cfg = CoordinatorConfig.from_settings(settings, prefix_cache_enabled=True)
+        assert cfg.prefix_cache_enabled is True

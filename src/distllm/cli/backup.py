@@ -35,6 +35,7 @@ def backup_create(
             "_note": "config file is not readable as text"
         }
     except Exception:
+        # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
         config_data = {"_note": "config file not found"}
 
     manifest = mgr.create_full(

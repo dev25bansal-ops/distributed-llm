@@ -254,19 +254,31 @@ class DraftModelRouter:
         cost_weight: float = 0.20,
         acceptance_weight: float = 0.30,
         load_weight: float = 0.15,
+        quality_scorer: Any | None = None,
     ) -> None:
         self._fleet = fleet
         self._latency_w = latency_weight
         self._cost_w = cost_weight
         self._acceptance_w = acceptance_weight
         self._load_w = load_weight
+        # Optional DraftQualityScorer. When present and select() is given a
+        # target_model, the per-target acceptance rate replaces the generic
+        # acceptance signal: the same draft can be excellent for one target
+        # and poor for another, and the fleet's recent_acceptance_rate is a
+        # blend across all targets.
+        self._quality_scorer = quality_scorer
         self._last_decision: RoutingDecision | None = None
 
     def select(
         self,
         constraints: RoutingConstraints | None = None,
+        target_model: str | None = None,
     ) -> RoutingDecision:
         """Select the best draft model endpoint for the given constraints.
+
+        When *target_model* is given and a quality scorer is configured, each
+        candidate's acceptance score comes from that scorer's per-(draft,
+        target) history instead of the fleet-wide acceptance rate.
 
         Returns a ``RoutingDecision`` with the selected endpoint and
         scoring details.  Never raises — falls back to the least-bad
@@ -305,7 +317,7 @@ class DraftModelRouter:
             if spec.max_concurrent > 0 and health.current_concurrent >= spec.max_concurrent:
                 continue
 
-            score = self._score(spec, health, constraints)
+            score = self._score(spec, health, constraints, target_model)
 
             # Check if this candidate meets all constraints
             meets_all = (
@@ -360,6 +372,7 @@ class DraftModelRouter:
         spec: DraftModelSpec,
         health: DraftModelHealth,
         constraints: RoutingConstraints,
+        target_model: str | None = None,
     ) -> float:
         """Score a draft model endpoint. Higher is better."""
         # Latency score: inverse of latency (lower latency = higher score)
@@ -371,8 +384,24 @@ class DraftModelRouter:
         max_cost = max(constraints.max_cost_per_hour, 0.01)
         cost_score = max(0.0, 1.0 - (spec.cost_per_hour / (max_cost * 2)))
 
-        # Acceptance rate score
+        # Acceptance rate score. Prefer the quality scorer's per-(draft,
+        # target) history when it has any: a draft that is strong for one
+        # target can be weak for another, while recent_acceptance_rate is a
+        # blend across every target it has served.
         acceptance = health.recent_acceptance_rate or spec.avg_acceptance_rate
+        if (
+            self._quality_scorer is not None
+            and target_model
+            and hasattr(self._quality_scorer, "get_acceptance_rate")
+        ):
+            try:
+                per_target = self._quality_scorer.get_acceptance_rate(
+                    spec.model_name, target_model
+                )
+            except Exception:
+                per_target = None
+            if per_target is not None:
+                acceptance = per_target
         acceptance_score = min(acceptance, 1.0)
 
         # Load score: lower concurrent = higher score

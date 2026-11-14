@@ -10,18 +10,27 @@ from __future__ import annotations
 import time
 import uuid
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
+if TYPE_CHECKING:
+    from distllm.core.coordinator import Coordinator
+
 from distllm.core.batch_scheduler import ScheduledBatch, Sequence
-from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.core.constrained_decoder import SchemaConstrainedDecoder
 from distllm.core.debug import is_debug_mode
 from distllm.core.graceful_degradation import LoadSnapshot
+from distllm.core.structured_output import JSONSchemaConstraint
 from distllm.errors.types import (
-    NodeError, NodeUnreachableError, OOMError, GRPCTimeoutError, BatchError,
+    BatchError,
+    GRPCTimeoutError,
+    NodeError,
+    NodeUnreachableError,
+    OOMError,
 )
 
 _current_request_id_ctx: ContextVar[str | None] = ContextVar(
@@ -54,7 +63,7 @@ class RequestPipeline:
     Holds a reference to the coordinator for shared state access.
     """
 
-    def __init__(self, coord: "Coordinator") -> None:
+    def __init__(self, coord: Coordinator) -> None:
         self._coord = coord
 
     # -- Token Sampling --
@@ -114,7 +123,14 @@ class RequestPipeline:
         accepted_tokens: list[int],
         next_token: int,
     ) -> list[int]:
-        tokens = list(accepted_tokens)
+        # ``accepted_tokens`` may carry the target's correction token at the
+        # end (``verify_batch``'s pinned mismatch contract appends it), but
+        # the accepted PREFIX is exactly the first ``accepted_count``
+        # entries.  Trimming to the prefix here keeps this helper's own
+        # contract ("append next_token when the target verified beyond the
+        # accepted prefix") from double-emitting the correction token that
+        # is already in the list.
+        tokens = list(accepted_tokens[:accepted_count])
         draft_len = int(draft_tokens.numel()) if isinstance(draft_tokens, torch.Tensor) else len(draft_tokens)
         if target_logits.dim() == 3:
             verification_steps = target_logits.shape[1]
@@ -214,9 +230,16 @@ class RequestPipeline:
 
         prompt_len = len(c.tokenizer.encode(prompt)) if c.tokenizer else 0
 
-        # Classify workload for auto-speculative method selection
+        # Classify workload for auto-speculative method selection.
+        # ``set_workload_type`` lived only on DistributedSpeculativeDecoder;
+        # guarding the call means a decoder that lacks it (or a third-party
+        # one) degrades to no auto-selection instead of crashing the request.
         spec_decoder = c._model_svc.get_spec_decoder() if hasattr(c, '_model_svc') else c._spec_decoder
-        if spec_decoder is not None and spec_decoder.method == "auto":
+        if (
+            spec_decoder is not None
+            and getattr(spec_decoder, "method", None) == "auto"
+            and hasattr(spec_decoder, "set_workload_type")
+        ):
             spec_decoder.set_workload_type(prompt)
 
         try:
@@ -278,13 +301,22 @@ class RequestPipeline:
                     if hybrid_executor is not None:
                         logits = hybrid_executor.execute(zc_input, node_kv_caches, request_id=request_id, draft_tokens=draft_tokens if use_speculative else None)
                     else:
-                        logits = c._pipeline.run_pipeline(zc_input, node_kv_caches, request_id=request_id, draft_tokens=draft_tokens if use_speculative else None)
+                        # run_pipeline takes no draft_tokens kwarg — passing it
+                        # raised TypeError on every speculative run through
+                        # this path. The pipeline forwards a plain sequence;
+                        # the draft is verified by verify_and_accept below,
+                        # which is what actually consumes draft_tokens.
+                        logits = c._pipeline.run_pipeline(zc_input, node_kv_caches, request_id=request_id)
 
                     if use_speculative and active_method == "medusa":
                         draft_tokens, _, _ = c._spec_decoder.generate_draft_tokens(None, step_input, target_logits=logits)
 
                     if use_speculative and draft_tokens:
-                        accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer, temperature=temperature, draft_logits=draft_logits)
+                        accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(
+                            draft_tokens, logits, c.tokenizer,
+                            temperature=temperature, draft_logits=draft_logits,
+                            span_length=step_input.shape[1],
+                        )
                         if c._continuous_trainer is not None and accepted_tokens:
                             draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
                             c._continuous_trainer.record(draft_ids, list(accepted_tokens))
@@ -350,10 +382,27 @@ class RequestPipeline:
             c.record_metric("total_generation_time", elapsed)
 
             if c.metrics_exporter:
-                c.metrics_exporter.tokens_generated.inc(tokens_generated)
-                c.metrics_exporter.token_latency.observe(elapsed)
+                # Every family below declares labels (model / tenant):
+                # prometheus_client raises ValueError on any write missing a
+                # declared label value, so the unlabelled .inc()/.observe()/
+                # .set() this used to call could never work on a real
+                # exporter.
+                _metric_labels = {"model": c.model_name, "tenant": user_id}
+                c.metrics_exporter.tokens_generated.labels(**_metric_labels).inc(tokens_generated)
+                c.metrics_exporter.token_latency.labels(model=c.model_name).observe(elapsed)
                 if elapsed > 0:
-                    c.metrics_exporter.tokens_per_second.set(tokens_generated / elapsed)
+                    c.metrics_exporter.tokens_per_second.labels(model=c.model_name).set(tokens_generated / elapsed)
+
+            # OpenTelemetry generation metrics. get_distllm_metrics() returns
+            # no-op instruments when no meter provider / OTel SDK is
+            # installed, so this is free on ordinary installs and starts
+            # exporting the moment DISTLLM's setup_metrics() is wired.
+            try:
+                from distllm.observability.metrics import get_distllm_metrics
+
+                get_distllm_metrics().record_generation(elapsed, tokens_generated)
+            except Exception:
+                pass
 
             req_log.info(f"Generated {tokens_generated} tokens in {elapsed:.2f}s ({tokens_generated/max(elapsed, 0.001):.1f} tok/s)")
 
@@ -369,12 +418,19 @@ class RequestPipeline:
         except (NodeUnreachableError, OOMError, GRPCTimeoutError, NodeError) as e:
             c.record_metric("errors", 1)
             if c.metrics_exporter:
-                c.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()
+                # errors_total declares ["type", "model", "tenant"]; a partial
+                # label set raises ValueError, which inside this handler would
+                # REPLACE the real inference error with a metrics error.
+                c.metrics_exporter.errors_total.labels(
+                    type=type(e).__name__, model=c.model_name, tenant=user_id,
+                ).inc()
             raise
         except Exception as e:
             c.record_metric("errors", 1)
             if c.metrics_exporter:
-                c.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()
+                c.metrics_exporter.errors_total.labels(
+                    type=type(e).__name__, model=c.model_name, tenant=user_id,
+                ).inc()
             raise
         finally:
             c._param_update_channel.unregister(request_id)
@@ -592,12 +648,25 @@ class RequestPipeline:
 
         if c._spec_decoder is not None and c._spec_decoder.is_enabled:
             seq_inputs = [input_ids[:, start:start + length] for start, length in zip(seq_starts, seq_lengths, strict=False)]
-            draft_tokens_list, _ = c._spec_decoder.generate_batch_draft_tokens(c.draft_model, seq_inputs)
+            draft_tokens_list, _, draft_logits_list = c._spec_decoder.generate_batch_draft_tokens(c.draft_model, seq_inputs)
             with torch.no_grad():
                 outputs = c.local_partitioner.full_model(input_ids=input_ids, attention_mask=attention_mask)
                 all_logits = outputs.logits
-            target_logits_list = [all_logits[i:i+1] for i in range(batch.batch_size)]
-            results = c._spec_decoder.verify_batch(draft_tokens_list=draft_tokens_list, target_logits_list=target_logits_list, tokenizer=c.tokenizer)
+            # Per-sequence slices of the (1, total, V) flat-batch logits.
+            # all_logits[i:i+1] sliced the batch dimension, so every slice
+            # after the first was empty ((0, seq, V)) and row geometry was
+            # wrong for the rest.  Row r of sequence i's slice predicts the
+            # token after its fed position r, so span_lengths=seq_lengths
+            # anchors draft token 0 on the slice's last row.
+            target_logits_list = [all_logits[:, start:start + length] for start, length in zip(seq_starts, seq_lengths, strict=False)]
+            results = c._spec_decoder.verify_batch(
+                draft_tokens_list=draft_tokens_list,
+                target_logits_list=target_logits_list,
+                tokenizer=c.tokenizer,
+                draft_logits_list=draft_logits_list,
+                temperature=[seq.temperature for seq in batch.sequences],
+                span_lengths=list(seq_lengths),
+            )
             if c._continuous_trainer is not None and draft_tokens_list:
                 for idx, (_, accepted, _) in enumerate(results):
                     if accepted and idx < len(draft_tokens_list):
@@ -605,7 +674,14 @@ class RequestPipeline:
                         draft_ids = dt.tolist() if hasattr(dt, 'tolist') else list(dt) if dt else []
                         if draft_ids:
                             c._continuous_trainer.record(draft_ids, list(accepted))
-            next_tokens = torch.tensor([r[2] for r in results], device=device)
+            # -1 means "accepted prefix has no successor row in the span":
+            # the scheduler consumes exactly one token per step, so emit the
+            # first accepted draft (the next token in sequence order) rather
+            # than the last, which would skip the earlier accepted tokens.
+            next_tokens = torch.tensor(
+                [(r[1][0] if r[2] < 0 and r[1] else r[2]) for r in results],
+                dtype=torch.long, device=device,
+            )
         else:
             with torch.no_grad():
                 outputs = c.local_partitioner.full_model(input_ids=input_ids, attention_mask=attention_mask)
@@ -660,7 +736,13 @@ class RequestPipeline:
                     logits = c._pipeline.run_pipeline_overlap(input_ids, node_kv_caches, request_id=seq.request_id)
                 else:
                     logits = c._pipeline.run_pipeline(input_ids, node_kv_caches, request_id=seq.request_id)
-                _, accepted, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer, temperature=seq.temperature, draft_logits=draft_logits)
+                _, accepted, next_token = c._spec_decoder.verify_and_accept(draft_tokens, logits, c.tokenizer, temperature=seq.temperature, draft_logits=draft_logits, span_length=input_ids.shape[1])
+                if next_token < 0 and accepted:
+                    # -1 = accepted prefix has no successor row in the span
+                    # (only the row predicting draft 0 exists). Emit the first
+                    # accepted draft so this step still advances the sequence
+                    # by one token in the right order.
+                    next_token = int(accepted[0])
                 if c._continuous_trainer is not None and accepted:
                     draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
                     c._continuous_trainer.record(draft_ids, list(accepted))
@@ -719,7 +801,18 @@ class RequestPipeline:
         last_logits = outputs[:, -1, :] if outputs.dim() == 3 else outputs
 
         if use_spec and draft_tokens_list:
-            results = c._spec_decoder.verify_batch(draft_tokens_list=draft_tokens_list, target_logits_list=[last_logits[i:i+1] for i in range(batch.batch_size)], tokenizer=c.tokenizer, draft_logits_list=draft_logits_list)
+            # Only the last row per sequence survives the pipeline (outputs
+            # [:, -1, :]) — and that row is the one that predicts draft
+            # token 0, so span_lengths=1 anchors verification there instead
+            # of consulting row 0 of a one-row span for every draft.
+            results = c._spec_decoder.verify_batch(
+                draft_tokens_list=draft_tokens_list,
+                target_logits_list=[last_logits[i:i+1] for i in range(batch.batch_size)],
+                tokenizer=c.tokenizer,
+                draft_logits_list=draft_logits_list,
+                temperature=[seq.temperature for seq in batch.sequences],
+                span_lengths=[1] * len(draft_tokens_list),
+            )
             if c._continuous_trainer is not None:
                 for idx, (_, accepted, _) in enumerate(results):
                     if accepted and idx < len(draft_tokens_list):
@@ -729,7 +822,13 @@ class RequestPipeline:
                                 dt.tolist() if hasattr(dt, 'tolist') else list(dt),
                                 list(accepted),
                             )
-            next_tokens = torch.tensor([r[2] for r in results], device=last_logits.device)
+            # -1 = no successor row inside this one-row span: emit the first
+            # accepted draft (only draft 0 is verifiable here) so every
+            # sequence still advances one token in the right order.
+            next_tokens = torch.tensor(
+                [(r[1][0] if r[2] < 0 and r[1] else r[2]) for r in results],
+                dtype=torch.long, device=last_logits.device,
+            )
         else:
             next_tokens = self._sample_batch(last_logits, batch)
 
@@ -811,7 +910,10 @@ class RequestPipeline:
                 with torch.no_grad():
                     verify_outputs = model(input_ids=verify_input, use_cache=False)
                 target_logits = verify_outputs.logits[:, gen_pos - 1:, :]
-                accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(draft_tokens=draft_tokens, target_logits=target_logits, tokenizer=c.tokenizer, temperature=temperature)
+                # The slice starts at the row that predicts draft token 0
+                # (gen_pos-1 predicts the token at gen_pos), so row j
+                # verifies draft j: span_length=1 => shift 0.
+                accepted_count, accepted_tokens, next_token = c._spec_decoder.verify_and_accept(draft_tokens=draft_tokens, target_logits=target_logits, tokenizer=c.tokenizer, temperature=temperature, span_length=1)
                 if c._continuous_trainer is not None and accepted_tokens:
                     draft_ids = draft_tokens.tolist() if hasattr(draft_tokens, 'tolist') else list(draft_tokens) if draft_tokens else []
                     c._continuous_trainer.record(draft_ids, list(accepted_tokens))

@@ -1,6 +1,5 @@
 """Streaming SSE response helpers for chat and completion endpoints.
 
-from loguru import logger
 Deduplicates the nearly-identical _stream_chat and _stream_completion
 functions into a single _stream_response() that parameterizes the
 object_type and request_id prefix.
@@ -16,12 +15,25 @@ import json
 import os
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any
 
+from loguru import logger
+
+from distllm.core.param_update_channel import ParamUpdateChannel
 from distllm.core.streaming_generator import StreamChunk
 from distllm.core.token_streaming_buffer import TokenStreamingBuffer
-from distllm.core.param_update_channel import ParamUpdateChannel
+from distllm.errors import ConfigError
+
+# Imported at module scope, not inside _stream_response. Starlette has already
+# sent the 200 status and headers by the time the generator body runs, so an
+# import that fails there cannot be reported: it aborts the stream and the
+# client receives a well-formed 200 with an empty body. That is exactly what
+# happened when this was a lazy import and the [observability] extra was
+# absent -- every streamed completion came back empty. Failing at import time
+# instead surfaces as a normal 500 with a traceback.
+from distllm.observability.spans import async_span_generation, record_ttft
 
 
 def _get_client_id(request: Any) -> str:
@@ -43,10 +55,26 @@ def _get_client_id(request: Any) -> str:
 
 import threading
 
-import torch
+
+# torch is an [self-hosted]-extra dependency; this module is imported by
+# routes/chat.py on the API startup path. Both torch uses below are inside
+# methods, so the import is deferred rather than fatal at module scope.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for streaming generation. Install the ML "
+            "stack: pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
+
+from distllm.core.token_generator import TokenGenerator
 
 from .api_state import g
-from distllm.core.token_generator import TokenGenerator
 
 _token_gen: TokenGenerator | None = None
 _token_gen_lock = threading.Lock()
@@ -108,6 +136,114 @@ def _build_chunk(
     )
 
 
+def ensure_streaming_available(coord: Any) -> None:
+    """Fail fast, before the SSE response starts, when *coord* cannot generate.
+
+    Starlette sends the 200 status line and headers before the first
+    iteration of a StreamingResponse iterator, so an error raised inside the
+    generator cannot become an HTTP error status. A coordinator that exists
+    but has neither a local partitioner nor registered pipeline nodes
+    therefore used to produce a role chunk, an empty ``finish_reason="stop"``
+    chunk and ``[DONE]`` — a silent, successful-looking empty completion —
+    while the identical non-streaming request correctly raised
+    ``ConfigError("No nodes registered in the pipeline")``. Route handlers
+    call this before returning a StreamingResponse so the failure surfaces as
+    a real HTTP error (500, code ``config_error``) instead.
+
+    Mirrors the dispatch conditions of :func:`_generate_tokens`: the local
+    partitioner (directly or on the inference engine) serves single-node
+    installs; a non-empty ``node_order`` serves distributed pipelines.
+    """
+    if coord is None:
+        # Routes raise their own 503 when no coordinator is loaded at all.
+        return
+    partitioner = getattr(coord, "local_partitioner", None)
+    if partitioner is None:
+        engine = getattr(coord, "_inference_engine", None)
+        partitioner = getattr(engine, "local_partitioner", None)
+    if partitioner is not None or getattr(coord, "node_order", None):
+        return
+    raise ConfigError(
+        "No nodes registered in the pipeline", context={"action": "stream"}
+    )
+
+
+async def _stream_zero_tokens(
+    request: Any,
+    object_type: str,
+    request_id_prefix: str,
+) -> AsyncGenerator[str, None]:
+    """SSE body for a ``max_tokens=0`` request that asked for ``stream=true``.
+
+    The routes used to return a JSON body for this combination, silently
+    ignoring the stream flag: an SSE reader (``distllm chat --stream``, any
+    OpenAI SDK with ``stream=True``) saw an empty stream with no ``[DONE]``,
+    indistinguishable from a dropped connection. Emit the same three-event
+    shape every other stream ends with: the role chunk, an empty content
+    chunk carrying the real finish reason (``length``, matching the
+    non-streaming zero-token response), and the ``[DONE]`` sentinel.
+    """
+    request_id = f"{request_id_prefix}{uuid.uuid4().hex[:12]}"
+    model_name = request.model
+    yield _build_chunk(request_id, object_type, model_name, include_role=True).to_sse()
+    yield _build_chunk(request_id, object_type, model_name, finish_reason="length").to_sse()
+    yield StreamChunk.data_done()
+
+
+def _step_local_model(
+    model,
+    model_input,
+    past_key_values,
+    tokenizer,
+    token_gen: TokenGenerator,
+    temp: float,
+    tp: float,
+    tk: int,
+    constraint,
+    include_logprobs: bool,
+    top_logprobs_n: int,
+    prefill: bool,
+):
+    """Run one autoregressive step for the local-partitioner path.
+
+    Executed inside a single asyncio.to_thread hop (PERF-07-STREAM) so the
+    stateful model call and the sample/decode/logprob CPU work do not block
+    the event loop. Reproduces the original per-token semantics exactly:
+    prefill feeds input_ids, decode feeds the last next_token with the KV
+    cache; constrained decoding masks logits before sampling; the sampled
+    token is reshaped to [batch, 1] and decoded; the constraint FSM is
+    updated with the decoded text; logprobs are computed when requested.
+    """
+    if prefill:
+        outputs = model(model_input, use_cache=True)
+    else:
+        outputs = model(model_input, past_key_values=past_key_values, use_cache=True)
+
+    logits = outputs.logits[:, -1, :]
+
+    if constraint is not None:
+        mask = constraint.get_logits_mask(logits.shape[-1], tokenizer)
+        logits[:, ~mask] = float('-inf')
+
+    next_token, _ = token_gen.sample(logits, temperature=temp, top_p=tp, top_k=tk)
+    if next_token.dim() == 0:
+        next_token = next_token.unsqueeze(0).unsqueeze(0)
+    elif next_token.dim() == 1:
+        next_token = next_token.unsqueeze(-1)
+    token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
+
+    if constraint is not None:
+        constraint.update(token_text)
+
+    logprob_data = None
+    if include_logprobs:
+        logprob_data = TokenGenerator._compute_logprobs(
+            logits, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
+        )
+
+    return outputs, next_token, token_text, logprob_data
+
+
 async def _generate_tokens(
     prompt: str,
     request_id: str,
@@ -159,6 +295,7 @@ async def _generate_tokens(
         past_key_values = None
 
         prefill_start = time.monotonic()
+        token_gen = _get_token_gen()
 
         with torch.no_grad():
             for step in range(max_tokens):
@@ -181,33 +318,36 @@ async def _generate_tokens(
                         include_logprobs = getattr(params, 'include_logprobs', False)
                         top_logprobs_n = getattr(params, 'top_logprobs', 0)
 
+                # PERF-07-STREAM: run the whole per-token body — the stateful
+                # model call (it consumes/updates past_key_values) plus the
+                # sample/decode/logprob CPU work — in ONE to_thread hop. The
+                # loop is autoregressive so hops cannot be merged across
+                # tokens, but coalescing the CPU work here keeps one hop per
+                # token with the sample/decode/logprobs moved off the event
+                # loop instead of blocking it after a separate hop.
                 if step == 0:
-                    outputs = await asyncio.to_thread(model, input_ids, use_cache=True)
+                    outputs, next_token, token_text, logprob_data = await asyncio.to_thread(
+                        _step_local_model,
+                        model, input_ids, None,
+                        tokenizer=tokenizer, token_gen=token_gen,
+                        temp=temp, tp=tp, tk=tk,
+                        constraint=constraint, include_logprobs=include_logprobs,
+                        top_logprobs_n=top_logprobs_n,
+                        prefill=True,
+                    )
                 else:
-                    outputs = await asyncio.to_thread(model, next_token, past_key_values=past_key_values, use_cache=True)
+                    outputs, next_token, token_text, logprob_data = await asyncio.to_thread(
+                        _step_local_model,
+                        model, next_token, past_key_values,
+                        tokenizer=tokenizer, token_gen=token_gen,
+                        temp=temp, tp=tp, tk=tk,
+                        constraint=constraint, include_logprobs=include_logprobs,
+                        top_logprobs_n=top_logprobs_n,
+                        prefill=False,
+                    )
 
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
-
-                if constraint is not None:
-                    mask = constraint.get_logits_mask(logits.shape[-1], tokenizer)
-                    logits[:, ~mask] = float('-inf')
-
-                next_token, _ = _get_token_gen().sample(logits, temperature=temp, top_p=tp, top_k=tk)
-                if next_token.dim() == 0:
-                    next_token = next_token.unsqueeze(0).unsqueeze(0)
-                elif next_token.dim() == 1:
-                    next_token = next_token.unsqueeze(-1)
-                token_text = tokenizer.decode(next_token[0, 0].item(), skip_special_tokens=True)
-
-                if constraint is not None:
-                    constraint.update(token_text)
-
-                logprob_data = None
-                if include_logprobs:
-                    logprob_data = TokenGenerator._compute_logprobs(
-                        logits, next_token[0, 0].item(), tokenizer, top_logprobs_n, temp
-                    )
 
                 ttft = None
                 if step == 0:
@@ -293,6 +433,19 @@ async def _generate_tokens(
             if token_id == tokenizer.eos_token_id:
                 break
 
+    else:
+        # Neither a local partitioner nor any pipeline nodes: there is no
+        # backend that could produce tokens. Falling off the end here is what
+        # made a streamed request against a coordinator with no workers look
+        # like a successful empty completion. Route handlers call
+        # ensure_streaming_available() before the response starts; this raise
+        # covers the race where nodes disappear between that check and the
+        # first token (the stream truncates without [DONE], and the cause is
+        # in the log) and direct _generate_tokens callers.
+        raise ConfigError(
+            "No nodes registered in the pipeline", context={"action": "stream"}
+        )
+
 
 async def _stream_response(
     prompt: str,
@@ -330,16 +483,33 @@ async def _stream_response(
     local_tokenizer = getattr(local_coord, 'tokenizer', None) if local_coord else None
     prompt_len = len(local_tokenizer.encode(prompt)) if local_tokenizer else 0
 
-    # Initialize streaming cost tracking
+    # Initialize streaming cost tracking. Off unless explicitly enabled:
+    # the per-token cost event is a private DistLLM extension and must not
+    # appear in an OpenAI-compatible stream by default.
     cost_helper = None
+    _cost_on = False
     try:
-        from distllm.api.cost_middleware import StreamingCostMiddleware
-        cost_helper = StreamingCostMiddleware()
-        cost_helper.start_request(request_id, prompt_len, model_name)
+        from distllm.api.api_settings import get_api_settings
+        _cost_on = bool(get_api_settings().cost_tracking)
     except ImportError:
-        pass
-
-    from distllm.observability.spans import async_span_generation, record_ttft
+        # The settings module is part of the package; if it cannot be imported
+        # the install is broken, and silently reporting "cost tracking off"
+        # would hide that. Cost tracking itself stays off (the safe default),
+        # but the reason is recorded rather than swallowed.
+        logger.warning(
+            "distllm.api.api_settings unavailable; streaming cost tracking is "
+            "disabled. This indicates a broken installation."
+        )
+    except Exception:
+        logger.opt(exception=True).warning(
+            "could not read cost-tracking setting; assuming off")
+    if _cost_on:
+        try:
+            from distllm.api.cost_middleware import StreamingCostMiddleware
+            cost_helper = StreamingCostMiddleware()
+            cost_helper.start_request(request_id, prompt_len, model_name)
+        except ImportError:
+            pass
 
     stream_start = time.monotonic()
     ttft_recorded = None
@@ -363,10 +533,12 @@ async def _stream_response(
             completion_tokens += 1
             full_text += token_text
 
-            # Track streaming cost
-            cost_event = None
+            # Track streaming cost. The event is *not* attached to the
+            # chunk: the OpenAI streaming format has no per-chunk cost
+            # field, and only the final usage chunk (below, under
+            # stream_options.include_usage) may carry a usage object.
             if cost_helper:
-                cost_event = cost_helper.record_token(request_id)
+                cost_helper.record_token(request_id)
 
             if ttft is not None:
                 ttft_recorded = ttft
@@ -380,9 +552,6 @@ async def _stream_response(
                     token_text=batch.text,
                     logprob_data=logprob_data,
                 )
-                # Inject cost data into chunk metadata
-                if cost_event and hasattr(chunk, 'usage'):
-                    chunk.usage = {**(chunk.usage or {}), "_cost": cost_event}
                 yield chunk.to_sse()
 
         batch = token_buffer.finish()
@@ -395,8 +564,8 @@ async def _stream_response(
         _full_text_trimmed = full_text.strip()
         if _full_text_trimmed and ('"tool_calls"' in _full_text_trimmed or '<tool_call>' in _full_text_trimmed):
             try:
-                from distllm.api.routes.chat import _ToolCallingEngine
-                _tc_engine = _ToolCallingEngine()
+                from distllm.api.tool_calling import ToolCallingEngine
+                _tc_engine = ToolCallingEngine()
                 parsed_calls = _tc_engine.extract_tool_calls(_full_text_trimmed)
                 if parsed_calls:
                     tool_calls_data = []
@@ -447,14 +616,16 @@ async def _stream_response(
         if cost_helper:
             cost_summary = cost_helper.finish_request(request_id)
 
-        if include_usage and local_tokenizer:
-            prompt_tokens = len(local_tokenizer.encode(prompt))
+        # Final usage chunk — OpenAI semantics: one chunk with an empty
+        # ``choices`` array, emitted only when the client asked for it via
+        # ``stream_options.include_usage``.
+        if include_usage:
             usage_data = {
-                "prompt_tokens": prompt_tokens,
+                "prompt_tokens": prompt_len,
                 "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
+                "total_tokens": prompt_len + completion_tokens,
             }
-            # Merge cost summary into usage
+            # Merge cost summary into usage when cost tracking is enabled
             if cost_summary:
                 usage_data["cost"] = cost_summary
             usage_chunk = StreamChunk(

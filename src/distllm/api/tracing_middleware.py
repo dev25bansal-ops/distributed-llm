@@ -61,7 +61,6 @@ from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-
 # ---------------------------------------------------------------------------
 # Pure-Python fallback types (used when OpenTelemetry is unavailable)
 # ---------------------------------------------------------------------------

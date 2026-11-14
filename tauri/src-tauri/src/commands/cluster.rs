@@ -18,34 +18,40 @@ pub async fn create_cluster(
     model: Option<String>,
 ) -> Result<ClusterStatus, AppError> {
     let port = port.unwrap_or(8000);
-    let mut coord = state.coordinator.lock().map_err(|e| AppError::Internal(e.to_string()))?;
-    if coord.is_some() {
-        return Err(AppError::ClusterAlreadyRunning);
+    {
+        // Scoped so the MutexGuard is released before the `.await` below.
+        let mut coord = state
+            .coordinator
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if coord.is_some() {
+            return Err(AppError::ClusterAlreadyRunning);
+        }
+
+        let python = ensure_distllm()?;
+
+        let mut args = vec![
+            "-m".into(),
+            "distllm.cli.main".into(),
+            "cluster".into(),
+            "start".into(),
+            "--port".into(),
+            port.to_string(),
+        ];
+        if let Some(ref m) = model {
+            validate_model_name(m)?;
+            args.extend(["--model".into(), m.clone()]);
+        }
+
+        let child = Command::new(python)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| AppError::SpawnFailed(format!("coordinator: {}", e)))?;
+        *coord = Some(child);
     }
 
-    let python = ensure_distllm()?;
-
-    let mut args = vec![
-        "-m".into(),
-        "distllm.cli.main".into(),
-        "cluster".into(),
-        "start".into(),
-        "--port".into(),
-        port.to_string(),
-    ];
-    if let Some(ref m) = model {
-        validate_model_name(m)?;
-        args.extend(["--model".into(), m.clone()]);
-    }
-
-    let child = Command::new(python)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| AppError::SpawnFailed(format!("coordinator: {}", e)))?;
-
-    *coord = Some(child);
     let cid = format!("cluster-{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let token = uuid::Uuid::new_v4().to_string();
     *state.cluster_id.lock().map_err(|e| AppError::Internal(e.to_string()))? = Some(cid);

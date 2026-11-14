@@ -111,3 +111,33 @@ def test_prefetcher_cross_model_only_on_matching_prompt():
     hit = prefetcher.warm_start([1, 2, 3, 4], model_id="llama-instruct")
     assert hit.source == WarmStartSource.CROSS_MODEL
     assert hit.model_id == "llama-chat"
+
+
+def test_prefetcher_metadata_only_entry_is_not_a_warm_hit():
+    """observe() stores kv_data=None; warm_start must NOT report that as a
+    CROSS_MODEL hit.
+
+    Regression: audit 2026-11-13 — the prefetcher's only store path passes
+    kv_data=None, so every observed prefix produced hit=True with nothing
+    to reuse: a caller trusting the hit skips prefill/KV computation and
+    gains nothing.
+    """
+    sharing = _make_sharing()
+    prefetcher = ClusterPredictivePrefetcher(
+        node_id="node-1",
+        cross_model_sharing=sharing,
+    )
+
+    # observe() persists a metadata-only entry (kv_data=None).
+    prefetcher.observe([1, 2], model_id="llama-chat")
+
+    result = prefetcher.warm_start([1, 2], model_id="llama-instruct")
+    assert result.source == WarmStartSource.MISS
+    assert result.hit is False
+
+    # With real KV stored, the hit is reported AND the payload is exposed.
+    sharing.store("llama-chat", [1, 2], "REAL-KV")
+    result2 = prefetcher.warm_start([1, 2], model_id="llama-instruct")
+    assert result2.source == WarmStartSource.CROSS_MODEL
+    assert result2.hit is True
+    assert result2.kv == "REAL-KV"

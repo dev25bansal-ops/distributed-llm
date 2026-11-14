@@ -27,7 +27,9 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -133,6 +135,7 @@ class BlockTransferServer:
             return BlockTransferResponse(blocks=blocks, success=True)
 
         except Exception as e:
+            # CQ-08: count the failure and continue (reported at the end); do not abort the batch.
             self._stats["errors"] += 1
             return BlockTransferResponse(blocks=[], success=False, error=str(e))
 

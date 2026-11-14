@@ -29,7 +29,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -405,6 +405,7 @@ def _run_live_concurrent(
 ) -> float:
     """Fire *concurrency* requests simultaneously, return aggregate tok/s."""
     import concurrent.futures
+
     import httpx
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -668,6 +669,9 @@ def print_compact_row(results: list[ClusterMetrics]) -> None:
 # ---------------------------------------------------------------------------
 
 def save_results(results: list[ClusterMetrics], path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w") as f:
         json.dump([r.to_dict() for r in results], f, indent=2)
     print(f"\nResults saved to {path}")
@@ -724,13 +728,17 @@ def main() -> None:
         "--api-key", default="", help="API key for authenticated endpoints"
     )
     parser.add_argument("--save", type=str, default="", help="Save results to JSON file")
+    parser.add_argument(
+        "--output", type=str, default="",
+        help="Alias for --save (path to write JSON results)",
+    )
     parser.add_argument("--load", type=str, default="", help="Load and display results from JSON")
     parser.add_argument(
         "--runs", type=int, default=5, help="Number of runs per benchmark (live mode)"
     )
     parser.add_argument(
         "--format",
-        choices=["table", "csv"],
+        choices=["table", "csv", "json"],
         default="table",
         help="Output format",
     )
@@ -765,11 +773,14 @@ def main() -> None:
 
     if args.format == "csv":
         print_compact_row(results)
+    elif args.format == "json":
+        print(json.dumps([r.to_dict() for r in results], indent=2, default=str))
     else:
         print_summary_table(results)
 
-    if args.save:
-        save_results(results, args.save)
+    save_path = args.save or args.output
+    if save_path:
+        save_results(results, save_path)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 
 from ..api_state import g
 from ..auth_deps import require_role
+from ..errors import FeatureDisabledError, error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(tags=["marketplace"], prefix="/v1/marketplace")
@@ -86,12 +91,23 @@ class MarketplaceStatsResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/listings", response_model=GPUListingResponse, dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/listings",
+    response_model=GPUListingResponse,
+    dependencies=[Depends(require_role("admin"))],
+    summary="Create a new GPU listing in the marketplace",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid listing payload (e.g. negative price or GPU count)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def create_listing(req: GPUListingRequest):
     """Create a new GPU listing in the marketplace."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     listing = marketplace.create_listing(
         provider_id=req.provider_id,
@@ -122,7 +138,15 @@ async def create_listing(req: GPUListingRequest):
     )
 
 
-@router.get("/listings", response_model=list[GPUListingResponse])
+@router.get(
+    "/listings",
+    response_model=list[GPUListingResponse],
+    summary="List available GPU listings with optional filters",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def list_listings(
     min_gpu_memory: int = 0,
     max_price: float = 0.0,
@@ -131,7 +155,7 @@ async def list_listings(
     """List available GPU listings with optional filters."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     listings = marketplace.list_listings(
         min_gpu_memory=min_gpu_memory,
@@ -156,12 +180,21 @@ async def list_listings(
     ]
 
 
-@router.get("/listings/{listing_id}", response_model=GPUListingResponse)
+@router.get(
+    "/listings/{listing_id}",
+    response_model=GPUListingResponse,
+    summary="Get a specific GPU listing",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        404: ERR_ENTRY("Listing not found", type_="invalid_request_error", code="not_found"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_listing(listing_id: str):
     """Get a specific GPU listing."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     listing = marketplace.get_listing(listing_id)
     if not listing:
@@ -181,24 +214,45 @@ async def get_listing(listing_id: str):
     )
 
 
-@router.delete("/listings/{listing_id}", dependencies=[Depends(require_role("admin"))])
+@router.delete(
+    "/listings/{listing_id}",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Remove a GPU listing",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        404: ERR_ENTRY("Listing not found", type_="invalid_request_error", code="not_found"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def remove_listing(listing_id: str):
     """Remove a GPU listing."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     if not marketplace.remove_listing(listing_id):
         raise HTTPException(status_code=404, detail="Listing not found")
     return {"status": "removed", "listing_id": listing_id}
 
 
-@router.post("/jobs", response_model=JobResponse, dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/jobs",
+    response_model=JobResponse,
+    dependencies=[Depends(require_role("admin"))],
+    summary="Post a compute job to the marketplace",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("Invalid job payload (e.g. negative price or memory bounds)", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def post_job(req: JobPostRequest):
     """Post a compute job to the marketplace."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     job = marketplace.post_job(
         requester_id=req.requester_id,
@@ -230,7 +284,16 @@ async def post_job(req: JobPostRequest):
     )
 
 
-@router.get("/jobs", response_model=list[JobResponse])
+@router.get(
+    "/jobs",
+    response_model=list[JobResponse],
+    summary="List marketplace jobs",
+    responses={
+        400: ERR_ENTRY("Invalid status value (not a recognized JobStatus)", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def list_jobs(
     requester_id: str = "",
     status: str = "",
@@ -238,7 +301,7 @@ async def list_jobs(
     """List marketplace jobs."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     from distllm.dist.marketplace import JobStatus
     job_status = None
@@ -264,36 +327,64 @@ async def list_jobs(
     ]
 
 
-@router.post("/jobs/{job_id}/complete", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/jobs/{job_id}/complete",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Mark a job as completed",
+    responses={
+        400: ERR_ENTRY("Job cannot be completed in its current state", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def complete_job(job_id: str, tokens_generated: int = 0):
     """Mark a job as completed."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     if not marketplace.complete_job(job_id, tokens_generated):
         raise HTTPException(status_code=400, detail="Cannot complete job")
     return {"status": "completed", "job_id": job_id}
 
 
-@router.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/jobs/{job_id}/cancel",
+    dependencies=[Depends(require_role("admin"))],
+    summary="Cancel a job",
+    responses={
+        400: ERR_ENTRY("Job cannot be cancelled in its current state", type_="invalid_request_error", code="invalid_request"),
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def cancel_job(job_id: str):
     """Cancel a job."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     if not marketplace.cancel_job(job_id):
         raise HTTPException(status_code=400, detail="Cannot cancel job")
     return {"status": "cancelled", "job_id": job_id}
 
 
-@router.get("/providers/{provider_id}/earnings")
+@router.get(
+    "/providers/{provider_id}/earnings",
+    summary="Get earnings summary for a GPU provider",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        404: ERR_ENTRY("Provider not found", type_="invalid_request_error", code="not_found"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_provider_earnings(provider_id: str):
     """Get earnings summary for a GPU provider."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     earnings = marketplace.get_provider_earnings(provider_id)
     if not earnings:
@@ -309,12 +400,20 @@ async def get_provider_earnings(provider_id: str):
     }
 
 
-@router.get("/stats", response_model=MarketplaceStatsResponse)
+@router.get(
+    "/stats",
+    response_model=MarketplaceStatsResponse,
+    summary="Get overall marketplace statistics",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        503: ERR_ENTRY("Marketplace not available", type_="service_unavailable", code="503"),
+    },
+)
 async def get_marketplace_stats():
     """Get overall marketplace statistics."""
     marketplace = g.get("marketplace")
     if not marketplace:
-        raise HTTPException(status_code=503, detail="Marketplace not available")
+        raise FeatureDisabledError("marketplace", "Marketplace not available")
 
     stats = marketplace.get_marketplace_stats()
     return MarketplaceStatsResponse(**stats)

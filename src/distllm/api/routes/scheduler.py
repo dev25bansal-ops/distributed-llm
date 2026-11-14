@@ -5,11 +5,16 @@ real-time scheduling metrics.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 
-from ..auth_deps import require_role
 from ..api_state import g
-from loguru import logger
+from ..auth_deps import require_role
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(
@@ -50,7 +55,16 @@ class SchedulerStatsResponse(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────────────────
 
-@router.get("/stats", response_model=SchedulerStatsResponse)
+@router.get(
+    "/stats",
+    response_model=SchedulerStatsResponse,
+    summary="Get current scheduler statistics",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Coordinator or batch scheduler not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def get_scheduler_stats(request: Request):
     """Get current scheduler statistics.
 
@@ -72,7 +86,16 @@ async def get_scheduler_stats(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/config")
+@router.patch(
+    "/config",
+    summary="Live-update scheduler configuration",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        422: ERR_ENTRY("A field is outside its allowed range", type_="invalid_request_error", code="invalid_request"),
+        503: ERR_ENTRY("Coordinator or batch scheduler not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def update_scheduler_config(
     update: SchedulerConfigUpdate,
     request: Request,
@@ -125,7 +148,10 @@ async def update_scheduler_config(
                 updated["aging_enabled"] = update.aging_enabled
 
             if update.max_preempted is not None:
-                scheduler._max_preempted = update.max_preempted
+                # The cap lives on the preemption manager; writing
+                # scheduler._max_preempted created a shadow attribute that
+                # nothing read.
+                scheduler.set_max_preempted(update.max_preempted)
                 updated["max_preempted"] = update.max_preempted
 
             if update.starvation_threshold_s is not None:
@@ -139,7 +165,15 @@ async def update_scheduler_config(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/config")
+@router.get(
+    "/config",
+    summary="Get current scheduler configuration",
+    responses={
+        401: ERR_ENTRY("Missing or invalid API key (`Authorization: Bearer <key>`)", type_="auth_error", code="authentication_error"),
+        403: ERR_ENTRY("Authenticated but not permitted (requires the admin role)", type_="auth_error", code="forbidden"),
+        503: ERR_ENTRY("Coordinator or batch scheduler not initialized", type_="service_unavailable", code="503"),
+    },
+)
 async def get_scheduler_config(request: Request):
     """Get current scheduler configuration.
 
@@ -160,7 +194,7 @@ async def get_scheduler_config(request: Request):
         "aging_interval_s": scheduler._aging_interval_s,
         "aging_max_boost": scheduler._aging_max_boost,
         "aging_enabled": scheduler._aging_enabled,
-        "max_preempted": scheduler._max_preempted,
+        "max_preempted": scheduler.get_max_preempted(),
         "starvation_threshold_s": scheduler._starvation_threshold_s,
         "enable_chunked_prefill": scheduler._enable_chunked_prefill,
         "adapt_prefill_budget": scheduler._adapt_prefill_budget,

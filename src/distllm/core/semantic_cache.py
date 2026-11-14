@@ -19,7 +19,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -62,13 +64,20 @@ class SemanticCache:
         self._max_entries = max_entries
         self._default_ttl = default_ttl
         self._entries: dict[str, CacheEntry] = {}
-        self._lock = threading.Lock()
+        # RLock: ``lookup`` holds the lock while ``_find_similar`` →
+        # ``_update_threshold`` → ``self.hit_rate`` re-acquires it.
+        self._lock = threading.RLock()
 
-        # Adaptive threshold
+        # Adaptive threshold. The adaptive band must always include the
+        # caller's initial threshold: an explicitly configured similarity
+        # threshold is a contract. Clamping adaptive updates into only the
+        # *default* [0.80, 0.99] band silently raised e.g. 0.5 → 0.80 after
+        # the 10th semantic hit, so prompts the operator explicitly wanted
+        # to accept stopped hitting the cache.
         self._adaptive = adaptive_threshold
         self._lr = threshold_learning_rate
-        self._min_threshold = min_threshold
-        self._max_threshold = max_threshold
+        self._min_threshold = min(min_threshold, similarity_threshold)
+        self._max_threshold = max(max_threshold, similarity_threshold)
         self._recent_similarities: list[float] = []  # Track similarity scores of hits
 
         # Stats
@@ -276,6 +285,17 @@ class SemanticCache:
 
     def _is_expired(self, entry: CacheEntry) -> bool:
         return time.time() > entry.created_at + entry.ttl_seconds
+
+    @property
+    def hit_rate(self) -> float:
+        """Observed hit rate (hits / total lookups).
+
+        ``_update_threshold`` reads this while holding ``self._lock`` (via
+        ``lookup`` → ``_find_similar``), hence the reentrant lock.
+        """
+        with self._lock:
+            total = self._hits + self._misses
+            return self._hits / total if total > 0 else 0.0
 
     def _evict_lru(self) -> None:
         """Evict the least recently used entry."""

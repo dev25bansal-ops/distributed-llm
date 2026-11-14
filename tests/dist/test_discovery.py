@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("zeroconf", reason="optional mDNS extra not installed")
+
 from distllm.dist.discovery import DiscoveryService, DiscoveryClient
 
 

@@ -9,13 +9,19 @@ Complete API reference for the DistLLM SDK in Python, JavaScript/TypeScript, Go,
 ### Installation
 
 ```bash
-pip install distllm-sdk
+pip install distributed-llm
 ```
+
+The Python SDK ships **inside** the main distribution as `distllm.sdk`. There is
+no separately published `distllm-sdk` package on PyPI -- an earlier revision of
+this page told you to install one, and `from distllm.sdk import ...` failed with
+ModuleNotFoundError on a clean install. Verified: in a fresh venv with only
+`distributed-llm` installed, `from distllm.sdk import DistLLMClient` works.
 
 ### Quick Start
 
 ```python
-from distllm_sdk import DistLLMClient
+from distllm.sdk import DistLLMClient
 
 # Async client
 async with DistLLMClient(base_url="http://localhost:8000") as client:
@@ -26,7 +32,7 @@ async with DistLLMClient(base_url="http://localhost:8000") as client:
     print(response.choices[0].message.content)
 
 # Sync client
-from distllm_sdk import DistLLMClientSync
+from distllm.sdk import DistLLMClientSync
 
 with DistLLMClientSync(base_url="http://localhost:8000") as client:
     response = client.chat_completions(
@@ -47,7 +53,7 @@ async for chunk in client.chat_completions_stream(
 ### Configuration
 
 ```python
-from distllm_sdk import DistLLMClient, RetryConfig, PoolConfig
+from distllm.sdk import DistLLMClient, RetryConfig, PoolConfig
 
 # With API key (production)
 client = DistLLMClient(
@@ -58,7 +64,7 @@ client = DistLLMClient(
     pool=PoolConfig(max_connections=100),
 )
 
-# Without API key (development with --no-auth)
+# API key is required -- auth is always on (--no-auth was removed)
 client = DistLLMClient(
     base_url="http://localhost:8000",
     api_key="not-needed",
@@ -68,7 +74,7 @@ client = DistLLMClient(
 ### Error Handling
 
 ```python
-from distllm_sdk.errors import AuthenticationError, RateLimitError, TimeoutError
+from distllm.sdk.types import AuthenticationError, RateLimitError, TimeoutError_
 
 try:
     response = await client.chat_completions(messages=[...])
@@ -95,9 +101,14 @@ print(client.stats.estimate_cost())
 
 ### Installation
 
+Not published to npm yet — `npm view distllm-sdk` returns 404. Until it is,
+install from a checkout; the package builds and its 11 tests pass:
+
 ```bash
-npm install distllm-sdk
+npm install /path/to/distributed-llm/sdk/js
 ```
+
+or build a tarball there with `npm pack` and install that.
 
 ### Quick Start
 
@@ -137,7 +148,7 @@ for await (const chunk of stream) {
 ### Installation
 
 ```bash
-go get github.com/distributed-llm/distributed-llm/sdk/go
+go get github.com/dev25bansal-ops/distributed-llm/sdk/go
 ```
 
 ### Quick Start
@@ -148,7 +159,7 @@ package main
 import (
     "context"
     "fmt"
-    distllm "github.com/distributed-llm/distributed-llm/sdk/go"
+    distllm "github.com/distributed-llm/distllm-sdk-go/sdk/go"
 )
 
 func main() {
@@ -192,7 +203,7 @@ if err := <-errCh; err != nil {
 
 ```toml
 [dependencies]
-distllm-sdk = "0.4"
+distllm-sdk = "1.0.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -240,3 +251,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `TIMEOUT` | 504 | Request timed out | [Troubleshooting](https://distllm.dev/docs/troubleshooting#5-performance-issues) |
 | `NODE_UNREACHABLE` | 503 | Worker node down | [Troubleshooting](https://distllm.dev/docs/troubleshooting#3-distributed-pipeline-errors) |
 | `OOM_ERROR` | 500 | GPU out of memory | [Troubleshooting](https://distllm.dev/docs/troubleshooting#6-gpu-issues) |
+
+> ⚠️ UNVERIFIED (hygiene pass 2026-11-06): the distllm.dev URLs in the Error
+> Codes table above are external; this hygiene pass could not verify them.

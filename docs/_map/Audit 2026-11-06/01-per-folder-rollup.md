@@ -1,0 +1,64 @@
+# Audit 2026-11-06 — per-folder issue counts (raw, pre-dedupe)
+
+Total result agents: 331
+
+- ?: 0 issues
+- D:\distributed-llm\src\distllm\api: 75 issues
+- D:\distributed-llm\src\distllm\backends: 74 issues
+- D:\distributed-llm\src\distllm\benchmarks: 48 issues
+- D:\distributed-llm\src\distllm\cache: 52 issues
+- D:\distributed-llm\src\distllm\cli: 73 issues
+- D:\distributed-llm\src\distllm\client: 47 issues
+- D:\distributed-llm\src\distllm\cloud: 92 issues
+- D:\distributed-llm\src\distllm\compliance: 48 issues
+- D:\distributed-llm\src\distllm\config: 74 issues
+- D:\distributed-llm\src\distllm\core: 67 issues
+- D:\distributed-llm\src\distllm\dashboard: 50 issues
+- D:\distributed-llm\src\distllm\deploy: 42 issues
+- D:\distributed-llm\src\distllm\dist: 82 issues
+- D:\distributed-llm\src\distllm\errors: 30 issues
+- D:\distributed-llm\src\distllm\health: 63 issues
+- D:\distributed-llm\src\distllm\integrations: 91 issues
+- D:\distributed-llm\src\distllm\models: 79 issues
+- D:\distributed-llm\src\distllm\observability: 74 issues
+- D:\distributed-llm\src\distllm\operator: 64 issues
+- D:\distributed-llm\src\distllm\plugins: 72 issues
+- D:\distributed-llm\src\distllm\prompts: 42 issues
+- D:\distributed-llm\src\distllm\sdk: 41 issues
+- D:\distributed-llm\src\distllm\security: 95 issues
+- D:\distributed-llm\src\distllm\terraform: 22 issues
+- D:\distributed-llm\src\distllm\ui: 90 issues
+- D:\distributed-llm\src\distllm\utils: 55 issues
+- D:\distributed-llm\src\distllm\verification: 70 issues
+- src/distllm/api: 13 issues
+- src/distllm/backends: 42 issues
+- src/distllm/benchmarks: 45 issues
+- src/distllm/cache: 31 issues
+- src/distllm/cache (cross_cluster_prefix_index.py, crdt.py, __init__.py): 9 issues
+- src/distllm/cli: 7 issues
+- src/distllm/cli (53 .py files, 12,118 lines; main.py 1,652 lines is the Typer root): 10 issues
+- src/distllm/cli — Developer experience & API/UI usability (lens): 16 issues
+- src/distllm/client: 32 issues
+- src/distllm/cloud: 27 issues
+- src/distllm/compliance: 23 issues
+- src/distllm/config: 23 issues
+- src/distllm/core: 26 issues
+- src/distllm/dashboard: 47 issues
+- src/distllm/deploy: 40 issues
+- src/distllm/dist: 21 issues
+- src/distllm/errors: 50 issues
+- src/distllm/health: 16 issues
+- src/distllm/integrations: 30 issues
+- src/distllm/models: 16 issues
+- src/distllm/observability: 39 issues
+- src/distllm/operator: 40 issues
+- src/distllm/plugins: 22 issues
+- src/distllm/prompts: 49 issues
+- src/distllm/sdk: 63 issues
+- src/distllm/security: 21 issues
+- src/distllm/terraform: 51 issues
+- src/distllm/ui: 14 issues
+- src/distllm/utils: 12 issues
+- src/distllm/verification: 26 issues
+- src\distllm\cache: 8 issues
+- src\distllm\health: 14 issues

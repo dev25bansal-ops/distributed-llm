@@ -116,3 +116,94 @@ class TestRunChat:
                 mock_client_cls.return_value = mock_client
 
                 run_chat("model", "localhost", 8000, 128, 0.7, console)
+
+
+# ---------------------------------------------------------------------------
+# chat --stream: the streaming path must authenticate like every other command
+# ---------------------------------------------------------------------------
+
+
+class TestChatStreamAuth:
+    """Regression: ``distllm chat --stream`` sent NO Authorization header.
+
+    Audit finding: ``_stream_chat`` built a bare ``httpx.AsyncClient`` and the
+    module never referenced ``auth_headers``/``resolve_api_key`` anywhere, so
+    streaming chat 401'd against every server (auth is always required) while
+    the non-streaming path worked because it uses ``client_for()``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_key_env(self, tmp_path, monkeypatch):
+        for var in ("API_KEY", "DISTLLM_API_KEY", "DISTLLM_KEY_FILE"):
+            monkeypatch.delenv(var, raising=False)
+        self.key_file = tmp_path / "api_key"
+        monkeypatch.setenv("DISTLLM_KEY_FILE", str(self.key_file))
+
+    def _capture_client_headers(self, monkeypatch) -> dict:
+        """Run one streaming turn against a recording client; return headers."""
+        import asyncio
+
+        from distllm.cli import chat_stream
+
+        captured: dict = {}
+
+        class _NullResponse:
+            def raise_for_status(self):
+                pass
+
+            async def aiter_lines(self):
+                return
+                yield  # pragma: no cover — makes the method an async generator
+
+        class _NullStream:
+            async def __aenter__(self):
+                return _NullResponse()
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        class _RecordingAsyncClient:
+            def __init__(self, **kwargs):
+                captured["headers"] = kwargs.get("headers")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+            def stream(self, method, url, **kwargs):
+                return _NullStream()
+
+        monkeypatch.setattr(chat_stream.httpx, "AsyncClient", _RecordingAsyncClient)
+
+        state = chat_stream.ChatState(messages=[{"role": "user", "content": "hi"}])
+
+        async def _drive():
+            async for _ in chat_stream._stream_chat(state):
+                pass
+
+        asyncio.run(_drive())
+        return captured
+
+    def test_streaming_sends_the_key_file_bearer(self, monkeypatch):
+        """A cluster started by `distllm cluster start` keeps its key only in
+        the key file; the streaming client must send it."""
+        self.key_file.write_text("sk-from-file\n", encoding="utf-8")
+
+        captured = self._capture_client_headers(monkeypatch)
+
+        assert captured["headers"].get("Authorization") == "Bearer sk-from-file"
+
+    def test_streaming_prefers_env_over_file(self, monkeypatch):
+        self.key_file.write_text("sk-from-file\n", encoding="utf-8")
+        monkeypatch.setenv("API_KEY", "sk-from-env")
+
+        captured = self._capture_client_headers(monkeypatch)
+
+        assert captured["headers"].get("Authorization") == "Bearer sk-from-env"
+
+    def test_streaming_without_any_key_sends_no_header(self, monkeypatch):
+        captured = self._capture_client_headers(monkeypatch)
+
+        assert captured["headers"] == {}

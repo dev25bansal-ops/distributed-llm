@@ -20,7 +20,6 @@ from distllm.core.evaluation.constants import (
 )
 from distllm.core.evaluation.models import EvalSample
 
-
 # ---------------------------------------------------------------------------
 # Scorers
 # ---------------------------------------------------------------------------

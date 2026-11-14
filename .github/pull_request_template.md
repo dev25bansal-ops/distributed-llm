@@ -19,7 +19,7 @@ Fixes #(issue_number)
 
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
-- [ ] I have tested this on multiple Python versions (3.10, 3.11)
+- [ ] I have tested this on multiple Python versions (3.11, 3.12)
 
 ## Checklist
 

@@ -8,7 +8,7 @@ aliases:
 ---
 # Backends & Models — `src/distllm/{backends,models}/`
 
-**28 .py files · ~7.5K LOC** (`backends/` 18, `models/` 10).
+**29 .py files · ~8.6K LOC** (`backends/` 19, `models/` 10).
 
 > **The worker-node inference adapter layer.** `backends/` defines the canonical `BackendAdapter.forward()` contract (`protocol.py`) and ~14 concrete adapters (PyTorch, vLLM, llama.cpp, ExLlama, ONNX, TensorRT, Triton, NIM, MLX, WebGPU, Ollama, TGI) that the gRPC `NodeService` calls to run inference regardless of engine; `registry.py` auto-selects/health-checks the best backend per machine; `paged_attention*.py` do block KV-cache memory. `models/` is model lifecycle + device placement: HF download/cache, LoRA adapters, and layer-slice partitioning across nodes.
 >
@@ -60,3 +60,5 @@ aliases:
 
 ## Tests
 `tests/backends/` (`test_backends`, `test_protocol`, `test_ollama_backend`, `test_tgi_backend`, `test_paged_attention_unit`), `tests/models/` (`test_model_cache`, `test_model_hub`), `tests/partition/*`.
+
+<!-- recounted 2026-11-06 by hygiene pass -->

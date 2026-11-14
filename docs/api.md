@@ -12,12 +12,14 @@ http://localhost:8000/v1
 
 All requests require an `Authorization: Bearer <api-key>` header.
 
-### Development (No Auth)
+### Authentication is always required
 
-For local development, disable authentication:
+There is no no-auth mode (`--no-auth` was removed and now logs a warning and
+changes nothing). Set a key before starting:
 
 ```bash
-distllm system api --model <model> --local --no-auth
+export API_KEY="choose-a-secret-value"
+distllm system api --model <model> --local
 ```
 
 No API key needed — anyone on localhost can connect.
@@ -140,18 +142,26 @@ const response = await client.chat.completions.create({
 | 504 | timeout_error | Request exceeded timeout |
 | 503 | node_unavailable | Worker node unavailable or unreachable |
 
-## Additional Endpoints (v0.4.0+)
+## Additional Endpoints (v0.4.1+)
 
 ### Marketplace API
 
-- `GET  /v1/marketplace/ads` — List active KV cache advertisements
-- `POST /v1/marketplace/ads` — Advertise a cached KV state
-- `POST /v1/marketplace/purchase` — Purchase a cache advertisement
+- `GET  /v1/marketplace/listings` — List GPU marketplace listings
+- `POST /v1/marketplace/listings` — Create a GPU listing (admin)
+- `POST /v1/marketplace/jobs` — Create a marketplace job (admin)
 
 ### Federation API
 
-- `POST /v1/federated/heartbeat` — Receive heartbeat from federated peers
-- `GET  /v1/federated/peers` — List federated peer clusters
+The federation API covers **federated fine-tuning rounds**, not peer heartbeats.
+There is no /v1/federation/heartbeat endpoint (or any heartbeat route) in the
+app; an earlier revision of this page listed one that never existed.
+
+- `POST /v1/federated/nodes` — Enrol a participating node
+- `POST /v1/federated/rounds` — Open a federated training round
+- `POST /v1/federated/rounds/submit` — Submit a node's local update
+- `POST /v1/federated/rounds/merge` — Merge submitted updates (FedAvg/FedProx)
+- `GET  /v1/federated/stats` — Aggregation statistics
+- `GET  /v1/federated/versions` — Advertise supported round versions
 
 ### WebRTC API
 
@@ -171,11 +181,11 @@ const response = await client.chat.completions.create({
 
 ### Gossip API
 
-- `POST /v1/gossip/message` — Exchange gossip messages
-- `GET  /v1/gossip/peers` — List gossip peers
+- `POST /api/v1/gossip/exchange` — Exchange gossip advertisements (HMAC-signed)
+- `POST /api/v1/gossip/fetch` — Fetch gossip cache entries (HMAC-signed)
 
 ### Admin API
 
 - `POST /admin/v1/nodes/register` — Register a worker node
 - `GET  /admin/v1/nodes` — List all nodes
-- `POST /admin/v1/models/compress` — Start model compression
+- `POST /admin/v1/compress` — Start model compression

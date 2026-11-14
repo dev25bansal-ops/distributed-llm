@@ -1,13 +1,33 @@
 """Embedding and reranking routes: POST /v1/embeddings, POST /v1/rerank."""
 
+from __future__ import annotations
+
 import base64
 import struct
 import time
 import uuid
 
-import torch
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+# torch is an [self-hosted]-extra dependency; this route module is imported
+# by the api package on the server startup path. The future import above
+# keeps annotations lazy and the guard below defers the import: the server
+# starts without the ML stack and a request that needs tensors gets a clear
+# error instead of a module-load crash.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for embeddings. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 from ..api_state import g
 from ..errors import error_openapi_entry
@@ -31,11 +51,40 @@ class EmbeddingRequest(BaseModel):
         }
     )
     model: str = Field(default="distributed-llm", description="Model identifier")
-    input: list[str] = Field(..., max_length=1024, description="Input text(s) to embed (max 1024 texts)")
+    # The OpenAI API accepts a bare string or a list of strings. Declaring only
+    # list[str] rejected `input: "hello"` with a 422, which broke the promise
+    # that any OpenAI client works by changing base_url -- the official SDK
+    # sends a plain string when given one. Pre-tokenized arrays are not
+    # accepted: the handler would tokenize the list's repr and return garbage,
+    # so a clear 422 is better than a silent wrong answer.
+    input: str | list[str] = Field(
+        ..., description="Input text(s) to embed (max 1024 texts)"
+    )
     encoding_format: str = Field(default="float", description="Output format: 'float' or 'base64'")
     dimensions: int | None = Field(default=None, ge=1, description="Number of dimensions for the embedding")
     normalize: bool = Field(default=True, description="Whether to L2-normalize embeddings")
     user: str | None = Field(default=None, description="End-user identifier")
+
+    @field_validator("input")
+    @classmethod
+    def _wrap_single_input(cls, value):
+        """Wrap a bare string so the handler always receives a list.
+
+        The OpenAI spec accepts `input: "hello"` as well as a list; the
+        handler iterates the field, so a plain string would otherwise be
+        walked character by character. An empty or whitespace-only string is
+        rejected rather than embedded, as OpenAI rejects it -- embedding ""
+        would otherwise return a vector for a blank prompt.
+        """
+        if isinstance(value, str):
+            if not value.strip():
+                raise ValueError("input must not be empty")
+            return [value]
+        # max_length on the field would also cap a single string's length, so
+        # the batch limit is enforced here, on the list branch only.
+        if len(value) > 1024:
+            raise ValueError("at most 1024 texts may be embedded per request")
+        return value
 
 
 class EmbeddingObject(BaseModel):
@@ -337,7 +386,13 @@ async def create_hybrid_rerank(request: HybridRerankRequest):
 
     embed_loader = getattr(coord, "_embedding_loader", None)
     if embed_loader is None:
-        raise HTTPException(status_code=503, detail="Embedding loader not available")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Hybrid reranking requires an embedding or cross-encoder model. "
+                "Configure embedding.embedding_model and/or embedding.rerank_model."
+            ),
+        )
 
     has_embedding = embed_loader.embedding_model is not None
     has_reranker = embed_loader.rerank_model is not None
@@ -345,7 +400,10 @@ async def create_hybrid_rerank(request: HybridRerankRequest):
     if not has_embedding and not has_reranker:
         raise HTTPException(
             status_code=503,
-            detail="Hybrid reranking requires at least an embedding or reranker model",
+            detail=(
+                "Hybrid reranking requires at least an embedding or reranker model. "
+                "Configure embedding.embedding_model and/or embedding.rerank_model."
+            ),
         )
 
     start_time = time.time()

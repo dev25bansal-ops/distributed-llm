@@ -1,0 +1,1140 @@
+[
+ {
+  "file": "src/distllm/core/ha_coordinator.py",
+  "line": 167,
+  "summary": "RayFaultTolerance counts never-contacted peers as alive: add_peer seeds every peer with online=True and last_seen=now, so a freshly started coordinator that has never exchanged a single heartbeat considers the full membership alive, self-elects, and authorises writes for a full election_timeout window (10 s default). Sibling of the earlier fail-open heartbeat fix; SplitBrainDetector in core/split_brain.py already fails closed for configured-but-silent peers (is_alive=False at construction) but the election does not.",
+  "failure_scenario": "3-node cluster {a,b,c}, b is leader and c follows. Node a restarts while partitioned from b/c (crash, deploy, or its own network not yet up). Within one election round (~2 s) a sees b and c as online, computes alive=3 of 3, self-elects, and can_accept_writes()=True while b is still LEADER and serving writes. Two leaders in one cluster, both accepting writes, for up to 10 s per restart — enough to diverge replicated state. Even with every peer permanently unreachable, the solo survivor self-elects: quorum counts 1 real + N phantom members.",
+  "severity": "crit",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.ha_coordinator import RayFaultTolerance as R; f=lambda *a,**k:(_ for _ in ()).throw(ConnectionError('x')); n=R('coordinator-a'); n.add_peer('coordinator-b','10.0.0.2',50051); n.set_heartbeat_transport(f); n._run_election_round(); print('leader=',n.is_leader(),'writes=',n.can_accept_writes())\"  # prints: leader= True writes= True\n# dual-leader variant: give a,b,c add_peer to each other, a's transport always raises, b<->c linked via handle_heartbeat_request, mark a offline/stale in b and c, then run one _run_election_round() on each -> a.is_leader() and b.is_leader() both True, both can_accept_writes() True",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/dist/worker.py",
+  "line": 569,
+  "summary": "worker main() crashes with AttributeError when any config.yaml exists: settings.network.cluster_key does not exist (NetworkSettings has no cluster_key field), so `distllm cluster join` workers die at startup; the join CLI then waits 60s and misreports 'Node registered with coordinator' while the worker is dead.",
+  "failure_scenario": "Run `distllm cluster join` from any directory containing config.yaml (the repo root ships one; `distllm config setup` writes one). The spawned worker resolves ConfigResolver._resolve_config_path('worker') -> config.yaml, loads DistLLMSettings, reaches line 568-569 `cluster_key = settings.network.cluster_key or None` and raises AttributeError: 'NetworkSettings' object has no attribute 'cluster_key'. The worker exits before registering; the CLI's port-poll times out ('registering anyway'), its own admin registration still returns 200, so the node appears in `cluster list-nodes` but no worker serves it. Verified: running the worker from the worktree root reproduced the exact AttributeError (worktree line 569).",
+  "severity": "crit",
+  "reproduced": true,
+  "check_command": "cd <repo-root> && PYTHONPATH=src python -m distllm.dist.worker --node-id p --model m --start-layer 0 --end-layer 1 --total-layers 2 --port 59999   # AttributeError: 'NetworkSettings' object has no attribute 'cluster_key'",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/security/watermark.py",
+  "line": 43,
+  "severity": "crit",
+  "reproduced": true,
+  "summary": "distllm.api (hence the distllm-api console script and `distllm run`) crashes at import with torch absent: security/__init__.py:34 eagerly imports watermark, whose module-scope `import torch` is unguarded even though the sibling `cryptography` import in the same file (line ~47) IS guarded.",
+  "failure_scenario": "Fresh venv, `pip install distributed-llm[cli]` (README install line) or bare `distributed-llm`, then run `distllm-api` or exactly step 4 of scripts/launch_gate_index_install.py (`python -c \"from distllm.api.server import app\"`). Import chain: api/__init__.py:3 -> api/middleware.py:683 (content moderation) -> security/__init__.py:34 -> watermark.py:43 -> ModuleNotFoundError: No module named 'torch'. Watermarking is an optional feature; nothing on the API-startup path uses it.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.api\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/coordinator.py",
+  "line": 325,
+  "summary": "Coordinator discards the metrics_exporter handed in by the API server (config.metrics_exporter is stored but self.metrics_exporter is hard-set to None and never read back), so every `if c.metrics_exporter:` write in request_pipeline.py is permanently dead and /metrics never calls populate_gauges",
+  "failure_scenario": "create_coordinator() passes state.metrics_exporter into Coordinator(metrics_exporter=...); Coordinator.__init__ puts it in CoordinatorConfig (line 100) then sets self.metrics_exporter = None (line 325) and nothing ever assigns it. Under live traffic, request_pipeline.py:366-370 (tokens_generated.inc, token_latency.observe, tokens_per_second.set) and 385-391 (errors_total) never execute, so distllm_tokens_generated_total, distllm_token_generation_latency_seconds and distllm_tokens_per_second stay permanently zero; /metrics's `if coord.metrics_exporter` branch (health.py:524) never runs, so populate_gauges never fires and distllm_coordinator_queue_depth, distllm_coordinator_active_requests, distllm_active_nodes stay at constants while distllm_circuit_breaker_state / distllm_node_health emit no series at all; the kopf HPA (operator/hpa.py: tokens_per_second, queue_depth) has no real scaling signal, and every one of these is dead on ALL launch paths, not just one",
+  "severity": "crit",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"from distllm.core.coordinator import Coordinator; s=object(); c=Coordinator(model_name='m', metrics_exporter=s); print('config kept:', c.config.metrics_exporter is s, '| instance:', c.metrics_exporter)\"  # prints config kept: True | instance: None",
+  "audit": "red-metrics"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/api/server_lifespan.py",
+  "line": 61,
+  "summary": "Startup creates a second DistLLMPrometheusExporter and replaces state.metrics_exporter while ObservabilityMiddleware holds the module-load instance, so all request-layer RED counters (requests_total, request_latency_seconds, request_duration_seconds, errors_total) are recorded into an orphaned registry and never exported by /metrics whenever the default lifespan runs",
+  "failure_scenario": "server.py:409 creates exporter E1 at import and mounts ObservabilityMiddleware with metrics_exporter=E1 (server.py:973-976, a fixed reference). server_lifespan._init_observability() (line 61) then does `state.metrics_exporter = DistLLMPrometheusExporter()` creating E2, contradicting the server.py:407 comment ('_init_observability reuses it at startup'). /metrics renders g.metrics_exporter = E2 (health.py:500), so on any ASGI launch that uses the default lifespan — `distllm run` (cli/run.py uvicorn.run(app)), `uvicorn distllm.api.server:app`, gunicorn, TestClient-as-context-testing — requests are counted into E1 and /metrics shows only HELP/TYPE header lines with zero samples for distllm_requests_total etc., defeating the RED dashboards/alerts; only the distllm-api main() path masks it because main() replaces the lifespan with a shutdown-only context so _init_observability never runs there",
+  "severity": "crit",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import prometheus_client as pc; from starlette.testclient import TestClient; from distllm.api.server import app, state; c=TestClient(app); c.__enter__(); [c.get('/health') for _ in range(2)]; txt=pc.generate_latest(state.metrics_exporter.registry).decode(); print('RED samples exported:', [l for l in txt.splitlines() if l.startswith('distllm_requests_total{')]); c.__exit__(None,None,None)\"  # after real startup prints [] despite 2 live requests",
+  "audit": "red-metrics"
+ },
+ {
+  "file": "integrations/kubernetes/helm/distllm/templates/poddisruptionbudget.yaml",
+  "line": 8,
+  "summary": "Helm chart integrations/kubernetes/helm/distllm cannot render at all: poddisruptionbudget.yaml calls include \"distllm.selectorLabels\", which is never defined in any template (grep for 'define \"distllm.selectorLabels\"' in the chart returns 0 hits; _helpers.tpl only defines name/fullname/labels). The template is also ungated — unlike sibling pdb.yaml it has no `{{- if .Values.podDisruptionBudget.enabled }}` wrapper — so no values can make the chart installable, and helm-publish.yml packages/publishes this chart (helm package does not render templates).",
+  "failure_scenario": "A user runs `helm install distllm ./integrations/kubernetes/helm/distllm` (the path advertised by docs/air-gapped-deployment.md and the pre-commit helm-lint hook): helm aborts with 'template: distllm/templates/poddisruptionbudget.yaml:8:21: ... error calling include: template: no template \"distllm.selectorLabels\" associated with template \"gotpl\"' — zero resources are installed. Setting podDisruptionBudget.enabled=false does not help (template lacks the gate). The pre-commit hook masks this: its entry `helm lint ... --quiet 2>/dev/null || echo \"Helm lint skipped (not installed)\"` exits 0 and prints 'Helm lint skipped' even when helm IS installed and lint fails (verified with helm v3.22.1). Render succeeds when a stub selectorLabels helper is added in a temp copy, confirming the single missing helper is the root cause. Secondary: pdb.yaml and poddisruptionbudget.yaml render two PDBs for the same workload.",
+  "severity": "crit",
+  "reproduced": true,
+  "check_command": "./.tmp-helmbin/windows-amd64/helm.exe lint integrations/kubernetes/helm/distllm  (or: helm template distllm integrations/kubernetes/helm/distllm)",
+  "audit": "shipped-configs"
+ },
+ {
+  "file": "src/distllm/core/distributed_speculative.py",
+  "line": 1297,
+  "summary": "DistributedSpeculativeDecoder._verify_tokens sampled path calls the shared accept_token kernel with logits row prefix_len+i-1 (one row early) while its own inline p computation uses prefix_len+i, so the accept/reject decision is made from the wrong position's distribution.",
+  "failure_scenario": "With a remote draft (draft_logprobs available, temperature>0 - the default mode of this decoder), the verifier consults row L-2+i instead of L-1+i. A stub with p(draft token)=4.5e-5 at its own row is ACCEPTED (accepted_count=1), and a token the target endorses with p=0.9993 at its own row is REJECTED (accepted_count=0). Every sampled acceptance decision is therefore drawn from the wrong distribution, silently corrupting generated text whenever distributed speculative decoding runs. The inline comment claims accept_token 'recomputes the identical decision' - it does not (regression from the M-02 refactor).",
+  "severity": "crit",
+  "reproduced": true,
+  "check_command": "python -c \"import torch, math; from distllm.core.distributed_speculative import DistributedSpeculativeDecoder as D; d = D(target_forward=lambda i, **k: None, draft_model=object(), temperature=1.0, device='cpu'); t = torch.zeros(1, 4, 16); t[0, 1, 7] = 10.0; t[0, 2, 9] = 10.0; n = d._verify_tokens(torch.tensor([[10, 11, 12]]), torch.tensor([[7]]), t, draft_logprobs=[math.log(0.999)]); print('accepted', n)\"  # prints 'accepted 1'; expected 0 - token 7 has p=4.5e-5 at its own row (row 2)",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/core/cache_manager.py",
+  "line": 347,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "store_prefix() calls _tier_store() without self._lock (docstring at line 216 mandates the lock), so concurrent stores crash with RuntimeError and re-storing an existing prefix double-counts used_bytes.",
+  "failure_scenario": "CacheManager(prefix_cache_enabled=False, gpu_cache_mb=1). 4 threads x 400 store_prefix() calls with unique keys: after the gpu tier fills, _tier_store's eviction loop iterates tier[\"entries\"].items() while another thread inserts into the same dict -> uncaught 'RuntimeError: dictionary keys changed during iteration' at cache_manager.py:222, raised inside the scheduler step (batch_scheduler.py:1105 / step_processor.py:97 have no try/except around it on this path). Separately, storing the SAME prefix 99 times reports used_bytes=99000 while 1 entry of 1000 real bytes exists (line 235 adds size unconditionally), which then evicts live entries as 'phantom' usage grows. Reproduced twice (crash) and deterministically (99000/1000 drift).",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_race2.py ; PYTHONPATH=src python .tmp-cache-audit/repro_cache_manager.py",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "src/distllm/dist/prefix_cache.py",
+  "line": 275,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "PrefixCache.evict(), the max_entries popitem loop in store() (line 249), and clear() (line 279+) remove entries without decrementing _total_memory_bytes, leaving phantom bytes that evict live entries which fit the budget.",
+  "failure_scenario": "PrefixCache(min_prefix_len=4, memory_budget_bytes=20000): store 9000B entry, evict() it -> entries=0 but memory reported=9000. Then store two fresh 9000B entries (real 18000, budget 20000): reported hits 27000, _evict_until_fit destroys one live entry -> lookup returns 0 for one of the two prefixes that both fit. Also: max_entries=2 with four 5000B stores reports 20000 bytes for 10000 real; clear() leaves 19000 reported with 0 entries. evict() is exercised by shipped tests (tests/dist/test_prefix_cache.py:139) and reaches production via CacheManager.prefix_cache.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_pc_final.py",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "src/distllm/dist/prefix_cache.py",
+  "line": 243,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "PrefixCache.store() overwrite path replaces kv_data without adjusting _total_memory_bytes, under-reporting memory (here 9x) and silently exceeding the configured budget.",
+  "failure_scenario": "PrefixCache(min_prefix_len=4, memory_budget_bytes=1<<20): store a 1000B payload for tokens T, then store a 9000B payload for the same T. stats() reports prefix_cache_memory_bytes=1000 while the cache actually holds 9000 bytes. Repeat with growing payloads and _total_memory_bytes never approaches the real footprint, so _evict_until_fit never runs and the operator-set budget is violated without bound.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_pc_overwrite.py",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "src/distllm/core/cache_manager.py",
+  "line": 189,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "Tier promotion in _tier_lookup() subtracts the promoted entry's size from the source tier unconditionally after a pop that may already have been evicted by the nested _tier_store() demotion, under-reporting used_bytes and leaving the entry duplicated across tiers.",
+  "failure_scenario": "gpu tier (budget 3000) holds G1(2500); cpu holds P(1000, earlier demoted). lookup_prefix(P): _tier_store('gpu', P) runs first (line 183) and its eviction loop demotes G1 to cpu; during that nested _tier_store('cpu') the cpu tier evicts P (oldest) to ssd and subtracts it; then lines 188-189 pop P from cpu (no-op) and subtract 1000 again. Measured: cpu used_bytes=1500 vs 2500 real, and P simultaneously present in gpu and ssd (2x real memory). Repeating this interleaving drives used_bytes downward with no clamp, so the tier admits data past its budget.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_promote2.py",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "src/distllm/core/advanced_scheduling/tiered_store.py",
+  "line": 355,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "TieredMemoryPool._put_l3's eviction loop pops entries without subtracting from _l3_used, so the L3 byte counter grows without bound, every put deletes all existing L3 entries, and get() counts a hit before verifying the NVMe load (popping on failure without decrementing).",
+  "failure_scenario": "TieredMemoryPool(nvme_max_gb=0.00001 => 10000B): five 4000B put(tier=COLD) calls -> l3_used reports 20000 while exactly one 4000B file remains on disk (4000B real vs 10000B capacity) and k0..k3.bin were all deleted even though two entries (8000B) fit. Because used_bytes never decreases, each put wipes the entire L3 tier first. Also get() increments the COLD 'hits' counter (line 224) before _load_from_nvme; if the file is gone it pops the entry (line 229) without subtracting -> measured l3_used stays 4000 with 0 entries and a served miss is counted as a hit.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_tiered_store.py",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\semantic_cache.py",
+  "line": 329,
+  "summary": "SemanticCacheMiddleware (the dedup layer's request-path sibling) returns cached completions keyed by prompt text alone — no credential/tenant/model scope — so any authenticated key can be served another key's cached output, and cache hits bypass QuotaMiddleware and route-level RBAC below it.",
+  "failure_scenario": "With DISTLLM_SEMANTIC_CACHE=1 (documented opt-in, server.py:664), key-a's earlier POST of prompt P with header X-Semantic-Cache: 1 stores its completion via _cache.add(prompt, resp_body.decode()) (semantic_cache.py:343). key-b (different, lower-privileged credential) POSTs the identical P with X-Semantic-Cache: 0.99: search() (line 328) matches by prompt-embedding only and dispatch returns key-a's exact response bytes with 200/X-Cache: HIT (line 331); the route, its role checks, and QuotaMiddleware (built-stack index 17, inner to SemanticCache at index 15) never run — cross-credential completion disclosure plus unmetered serving. Direction is reversible: an admin or any other tenant asking the same (or >=threshold-similar) prompt receives the low-privilege key's poisoned completion.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "python D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/.claude/tmp_dedup_audit/repro_real_crosskey.py  (prints: key-b request -> 200 X-Cache: HIT {\"marker\": \"completion-generated-for-key-a\"})",
+  "audit": "dedup-auth"
+ },
+ {
+  "file": "docs/BENCHMARKS.md",
+  "line": 127,
+  "summary": "The flagship 92.0/153.1 tok/s figures are labeled 'measured 2026-06-26' but no in-repo artifact or code path produces them, and the documented reproduction command runs an analytical estimator that prints 99.1 tok/s instead of 153.1.",
+  "failure_scenario": "BUILDATHON-APPLICATION.md (lines 114-117, 316-317) tells the jury these figures are 'recorded in the repository with their measurement date and hardware' and 'ones we can defend and re-run'. Running BENCHMARKS.md's own Reproduction command (`python -m benchmarks.cluster_benchmark --models llama8b --clusters 2 --prompt-len 512 --max-tokens 128`, line 77) prints 'Running analytical estimates (use --live for real hardware)' and reports 99.1 tok/s for 2 nodes (1 GbE) — not 153.1. The only appearance of the 92.0 number in any script is `single_gpu_tok_s=92.0` in benchmarks/cluster_benchmark.py:76, hardcoded as an input to that roofline estimator and commented 'empirical tok/s on 1x H100' (line 51) — contradicting the RTX 4090 attribution in BENCHMARKS.md. No raw measurement JSON, no CI run, and no committed artifact exists: benchmarks/results/ is gitignored, GitHub Actions has zero June-2026 artifacts, and only CI Dashboard/Chaos ran on 2026-06-26. The 153.1 row's 'Run ID' is literally '—' (line 218-219). If a jury engineer runs the documented command, they get a different number in estimation mode — exactly the check the application invites.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd \"D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\" && python -m benchmarks.cluster_benchmark --models llama8b --clusters 2 --prompt-len 512 --max-tokens 128  (prints 99.1 tok/s, labeled analytical estimates)",
+  "audit": "docs-claims"
+ },
+ {
+  "file": "src/distllm/api/streaming.py",
+  "line": 437,
+  "summary": "Streaming completions return a silent empty 200 (role chunk, empty finish_reason=stop, [DONE]) when the coordinator exists but has no partitioner and no pipeline nodes, instead of an error — the same 'silent empty 200' class as the previously fixed streaming import bug, via a different path.",
+  "failure_scenario": "Run `distllm cluster start --model <m>` in the shipped distributed mode: the API server immediately has a Coordinator, but not a single worker has registered yet (or all workers have left). A client sends POST /v1/chat/completions with stream=true. `_generate_tokens` finds local_partitioner=None and node_order=[] and falls off the end without raising; `_stream_response` (line 437) only guards `not local_coord` and emits a role delta, an empty delta with finish_reason 'stop', and [DONE], HTTP 200. The caller (distllm chat --stream, any OpenAI SDK with stream=True) records a successful empty completion and has no way to know inference never ran. Reproduced over a live socket on port 8935: streaming returned HTTP 200 with only the role + stop + [DONE] chunks, while the identical non-streaming request on the same server correctly returned HTTP 500. Contrast: the non-stream path raises ConfigError('No nodes registered in the pipeline') from the engine, so only streaming silently 'succeeds'.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "python .claude/tmp-errmq/check_real_stream.py   (TestClient + real Coordinator in distributed mode; prints streaming 200 empty body vs non-streaming 500; no server needed)",
+  "audit": "error-messages"
+ },
+ {
+  "file": "src/distllm/core/coordinator.py",
+  "line": 234,
+  "summary": "Coordinator.__init__ calls self._election.set_replication_peers() at line 234 but self._running is only created at line 239; set_replication_peers (coordinator_election.py:266) reads self._coordinator._running.is_set(), so any config with ha_enabled=True plus ha_replication_peers crashes at construction with AttributeError. The documented production HA-replication configuration cannot boot.",
+  "failure_scenario": "CoordinatorConfig(ha_enabled=True, ha_peer_coordinators=[...], ha_replication_peers=['http://10.0.0.2:8000']) -> Coordinator(config=cfg) raises AttributeError: 'Coordinator' object has no attribute '_running' in set_replication_peers before the server can start. HA deployments either crash-loop or silently drop the state-replication setting (operators who omit ha_replication_peers avoid the crash but then never start replication).",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd <worktree> && timeout 110 env PYTHONPATH=src python -c \"from distllm.core.coordinator import Coordinator; from distllm.core.coordinator_config import CoordinatorConfig; cfg=CoordinatorConfig(model_name='m', port=8123, ha_enabled=True, ha_peer_coordinators=[('b','10.0.0.2',50051)], ha_replication_peers=['http://10.0.0.2:8000']); Coordinator(config=cfg)\"  # AttributeError: 'Coordinator' object has no attribute '_running'",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/core/ha_coordinator.py",
+  "line": 306,
+  "summary": "handle_heartbeat_request steps a leader down whenever the sender's ID is lexicographically lower (if sender_id < self._id) with no term comparison at all; the term check above it only triggers on term > current_term. A plain follower, or a stale node that never participated in the current term, deposes a valid higher-term leader and is recorded as _leader_id.",
+  "failure_scenario": "Coordinator-b is LEADER at term 7. Coordinator-a is (and always was) a FOLLOWER at term 1, e.g. restarted with fresh state. a's routine heartbeat (every node probes every node via _probe_peer) reaches b: b transitions LEADER->FOLLOWER and sets leader_id='coordinator-a'. With asymmetric reachability b flaps LEADER/FOLLOWER every round, returning NotLeaderError to clients intermittently and redirecting them at a node that is not the leader. Term/lease ordering is bypassed entirely: any lower-ID sender wins regardless of term.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.ha_coordinator import RayFaultTolerance as R, CoordinatorState as C; lb=R('coordinator-b'); lb._state=C.LEADER; lb._current_term=7; lb.handle_heartbeat_request('coordinator-a',1); print(lb.get_state(), lb.get_leader())\"  # prints: CoordinatorState.FOLLOWER coordinator-a",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/core/ha_coordinator.py",
+  "line": 245,
+  "summary": "The write fence added by commit 7ebec6af only runs when self._split_brain_detector is not None, and no production code anywhere calls set_split_brain_detector() (only tests do). has_quorum() itself is fine, but replicate_state() therefore has no self-contained quorum gate: a leader that has lost contact with its quorum stores writes unconditionally. The claimed protection is inert in every real deployment.",
+  "failure_scenario": "3-node cluster; coordinator-a is leader. Both peers go silent and are marked offline; has_quorum() now returns False and can_accept_writes() returns False, yet replicate_state('topology', {...}) stores the value because no detector was installed. A healed partition ends up with two divergent state histories — the exact split-brain 7ebec6af claimed to close, still reachable in production.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.ha_coordinator import RayFaultTolerance as R; f=lambda *a,**k:(_ for _ in ()).throw(ConnectionError('x')); n=R('coordinator-a'); n.add_peer('coordinator-b','h',1); n.set_heartbeat_transport(f); n._run_election_round(); n._peers['coordinator-b']['online']=False; print('has_quorum:',n.has_quorum()); n.replicate_state('topology',{'v':2}); print('stored despite no quorum:',n.get_replicated_state())\"  # prints: has_quorum: False / stored despite no quorum: {'topology': {'v': 2}}",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/core/ha_coordinator.py",
+  "line": 315,
+  "summary": "handle_heartbeat_request applies any sender's replicated state whenever the local node is FOLLOWER — there is no check that the sender is the leader, is in the current term, or that the state is newer (plain dict.update, last-writer-wins). _probe_peer attaches the local _replicated_state to every outbound probe, so follower-to-follower probes propagate stale state. The same applies via the live HTTP path: POST /api/v1/ha/heartbeat accepts a 'state' body from any holder of the HA secret (server.py:1562) and applies it without a sender-authority check.",
+  "failure_scenario": "Failover: leader c pushed {'topology': 'v10'} to standbys a and b. c dies, b becomes leader. Old leader c (now a follower) still holds its stale {'topology': 'v7'} and keeps probing; when its heartbeat reaches standby b, b overwrites v10 with v7 (reproduced). Any demoted or lagging node can regress a standby's state, and the /api/v1/ha/snapshot equivalent (apply_state_snapshot) likewise has no sender-is-leader check.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.ha_coordinator import RayFaultTolerance as R; b=R('coordinator-b'); b.handle_heartbeat_request('coordinator-c',9,{'topology':'v10'}); print('after leader push:',b.get_replicated_state()); b.handle_heartbeat_request('coordinator-a',1,{'topology':'v7'}); print('after stale follower probe:',b.get_replicated_state())\"  # prints v10 then v7",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/core/api_key_store.py",
+  "line": 529,
+  "summary": "The server-side key store and auth middleware never read DISTLLM_API_KEY (only API_KEYS/API_KEYS_FILE/API_KEY), while docs tell operators to export DISTLLM_API_KEY and every CLI/SDK client prefers DISTLLM_API_KEY over the working key file - so the documented env var can never configure the server and silently shadows the key file that would authenticate.",
+  "failure_scenario": "Follow docs/SECURITY_HARDENING.md:186 (`export DISTLLM_API_KEY=sk-documented`) and start the server. ApiKeyStore._load (line 529 reads only API_KEY) finds nothing, auto-generates a different key into .distllm/api_key, and authenticate('sk-documented') returns None. Meanwhile cli/http_client.resolve_api_key (line 30) prefers DISTLLM_API_KEY, so every CLI command sends sk-documented and 401s with 'Unauthorized: invalid API key' even though the correct key is on disk. With both API_KEY=A and DISTLLM_API_KEY=B set, the store authenticates A only while clients send B (verified: store.authenticate('sk-A')=True, 'sk-B'=None, resolve_api_key()='sk-B').",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src DISTLLM_API_KEY=sk-x python -c \"import os,tempfile; os.environ['DISTLLM_KEY_FILE']=tempfile.mkdtemp()+os.sep+'k'; from distllm.core.api_key_store import ApiKeyStore; s=ApiKeyStore(); print('authenticates DISTLLM_API_KEY value:', s.authenticate('sk-x'))\"  # prints None; then: PYTHONPATH=src DISTLLM_API_KEY=sk-x python -c \"from distllm.cli.http_client import resolve_api_key; print(resolve_api_key())\"  # prints sk-x",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "src/distllm/cli/chat_stream.py",
+  "line": 224,
+  "summary": "`distllm chat --stream` builds a bare httpx.AsyncClient with no Authorization header and no call to resolve_api_key/auth_headers anywhere in the module, so streaming chat 401s against every server (auth is always required), while the non-streaming `distllm chat` path works because it uses client_for().",
+  "failure_scenario": "Start a cluster (key only in .distllm/api_key), run `distllm chat --stream`, send a message: _stream_chat POSTs /v1/chat/completions without any Authorization header and the server returns 401; the CLI prints 'API error (401)'. Reproduced against a stub server on port 8934: chat_stream sent Authorization=None and got 401, while client_for() sent 'Bearer sk-from-file'. `grep -c -E 'Authorization|auth_headers|resolve_api_key' src/distllm/cli/chat_stream.py` returns 0, confirming no auth code path exists in the module.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "grep -c -E \"Authorization|auth_headers|resolve_api_key\" src/distllm/cli/chat_stream.py  # 0 matches: the streaming path never authenticates",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "(network path) LAPTOP-MSLI2NU1 egress — Windows 11 + WSL2 Ubuntu; no repo file implicated",
+  "severity": "high",
+  "reproduced": true,
+  "summary": "Root cause (reproduced): this egress silently blackholes TLS ClientHellos whose SNI is exactly 'controlplane.tailscale.com' — identical behavior from Windows and from WSL2 (WSL NATs through Windows). Both tailscaled instances are therefore logged out (BackendState=NoState) with no netmap; WSL's tailscale0 holds no 100.x address, so the A10 and every tailnet peer are unreachable. 'no matching peer' + TCP failures are symptoms of the dead control channel, NOT of Windows claiming 100.x routes (Windows has zero 100.x routes).",
+  "failure_scenario": "WSL→A10 over tailscale: `tailscale status` => 'You are logged out. The last login error was: fetch control key: Get https://controlplane.tailscale.com/key?v=148: context deadline exceeded' / 'unexpected state: NoState'; `tailscale ip` => none; `ip route get 100.68.122.100` => via 172.27.176.1 dev eth0 (default Wi-Fi gateway, no tailscale0 path); `ping -c2 100.68.122.100` => 100% loss; WSL journald has 194 'fetch control key ... deadline exceeded' events (first 2026-11-13T09:51:34Z) and 3x 'ping(100.68.122.100): no matching peer' (10:11–10:21Z). Discriminator: TCP connects to the control LB 192.200.0.104, but the TLS handshake hangs ONLY when SNI=controlplane.tailscale.com (ss -tin during stall: hello segment retransmitted 8x, bytes_retrans 2624, segs_in=1); the SAME IP with no SNI completes TLSv1.3 (cert CN=controlplane.tailscale.com, Let's Encrypt YE1) and GET /key returns 200 {\"legacyPublicKey\":\"mkey:9e5...\"}. The same-SNI drop also occurs toward github.com/1.1.1.1/8.8.8.8 (which answer with other SNIs), and external vantage points (check-host.net ch/es/ir/se/us) get 302 from https://controlplane.tailscale.com/ — so this is a local-path payload-scoped drop, not a Tailscale outage, DNS, or cert problem.",
+  "check_command": "REPRO (read-only) — [WSL]: openssl s_client -connect 192.200.0.104:443 -noservername -brief </dev/null   # => TLSv1.3 OK, cert CN=controlplane.tailscale.com ; openssl s_client -connect 192.200.0.104:443 -servername controlplane.tailscale.com -brief </dev/null   # => silent hang / 0 bytes ; curl -sS -m 10 -o /dev/null -w '%{http_code}' https://controlplane.tailscale.com/key   # => 000 . [Windows PowerShell]: curl.exe -sS -m 10 -o NUL -w '%{http_code}' https://controlplane.tailscale.com/key   # => 000 (timeout) while curl.exe -sS -m 10 -o NUL -w '%{http_code}' https://example.com   # => 200 .\nFIX, in order — (1) [Windows PowerShell, as Administrator]: tailscale down ; net stop Tailscale ; sc.exe config Tailscale start= demand    # stops the Windows node from ever re-owning 100.64/10 routes (it cannot log in through this network anyway).\n(2) Move this laptop's Internet (Wi-Fi) to an egress that does not drop the Tailscale control SNI — e.g. phone hotspot; WSL2 NATs through Windows, so this single switch fixes both sides. Confirm with [Windows PowerShell]: curl.exe -sS -m 8 -I https://controlplane.tailscale.com/   # expect HTTP/1.1 302, not a timeout.\n(3) [WSL (root)]: tailscale up --accept-routes --hostname=wsl-gpu-node    # login uses login.tailscale.com, which is NOT blocked.\n(4) VERIFY [WSL]: tailscale ping -c 3 <A10-tailnet-IP-or-name>    # proves the overlay path end-to-end (DERP fallback ok); service-level alternative: timeout 6 bash -c 'echo > /dev/tcp/<A10-IP>/50051' && echo A10-REACHABLE . (<A10> = the A10's tailnet IP/name from `tailscale status`; if it never appears there, the A10 itself is not joined to this tailnet and must be joined from its side.)",
+  "audit": "net-path"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\cli\\cluster.py",
+  "line": 414,
+  "summary": "`distllm cluster join` re-registers the node with no `ready` field, so the coordinator sets `is_healthy=False`, and no admin/CLI verb can restore it.",
+  "failure_scenario": "`distllm cluster join` spawns the worker (which self-registers with ready=true), then posts /admin/v1/nodes/register without a ready key; RegisterNodeRequest defaults ready=False, so admin.py:634-638 flips `node.is_healthy = False` on the fresh PipelineNode (typical ordering: worker registers first, CLI's poll is 1s later). `run_pipeline` then filters the node out and every inference request fails `RuntimeError: No healthy nodes in pipeline`. `recover` writes node.healthy=True (an attribute PipelineNode does not define) and `undrain` only touches the ResourceManager, so neither restores is_healthy — verified with real PipelineOrchestrator/ResourceManager: after worker-ready register is_healthy=True, after CLI-style re-register is_healthy=False, and after recover+undrain it is still False. Because no production code ever attaches a gRPC client to a PipelineNode, the health probe loop (which skips client-is-None nodes) never clears it either.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_node_lifecycle_audit2.py  (prints: after CLI re-register is_healthy=False; RESULT: request FAILS: No healthy nodes in pipeline; after recover/undrain still False)",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\dist\\pipeline\\orchestrator.py",
+  "line": 424,
+  "summary": "Draining a node does not stop new requests: the serving path filters only on `is_healthy` and never consults `ResourceManager._draining_nodes`.",
+  "failure_scenario": "`POST /admin/v1/nodes/{id}/drain` (its own description: \"Stop sending new requests to a node. Existing in-flight requests are allowed to complete\") only adds the id to `_draining_nodes`. `run_pipeline`/`run_pipeline_microbatched` build `ordered_nodes` from `self._nodes[nid].is_healthy` only; a whole-src grep shows `is_node_draining`/`get_draining_nodes` are read solely by admin.py for display. Verified: after a 200 drain on a registered node with an injected forward client, `run_pipeline` still invoked the node (forward calls 0→1) and `node.is_healthy` was unchanged. `cluster leave`'s comment \"Drain first so in-flight requests finish\" is therefore false — drain waits for nothing; a node under maintenance keeps receiving traffic until it is deregistered.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_node_lifecycle_audit.py  (prints: [OK ] BUG: request still routed to drained node :: calls before=0 after=1)",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\routes\\admin.py",
+  "line": 322,
+  "summary": "`offline` and `recover` branch on attrs that real nodes do not have (`healthy`/dict), so offline is a silent no-op and recover cannot clear `is_healthy`; both return 200.",
+  "failure_scenario": "`coord.nodes` holds PipelineNode objects (dataclass field is `is_healthy`, no `healthy`). offline_node: the `isinstance(node, dict)` branch does nothing, the `hasattr(node, 'healthy')` branch is never taken for PipelineNode, so it only logs \"cannot mark node ... offline (unknown type: PipelineNode)\" — verified: after a 200 offline the node was still routed to by run_pipeline and `node.is_healthy` stayed True; the circuit-breaker simulation it performs is never consulted by run_pipeline and is erased by record_success on the next successful request. recover_node for a PipelineNode executes `node.healthy = True` — a dead attribute; verified: with `node.is_healthy=False` (as set by a failed register/health path), recover 200s but is_healthy remains False and routing still raises 'No healthy nodes in pipeline'. So there is no admin verb that exits the \"pipeline-unhealthy\" state.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_node_lifecycle_audit.py  (prints: [OK ] BUG: request still routed to offlined node; [OK ] BUG: recover does not restore is_healthy; offline warning 'unknown type: PipelineNode')",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/structured_output/__init__.py",
+  "line": 6,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "Second, independent chain that breaks `import distllm.api.server`/`distllm.api` without torch: api/routes/chat.py:19 unconditionally imports JSONSchemaConstraint/StructuredOutputEngine from this package, which hard-imports torch at module scope; fixing watermark.py alone is not enough.",
+  "failure_scenario": "Same lean venv as the crit finding; even with the security path fixed, api/__init__.py:4 -> api/server.py:33 -> api/routes/__init__.py:6 -> routes/chat.py:19 -> core/structured_output/__init__.py:6 raises ModuleNotFoundError: torch before the app object exists, so the installed `distllm-api` script cannot start on a [cli]-only or bare install.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.core.structured_output\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/coordinator.py",
+  "line": 20,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "Third independent chain: coordinator.py has NO optional-dep guard (unlike dist/worker.py) and imports torch (line 20) and `from transformers import AutoTokenizer` (line 25) at module scope, breaking `distllm.core.coordinator`, the distllm-coordinator console script, and api/server.py:104 on any install without [self-hosted].",
+  "failure_scenario": "`pip install distributed-llm[cli]`; run `distllm-coordinator` or `python -c \"from distllm.api.server import app\"`: api/__init__.py:4 -> server.py:104 -> coordinator.py:20 raises ModuleNotFoundError: torch (with torch present but transformers absent, it raises at coordinator.py:25). The coordinator is the documented way to start a cluster head, and dist/worker.py demonstrates the intended graceful-guard pattern the coordinator lacks.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.core.coordinator\" && PYTHONPATH=src python -c \"import sys; sys.modules['transformers']=None; import distllm.core.coordinator\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/models/partitioner.py",
+  "line": 17,
+  "severity": "high",
+  "reproduced": true,
+  "summary": "models/partitioner.py hard-imports torch (line 14) and transformers (line 17) at module scope; dist/worker.py:73 imports ModelPartitioner AFTER implementing its own _TORCH_AVAILABLE/_require_torch guard (worker.py:16-31), so the guard's intended helpful error is unreachable.",
+  "failure_scenario": "`pip install distributed-llm[cli]`; run `distllm-node` (dist/worker.py:main): worker.py:73 -> partitioner.py:17 raises raw ModuleNotFoundError: No module named 'transformers' instead of the designed message \"torch is required for worker node; install with pip install distributed-llm[self-hosted]\". Same chain breaks dist/node_registrar.py:13 and core/cluster_manager.py:9 (cluster join/registration on a lean head node).",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['transformers']=None; import distllm.dist.worker\" && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.models.partitioner\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/api/server.py",
+  "line": 997,
+  "summary": "Dashboard static assets (src/distllm/dashboard/static/ and static_v2/: index.html, app.js, styles.css, distllm-webrtc.js, leaderboard.html, models.html) are absent from both the wheel and the sdist, so every installed build serves 'Dashboard not found' at /dashboard, /dashboard/leaderboard, and /dashboard/models, and the /dashboard/static mount serves nothing.",
+  "failure_scenario": "pip install distributed-llm (wheel or sdist), then GET /dashboard as an authenticated user returns HTTP 200 with body '<h1>Dashboard not found</h1>'; GET /dashboard/leaderboard returns '<h1>Leaderboard not found</h1>'; GET /dashboard/static/app.js returns 404. Reproduced by installing the freshly built sdist into a temp target (pip install --no-deps --target ... dist/distributed_llm-0.7.0.tar.gz) and driving distllm.api.server.app with fastapi TestClient from outside the repo tree: the static/ dir exists only as an empty mkdir from server.py:999, and static_v2/ does not exist at all. Root cause: [tool.setuptools.package-data] declares no entry for distllm.dashboard, and MANIFEST.in has no rule for it, so setuptools drops the non-.py files from both artifacts. CI stays green because tests/api/test_dashboard.py asserts the real dashboard content while running inside the repo checkout where the files exist.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -I -c \"import zipfile; print([n for n in zipfile.ZipFile('dist/distributed_llm-0.7.0-py3-none-any.whl').namelist() if 'dashboard/static' in n])\"  # prints [] (fresh rebuild identical)",
+  "severity": "high",
+  "reproduced": true,
+  "audit": "packaging"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/pyproject.toml",
+  "line": 66,
+  "summary": "Declared dependency floors grpcio>=1.60.0 and protobuf>=4.25.0 are below what the shipped generated gencode hard-requires (node_pb2_grpc.py raises unless grpcio>=1.80.0; node_pb2.py validates protobuf runtime 6.31.1), so any environment whose resolved grpcio/protobuf satisfies the declared floors but is older than the gencode can never import the server, coordinator, or worker.",
+  "failure_scenario": "In an env with grpcio==1.79 (satisfies declared >=1.60.0, pip will not upgrade it), `distllm-api`, `distllm-coordinator`, `distllm-node`, and `import distllm.api.server` all die at import with RuntimeError 'The grpc package installed is at version 1.79..., but the generated code in node_pb2_grpc.py depends on grpcio>=1.80.0'; with protobuf 4.25-6.30 they die with google.protobuf.runtime_version.VersionError 'gencode 6.31.1 runtime 4.25.0'. Reproduced sin the installed copy by setting grpc.__version__='1.60.0' and by monkeypatching protobuf runtime MAJOR/MINOR/PATCH to 4.25.0: distllm.api.server, distllm.core.coordinator, distllm.dist.worker, distllm.dist.node_client, distllm.dist.node_service all raise. The except ImportError guards in node_client.py:36-39 and node_service.py:50-53 do not catch these (RuntimeError/VersionError propagate).",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import grpc; grpc.__version__='1.60.0'; import distllm.api.server\"  # RuntimeError: depends on grpcio>=1.80.0 (also: python -c \"import google.protobuf.runtime_version as rv; rv.MAJOR,rv.MINOR,rv.PATCH=4,25,0; import distllm.api.server\" -> VersionError)",
+  "severity": "high",
+  "reproduced": true,
+  "audit": "packaging"
+ },
+ {
+  "file": "src/distllm/dist/pipeline/orchestrator.py",
+  "line": 190,
+  "summary": "The redundancy config knob is inert end-to-end: coordinator wires config.redundancy into PipelineOrchestrator._redundancy, but no code in src ever reads it, and the only class that implements redundant fan-out (dist/redundant.py RedundantExecutor) is never constructed anywhere in production src (only exported lazily).",
+  "failure_scenario": "Operator starts the coordinator with redundancy=2 (--redundancy, help text 'Redundant peers per stage') expecting fault-tolerant stage execution; run_pipeline runs each stage exactly once with no fan-out and no failover — the feature silently never engages. Probe with two same-range replicas shows redundancy=1 and redundancy=2 behave identically (2 sequential calls, same output). Supporting grep: `_redundancy` appears only as a write at orchestrator.py:190 and inside redundant.py itself; `RedundantExecutor(` has no non-test, non-docstring instantiation in src. StrategySelector.select_strategy (dist/pipeline/strategy.py:97) also has no production caller — tests only.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys,types; sys.path.insert(0,'src'); import torch; from distllm.dist.pipeline.orchestrator import PipelineOrchestrator as P; calls=[]\nfor red in (1,2):\n    calls.clear(); p=P(redundancy=red)\n    p.register_node('n1','h1',1,0,15); p.register_node('n2','h2',1,0,15)\n    mk=lambda tag:(lambda hidden_states,kv_cache,request_id:(calls.append(tag) or hidden_states+1))\n    p._nodes['n1'].client=types.SimpleNamespace(forward=mk('n1'))\n    p._nodes['n2'].client=types.SimpleNamespace(forward=mk('n2'))\n    out=p.run_pipeline(torch.zeros(1,2,dtype=torch.long),{},'r')\n    print('redundancy=',red,'calls=',len(calls),'output=',out[0,0].item())\"  (observed: redundancy= 1 calls= 2 / redundancy= 2 calls= 2, identical)",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "src/distllm/dist/redundant_executor.py",
+  "line": 1320,
+  "summary": "RedundantExecutor.run_redundant silently returns a success-shaped RedundantResult(result=None, replica_id='', failures=0) when the timeout expires before any replica completes, instead of raising as the docstring promises ('Raises RuntimeError: If all replicas failed').",
+  "failure_scenario": "Call run_redundant with n_replicas=2, timeout_s=0.05, and a task that sleeps 0.4s: no exception is raised; the caller receives RedundantResult with result=None and failures=0, and the INFO log falsely reports 'task completed via  in 0.0ms (0/2 replicas failed)'. The guard at line 1320 only raises when best_result is None AND failures > 0, so the timeout case (zero completions examined) falls through to the success return at line 1335. A caller checking only failures==0 concludes success and propagates a None payload downstream.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys,time; sys.path.insert(0,'src'); from distllm.dist.redundant_executor import RedundantExecutor as R; r=R().run_redundant(lambda rid,**kw: time.sleep(0.4), n_replicas=2, timeout_s=0.05); print('no exception; result=',repr(r.result),'failures=',r.failures,'replica_id=',repr(r.replica_id))\"  (observed: no exception; result= None failures= 0 replica_id= '')",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "src/distllm/dist/redundant_executor.py",
+  "line": 1303,
+  "summary": "RedundantExecutor.run_redundant inspects only the first-completed future (FIRST_COMPLETED + break), so when the fastest replica fails and a healthy backup replica is still running, it raises 'All N redundant replicas failed' — defeating the failover the redundancy exists to provide.",
+  "failure_scenario": "replica-0 raises RuntimeError('replica down') immediately; replica-1 is healthy but needs 0.15s. wait(FIRST_COMPLETED) returns only replica-0's future; the loop at 1303 sees its exception, sets failures=1, exits; best_result stays None and the guard at 1320 raises RuntimeError('All 2 redundant replicas failed') even though the healthy replica would have succeeded 150ms later. The whole purpose of redundant execution (survive a failed replica) fails in the most common real failure shape (fast connection refusal on the primary).",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys,time; sys.path.insert(0,'src'); from distllm.dist.redundant_executor import RedundantExecutor as R\ndef f(rid,**kw):\n    if rid=='replica-0': raise RuntimeError('replica down')\n    time.sleep(0.15); return 'healthy-result'\ntry: print('returned:', R().run_redundant(f, n_replicas=2, timeout_s=5).result)\nexcept RuntimeError as e: print('raised:', e)\"  (observed: raised: All 2 redundant replicas failed (1 failures, timeout=5s))",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "src/distllm/dist/redundant_executor.py",
+  "line": 737,
+  "summary": "IncrementalRecovery.save_delta without base_params records zero deltas forever — the documented no-base mode is a silent no-op, making recover_to impossible.",
+  "failure_scenario": "The docstring documents base_params=None as a supported mode ('the delta is computed against the parameter's value at the last recorded step (or the checkpoint if no prior delta exists)'). In the code, the first occurrence sets base=current (line 737, comment 'delta = 0 effectively'), the zero delta is skipped at line 745, so no previous delta ever exists; every subsequent call also falls into base=current and records nothing. After two documented save_delta(1, w=5.0) / save_delta(2, w=7.0) calls, delta_count=0 and latest_step=0; a later recover_to(2, params) raises 'target_step 2 exceeds latest step 0' — the incremental-recovery feature is unusable in its documented default mode.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys; sys.path.insert(0,'src'); import torch; from distllm.dist.redundant_executor import IncrementalRecovery as I; r=I(); r.save_delta(1,{'w':torch.full((4,),5.0)}); r.save_delta(2,{'w':torch.full((4,),7.0)}); print('delta_count=',r.delta_count,'latest_step=',r.latest_step)\"  (observed: delta_count= 0 latest_step= 0)",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "src/distllm/dist/redundant.py",
+  "line": 113,
+  "summary": "RedundantExecutor._run_redundant treats every entry of node_order as a sequential stage, so when two replicas cover the same layer range the hidden state is pushed through the same layers twice (duplicate forward application) — corrupting the output.",
+  "failure_scenario": "With replication nodes 'a' and 'b' both covering layers 0-15 and redundancy=2, the orchestrator node_order contains both; the stage loop (line 112) runs once per node, each time fanning out to the same {a,b} candidate set (line 113 finds peers by identical start/end layer). The first stage applies hidden+1 and the second stage applies the SAME layer range again, so input 0 yields output 2.0 (4 forward calls) instead of the single-pass 1.0. Wrong inference results whenever redundancy>1 is actually engaged. The same probe also shows fan-out is sequential (not concurrent — a slow primary blocks, contradicting 'uses the first response') and timeout_s=0.05 is never enforced (wall time 1.2s; `self._timeout` set at line 40 is read nowhere).",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys; sys.path.insert(0,'src'); import torch; import distllm.dist.node_client as nc; from distllm.dist.redundant import RedundantExecutor; from distllm.dist.pipeline.orchestrator import PipelineOrchestrator as P\ncalls=[]\nnc.forward_request=lambda host,port,hidden_states,kv_cache=None,request_id='',**kw:(calls.append(host) or hidden_states+1)\np=P(); p.register_node('a','10.0.0.1',1,0,15); p.register_node('b','10.0.0.2',1,0,15)\nout=RedundantExecutor(p,redundancy=2).run_pipeline(torch.zeros(1,4),{},'r')\nprint('forward calls=',len(calls),'output=',out[0,0].item())\"  (observed: forward calls= 4 output= 2.0; expected one pass = 1.0)",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "integrations/kubernetes/kustomize/overlays/dev/kustomization.yaml",
+  "line": 13,
+  "summary": "The integrations kustomize overlays dev/staging/prod are unbuildable: each `patches` entry sets `target:` while pointing `path:` at coordinator-patch.yaml, which is a multi-document file (two Deployments). Kustomize v5 rejects this with 'Multiple Strategic-Merge Patches in one `patches` entry is not allowed to set `patches.target` field: [path: \"coordinator-patch.yaml\"]'. All three overlays (dev, staging, prod, each at line 13 of their kustomization.yaml) fail; helpers/quote wrong: the entry targeting Deployment/worker also points at the same file whose first document is the coordinator patch.",
+  "failure_scenario": "`kubectl apply -k integrations/kubernetes/kustomize/overlays/dev` (or staging/prod) fails during build with the kustomize error above — the overlay deploys nothing. Verified reproduction: `kubectl kustomize integrations/kubernetes/kustomize/overlays/dev` exits non-zero with that exact error (same for overlays/staging and overlays/prod). Root cause confirmed by fixing in a temp copy (outside the repo): splitting coordinator-patch.yaml into two single-document files and pointing each entry at its matching file makes the build render 7 resources successfully.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "kubectl kustomize integrations/kubernetes/kustomize/overlays/dev && kubectl kustomize integrations/kubernetes/kustomize/overlays/staging && kubectl kustomize integrations/kubernetes/kustomize/overlays/prod",
+  "audit": "shipped-configs"
+ },
+ {
+  "file": "integrations/docker/docker-compose.gpu.yml",
+  "line": 151,
+  "summary": "integrations/docker/docker-compose.gpu.yml does not parse: the coordinator service mapping contains two YAML merge keys (`<<: *distllm-image` at line 81 and `<<: *gpu-reservation` at line 151). Duplicate `<<` keys in one mapping is a construct error for docker compose's Go parser, so the entire file is rejected. worker-1 (lines 163+221) and worker-2 (lines 224+282) repeat the same double-merge pattern.",
+  "failure_scenario": "Running the file's own advertised command `docker compose -f integrations/docker/docker-compose.gpu.yml up -d` (quoted in the file header, lines 8-11) fails before doing anything: 'failed to parse .../docker-compose.gpu.yml: yaml: construct errors: line 32: line 151: mapping key \"<<\" already defined at line 81'. The integration's GPU deployment stack cannot start. The correct YAML is a single merge of a list, e.g. `<<: [*distllm-image, *gpu-reservation]`, or folding the anchors.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "docker compose -f integrations/docker/docker-compose.gpu.yml config",
+  "audit": "shipped-configs"
+ },
+ {
+  "file": "src/distllm/core/request_pipeline.py",
+  "line": 609,
+  "summary": "_generate_local_batch unpacks generate_batch_draft_tokens() into 2 values, but the method returns a 3-tuple (tokens, kv_caches, draft_logits), raising ValueError on the first spec-enabled batch step.",
+  "failure_scenario": "Any local cluster with a SpeculativeDecoder wired to the coordinator (the documented usage) and the batch scheduler running a request: the first call to _generate_local_batch hits line 609 and raises \"ValueError: too many values to unpack (expected 2, got 3)\" - reproduced with the real RequestPipeline over a stub model. batch.generate is also blocked: even after fixing the unpack, line 613 slices all_logits[i:i+1] per batch row, so for batch_size>1 every slice after index 0 is empty (shape (0, seq, vocab)) and verify_batch raises IndexError.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "python .tmp-audit-specbatch.py  # crashes in real RequestPipeline._generate_local_batch: ValueError: too many values to unpack (expected 2, got 3)",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/core/speculative_decoder.py",
+  "line": 257,
+  "summary": "_draft_forward records the draft probability q from the UNMASKED softmax while the token itself is sampled from the top-k masked (renormalized) distribution, so verification runs min(1, p/q) against the wrong q and over-accepts.",
+  "failure_scenario": "Default constructor has top_k=20, temperature=1.0. With top_k=1 the draft always proposes the top token (true proposal probability 1.0) but q is recorded as the unmasked softmax value (0.3), so acceptance min(1, p/q) becomes 1.0 instead of min(1, p) despite p=0.70: reproduced 300/300 acceptances where exact speculative sampling gives ~70%. The output distribution no longer matches the target model's - the core correctness guarantee of speculative decoding is broken (same pattern in SelfSpeculativeDecoder._draft_forward, lines 811-816).",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "python .tmp-audit-specverify.py  # section C2: 'accepted 300/300 trials' with p_target=0.70, expected ~70%",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/api/middleware.py",
+  "line": 466,
+  "summary": "The shipped server blocks /v1/auth/{token,refresh,revoke} with a 401: SsoMiddleware explicitly skips these routes (AUTH_ROUTES, sso_middleware.py:67,396) but AuthMiddleware's exemption list omits them, so the documented SSO code-exchange and the only revocation endpoint require a pre-existing API key.",
+  "failure_scenario": "Enterprise user completes IdP login and POSTs {code,state} to /v1/auth/token on distllm.api.server.app; the request never reaches the handler — inner AuthMiddleware returns 401 \"Unauthorized: invalid API key\" (real app repro: 401 401; with a valid admin API key the same request reaches the route and returns 400 missing_code, proving the route works but is gate-blocked). Consequence: the SSO login flow is unusable by users who by definition have no API key, and a holder of an SSO JWT cannot call /v1/auth/revoke (401), so holder-initiated revocation is impossible.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src D:/distributed-llm/.venv/Scripts/python.exe -c \"from fastapi.testclient import TestClient; from distllm.api.server import app; r=TestClient(app).post('/v1/auth/token', json={}); print(r.status_code, r.json()['error']['code'])\"  -> 401 401",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "src/distllm/api/sso_middleware.py",
+  "line": 435,
+  "summary": "Revoking an externally-validated (OIDC) Bearer token is a silent no-op: revoke_token_str's documented hash-based fallback (lines 340-356) stores sha256(token) in TokenBlacklist, but dispatch()'s external-provider path never consults the blacklist — only locally-decoded JWTs are checked (line 407-421).",
+  "failure_scenario": "Stolen OIDC access token is revoked via the only reachable path (mw.revoke_token_str(token) — the HTTP route is itself blocked, see finding 1); the next request with that token is validated by the registered OIDCHandler via JWKS and served normally: repro shows GET /echo with the revoked Bearer token -> 200 {'auth': 'sso'}. The revocation guarantee the endpoint documents does not hold for external tokens.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src D:/distributed-llm/.venv/Scripts/python.exe -c \"\nimport types\nfrom fastapi import FastAPI, Request\nfrom fastapi.testclient import TestClient\nfrom distllm.api.sso_auth import SSOUserInfo\nfrom distllm.api.sso_middleware import setup_sso\nasync def v(t): return SSOUserInfo(sub='v', provider='oidc') if t == 'tok' else None\na = FastAPI()\n@a.get('/echo')\nasync def e(r: Request): return {'a': getattr(r.state, 'auth_method', None)}\nsetup_sso(a); c = TestClient(a); c.get('/echo')\nmw = a.state._sso_middleware\nmw.register_provider('p', types.SimpleNamespace(_authority='x', async_validate_token=v))\nmw.revoke_token_str('tok')\nprint('revoked-token-request:', c.get('/echo', headers={'Authorization': 'Bearer tok'}).status_code)\"  -> revoked-token-request: 200",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "src/distllm/api/sso_auth.py",
+  "line": 319,
+  "summary": "The OIDC/OAuth2 callback requires a server-issued state, but the state/PKCE/nonce stores are populated only by get_login_url(), and nothing in the shipped server ever calls it (no login/bootstrap route exists) — so every real callback and /v1/auth/token exchange is rejected 'state not found'.",
+  "failure_scenario": "A fresh env-configured OIDCHandler (as created in production by SSOAuthHandler._initialize): handle_callback('code', expected_state='<state from the IdP redirect>') returns None because _state_store/_pkce_store are empty; POST /v1/auth/token likewise can never succeed for oidc/oauth2, since no API yields a state the stores know (route demands state, returns 400 missing_state otherwise). grep proves zero get_login_url callers outside the sso_auth/sso_middleware definitions. In multi-worker deployments the per-process stores would also lose state across workers even if a caller existed.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src D:/distributed-llm/.venv/Scripts/python.exe -c \"from distllm.api.sso_auth import OIDCHandler; h=OIDCHandler.__new__(OIDCHandler); h._state_store={}; h._nonce_store={}; h._pkce_store={}; print('callback result:', h.handle_callback('code', expected_state='s'))\"  -> callback result: None;  and: grep -rn \"get_login_url\" src/ --include=*.py | grep -v \"sso_auth.py\\|sso_middleware.py\"  -> no matches",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 387,
+  "summary": "Every streaming request is registered on the coordinator's param-update channel with default GenerationParams and _generate_tokens then samples with those defaults, silently discarding the request's temperature/top_p/top_k.",
+  "failure_scenario": "POST /v1/chat/completions {stream:true, temperature:0.0, top_p:0.2, top_k:7}: _stream_response registers chatcmpl-<id> with GenerationParams() (0.7/0.9/0) at line 387; _generate_tokens reads the channel at lines 241-249 (local) / 314-322 (distributed) and overrides temp/tp/tk. Reproduced end-to-end through chat_completions with a real ParamUpdateChannel: the model step received (0.7, 0.9, 0) instead of (0.0, 0.2, 7). Production coordinators always have the channel (coordinator.py:255); MagicMock-based tests skip it via the isinstance guard at line 242, which is why CI misses it. Users who set non-default sampling (incl. temperature=0 for greedy) silently get different sampling; default-value requests happen to be unaffected.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-e2e.py  # prints: body requested (0.0, 0.2, 7) -> effective [(0.7, 0.9, 0)]",
+  "audit": "streaming"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 445,
+  "summary": "Any exception raised during generation after the first chunk propagates raw: the client gets a well-formed 200 SSE body that just stops — no finish_reason, no [DONE], no error event.",
+  "failure_scenario": "Backend fails mid-decode (CUDA OOM, pipeline/gRPC error, or any bug in the loop). Headers and the role chunk are already sent (line 435). The unhandled exception kills the ASGI task. Reproduced over real HTTP on port 8931 (/boom route): curl receives the role chunk plus 2 content chunks, exits with code 18, http_code=200, and never receives finish_reason or 'data: [DONE]'. OpenAI-compatible clients cannot distinguish this from a long pause and typically hang until their own timeout. The module comment (lines 28-34) fixed only the import-time variant of this class; the generation-loop variant is unprotected — core/streaming_generator.py shows the pattern (catch, emit finish_reason='error') but that class is not used here.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit.py  # T1 pass + [HTTP] section: status=200, truncated body, no [DONE]",
+  "audit": "streaming"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\routes\\health.py",
+  "line": 618,
+  "summary": "POST /v1/update-params misreports and corrupts: it 404s for live streams (ParamUpdateChannel.update() always returns None) and, before raising, writes explicit None into unset fields of the live params, so the next token step raises and the stream truncates.",
+  "failure_scenario": "A streaming client (the request id is visible in every chunk's 'id' field) calls the documented mid-stream steering endpoint with a partial body {temperature: 0.3}. Step 1 (reproduced): param_update_channel.py:71 'update()' has return type None and returns None, so the route raises 404 'Request ... not found or already completed' even though the request is live and the update landed. Step 2 (reproduced): the route passed top_p=None / top_k=None (unset fields), which params.update() applies via setattr, so the live params now hold None. Step 3 (reproduced): the next sampling step in the stream raises TypeError: '>' not supported between instances of 'NoneType' and 'int' (token_generator.py:43 top_k check / line 47 top_p check), and per the finding above the stream then truncates with no error signal — the client's own steering call killed its stream while telling it 404. A full three-field payload silently changes sampling while still reporting 404.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit3.py  # R2a: HTTPException=404 for a LIVE id; R2b: top_p=None top_k=None after route call; R2c: next sample raises TypeError",
+  "audit": "streaming"
+ },
+ {
+  "file": "tests/dist/test_cache_digest.py",
+  "line": 18,
+  "summary": "tests/dist/test_cache_digest.py._get_module() installs an unrestored sys.modules stub for 'distllm.dist.merkle' (MerkleTree=None, no EMPTY_HASH, no __file__) that persists for the rest of the pytest session, so any later test that lazily imports distllm.dist.merkle / distllm.dist.attention fails; reproduced in default directory order (tests/dist runs before tests/security), killing 4 tests in tests/security/test_kv_cache_integrity.py.",
+  "failure_scenario": "Run the suite in normal order (tests/dist before tests/security, or any run with the digest file before the victims): TestRollingHash.setup_class executes _get_module(), which does `sys.modules['distllm.dist.merkle'] = merkle_mod` (merkle_mod.MerkleTree = None) with no save/restore. Later, tests/security/test_kv_cache_integrity.py:55 does `from distllm.dist.merkle import MerkleTree` -> binds the leaked stub's None -> line 66 `MerkleTree(leaves=leaves)` raises `TypeError: 'NoneType' object is not callable`; 4 tests in that file fail. A second victim, tests/core/test_kv_cache_comprehensive.py:71 (when run after the polluter, e.g. explicit file lists), lazily imports distllm.dist.attention, whose module-level `from distllm.dist.merkle import MerkleTree, EMPTY_HASH` raises `ImportError: cannot import name 'EMPTY_HASH' from 'distllm.dist.merkle' (unknown location)` (src/distllm/dist/attention.py:28); 3 tests fail. Each victim passes alone, so the outcome is purely order-dependent. Note the stub is also unnecessary: cache_digest.py imports merkle only lazily inside build_merkle_digest/diff_merkle (never called by this test file) and the real merkle.py imports cleanly here.",
+  "severity": "high",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -m pytest \"tests/security/test_kv_cache_integrity.py\" -q; python -m pytest \"tests/dist/test_cache_digest.py\" \"tests/security/test_kv_cache_integrity.py\" -q; python -m pytest \"tests/dist/test_cache_digest.py\" \"tests/core/test_kv_cache_comprehensive.py\" -q",
+  "audit": "test-order"
+ },
+ {
+  "file": "src/distllm/core/advanced_scheduling/tiered_store.py",
+  "line": 429,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "_demote_to_l3() writes to NVMe and increments _l3_used without ever checking _l3_capacity, so directory-cache demotions blow through the configured L3 quota.",
+  "failure_scenario": "TieredMemoryPool(cpu_memory_gb=0.000005 => 5000B L2, nvme_max_gb=0.000001 => 1000B L3): 20 warm puts of 400B fill L2; each L2 eviction demotes to L3 unchecked. Measured l3_used=3200 with 8 files on disk versus a 1000-byte L3 capacity - the NVMe budget is exceeded by 3x and grows with load; only _put_l3 (which is itself broken, see above) ever evicts.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_race.py  # see 'Case A' output",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "src/distllm/core/cache_manager.py",
+  "line": 578,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "_tier_stats miss counters are never incremented anywhere in lookup_with_gossip(), so get_tier_stats() reports 0 misses for any number of actual misses and its hit/miss telemetry disagrees with what was served.",
+  "failure_scenario": "CacheManager with empty caches: 50 lookup_with_gossip() calls that all return None leave every tier's 'misses' at 0 ({'local': {'hits': 0, 'misses': 0}, ...}), while the same method does increment 'hits' on success (lines 538/552/563/572). Any hit-rate computed from get_tier_stats() (the counters the class documents as per-tier metrics) is wrong.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python .tmp-cache-audit/repro_tier_stats.py",
+  "audit": "cache-accounting"
+ },
+ {
+  "file": "src/distllm/core/semantic_cache.py",
+  "line": 210,
+  "summary": "SemanticCache's adaptive-threshold update clamps an explicitly passed similarity_threshold into the hard-coded defaults band [0.80, 0.99], silently raising 0.5 -> 0.8 on the 10th semantic hit (same class as the fixed dist/prefix_cache.py bug: explicit value replaced by adaptive logic).",
+  "failure_scenario": "SemanticCache(similarity_threshold=0.5, adaptive_threshold=True): after 10 lookups that semantically hit, _update_threshold() computes threshold 0.5049 then applies max(0.80, min(0.99, x)) = 0.80. A later lookup whose true cosine similarity is 0.6 now misses, although the caller explicitly configured 0.5 to accept it; the cache silently serves fewer hits and no log/warning is emitted.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');from distllm.core.semantic_cache import SemanticCache;c=SemanticCache(similarity_threshold=0.5,adaptive_threshold=True);c.hit_rate=0.75;c.store('Q',response='R',embedding=[1.0]*16,scope='t');[c.lookup('other',embedding=[0.95]*16,scope='t') for _ in range(11)];print('threshold',c._threshold)\"  # prints ~0.80, caller asked 0.5",
+  "audit": "config-override"
+ },
+ {
+  "file": "src/distllm/core/semantic_cache.py",
+  "line": 217,
+  "summary": "The same adaptive-threshold path reads self.hit_rate, which does not exist (hit_rate is only a stats() dict key), so every SemanticCache lookup with adaptive_threshold=True raises AttributeError on the 10th semantic hit and the request fails.",
+  "failure_scenario": "SemanticCache(similarity_threshold=0.5, adaptive_threshold=True) used normally: the 10th lookup that finds a semantic match raises AttributeError('SemanticCache' object has no attribute 'hit_rate') from _update_threshold -> _find_similar -> lookup. The public adaptive_threshold flag is therefore unusable, and the exception surfaces inside a cache lookup on the request path. Same missing attribute at line 257 (GP branch).",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');from distllm.core.semantic_cache import SemanticCache;c=SemanticCache(similarity_threshold=0.5,adaptive_threshold=True);c.store('Q',response='R',embedding=[1.0]*16,scope='t');[c.lookup('other',embedding=[0.95]*16,scope='t') for _ in range(11)]\"  # raises AttributeError on ~10th iteration",
+  "audit": "config-override"
+ },
+ {
+  "file": "src/distllm/core/coordinator_config.py",
+  "line": 195,
+  "summary": "CoordinatorConfig.from_settings only copies 8 fields from DistLLMSettings; explicitly configured prefix-cache settings (and the other unlisted fields) are silently replaced by CoordinatorConfig defaults (enabled=True,max_entries=5000 -> False,256).",
+  "failure_scenario": "A user sets prefix_cache: {enabled: true, max_entries: 5000} in config.yaml; distllm coordinator builds CoordinatorConfig.from_settings(settings), which never passes prefix_cache_enabled/prefix_cache_max_entries, so the result reports enabled=False / 256. No error or warning; worse, nothing in src consumes either the settings or the CoordinatorConfig fields (coordinator.py:114 builds CacheManager() with no arguments, so prefix caching is off regardless).",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');from distllm.config.settings import DistLLMSettings;from distllm.core.coordinator_config import CoordinatorConfig;s=DistLLMSettings(prefix_cache={'enabled':True,'max_entries':5000});c=CoordinatorConfig.from_settings(s);print(c.prefix_cache_enabled,c.prefix_cache_max_entries)\"  # False 256",
+  "audit": "config-override"
+ },
+ {
+  "file": "src/distllm/core/scheduler/budget_computer.py",
+  "line": 165,
+  "summary": "BatchScheduler.__init__ (batch_scheduler.py:101) replaces the explicitly passed max_tokens_per_batch with compute_dynamic_budget, which silently clamps it to 131072 (and can shrink it further from PagedAttention pool state), so an explicit 200000 budget is never honored or reported back.",
+  "failure_scenario": "config.yaml batching.max_tokens_per_batch=200000 flows via CoordinatorConfig into BatchScheduler(max_tokens_per_batch=200000); the constructed scheduler's max_tokens_per_batch attribute reads 131072 and adjust_budget() re-derives the same clamped value. With a PagedAttention manager attached, adaptive pool-derived logic may shrink the caller's budget arbitrarily (e.g. 1440 tokens in tests) with only a debug log. The canonical config value the operator set is silently not what runs.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');from distllm.core.batch_scheduler import BatchScheduler;print(BatchScheduler(max_tokens_per_batch=200000).max_tokens_per_batch)\"  # 131072",
+  "audit": "config-override"
+ },
+ {
+  "file": "src/distllm/dist/attention.py",
+  "line": 247,
+  "summary": "BlockPool._expand_pool grows an explicitly passed num_blocks (doubling, min +64 blocks) whenever auto_expand is true, and PagedAttentionManager does not expose auto_expand, so an explicit GPU block budget is silently exceeded on demand.",
+  "failure_scenario": "BlockPool(num_blocks=4, block_size=2, ...) allocates 4 blocks, then the 5th allocate_block() silently grows the pool to 68 blocks (and on GPU that allocates a fresh tensor of pool size). inference_engine.py:233 and hybrid_cache.py:108 construct PagedAttentionManager, whose signature has no auto_expand parameter, so even an operator setting DISTLLM_PAGED_NUM_BLOCKS=1024 cannot make 1024 a hard memory ceiling — the pool silently expands beyond it under load. This is the same shape as the fixed prefix_cache memory_budget bug.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');import torch;from distllm.dist.attention import BlockPool;p=BlockPool(num_blocks=4,block_size=2,num_layers=1,num_heads=1,head_dim=2,dtype=torch.float16,device='cpu');[p.allocate_block() for _ in range(5)];print(p.num_blocks)\"  # 68",
+  "audit": "config-override"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\semantic_cache.py",
+  "line": 343,
+  "summary": "Semantic cache key ignores model, temperature, and all generation parameters (store/search use prompt text only), so a request for one model/parameter set is served the completion cached for a different one.",
+  "failure_scenario": "With the flag on, a client POSTs model-expensive, temperature 0.0 with X-Semantic-Cache: 0.99 for prompt text P already cached from an earlier request with model-cheap, temperature 1.0: the middleware returns the cheap model's output as the response to the expensive-model request (200, X-Cache: HIT) without ever executing the route, so the wrong model's completion is served under the requested model name.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/.claude/tmp_dedup_audit/repro_model_blind.py  (prints: model-expensive,temp=0.0 -> 200 X-Cache: HIT {\"marker\": \"output-of-model-cheap-temp=1.0\"})",
+  "audit": "dedup-auth"
+ },
+ {
+  "file": "docs/OPS_RUNBOOK.md",
+  "line": 41,
+  "summary": "OPS_RUNBOOK documents `distllm backup list/restore/create` but no top-level `backup` command exists (it is `config backup`), and `config backup create` has no `--type` flag.",
+  "failure_scenario": "An operator following the recovery runbook ('Scenario: config change causes performance degradation' at line 35, and 'Upgrading DistLLM Version' at line 165) types `distllm backup list` and gets exit code 2 with 'No such command backup.'; `distllm backup create --type full` similarly fails, and the real command `distllm config backup create` rejects `--type` ('No such option: --type'). Unlike SCALING.md/PLUGIN_DEVELOPMENT.md, OPS_RUNBOOK.md carries zero hygiene 'UNVERIFIED' annotations, so these read as working instructions. Backup steps that silently fail during an incident are exactly when they matter.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\" && PYTHONPATH=src python -m distllm.cli.main backup list  (exit 2, 'No such command backup'); PYTHONPATH=src python -m distllm.cli.main config backup create --type full  (exit 2, 'No such option: --type')",
+  "audit": "docs-claims"
+ },
+ {
+  "file": "docs/QUICKSTART.md",
+  "line": 173,
+  "summary": "QUICKSTART documents `distllm system run --coordinator-host your-server.com` but `system run` has no --coordinator-host option.",
+  "failure_scenario": "A user setting up WAN mode per QUICKSTART lines 169-173 runs the documented worker command and gets exit code 2 with 'No such option: --coordinator-host'. The flag exists only on the separate `distllm-node` console script (distllm.dist.worker:main). SCALING.md repeats the same wrong command but has a hygiene banner correcting it (SCALING.md:27); QUICKSTART.md has no such annotation, so the first-run document presents a command that cannot run.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\" && PYTHONPATH=src python -m distllm.cli.main system run --coordinator-host x  (exit 2, 'No such option: --coordinator-host')",
+  "audit": "docs-claims"
+ },
+ {
+  "file": "docs/TROUBLESHOOTING.md",
+  "line": 516,
+  "summary": "TROUBLESHOOTING documents `distllm system logs --node node_1 --tail 50` and `system logs --tail 100`, but the `system logs` command accepts no --node or --tail options.",
+  "failure_scenario": "During the circuit-breaker incident procedure (line 516) and general log inspection (line 1647), the documented command fails with exit code 2 and 'No such option: --node' (and --tail does not exist either; `system logs stream` offers --lines/-n, --level, --component, --search, --follow). The user following the troubleshooting steps to diagnose a failing node hits a CLI error instead of the intended logs.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\" && PYTHONPATH=src python -m distllm.cli.main system logs --node node_1 --tail 50  (exit 2, 'No such option: --node')",
+  "audit": "docs-claims"
+ },
+ {
+  "file": "docs/benchmark-results.md",
+  "line": 281,
+  "summary": "The reproduction section (and four other places in the file) documents `python benchmarks/kv_reuse_bench.py`, but that script has never existed in any commit or checkout of the repo.",
+  "failure_scenario": "benchmark-results.md presents measured kv-reuse numbers ('engine_stream_default 97.2 -> 174.5 tok/s', 'Artifacts: benchmarks/results/kv-reuse-aligned-*.json') and tells the reader to reproduce them with `python benchmarks/kv_reuse_bench.py --device cpu|--device cuda` (lines 152, 231, 281-282). The file does not exist: `ls benchmarks/kv_reuse_bench.py` fails and `git log --all -- benchmarks/kv_reuse_bench.py` is empty — it was never committed, so the documented measurements cannot be re-run even though the result JSONs sit in the (gitignored) benchmarks/results/ of the main checkout. This weakens the 'numbers that remain are ones we can defend and re-run' claim the Buildathon application leans on.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\" && ls benchmarks/kv_reuse_bench.py; git log --all --oneline -- benchmarks/kv_reuse_bench.py  (both empty/missing)",
+  "audit": "docs-claims"
+ },
+ {
+  "file": "src/distllm/api/routes/model_registry.py",
+  "line": 221,
+  "summary": "POST /api/models/load and /api/models/unload return HTTP 200 with a bare {\"error\": ...} body when no coordinator is loaded or no load/unload method exists; the repo's own CLI (distllm model load/unload) only checks the HTTP status and then tells the user the operation succeeded.",
+  "failure_scenario": "Host the ASGI app without its main() entrypoint (e.g. `uvicorn distllm.api.server:app`, or any embedding of the app), so g.coordinator is None. POST /api/models/load returns HTTP 200 with body {\"error\": \"coordinator not available\"} — not the standard {\"error\": {message,...}} envelope, and not a 4xx/5xx. `distllm model load llama-x` against this server (distllm/cli/models.py:182) passes raise_for_status() and prints 'Model loaded: llama-x'; same for `distllm model unload` (cli/models.py:196) and `distllm deploy` which prints 'Deployment request accepted.'. The user is told a model was loaded/deployed when nothing happened. Reproduced live: server on port 8935 with no coordinator answered HTTP 200 {\"error\":\"coordinator not available\"}, and the real CLI function printed 'Model loaded: llama-x'. Rows 253 (unload) and 228/260 (method-missing variants) share the defect.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python .claude/tmp-errmq/serve.py  (background, port 8935) ; then `DISTLLM_API_KEY=k-test python .claude/tmp-errmq/check_cli.py` -> prints 'Model loaded: llama-x' / 'Model unloaded: llama-x' despite HTTP 200 {\"error\":\"coordinator not available\"}",
+  "audit": "error-messages"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/security/watermark.py",
+  "line": 43,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "Unconditional module-scope `import torch` in security/watermark.py (reached from every `distllm.api` import: api/__init__.py:3 -> api/middleware.py:683 -> security/__init__.py:34 -> watermark.py:43) breaks the README-documented lean install `pip install distributed-llm[cli]` (README.md:65): `distllm selftest` exits 1 with two FAILs and the API server exits 1 at startup, while the wheel declares distllm-api/-coordinator/-node console scripts that cannot load without torch (same pattern at core/coordinator.py:20 and core/debug.py:3).",
+  "failure_scenario": "Fresh venv; `pip install --no-index --find-links=<wheelhouse> \"distributed_llm-0.7.0-py3-none-any.whl[cli]\"` succeeds (39 pkgs, all local), then `distllm selftest` -> exit 1: 'console scripts FAIL unresolvable: distllm-api, distllm-coordinator, distllm-node' and 'api roundtrip FAIL ModuleNotFoundError: No module named torch'; `distllm-api --port 8933` -> exit 1 with the same ModuleNotFoundError raised at distllm/api/server.py import chain, ending at watermark.py line 43 `import torch`. Root cause is the module-scope import, not the missing extra: distllm.security.__init__ imports watermark unconditionally, so even `from distllm.security.content_moderation.base import ModerationResult` (api/middleware.py:683) drags torch in. Remediation the tool prints (selftest.py:217 'pip install --force-reinstall distributed-llm[cli]') cannot fix it because torch is only in the [self-hosted] extra.",
+  "check_command": "\"C:\\Users\\dev25\\AppData\\Local\\Temp\\gp-golden\\lean2\\Scripts\\distllm.exe\" selftest ; echo exit=$?   (from scratch: python -m venv T && T/Scripts/pip install --no-index --find-links=C:\\Users\\dev25\\AppData\\Local\\Temp\\gp-golden\\wheelhouse \"distributed_llm-0.7.0-py3-none-any.whl[cli]\" && T/Scripts/distllm selftest)",
+  "audit": "golden-path"
+ },
+ {
+  "file": "src/distllm/core/split_brain.py",
+  "line": 189,
+  "summary": "Fencing tokens are not durable and not comparable across nodes: _fence_token starts at 0 in every process (line 72), should_accept_request uses >= so token 0 — and anything, including a fenced-out leader's old token after restart — is accepted, and no node ever exchanges its token with peers. Additionally, nothing in src calls should_accept_request()/fence_request(): FederationCluster increments its private token on partition (federation.py:496) but no request path ever verifies a token, so the fence is write-only.",
+  "failure_scenario": "Old leader is fenced at token 3; the fencing authority (or a follower enforcing it) restarts (crash, rolling deploy) and its counter resets to 0, so the fenced leader's next request with token 3 is accepted again. And because each cluster keeps a local counter that is never transmitted, token 3 at node X cannot be ordered against token 1 at node Y — a stale leader's writes are indistinguishable from the new leader's, which is the stale-leader tolerance this mechanism is supposed to prevent.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.split_brain import SplitBrainDetector as D; d=D('a',['b'],quorum_size=1); d.increment_fence_token(); t=d.get_fence_token(); d2=D('a',['b'],quorum_size=1); print('stale token',t,'accepted after restart:',d2.should_accept_request(t))\"  # prints: stale token 1 accepted after restart: True",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/core/cluster_state_store.py",
+  "line": 341,
+  "summary": "ClusterStateStore never renews its leader lease and never re-validates it: elect_leader() sets the leader key with ttl*2 and the lock with ttl, heartbeat() only refreshes the node key, and is_leader() is a purely local comparison (_leader_id == _node_id) that never re-reads the backend. After LEADER_TTL the lock/key expire, a second node elects itself, and the first still reports is_leader()=True — a stale leader that keeps writing. With no Redis the InMemoryBackend fallback is per-process, so every process self-elects.",
+  "failure_scenario": "Node a elected leader (ttl=15 s). Its heartbeat loop refreshes only its node key; 30 s later the cluster:leader key expires. Node b's background loop sees no leader and elect_locals itself. Both a.is_leader() and b.is_leader() return True indefinitely, with no fencing token on the lock to reject a's late writes (lock has none; acquire is set-nx-ex only). In a multi-process deployment without Redis, a and b each hold private in-memory locks and both self-elect on first attempt.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"import time; from distllm.core.cluster_state_store import ClusterStateStore as S; a=S(cluster_name='c',node_id='a',redis_host='',ttl=1); b=S(cluster_name='c',node_id='b',redis_host=''); b._backend=a._backend; print('a elected:',a.elect_leader()); time.sleep(2.2); print('b elected after lease lapse:',b.elect_leader()); print('both leaders:',a.is_leader(),b.is_leader())\"  # both leaders: True True",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/cli/cluster.py",
+  "line": 399,
+  "summary": "Same CLI, two different env orders: cluster join registration reads API_KEY first then DISTLLM_API_KEY, while http_client.resolve_api_key and cluster._admin_headers read DISTLLM_API_KEY first (and dist/p2p/transport.py reads only DISTLLM_GOSSIP_API_KEY then API_KEY), so when both vars are set to different values different commands send different keys.",
+  "failure_scenario": "Set API_KEY=A and DISTLLM_API_KEY=B (common during the v0.3->v0.4 migration the docs describe). The server (API_KEY-only, per finding 2) accepts A. `distllm cluster join` sends A (works), while `distllm cluster list-nodes`, `distllm chat`, and `distllm model list` send B -> 401. Verified: resolve_api_key()='sk-B', _admin_headers()={'Authorization': 'Bearer sk-B'}, join path picks 'sk-A'. dist/worker.py lines 453/488 also pick API_KEY first (opposite of the clients that talk to the same server).",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "API_KEY=A DISTLLM_API_KEY=B PYTHONPATH=src python -c \"import os; from distllm.cli.http_client import resolve_api_key; from distllm.cli.cluster import _admin_headers; print('resolve:', resolve_api_key(), '| admin:', _admin_headers().get('Authorization'), '| join picks:', os.environ.get('API_KEY') or os.environ.get('DISTLLM_API_KEY'))\"",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "src/distllm/cli/client.py",
+  "line": 71,
+  "summary": "DistLLMClient (used by `distllm benchmark eval` and federated commands) resolves the key only from DISTLLM_API_KEY - it never reads API_KEY nor the coordinator key file - so the default eval flow 401s against a cluster started by `distllm cluster start` (whose admin key lives only in the key file).",
+  "failure_scenario": "Start a cluster with `distllm cluster start` (server mints the key into .distllm/api_key; no env vars). Run `distllm benchmark eval my-model` without --api-key: cli/eval.py:77 sets api_key_resolved='' and constructs DistLLMClient(api_key=''), whose constructor falls back only to os.environ['DISTLLM_API_KEY'] -> no Authorization header -> POST /v1/eval/run returns 401. Verified: with API_KEY='sk-file' and the key file holding the same value, DistLLMClient._headers contained no Authorization.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"import os,tempfile; os.environ['DISTLLM_KEY_FILE']=tempfile.mkdtemp()+os.sep+'k'; open(os.environ['DISTLLM_KEY_FILE'],'w').write('sk-file'); os.environ['API_KEY']='sk-file'; from distllm.cli.client import DistLLMClient; print(DistLLMClient(base_url='http://x')._headers)\"  # no Authorization key",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "src/distllm/dist/worker.py",
+  "line": 453,
+  "summary": "Worker's own coordinator registration and ready-notification never read the coordinator key file (the same bug class as the known-fixed cli/cluster.py join): they send `Bearer <cluster_key>` when a cluster key is configured, or only env API_KEY/DISTLLM_API_KEY, so with the default file-only key the worker's registration/ready calls 401.",
+  "failure_scenario": "Start a cluster with `distllm cluster start` (key only in .distllm/api_key) and run `distllm cluster join` with no env keys: dist/worker.py _register_with_coordinator(None) and _notify_coordinator_ready(None) send headers={'Content-Type': 'application/json'} - no Authorization - and the coordinator answers 401 (verified with a stub server: both calls captured no Authorization header and returned 401). The CLI-side registration masks this, but the worker's ready signal never lands, and a directly-started worker (python -m distllm.dist.worker on another host) never registers at all. With --cluster-key K, the worker sends Bearer K, which the API key store does not accept (the store only honors API_KEYS/API_KEYS_FILE/API_KEY), causing the same 401.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "grep -n \"DISTLLM_KEY_FILE\\|resolve_api_key\\|_api_key_path\" src/distllm/dist/worker.py   # no matches: worker has no key-file read; only os.environ.get('API_KEY') or os.environ.get('DISTLLM_API_KEY') at lines 453, 488",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "(environment) Windows routing table + WSL2 NAT",
+  "severity": "med",
+  "reproduced": true,
+  "summary": "Secondary mechanism/risk: while WSL's tailscaled is logged out, all WSL traffic to 100.64.0.0/10 falls through to the Wi-Fi default gateway and is dropped; and any time the Windows tailscaled node is logged in while WSL's is not, the Windows Tailscale adapter owns 100.64/10 on the host and will silently carry/blackhole WSL's tailnet traffic (classic dual-tailscaled WSL2 hijack). Keep the Windows node stopped while WSL is the tailnet node.",
+  "failure_scenario": "`ip route get 100.68.122.100` => via 172.27.176.1 dev eth0 (no tailscale0 route) + `ping -c2 100.68.122.100` => 100% loss — reproduced now. Windows currently shows ZERO 100.x routes (so the hijack is latent, not active), but PowerShell history shows the dual-daemon pattern in use (`net stop Tailscale` on Windows + `wsl ... tailscale up --accept-routes`), which is the configuration that produces the hijack whenever both are up and Windows' node wins the host routing table.",
+  "check_command": "[WSL]: ip route get 100.68.122.100 ; ping -c 2 100.68.122.100 | [Windows PowerShell]: route print -4 | findstr /r \"^ *100\\.\" ; Get-NetRoute -AddressFamily IPv4 | Where-Object DestinationPrefix -like '100.*'",
+  "audit": "net-path"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\routes\\admin.py",
+  "line": 390,
+  "summary": "Deregister leaves the id in `_draining_nodes` forever (no removal path), so a rejoined node with the same id reports as draining and the drain metric stays inflated.",
+  "failure_scenario": "DELETE /admin/v1/nodes/{id} calls mark_node_draining then pops the node; the only code that discards an id from `_draining_nodes` is the circuit-breaker cooldown (needs failure counts >= 3 plus a recovery time — admin drain creates neither) and `mark_node_alive`, reachable via undrain which 404s once the node is gone. Verified: after deregister, `is_node_draining('w1')` is True, `get_metrics()['draining_nodes']` is 1 (feeds the distllm_draining_nodes gauge), `POST .../undrain` returns 404, and after re-registering the same node id `GET /admin/v1/nodes` shows `draining: true, state: 'draining'` and cluster list-nodes prints '1 draining' — the exact a10-worker-1 symptom the delete route was added to fix, now re-created through delete itself.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_node_lifecycle_audit.py  (prints: draining set after delete: ['w1']; metrics draining_nodes: 1; undrain 404; 'BUG: rejoined node shows draining=True')",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\routes\\admin.py",
+  "line": 159,
+  "summary": "Admin node listing reads `getattr(node, 'healthy', False)` on PipelineNode (which has `is_healthy`), so every node lists healthy=false, healthy_count is always 0, and cluster/status is permanently 'degraded'.",
+  "failure_scenario": "Verified with a real registered PipelineNode: `GET /admin/v1/nodes` returned `healthy: false` (healthy_count=0) while the same payload's `state` said 'healthy' and the node was serving, and `GET /admin/v1/cluster/status` returned status 'degraded', healthy_nodes=0. Any operator or dashboard consuming the admin API sees a constantly degraded cluster; the self-contradictory healthy/state fields also mask genuinely stuck nodes (and are how finding #1's stuck node appears: healthy=false + state=healthy).",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_node_lifecycle_audit.py  (prints: listing healthy=False state=healthy; [OK ] healthy_count=0 despite live node; [OK ] cluster status degraded despite live node)",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\cli\\main.py",
+  "line": 977,
+  "summary": "`distllm cluster leave` defaults `--port 50050` (the gRPC port) but `_cluster_leave` calls REST admin routes (which live on 8000), so the command cannot work against a default cluster.",
+  "failure_scenario": "`cluster list-nodes` defaults to --port 8000 with an explicit note it talks to the REST port; `cluster leave` (and `cluster drain`) create `_get_client(host, 50050)` for /admin/v1/nodes/... Against a default `cluster start`, port 50050 speaks gRPC, not HTTP; against an idle port it prints 'Could not connect ... 50050'. Reproduced against a plain TCP listener: the run ended with raw 'Error: [WinError 10053] An established connection was aborted...' via the generic CLI error handler instead of the friendly admin-path message, and both the drain/delete 401 handling and 'node is not registered' text can never trigger because the request never reaches the admin router. Fix works only by manual `--port 8000`.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python -m distllm.cli.main cluster leave --help  (shows --port default 50050 for the REST admin path; contrast: python -m distllm.cli.main cluster list-nodes --help shows 8000)",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\core\\coordinator.py",
+  "line": 1699,
+  "summary": "Coordinator restart loses all lifecycle state: `_draining_nodes` is in-memory and never persisted, shutdown_state.json is write-only, and HA snapshot application discards node health.",
+  "failure_scenario": "A node drained just before a coordinator restart comes back fully listed and routable: ResourceManager state lives only in memory (verified: fresh ResourceManager reports draining=False after the previous one had True), `ResourceManager.save_state/load_state` exist but are never called anywhere in src/, `_save_shutdown_state` writes ~/.distllm/shutdown_state.json that no code ever reads (the only other reference is its test), and workers register only once at process start (no heartbeat/re-register in dist/worker.py; the failover handler is unwired), so after a coordinator restart the node pool is rebuilt only if workers are restarted too. On HA failover the snapshot carries per-node 'healthy' but apply_state_snapshot (coordinator_election.py:161-171) re-registers nodes without re-applying health, so previously unhealthy or draining nodes silently return to service.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_drain_restart.py  (prints: pre-restart draining: True; post-restart draining (fresh RM): False)  ; grep -rn \"save_state\\(|load_state\\(|shutdown_state\" src/ | grep -v model_version",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/debug.py",
+  "line": 3,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "core/debug.py imports torch at module scope although the public API (set_debug_mode/is_debug_mode, lines 14-21) needs no torch — torch is only used inside _parse_forward_request/_build_forward_response bodies; it sits first on the import chains of dist/worker.py:70, api/server.py:105, and dist/pipeline/strategy.py:12.",
+  "failure_scenario": "Any lean install importing distllm.dist.worker (or api.server, or dist.pipeline.strategy) fails at debug.py:3 with ModuleNotFoundError: torch when only torch is absent — a debug flag helper makes torch a hard import-time requirement for the worker, the API server, and the pipeline.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.core.debug\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/kv_cache.py",
+  "line": 9,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "kv_cache.py's unguarded module-scope `import torch` defeats the torch guards of every module that imports it: dist/node_service.py:76 (which defines _TORCH_AVAILABLE/_require_torch at lines 15-39), dist/backends/vllm.py:33 and dist/backends/llamacpp.py:33 all crash on import when torch is absent.",
+  "failure_scenario": "`pip install distributed-llm[cli]`; `python -c \"import distllm.dist.node_service\"` -> node_service.py:76 -> kv_cache.py:9 ModuleNotFoundError: torch. The guarded path (tensor_to_proto/KVCache raising the intended ImportError on use) never executes because module import fails first.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.dist.node_service\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/backends/protocol.py",
+  "line": 19,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "backends/protocol.py hard-imports torch even though it has `from __future__ import annotations` (line 12) and references torch only inside string annotations (lines 46-50, 119-124, 270-275); sibling backends/registry.py:41-44 guards torch with try/except, so `import distllm.backends` fails at backends/__init__.py:31 -> protocol.py:19 while the properly guarded registry is unreachable.",
+  "failure_scenario": "Lean install without torch: `import distllm.backends` (the package entry point used by integration/CLI code, e.g. verification/runner.py:73's `from distllm.backends import select_backend`) raises ModuleNotFoundError: torch at protocol.py:19, even though the file needs the name only for typing. Fix: move the import under TYPE_CHECKING.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.backends\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/api/streaming.py",
+  "line": 57,
+  "severity": "med",
+  "reproduced": true,
+  "summary": "The api package itself contains more unguarded module-scope torch imports: api/streaming.py:57 and api/routes/embeddings.py:8; these remain import-time hard requirements for distllm.api even after the security/structured_output/coordinator chains are fixed (note streaming.py's own lines 31-40 comment deliberately made the observability import loud — the torch import predates it and belongs to the same failure class).",
+  "failure_scenario": "Lean install without torch, with the other chains hypothetically fixed: api/server.py:96 -> api/streaming.py:57 raises ModuleNotFoundError: torch; likewise api/routes/embeddings.py:8 in the routes package import, so chat/completion streaming and the embeddings route cannot be imported without torch.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys,types; sys.modules['torch']=None; m=types.ModuleType('distllm.api'); m.__path__=['src/distllm/api']; sys.modules['distllm.api']=m; import distllm.api.streaming\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/observability/metrics.py",
+  "line": 87,
+  "summary": "The entire OTel DistLLMMetrics surface is dead in production: none of the six registered metrics (node_latency, generation_duration, tokens_generated, draft_calls, draft_latency, draft_acceptance) or its record_node_latency/record_generation/record_draft_call helpers has a single call site in src/, and setup_metrics (which would install the MeterProvider) is never called anywhere in src",
+  "failure_scenario": "grep across src shows only the class definition and the __init__ re-export; setup_metrics appears only in tests/observability/test_optional_sdk.py, so metrics.set_meter_provider is never invoked in production and get_meter would return a no-op API meter even if constructed. An operator following the module docstring and wiring OTLP gets zero exported instrumentation: no node latency history, no draft-token acceptance rate, no generation counters — the metric definitions are decoration. Only tests construct DistLLMMetrics (tests/observability/test_observability.py) and even they write directly via .add/.record rather than the helpers.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && grep -rn \"record_node_latency\\|record_generation(\\|record_draft_call\\|setup_metrics(\" src/distllm --include=*.py  # finds definitions/imports only; no call sites",
+  "audit": "red-metrics"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/observability/exporter.py",
+  "line": 256,
+  "summary": "Most registered Prometheus families have no writer anywhere in src (node_gpu_utilization_percent, node_gpu_memory_bytes, node_latency_p50_ms/p99_ms, kv_cache_usage_ratio, anomaly_detected_total, recovery_total/duration_ms/sequences_recovered/sequences_lost, spot_interruptions_total, cost_per_hour_total, budget_remaining, request_cost_total, request_gpu_hours), and even node_health's only would-be writer checks a non-existent `health_status` attribute",
+  "failure_scenario": "grep for each family's attribute across src finds only the declaration in exporter.py (plus PromQL strings in capacity_planning/hpa/slo_config that query them). request_cost_total/request_gpu_hours additionally require request.state._request_cost, which nothing in src sets (only a test does, tests/api/test_auth_middleware.py:712). populate_gauges' node_health line guards on hasattr(reg, 'health_status') but NodeRegistration exposes only `.healthy`, so even if F2 were fixed node_health would still never be set. The shipped Grafana dashboards (deploy/helm/grafana-dashboards, asserted by tests/deploy/test_observability.py) and the kopf HPA read these names and get empty results; dist/recovery.py writes same-named counters but into a private CollectorRegistry that is never exposed by /metrics (and merging it would raise 'Duplicated timeseries').",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"from starlette.testclient import TestClient; from distllm.api.server import app; c=TestClient(app); c.__enter__(); c.get('/health'); body=c.get('/metrics').text; fams=['distllm_kv_cache_usage_ratio','distllm_node_gpu_utilization_percent','distllm_anomaly_detected_total','distllm_recovery_total','distllm_tokens_generated_total','distllm_spot_interruptions_total']; print({f: any(l.startswith(f) and not l.startswith('#') for l in body.splitlines()) for f in fams}); c.__exit__(None,None,None)\"  # all False: declared (HELP/TYPE) but never sampled",
+  "audit": "red-metrics"
+ },
+ {
+  "file": "src/distllm/dist/redundant_executor.py",
+  "line": 1408,
+  "summary": "RedundantExecutor.recover_node trivially reports success while silently skipping the promised NCCL state-replication phase: the default NCCLStateReplicator is constructed with auto_init=False, so is_initialized is always False and the state_tensors branch is skipped with no warning, returning success=True and replication_size_bytes=0.",
+  "failure_scenario": "Caller invokes the documented usage executor.recover_node('node-3', state_tensors={'kv': ...}) expecting KV-cache state to be replicated to the recovered node; phase 3 guard at line 1408 requires self._replicator.is_initialized, but the default replicator (line 1234, auto_init=False) never initialized, so the loop is skipped silently; the report claims success=True, replication_size_bytes=0, error=''. Even a bare recover_node('node-3') (the docstring's own example) returns success=True with steps_replayed=0, weights_synced=0 — a no-op recovery indistinguishable from a real one except by inspecting zeroed counters.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys; sys.path.insert(0,'src'); import torch; from distllm.dist.redundant_executor import RedundantExecutor as R; rep=R().recover_node('node-3',state_tensors={'kv':torch.zeros(8)}); print('success=',rep.success,'replication_size_bytes=',rep.replication_size_bytes,'error=',repr(rep.error))\"  (observed: success= True replication_size_bytes= 0 error= '')",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "src/distllm/dist/redundant_executor.py",
+  "line": 733,
+  "summary": "IncrementalRecovery mixed mode (base_params given once, then omitted) silently computes wrong deltas via _estimate_previous_value's 'approximation', so recover_to returns silently with corrupted parameters.",
+  "failure_scenario": "save_delta(1, w=15.0, base_params=ck{w:10.0}) records +5 correctly; save_delta(2, w=17.0) with no base_params sets base=_estimate_previous_value(name, 1) which returns the SUM of stored deltas (+5) rather than the previous absolute value (15.0), so it records delta=17-5=12 instead of +2. recover_to(2, ck) then applies +5 then +12 and returns w=27.0 where the true value is 17.0 — no exception, silently wrong recovered model/parameter state.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"import sys; sys.path.insert(0,'src'); import torch; from distllm.dist.redundant_executor import IncrementalRecovery as I; r=I(); ck={'w':torch.full((4,),10.0)}; r.save_delta(1,{'w':torch.full((4,),15.0)},base_params=ck); r.save_delta(2,{'w':torch.full((4,),17.0)}); out=r.recover_to(2,dict(ck)); print('recovered w[0]=',out['w'][0].item(),'expected=17.0')\"  (observed: recovered w[0]= 27.0 expected=17.0)",
+  "audit": "redundant-exec"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\core\\cross_model_prefix_sharing.py",
+  "line": 115,
+  "summary": "store() keeps the caller's token_ids list by reference (no copy), so if the caller mutates a reused token buffer after storing, the entry's token_ids no longer match its prefix_hash key and the sibling-branch guard (line 178) compares against the mutated list, returning KV computed for a different request's prompt.",
+  "failure_scenario": "A serving loop reuses one token buffer across requests: it calls store('x', t, kv) with t=[1,2], then reuses the buffer as t[:]=[9,8] for the next request. A sibling model 'y' (same base) looks up [9,8]: the guard entry.token_ids != token_ids is False because entry.token_ids was mutated to [9,8], so lookup returns the KV stored for [1,2] tagged source_model='x' — the exact 'cache hit returns another request's tokens' condition. Verified: python -I -c \"import sys; sys.path.insert(0, r'D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src'); from distllm.core.cross_model_prefix_sharing import CrossModelPrefixSharing as C; s=C(default_ttl=3600); s.register_model('b'); s.register_model('x', base_model='b', shared_layers=4); s.register_model('y', base_model='b', shared_layers=4); t=[1,2]; s.store('x', t, 'KV-FOR-1-2'); t[:]=[9,8]; e=s.lookup('y',[9,8]); print('returned for prompt B:', e.token_ids, e.kv_data, 'from', e.source_model)\" prints: returned for prompt B: [9, 8] KV-FOR-1-2 from x. cluster_predictive_prefetcher.observe() forwards the caller's list unchanged into store(), so the same pattern applies via that path too.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -I -c \"import sys; sys.path.insert(0, r'D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src'); from distllm.core.cross_model_prefix_sharing import CrossModelPrefixSharing as C; s=C(default_ttl=3600); s.register_model('b'); s.register_model('x', base_model='b', shared_layers=4); s.register_model('y', base_model='b', shared_layers=4); t=[1,2]; s.store('x', t, 'KV-FOR-1-2'); t[:]=[9,8]; e=s.lookup('y',[9,8]); print('returned for prompt B:', e.token_ids, e.kv_data, 'from', e.source_model)\"",
+  "audit": "sibling-cache"
+ },
+ {
+  "file": "src/distllm/core/speculative_decoder.py",
+  "line": 513,
+  "summary": "verify_batch's in-loop EOS check `break`s before appending a per-sequence result, so the returned results list is shorter than the batch - the caller's per-sequence token mapping desyncs and torch.tensor([r[2] for r in results]) produces too few next tokens.",
+  "failure_scenario": "Two batched sequences whose draft tokens hit the tokenizer EOS mid-chain: the for-loop breaks out of the EOS-matching sequence's verification without appending, so results == [] (reproduced; len 0 instead of 2). scheduler.step then indexes next_tokens[i] for every sequence in the batch - IndexError whenever any sequence's draft touches EOS, or silently misaligned tokens when some other sequence did produce a result.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python .tmp-audit-specstats.py  # section A prints: results: [] -> len: 0 (expected 2)",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/core/speculative_decoder.py",
+  "line": 492,
+  "summary": "verify_batch indexes logits2d[i] (row i) to verify draft token i, but request_pipeline passes FULL per-sequence logits (prefill rows = prompt positions), where draft token 0 must be verified against row L-1; interior prompt rows are consulted instead.",
+  "failure_scenario": "A prefill sequence of length 4 whose draft token 7 is endorsed exactly by row 3 (the row that predicts it): verify_batch returns (0, [9], 9) - the endorsed draft is rejected AND the emitted 'next token' 9 comes from row 0, the first prompt position's distribution, so the very first generated token is corrupted. Both callers are affected: request_pipeline.py:614 ([all_logits[i:i+1]]) and :736 ([last_logits[i:i+1]] for prefill sequences in mixed batches).",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import torch; from distllm.core.speculative_decoder import SpeculativeDecoder; L=torch.zeros(1,4,16); L[0,:3,9]=10.0; L[0,3,7]=10.0; print(SpeculativeDecoder(device='cpu').verify_batch([[7]], [L]))\"  # prints [(0, [9], 9)]; expected to accept draft 7",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/core/speculative_decoder.py",
+  "line": 442,
+  "summary": "verify_batch ignores its temperature parameter and draft_logits_list entirely - it always does greedy argmax-match acceptance and emits the target argmax as the next token, so the batch speculative paths silently ignore the request's sampling temperature.",
+  "failure_scenario": "A batch request with temperature=1.0 (or any sampled config) goes through _generate_local_batch/_run_async_pipeline_batch (request_pipeline.py:614, :736) which never pass temperature, and verify_batch has no sampled branch anyway: every decision is argmax-vs-draft and next_token is always an argmax - sampling degenerates to greedy, unlike the non-spec path which calls self._sample with the request temperature. The draft_logits_list argument that was carefully generated for rejection sampling is dead weight. Also, even with temperature explicitly passed, identical decisions result: temperature=0.0 and temperature=1.0 with q~0 return the same (1, [5], 5) although a rejection sampler must reject q<=0.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python -c \"import torch; from distllm.core.speculative_decoder import SpeculativeDecoder; L=torch.zeros(1,1,16); L[0,0,5]=10.0; d=SpeculativeDecoder(device='cpu'); print(d.verify_batch([[5]], [L], temperature=0.0), d.verify_batch([[5]], [L], temperature=1.0, draft_logits_list=[torch.zeros(1,16)]))\"  # both print (1, [5], 5)",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/core/speculative_decoder.py",
+  "line": 1016,
+  "summary": "MultiDraftSpeculativeDecoder computes accepted = generated.shape[1] - prompt_len (every emitted token, including target-fallback correction tokens from rounds with zero consensus and full-rejection rounds) against total_proposed = sum(consensus_lengths), so acceptance-rate statistics count the wrong path and can be inflated to 1.0 (or be absent) with zero real draft acceptances.",
+  "failure_scenario": "A run where the consensus draft is proposed but rejected by the target, and the emitted token is the target's correction: reported stats show accepted=1, total_proposed=1, acceptance_rate=1.0, while true draft acceptances = 0. Rounds with consensus_len==0 (target-fallback tokens) also inflate 'accepted'. Consumers of these stats (adaptive speculation length, auto-disable thresholds, dashboards) are misled into thinking the draft is perfect.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "python .tmp-audit-specstats.py  # section B prints acceptance_rate 1.0, true draft acceptances 0",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/api/sso_auth.py",
+  "line": 560,
+  "summary": "The 'MANDATORY (H-13)' id_token signature verification and the OIDC nonce replay check run only when the token response happens to include an id_token; a response without one skips both and authenticates from the userinfo call, contradicting the comment 'an id_token must always be cryptographically validated, and the exchange fails closed'.",
+  "failure_scenario": "IdP (or a misconfigured OIDC app that silently dropped the scope, or an OAuth2-compat endpoint) returns 200 {access_token} with no id_token/empty id_token: handle_callback skips validate_token and the nonce comparison — the stored nonce is never consumed, replay protection is inert — and returns identity from whatever the userinfo endpoint says. Repro (mocked httpx): token 200 {access_token}, userinfo 200 {'sub':'forged'} -> accepted sub 'forged'; /v1/auth/token then mints a local HS256 JWT with that identity and role mapping.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src D:/distributed-llm/.venv/Scripts/python.exe -c \"\nimport time\nfrom unittest.mock import patch\nfrom distllm.api.sso_auth import OIDCHandler\nh = OIDCHandler.__new__(OIDCHandler)\nh._state_store={'s':time.time()+600}; h._nonce_store={'s':{'nonce':'n','expires':time.time()+600}}; h._pkce_store={'s':'v'}\nh._token_endpoint='https://x/t'; h._client_id='c'; h._client_secret='s'; h._callback_url='https://x/cb'\nh._userinfo_endpoint='https://x/u'; h._jwks_url=None; h._discovered_jwks_url=None; h._allow_unverified_id_token=False\nclass R:\n    status_code=200; text=''\n    def __init__(self,b): self._b=b\n    def json(self): return self._b\nwith patch('httpx.post', lambda *a, **k: R({'access_token':'at'})), patch('httpx.get', lambda *a, **k: R({'sub':'forged'})):\n    u = h.handle_callback('code', expected_state='s')\nprint('accepted-sub:', u and u.sub)\"  -> accepted-sub: forged",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "src/distllm/api/sso_middleware.py",
+  "line": 377,
+  "summary": "SAML and OAuth2 are documented first-class providers but are unusable through the middleware: _auto_detect_providers registers only OIDCHandler, register_provider crashes on SAMLHandler/GenericOAuth2Handler (accesses handler._authority, line 323), and SAMLHandler.handle_callback lacks the expected_state keyword the route passes (line 611).",
+  "failure_scenario": "A) DISTLLM_SSO_PROVIDER=oauth2 fully configured (client id/secret/authorize/token/userinfo): get_sso_handler().is_enabled is True yet POST /v1/auth/token {'provider':'default'} returns 400 unknown_provider — the config is read but never enforced. B) Following the docstring's sso.register_provider('corp', SAMLHandler(...)) raises AttributeError 'SAMLHandler' object has no attribute '_authority' at registration (same for GenericOAuth2Handler). C) If the handler is forced into _providers, the exchange raises TypeError: SAMLHandler.handle_callback() got an unexpected keyword argument 'expected_state' -> HTTP 500.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "A: cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src DISTLLM_SSO_PROVIDER=oauth2 DISTLLM_SSO_CLIENT_ID=c DISTLLM_SSO_AUTHORIZE_URL=https://x/a DISTLLM_SSO_TOKEN_URL=https://x/t DISTLLM_SSO_USERINFO_URL=https://x/u D:/distributed-llm/.venv/Scripts/python.exe -c \"from fastapi import FastAPI; from fastapi.testclient import TestClient; from distllm.api.sso_auth import get_sso_handler; from distllm.api.sso_middleware import setup_sso; a=FastAPI(); setup_sso(a); print('enabled=', get_sso_handler().is_enabled); r=TestClient(a).post('/v1/auth/token', json={'provider':'default','code':'x','state':'y'}); print(r.status_code, r.json()['error']['code'])\"  -> enabled= True / 400 unknown_provider.  B: register a SAMLHandler via sm._active.register_provider after TestClient(app).get('/echo') -> AttributeError: 'SAMLHandler' object has no attribute '_authority'.  C: force handler into mw._providers['corp'], POST /v1/auth/token -> TypeError: SAMLHandler.handle_callback() got an unexpected keyword argument 'expected_state'",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 569,
+  "summary": "Param-channel cleanup never runs when the stream ends abnormally — client disconnect, GeneratorExit, or mid-stream exception — leaking one registration per aborted stream permanently.",
+  "failure_scenario": "Client closes the connection mid-stream (tab close, timeout, curl --max-time): Starlette closes the async generator (GeneratorExit at the yield point), so the code after the 'async with async_span_generation' block at lines 569-572 never executes and coord._param_update_channel keeps the request id forever. Reproduced over real HTTP: after one aborted stream, /state showed size=1 and the entry persisted well past when the 2.5s stream would have completed (proving generation was aborted AND cleanup skipped); a second failure (mid-stream exception) raised it to 2. Unbounded growth over server lifetime; stale entries also make request-id-based tooling (health/update-params) see dead requests as live.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && (python .tmp-sse-server.py &) ; sleep 15 ; curl -s -N --max-time 0.6 http://127.0.0.1:8931/ok >/dev/null ; sleep 1 ; curl -s http://127.0.0.1:8931/state  # {\"size\":1,...} ; then curl -s -N --max-time 10 http://127.0.0.1:8931/boom ; curl -s http://127.0.0.1:8931/state  # {\"size\":2,...}",
+  "audit": "streaming"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 529,
+  "summary": "Streaming hardcodes finish_reason='stop' even when generation was truncated by max_tokens; clients can never see 'length'.",
+  "failure_scenario": "max_tokens=3 with a model that does not emit EOS: three content chunks are emitted, the loop exits by budget, and the final chunk says finish_reason='stop' (reproduced: 3 tokens generated, EOS unreachable, finish_reason='stop'). Any OpenAI-compatible consumer that continues generation on 'length' or flags truncation treats a cut-off answer as complete; long responses silently truncate with a success signal. (The completions route has the same hardcoded 'stop' in non-streaming, completion.py:169.)",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit.py  # T3: generated 3 tokens (max_tokens=3, EOS never hit) -> finish_reason='stop'",
+  "audit": "streaming"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 437,
+  "summary": "Zero-token generation completes as a silent empty 200 success stream (role chunk + finish_reason='stop' + [DONE]) instead of an error — e.g. when the coordinator exists but has no model attached.",
+  "failure_scenario": "g.coordinator exists but has neither local_partitioner nor node_order (startup window before weights attach, after unload, or coordinator set to None between the route's 503 guard and the generator body running — _generate_tokens returns at lines 196-197 on a falsy coordinator). Reproduced: the SSE stream yields the role chunk, an immediate finish_reason='stop', and [DONE], with zero content chunks and no error. Automation (retries, health logic, evals) cannot distinguish 'model produced nothing' from 'no model is loaded', masking a service outage as a valid empty completion.",
+  "severity": "med",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit.py  # T4: err=None content_chunks=0 finish=['stop'] last=[DONE]",
+  "audit": "streaming"
+ },
+ {
+  "file": "src/distllm/core/coordinator_config.py",
+  "line": 207,
+  "summary": "The from_settings override loop silently drops unknown keys (typo'd field names become no-ops) and bypasses all pydantic validation by setattr, so out-of-range/invalid explicit values are accepted.",
+  "failure_scenario": "from_settings(settings, max_batchsize=999) silently ignores the typo (max_batch_size stays 32) with no error. from_settings(settings, port=99999, dtype='int4') returns a CoordinatorConfig reporting port=99999 and dtype='int4' even though the Field constraints (le=65535) and the dtype validator forbid them; the direct constructor CoordinatorConfig(port=99999) correctly raises ValidationError, so the bypass is specific to this path.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');from distllm.config.settings import DistLLMSettings;from distllm.core.coordinator_config import CoordinatorConfig;c=CoordinatorConfig.from_settings(DistLLMSettings(),max_batchsize=999,port=99999,dtype='int4');print(c.max_batch_size,c.port,c.dtype)\"  # 32 99999 int4",
+  "audit": "config-override"
+ },
+ {
+  "file": "src/distllm/dist/async_pipeline.py",
+  "line": 380,
+  "summary": "AsyncPipelineEngine discards an explicitly configured num_warmup_micro_batches: the first forward() overwrites self._warmup with min(num_stages-1, num_micro_b), so the setting (and ASYNC_PIPELINE_NUM_WARMUP_MICRO_BATCHES env var) never affects the schedule or the reported stats.",
+  "failure_scenario": "AsyncPipelineConfig(num_stages=3, num_micro_batches=2, num_warmup_micro_batches=7) is accepted (frozen BaseSettings) and _warmup=7 at init, but after one forward() _warmup==2 and stats()['warmup'] reports 2. The configured warmup is replaced by derived logic without a warning, and nothing in _run_1f1b ever consulted the configured value, so the knob is a silent no-op.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python -c \"\nimport sys; sys.path.insert(0,'src')\nimport torch\nfrom distllm.dist.async_pipeline import AsyncPipelineEngine, AsyncPipelineConfig\nclass S:\n    _backward_fn = None\n    def initialize(self): pass\n    def run_micro_batch(self, h, mb_id=None): return h\n    def wait(self): pass\ne = AsyncPipelineEngine(AsyncPipelineConfig(num_stages=3, num_micro_batches=2, num_warmup_micro_batches=7))\n[e.add_stage(S()) for _ in range(3)]\ne.forward(torch.zeros(4, 8))\nprint('warmup =', e._warmup)\n\"  # configured 7 -> prints 2",
+  "audit": "config-override"
+ },
+ {
+  "file": "src/distllm/core/kv_cache.py",
+  "line": 692,
+  "summary": "KVCache.update silently doubles an explicitly passed max_seq_len on overflow (new_max = max(max_seq_len, needed) * 2), even though the docstring frames growth as the fallback for when max_seq_len is NOT set.",
+  "failure_scenario": "KVCache(max_seq_len=8) pre-allocates an 8-token buffer; appending a 9th+ token replaces _max_seq_len with 24 and reallocates a 24-token buffer instead of enforcing the caller's pre-allocation bound. Code that passes max_seq_len as a memory cap (the buffer is per-layer per-request) gets 3x the memory silently; there is no warning and no way to observe the replacement except reading the private attribute.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python -c \"import sys;sys.path.insert(0,'src');import torch;from distllm.core.kv_cache import KVCache;c=KVCache(max_seq_len=8,num_layers=1);c.init_cache(1,1,1,4,'cpu');c.update(0,torch.randn(1,1,8,4),torch.randn(1,1,8,4));c.update(0,torch.randn(1,1,4,4),torch.randn(1,1,4,4));print(c._max_seq_len)\"  # 24",
+  "audit": "config-override"
+ },
+ {
+  "file": "README.md",
+  "line": 174,
+  "summary": "README roadmap states 'v0.4.x (current)' while the repository's actual current version is 0.7.0.",
+  "failure_scenario": "README.md:174 labels the roadmap bullet 'v0.4.x (current)', but pyproject.toml declares version = '0.7.0', CHANGELOG.md's newest section is [0.7.0] - 2026-11-12, and dist/ contains distributed_llm-0.7.0 wheels; PyPI serves 0.6.2.2 as the published version. Anyone checking the front page against the shipped artifacts sees a version claim three releases stale.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd \"D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\" && grep -n 'version =' pyproject.toml; grep -n 'v0.4.x' README.md",
+  "audit": "docs-claims"
+ },
+ {
+  "file": "src/distllm/api/routes/model_registry.py",
+  "line": 197,
+  "summary": "GET /api/models/registry/{model_id} returns HTTP 200 {\"error\": \"model not found\"} for a missing model instead of a 404, so any client that checks response.ok treats the failed lookup as a successful detail fetch.",
+  "failure_scenario": "GET /api/models/registry/not-a-real-model on a live server returns HTTP 200 with body {\"error\":\"model not found\",\"id\":\"not-a-real-model\"} (the 404 branch does not exist; the route's OpenAPI docs promise 'detailed info for a single model'). An external client or monitor that keys on the HTTP status (curl --fail, fetch response.ok, OpenAI-style SDK error handling) reads this as success and receives an error object where a model record was expected.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python .claude/tmp-errmq/check_registry.py   (prints '200 application/json {\"error\":\"model not found\",\"id\":\"not-a-real-model\"}')",
+  "audit": "error-messages"
+ },
+ {
+  "file": "src/distllm/api/routes/webrtc.py",
+  "line": 190,
+  "summary": "POST /v1/webrtc/ice returns HTTP 200 {\"status\":\"error\", ...} whenever a candidate cannot be applied (malformed candidate, missing transport, aiortc unavailable), so a signaling client checking the HTTP status believes the candidate was accepted; the route's documented responses (404, 422) promise no such 200-error shape.",
+  "failure_scenario": "With a session created via POST /v1/webrtc/offer, POST /v1/webrtc/ice with candidate='x', sdp_mid='' returns HTTP 200 with body {\"status\":\"error\",\"detail\":\"Candidate must have either sdpMid or sdpMLineIndex\"}. Reproduced live on port 8935. A browser signaling client (or any HTTP client that keys on status code) sees 200 and proceeds assuming the candidate was registered, while ICE connectivity will silently fail; the route's OpenAPI entry documents only 404/422 for this endpoint. The offer handler has the sibling issue at line 152-155: any setup failure collapses to 500 detail='WebRTC setup failed', which never says whether the SDP, aiortc, or connectivity was at fault.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python .claude/tmp-errmq/serve.py  (background, port 8935) ; curl -s -w ' HTTP:%{http_code}' -H 'Authorization: Bearer k-test' -H 'Content-Type: application/json' -d '{\"sdp\":\"x\",\"type\":\"offer\",\"session_id\":\"s1\"}' http://127.0.0.1:8935/v1/webrtc/offer ; curl -s -w ' HTTP:%{http_code}' -H 'Authorization: Bearer k-test' -H 'Content-Type: application/json' -d '{\"session_id\":\"s1\",\"candidate\":\"x\",\"sdp_mid\":\"\",\"sdp_mline_index\":0}' http://127.0.0.1:8935/v1/webrtc/ice   -> HTTP:200 with status=error body",
+  "audit": "error-messages"
+ },
+ {
+  "file": "src/distllm/api/server_errors.py",
+  "line": 72,
+  "summary": "The catch-all 500 handler replaces every unhandled exception's message with 'An unexpected error occurred. Please try again later.', so a configuration error like 'No nodes registered in the pipeline' is reported to the caller as a transient failure with reusable retry advice.",
+  "failure_scenario": "POST /v1/chat/completions (non-streaming) against a distributed coordinator with no registered nodes: the engine raises ConfigError('No nodes registered in the pipeline'), which reaches general_exception_handler and becomes HTTP 500 {\"error\":{\"message\":\"An unexpected error occurred. Please try again later.\",\"code\":\"config_error\"}}. The message tells the caller to retry a configuration problem that will never succeed until nodes are added; the actionable cause exists only in the server log line 'Unhandled exception: [CONFIG_ERROR] No nodes registered in the pipeline'. Reproduced via both TestClient and a live socket (port 8935).",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python .claude/tmp-errmq/check_real_stream.py   (non-streaming section prints the 500 with the generic message; server-side log line shows the masked ConfigError)",
+  "audit": "error-messages"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/cli/selftest.py",
+  "line": 217,
+  "severity": "low",
+  "reproduced": true,
+  "summary": "selftest's printed remediation for any FAIL is `Reinstall: pip install --force-reinstall distributed-llm[cli]`, but for the torch-import FAIL the [cli] extra does not contain torch, so following the advice loops the user on a command that reproduces the identical failure; the working install is the [self-hosted] extra (torch>=2.5.0).",
+  "failure_scenario": "In a [cli]-only venv, `distllm selftest` exits 1 and prints '2 check(s) failed. Reinstall: pip install --force-reinstall distributed-llm[cli]'. Running that exact command reinstalls the same extras closure with no torch; `distllm selftest` fails identically. A user debugging a fresh install is sent in a circle instead of told to add the self-hosted extra.",
+  "check_command": "\"C:\\Users\\dev25\\AppData\\Local\\Temp\\gp-golden\\lean2\\Scripts\\distllm.exe\" selftest  (last line shows the misleading remedy; rerun after installing [cli] again shows identical FAILs)",
+  "audit": "golden-path"
+ },
+ {
+  "file": "src/distllm/core/coordinator_election.py",
+  "line": 242,
+  "summary": "_replication_loop has no leadership or quorum check: it pushes state snapshots (and heartbeat pings) to every replication peer every second regardless of whether this coordinator is the leader. A demoted or standby coordinator therefore broadcasts its own — possibly stale — view of cluster state, and the receiving standbys apply it because the snapshot endpoint has no sender-authority check either.",
+  "failure_scenario": "Coordinator a was leader, got demoted (or is a standby with an out-of-date node list) but set_replication_peers() was configured. Its loop keeps POSTing /api/v1/ha/snapshot to peers; standbys accept and apply a's stale node registrations over the new leader's, regressing cluster state during the failover window.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"import sys,types,threading,time; P=[]; h=types.ModuleType('httpx'); h.Client=lambda *a,**k: type('C',(),{'__enter__':lambda s:s,'__exit__':lambda s,*a:0,'post':lambda s,u,**k:(P.append(u),types.SimpleNamespace(status_code=200))[1]})(); sys.modules['httpx']=h; from distllm.core.coordinator_election import CoordinatorElection as CE; from types import SimpleNamespace as NS; ce=CE.__new__(CE); ce._coordinator=NS(nodes={},_running=threading.Event(),_health_mgr=NS(is_healthy=lambda:True)); ce._coordinator._running.set(); ce._ha_election=NS(is_leader=lambda:False); ce._is_standby=True; ce._replication_peers=['http://p:8000']; t=threading.Thread(target=ce._replication_loop,daemon=True); t.start(); time.sleep(1.2); ce._coordinator._running.clear(); print('snapshot POSTs sent by a non-leader:',len(P))\"  # prints: 2",
+  "audit": "ha-fence"
+ },
+ {
+  "file": "src/distllm/cli/audit.py",
+  "line": 191,
+  "summary": "cli-doctor checks the wrong key-file location: it looks for ~/.distllm/api_key while the server and clients read the cwd-relative .distllm/api_key (or DISTLLM_KEY_FILE), so it reports 'generated' when the server will actually load the file, and check_auth reads only API_KEY (never DISTLLM_API_KEY or the file).",
+  "failure_scenario": "Start a server in a directory with no env vars; it writes .distllm/api_key. Run `distllm cli-doctor` from that directory: check_api_key_store checks os.path.expanduser('~/.distllm/api_key') (line 191), which does not exist, and reports 'API key source: generated' - contradicting the key file the server actually uses. Verified: with HOME redirected to an empty dir and a real .distllm/api_key in cwd, the doctor verdict was 'generated'.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.api_key_store import _api_key_path; print('server reads:', _api_key_path())\" && grep -n \"distllm/api_key\" src/distllm/cli/audit.py src/distllm/core/api_key_store.py  # audit.py uses ~/.distllm/api_key, store uses .distllm/api_key",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "src/distllm/core/framework_adapters.py",
+  "line": 52,
+  "summary": "Framework adapters and integration packages resolve only DISTLLM_API_KEY (or a fabricated placeholder) and never fall back to API_KEY or the key file: with no DISTLLM_API_KEY, _resolve_api_key returns the literal 'not-needed' and every adapter request 401s against a secured server.",
+  "failure_scenario": "Choose SECURITY/QUICKSTART flow: API_KEY (or the auto key file) is the working credential. Call get_openai_client() / get_langchain_llm() with no explicit api_key: _resolve_api_key(None) returns 'not-needed' (verified), so the adapter sends 'Authorization: Bearer not-needed' and the server returns 401. The same DISTLLM_API_KEY-only pattern is in integrations/* (agno, autogpt, openai-agents, dify, ollama_compat) and in sdk/src/distllm_sdk/cli.py:97 and mcp_server.py:61.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "PYTHONPATH=src python -c \"from distllm.core.framework_adapters import _resolve_api_key; print(repr(_resolve_api_key(None)))\"  # 'not-needed' when DISTLLM_API_KEY is unset",
+  "audit": "key-precedence"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\dist\\worker.py",
+  "line": 481,
+  "summary": "Worker's ready notification posts to `/admin/v1/nodes/{id}/ready`, a route that does not exist (404); the advertised second signal never lands.",
+  "failure_scenario": "After model load, `_notify_coordinator_ready` POSTs a JSON ready=true to /admin/v1/nodes/{id}/ready (documented in dist/api_docs.py:98 but absent from the admin router — the router exposes only /nodes/register, /nodes/{id}/drain|undrain|offline|recover, DELETE /nodes/{id}). Verified against the real admin router: the POST returns 404 and the worker logs 'Ready notification returned 404'. Any node marked unhealthy by register's ready=false path (see finding #1) can only be cleared through re-registration; this route was presumably the intended un-set and is dead.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd \"D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper\" && python .claude/tmp_drain_restart.py  (prints: worker ready-notify route status: 404)",
+  "audit": "node-lifecycle"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/protocols.py",
+  "line": 10,
+  "severity": "low",
+  "reproduced": true,
+  "summary": "core/protocols.py — a pure typing/Protocol interface module with no runtime torch usage — has an unguarded module-scope `import torch` and no `from __future__ import annotations`, so its torch.Tensor protocol annotations are evaluated at def time and the name must be bound; the module is lazily registered by core/__init__.py, so it fails only when actually accessed (e.g. ITokenizer).",
+  "failure_scenario": "Lean install without torch: `from distllm.core.protocols import ITokenizer` raises ModuleNotFoundError: torch. Adding `from __future__ import annotations` + TYPE_CHECKING import (the pattern used by observability/tracing.py) would make the module importable; note the current unquoted annotations would then still need a quoted/torch-free form if the import were merely guarded to None (torch.X would raise AttributeError at def time).",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.core.protocols\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/dist/transport.py",
+  "line": 27,
+  "severity": "low",
+  "reproduced": true,
+  "summary": "Unguarded module-scope `import torch` in the dist transport modules: dist/transport.py:27 and dist/p2p/transport.py:29 (also dist/zero_copy.py:12, dist/block_transfer_service.py:30) — network transport modules that pull torch at import time.",
+  "failure_scenario": "Lean install without torch: `import distllm.dist.transport` or `import distllm.dist.p2p.transport` (used by p2p gossip/discovery: dist/p2p/gossip.py:27 -> transport.py:29) raises ModuleNotFoundError: torch, so the P2P transport layer cannot be imported on a coordinator-only host.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.dist.transport\" && PYTHONPATH=src python -c \"import sys; sys.modules['torch']=None; import distllm.dist.p2p.transport\"",
+  "audit": "optional-imports"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/pyproject.toml",
+  "line": 290,
+  "summary": "The package-data declaration \"distllm.dist\" = [\"*.proto\"] is a no-op: no .proto file exists inside src/distllm/dist (the only proto is repo-root proto/node.proto, which MANIFEST.in puts in the sdist root), so the wheel ships zero .proto files and the comment's promise that 'the .proto ships as package data so a source install can regenerate them' is not delivered to any installed user.",
+  "failure_scenario": "A user hits the gencode/runtime mismatch above and follows the stated remedy ('regenerate if the gencode and the installed protobuf runtime disagree'): the installed wheel contains no node.proto anywhere (verified: wheel namelist has zero *.proto; pip install from sdist also leaves no proto in the installed tree, since the sdist copies proto/node.proto only into pip's discarded build dir). The file survives only for someone who manually unpacks the sdist.",
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -I -c \"import zipfile; print([n for n in zipfile.ZipFile('dist/distributed_llm-0.7.0-py3-none-any.whl').namelist() if n.endswith('.proto')])\" && ls src/distllm/dist/*.proto  # [] and 'No such file' — the glob matches nothing",
+  "severity": "low",
+  "reproduced": true,
+  "audit": "packaging"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/correctness_harness.py",
+  "line": 53,
+  "summary": "DEFAULT_REGISTRY_PATH resolves to correctness_registry.jsonl inside the installed package directory, but the file is neither shipped in the wheel/sdist nor writable-safe in site-packages: an installed copy reports 0 records and replay_from_seed(1234, 8, 128) returns matches=False, while the same call in the repo returns True against the two committed records; DeterminismRegistry.record() would also try to append into site-packages.",
+  "failure_scenario": "A user installs the package and runs the documented determinism replay for the committed seed tuple (replay_from_seed(1234, 8, 128)): the installed copy prints matches=False / stored_record=None, presenting the committed certification evidence as a failed verification, whereas the identical call in a repo checkout prints matches=True. Reproduced: installed-from-sdist copy -> 'registry file exists: False, all_records: 0, matches: False'; repo copy -> 'all_records: 2, matches: True'. Additionally record() appends to Path(__file__).parent inside the install, which raises PermissionError for read-only system site-packages.",
+  "check_command": "python -m pip install --no-deps --quiet --target \"$TEMP/dllm_reg\" dist/distributed_llm-0.7.0.tar.gz && python -c \"import sys; sys.path.insert(0, __import__('os').environ['TEMP'] + '/dllm_reg'); from distllm.core.correctness_harness import replay_from_seed, DEFAULT_REGISTRY_PATH; print(DEFAULT_REGISTRY_PATH.exists(), replay_from_seed(1234, 8, 128)[0])\"  # False False from the installed copy; True True for the repo copy run the same way",
+  "severity": "low",
+  "reproduced": true,
+  "audit": "packaging"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/src/distllm/core/request_pipeline.py",
+  "line": 386,
+  "summary": "The pipeline error-path metric call errors_total.labels(type=...) supplies only 1 of the family's 3 declared labels (model, tenant missing), so the moment the coordinator's metrics_exporter guard becomes truthy this raises ValueError inside the exception handler and masks the original inference error",
+  "failure_scenario": "exporter.py declares distllm_errors_total with labels ['type','model','tenant']. request_pipeline.py:386 and :391 call `c.metrics_exporter.errors_total.labels(type=type(e).__name__).inc()`; prometheus_client raises ValueError('Incorrect label names') for a partial label set (verified below). Today the call is unreachable because coordinator.metrics_exporter is None (finding 1), but any fix to that wiring, or any embedder/test that sets coordinator.metrics_exporter (e.g. a node-unreachable path under load), replaces the real NodeUnreachableError/OOMError with a ValueError from the metrics call.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -c \"from prometheus_client import Counter; e=Counter('distllm_errors_total','d',['type','model','tenant']); e.labels(type='http_500').inc()\"  # ValueError: Incorrect label names",
+  "audit": "red-metrics"
+ },
+ {
+  "file": "D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper/tests/api/test_auth_middleware.py",
+  "line": 910,
+  "summary": "TestObservabilityMiddlewareMounted — the regression test meant to prove RED metrics reach the real exporter — uses TestClient without a context manager, so lifespan startup never runs and it asserts against the module-load exporter; with the context manager the same assertions fail",
+  "failure_scenario": "TestClient(app) used without `with` does not run lifespan events, so state.metrics_exporter remains the module-load instance the middleware actually writes to and `assert value >= 1` passes; when the test is run as `with TestClient(app) as client:` the startup swaps state.metrics_exporter to the second instance (finding 2), generate_latest(exporter.registry) has no distllm_requests_total sample, and the assertion fails. This is why CI stays green while the default-lifespan production path exports zero RED samples.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd D:/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python -m pytest tests/api/test_auth_middleware.py -k Mounted -q  # passes today; rerun with `with TestClient(app) as client:` in test_real_app_records_metrics_on_request to see it fail",
+  "audit": "red-metrics"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\core\\cross_model_prefix_sharing.py",
+  "line": 182,
+  "summary": "lookup() computes shared = min(entry.shared_layers, model.shared_layers) only for the >0 compatibility check and returns the entry unchanged, so a returned entry can report more shared layers than the querying model actually shares.",
+  "failure_scenario": "Model 'big' (shared_layers=80) stores KV; 'small' (shared_layers=70, same base) looks it up for the same tokens and receives the entry with entry.shared_layers==80. A consumer that uses entry.shared_layers to decide how deep into the returned KV it may read would attend over KV produced by layers 70-79 of a different model — wrong attention values in generation. Verified: the check command prints 'model shares 70 layers; entry reports 80'. Latent today: no production consumer exists, but the returned entry is the only channel the class exposes for slice depth.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python -I -c \"import sys; sys.path.insert(0, r'D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src'); from distllm.core.cross_model_prefix_sharing import CrossModelPrefixSharing as C; s=C(default_ttl=3600); s.register_model('big', base_model='base', shared_layers=80); s.register_model('small', base_model='base', shared_layers=70); s.store('big',[5,6],'KV-80'); e=s.lookup('small',[5,6]); print('model shares 70 layers; entry reports', e.shared_layers)\"",
+  "audit": "sibling-cache"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\core\\cluster_predictive_prefetcher.py",
+  "line": 117,
+  "summary": "observe() persists cross-model entries with kv_data=None, and warm_start() then reports them as CROSS_MODEL hits with hit=True even though no KV payload exists; the result object carries no KV at all, so the cross-model 'warm start' can never actually deliver reusable KV.",
+  "failure_scenario": "A node observes prefix [1,2] for model 'x' (the only store path used by the prefetcher passes kv_data=None). A request for the same prefix on sibling 'y' calls warm_start and receives CROSS_MODEL/hit=True, so a caller that trusts the hit to skip prefill/KV computation gets a warm signal with nothing to reuse; if real KV had been stored, warm_start still discards it (WarmStartResult has no kv field). Verified: check command prints 'warm_start: WarmStartSource.CROSS_MODEL hit= True reported model: x'.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python -I -c \"import sys; sys.path.insert(0, r'D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src'); from distllm.core.cross_model_prefix_sharing import CrossModelPrefixSharing as C; from distllm.core.cluster_predictive_prefetcher import ClusterPredictivePrefetcher as P; s=C(default_ttl=3600); s.register_model('b'); s.register_model('x', base_model='b', shared_layers=4); s.register_model('y', base_model='b', shared_layers=4); pf=P(node_id='n1', cross_model_sharing=s); pf.observe([1,2], model_id='x'); r=pf.warm_start([1,2], model_id='y'); print('warm_start:', r.source, 'hit=', r.hit, 'reported model:', r.model_id)\"",
+  "audit": "sibling-cache"
+ },
+ {
+  "file": "src/distllm/core/request_pipeline.py",
+  "line": 295,
+  "summary": "The distributed generate loop passes a draft_tokens keyword to c._pipeline.run_pipeline, but every real pipeline implementation (PipelineOrchestrator, WideAreaPipeline, RedundantExecutor) only accepts (input_ids, node_kv_caches, request_id) - the call raises TypeError before any token is generated.",
+  "failure_scenario": "In the node_order (distributed) generation loop, once control reaches line 295 (requires the host to provide the _zero_copy_engine/_hybrid_parallel_executor attributes, as current test fixtures do - a bare Coordinator raises AttributeError on line 287 first), run_pipeline(input_ids, node_kv_caches, request_id=..., draft_tokens=None) raises \"TypeError: PipelineOrchestrator.run_pipeline() got an unexpected keyword argument 'draft_tokens'\" - reproduced directly against the real signature. The same broken call exists in dist/parallel.py:_pp_fwd (line 973-975).",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "python -c \"import inspect; from distllm.dist.pipeline.orchestrator import PipelineOrchestrator as P; print('draft_tokens' in inspect.signature(P.run_pipeline).parameters)\"  # prints False, while request_pipeline.py:295 always passes it",
+  "audit": "spec-decode"
+ },
+ {
+  "file": "src/distllm/api/sso_middleware.py",
+  "line": 603,
+  "summary": "When the userinfo call fails after a successful token exchange, handle_callback still returns an SSOUserInfo with empty sub and empty claims, which /v1/auth/token signs into a local JWT — an identity is minted from a failed enrichment step instead of failing closed.",
+  "failure_scenario": "IdP token endpoint returns 200 {access_token} but userinfo returns 500: handle_callback returns SSOUserInfo(sub=''), and the token endpoint issues a JWT with sub='' and api_key_id 'sso:oidc:' — every user hitting this path collapses into one identity (audit-trail collision), and a transient IdP outage silently yields a valid credential rather than a 401. Repro with mocked httpx shows the empty-sub SSOUserInfo.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src D:/distributed-llm/.venv/Scripts/python.exe -c \"\nimport time\nfrom unittest.mock import patch\nfrom distllm.api.sso_auth import OIDCHandler\nh = OIDCHandler.__new__(OIDCHandler)\nh._state_store={'s':time.time()+600}; h._nonce_store={}; h._pkce_store={'s':'v'}\nh._token_endpoint='https://x/t'; h._client_id='c'; h._client_secret='s'; h._callback_url='https://x/cb'\nh._userinfo_endpoint='https://x/u'; h._jwks_url=None; h._discovered_jwks_url=None\nclass R:\n    status_code=200; text=''\n    def __init__(s,b): s._b=b\n    def json(s): return s._b\nwith patch('httpx.post', lambda *a, **k: R({'access_token':'at'})), patch('httpx.get', lambda *a, **k: R({'error':'boom'})):\n    u = h.handle_callback('code', expected_state='s')\nprint('identity after userinfo failure:', repr(u))\"  -> identity after userinfo failure: SSOUserInfo(sub='', email='', name='', roles=[], groups=[], provider='oidc', ...)",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "src/distllm/api/api_settings.py",
+  "line": 107,
+  "summary": "DISTLLM_SSO_* values supplied through a .env file are read into APISettings but never enforced: SSOAuthHandler reads os.environ only, nothing transfers api_settings.sso_* anywhere, and no dotenv loader exists in src.",
+  "failure_scenario": "Operator configures SSO the way other DISTLLM_ settings are configured — a .env file with DISTLLM_SSO_PROVIDER=oidc/client_id/authority. APISettings().sso_provider == 'oidc' while SSOAuthHandler().is_enabled is False: SSO is silently off in a deployment that believes it is on (and the sso_* fields have zero consumers anywhere in src/tests).",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper && PYTHONPATH=src D:/distributed-llm/.venv/Scripts/python.exe -c \"\nimport os, tempfile\nos.chdir(tempfile.mkdtemp())\nopen('.env','w').write('DISTLLM_SSO_PROVIDER=oidc\\n')\nfor k in [k for k in os.environ if k.startswith('DISTLLM_SSO')]: del os.environ[k]\nfrom distllm.api.api_settings import APISettings\nfrom distllm.api.sso_auth import SSOAuthHandler\nprint('APISettings(.env).sso_provider=%r SSOAuthHandler().is_enabled=%s' % (APISettings().sso_provider, SSOAuthHandler().is_enabled))\"  -> APISettings(.env).sso_provider='oidc' SSOAuthHandler().is_enabled=False",
+  "audit": "sso-fork"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 170,
+  "summary": "Streaming logprobs are advertised (module docstring) but unreachable from the request — body logprobs/top_logprobs are never read — and the code path that would enable them calls TokenGenerator._compute_logprobs with wrong positional arguments and would crash mid-stream.",
+  "failure_scenario": "POST /v1/chat/completions {stream:true, logprobs:true, top_logprobs:5}: no chunk carries logprobs and the stream completes normally (reproduced: logprobs_in_any_chunk=False) — the advertised compat feature is silently ignored. The only enable switch is params.include_logprobs, which GenerationParams does not define (so no API path can set it), and if it ever were set, _step_local_model calls _compute_logprobs(logits, int_id, tokenizer, top_logprobs_n, temp) while the signature is (logits, token_ids, top_logprobs, temperature, tokenizer) → AttributeError: 'int' object has no attribute 'dim' (reproduced via direct call), which per the mid-stream-exception behavior above aborts the stream after headers were sent.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit3.py  # R3: logprobs=True silently absent ; python .tmp-check-logprobs.py  # CRASH: AttributeError: 'int' object has no attribute 'dim'",
+  "audit": "streaming"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\routes\\chat.py",
+  "line": 739,
+  "summary": "stream=true with max_tokens=0 returns a JSON ChatCompletionResponse instead of SSE (same shape in completion.py:118) — the stream flag is silently switched off.",
+  "failure_scenario": "A client posts {stream:true, max_tokens:0} (natural when a caller's budget is clamped to 0 or during probes): the route returns before ever checking body.stream (reproduced route-level: returned ChatCompletionResponse with content-type application/json, not text/event-stream). An SSE reader (e.g. distllm/client/client.py stream_generate, which only parses 'data: ' lines) sees an empty stream and no [DONE], indistinguishable from a dropped connection.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit3.py  # R4: returned ChatCompletionResponse (stream flag ignored)",
+  "audit": "streaming"
+ },
+ {
+  "file": "D:\\distributed-llm\\.claude\\worktrees\\bubbly-pondering-whisper\\src\\distllm\\api\\streaming.py",
+  "line": 482,
+  "summary": "Tool-call detection runs for text_completion streams too: when the generated text contains a tool-call payload, /v1/completions emits a final chunk {text: '', finish_reason: 'tool_calls'} — an invalid finish_reason for completions and a payload-free chunk.",
+  "failure_scenario": "The model emits a {'tool_calls': [...]} JSON object or <tool_call> text during a /v1/completions stream (plausible for agentic-trained models; the trigger is the same heuristic used for chat, lines 481-520, which does not check object_type). _build_chunk (lines 106-111) ignores the tool_calls argument for non-chat object types, so the final chunk is empty and carries the chat-only finish_reason 'tool_calls' (reproduced: {'index':0,'text':'','finish_reason':'tool_calls'}). Strict OpenAI-compat consumers validating the finish_reason enum for text_completion reject it, and the final chunk signals an end condition the payload never explains.",
+  "severity": "low",
+  "reproduced": true,
+  "check_command": "cd /d/distributed-llm/.claude/worktrees/bubbly-pondering-whisper && python .tmp-sse-audit4.py  # R6-completion: final choice = {\"index\": 0, \"text\": \"\", \"finish_reason\": \"tool_calls\"}",
+  "audit": "streaming"
+ }
+]

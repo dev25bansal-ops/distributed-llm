@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import threading
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +22,6 @@ from typing import Any
 from loguru import logger
 
 from distllm.core.plugin_system import PluginBase
-
 
 # ── RateLimitPlugin ──────────────────────────────────────────────────────────
 
@@ -269,7 +268,6 @@ class MetricsPlugin(PluginBase):
 # ── AuthPlugin (re-exported from auth_plugin.py) ─────────────────────────
 
 from distllm.plugins.auth_plugin import AuthPlugin  # noqa: E402
-
 
 # ── ContentModerationPlugin ──────────────────────────────────────────────
 

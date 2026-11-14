@@ -1,8 +1,8 @@
 """Unit tests for DistributedSpeculativeDecoder."""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 
 from distllm.core.distributed_speculative import (
@@ -225,6 +225,53 @@ class TestStats:
         s = sd.stats
         assert "acceptance_rate" in s
         assert 0 <= s["acceptance_rate"] <= 1
+
+
+# ── Sampled-path row geometry (finding 1297) ─────────────────────────────
+
+
+class TestSampledVerifyRowGeometry:
+    """Fixes for audit 1297: the sampled path must read each draft
+    token's OWN logits row (prefix_len + i), matching the inline p
+    computation, instead of one row early."""
+
+    def _decoder(self):
+        return DistributedSpeculativeDecoder(
+            target_forward=lambda ids, **kw: None,
+            draft_model=object(),
+            temperature=1.0,
+            device="cpu",
+        )
+
+    def test_rejects_token_with_zero_mass_at_its_own_row(self):
+        import math as _math
+
+        sd = self._decoder()
+        t = torch.zeros(1, 4, 16)
+        t[0, 1, 7] = 10.0  # the WRONG row (one early) favours the draft
+        t[0, 2, 9] = 10.0  # draft token 7 has ~zero mass at its own row
+        accepted = sd._verify_tokens(
+            torch.tensor([[10, 11, 12]]), torch.tensor([[7]]), t,
+            draft_logprobs=[_math.log(0.999)],
+        )
+        assert accepted == 0, (
+            "a token with p~0 at its own row must be rejected"
+        )
+
+    def test_accepts_token_fully_endorsed_at_its_own_row(self):
+        import math as _math
+
+        sd = self._decoder()
+        t = torch.zeros(1, 4, 16)
+        t[0, 1, 9] = 10.0  # wrong row: token 7 ~zero there
+        t[0, 2, 7] = 10.0  # own row: token 7 ~1.0 -> accept
+        accepted = sd._verify_tokens(
+            torch.tensor([[10, 11, 12]]), torch.tensor([[7]]), t,
+            draft_logprobs=[_math.log(0.999)],
+        )
+        assert accepted == 1, (
+            "a token the target endorses at its own row must be accepted"
+        )
 
 
 # ── Adaptive candidates ─────────────────────────────────────────────────

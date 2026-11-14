@@ -22,7 +22,9 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 from distllm.dist.merkle import MerkleTree, EMPTY_HASH
@@ -150,7 +152,7 @@ class BlockPool:
         num_layers: int,
         num_heads: int,
         head_dim: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         device: str = "cuda",
         swap_to_cpu: bool = False,
         max_swap_blocks: int = 0,
@@ -158,6 +160,8 @@ class BlockPool:
         eviction_watermark: float = 0.85,
         restore_watermark: float = 0.70,
     ):
+        if dtype is None:
+            dtype = torch.float16
         if num_blocks <= 0:
             raise ValueError(f"num_blocks must be positive, got {num_blocks}")
         if block_size <= 0 or (block_size & (block_size - 1)) != 0:
@@ -781,12 +785,28 @@ class PagedAttentionManager:
         num_layers: int = 12,
         num_heads: int = 12,
         head_dim: int = 64,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         device: str = "cuda",
         swap_to_cpu: bool = False,
         max_swap_blocks: int = 0,
         max_seq_len: int = 4096,
+        auto_expand: bool = False,
     ):
+        """Create a paged-attention manager.
+
+        Args:
+            auto_expand: When True the block pool silently doubles (+64
+                blocks, minimum) once exhausted.  Default False: the
+                explicitly configured ``num_blocks`` (e.g. from
+                DISTLLM_PAGED_NUM_BLOCKS) is a memory ceiling — expanding
+                past it on demand silently exceeded the operator's GPU
+                budget, the same contract violation the prefix-cache
+                memory budget had.  Allocation failures are surfaced
+                instead (RuntimeError from create_sequence/append_tokens),
+                and operators who want elastic growth opt in explicitly.
+        """
+        if dtype is None:
+            dtype = torch.float16
         if block_size <= 0:
             block_size = self.recommended_block_size(max_seq_len)
         self.block_size = block_size
@@ -800,6 +820,11 @@ class PagedAttentionManager:
             device=device,
             swap_to_cpu=swap_to_cpu,
             max_swap_blocks=max_swap_blocks,
+            # Previously not forwarded, so the pool's auto-expand always
+            # applied and an explicitly configured num_blocks (e.g.
+            # DISTLLM_PAGED_NUM_BLOCKS) could never be a hard GPU-memory
+            # ceiling — the pool silently doubled (+64 min) on demand.
+            auto_expand=auto_expand,
         )
         self._tables: Dict[str, BlockTable] = {}
         self._lock = threading.Lock()
@@ -894,6 +919,7 @@ class PagedAttentionManager:
                 h.update(v_cpu.numpy().tobytes())
                 h.update(str(k.shape).encode())
             except Exception:
+                # CQ-08: skip this item and continue with the rest (partial results are acceptable).
                 continue
 
         digest = h.hexdigest()
@@ -1601,9 +1627,11 @@ class VariableBlockSizePool:
         num_blocks_per_size: Dict[int, int],
         num_heads: int,
         head_dim: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype | None = None,
         device: str = "cuda",
     ):
+        if dtype is None:
+            dtype = torch.float16
         if not layer_block_sizes:
             raise ValueError("layer_block_sizes must not be empty")
         for bs in layer_block_sizes:

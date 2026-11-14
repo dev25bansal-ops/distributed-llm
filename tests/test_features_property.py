@@ -126,7 +126,7 @@ def test_prop_money_no_drift(charges):
     for c in charges:
         amt = Decimal(c) / Decimal(100)  # cents -> dollars
         expected += amt
-        total = total.add(amt)  # exact Decimal accumulate
+        total.add(amt)  # exact Decimal accumulate in place
     # Recorded total (quantized once) == exact sum of charges.
     assert total.value() == expected.quantize(Decimal("0.01"))
 

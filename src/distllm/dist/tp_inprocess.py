@@ -17,9 +17,11 @@ import os
 import threading
 from typing import Any
 
-import torch
-import torch.distributed as dist
-import torch.nn as nn
+from distllm._optional_deps import optional_import, resolve_class
+
+torch = optional_import("torch")
+dist = optional_import("torch.distributed")
+nn = optional_import("torch.nn")
 from loguru import logger
 
 
@@ -49,7 +51,10 @@ class TPSlicer:
         return weight[:, rank * chunk:(rank + 1) * chunk].contiguous()
 
 
-class TPLinear(nn.Module):
+_NnModule = resolve_class("torch.nn", "Module")
+
+
+class TPLinear(_NnModule):
     """Linear layer sliced for tensor parallelism.
 
     - Column-parallel: forward is a standard linear, output is all-reduced.

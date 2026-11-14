@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 class GBNFParser:
     """Parses GBNF grammar strings into rule definitions.
 
@@ -154,6 +154,11 @@ class GBNFFSM:
         self._compiled = False
         self._dfa: dict[int, dict[int, int]] = {}
         self._dead = False
+        # Compile the single-target DFA up front so the fast masking path in
+        # get_allowed_bytes() is live from construction. Previously _compiled
+        # stayed False unless a caller invoked compile_to_dfa() by hand, which
+        # made the DFA branch dead code for every production caller.
+        self.compile_to_dfa()
 
     def _extract_target(self) -> str:
         """Extract the target string from the root rule."""

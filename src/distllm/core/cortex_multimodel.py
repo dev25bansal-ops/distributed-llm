@@ -662,6 +662,7 @@ class ModelPool:
             if device is not None and str(device).startswith("cuda"):
                 torch.cuda.empty_cache()
         except Exception:
+            # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
             pass
 
 

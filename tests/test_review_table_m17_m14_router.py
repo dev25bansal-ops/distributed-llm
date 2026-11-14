@@ -107,12 +107,17 @@ def test_route_and_route_with_context_share_content_rules():
     assert a.model == "code-model" == b.model
 
 
-def test_tool_call_tier_ordered_after_cost_tier():
-    """A request that has tool calls AND a tight cost budget must honor the
-    cost tier (cheaper model), not the generic tool-call model."""
+def test_tool_call_tier_ordered_before_cost_tier():
+    """A request with tool calls AND a tight cost budget must route to the
+    tool-capable model: tool-call support is a hard capability requirement and
+    outranks the soft cost preference.
+
+    This asserts the router's documented evaluation order (model_router.py
+    route_with_context docstring: 1 content rules, 2 tool-call, 3 language,
+    4 cost tiers, ...). The previous version of this test asserted cost-first,
+    which the implementation has never done.
+    """
     r = _router_with_tiers()
     ctx = RoutingContext(has_tool_calls=True, cost_budget=0.005)
     m = r.route_with_context([{"role": "user", "content": "hello"}], ctx=ctx)
-    # cost tier (0.01 >= 0.005) wins over tool-call route
-    assert m.model == "cheap-model", f"expected cost tier, got {m.model}"
-    assert m.rule_name == "cost"
+    assert m.model == "tool-model", f"expected tool-call route, got {m.model}"

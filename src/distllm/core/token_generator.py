@@ -4,9 +4,28 @@ Handles token sampling, constraint application, logprobs, penalties, and generat
 Extracted from the Coordinator class.
 """
 
+from __future__ import annotations
+
 from typing import Any
 
-import torch
+
+# torch is an [self-hosted]-extra dependency; this module is imported by
+# api/streaming.py on the API startup path. The future import above keeps the
+# torch.Tensor annotations lazy, so the import can be deferred: module load
+# succeeds without the ML stack and the RuntimeError below names the fix if
+# sampling is actually attempted.
+class _TorchNotInstalled:
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "torch is required for token sampling. Install the ML stack: "
+            "pip install 'distributed-llm[self-hosted]'"
+        )
+
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = _TorchNotInstalled()  # type: ignore[assignment]
 
 from distllm.core.structured_output import JSONSchemaConstraint
 

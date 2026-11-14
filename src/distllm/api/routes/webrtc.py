@@ -24,9 +24,14 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 
-from loguru import logger
+from ..errors import error_openapi_entry
+
+# Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
+# concrete error envelope every failure path returns.
+ERR_ENTRY = error_openapi_entry
 
 
 router = APIRouter(tags=["webrtc"], prefix="/v1/webrtc")
@@ -100,7 +105,16 @@ _session_mgr = WebRTCSessionManager()
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/offer", response_model=SDPAnswerResponse)
+@router.post(
+    "/offer",
+    response_model=SDPAnswerResponse,
+    summary="Exchange an SDP offer for the server's SDP answer",
+    responses={
+        422: ERR_ENTRY("Malformed SDP offer payload", type_="invalid_request_error", code="invalid_request"),
+        500: ERR_ENTRY("WebRTC setup failed while answering the offer", type_="server_error", code="500"),
+        503: ERR_ENTRY("WebRTC not available (aiortc not installed)", type_="service_unavailable", code="503"),
+    },
+)
 async def webrtc_offer(req: SDPOfferRequest):
     """Exchange SDP offer/answer for WebRTC connection.
 
@@ -109,7 +123,7 @@ async def webrtc_offer(req: SDPOfferRequest):
     to the DistLLM cluster.
     """
     try:
-        from distllm.dist.webrtc import HAS_WEBRTC, WebRTCTransport, WebRTCConfig
+        from distllm.dist.webrtc import HAS_WEBRTC, WebRTCConfig, WebRTCTransport
     except ImportError:
         raise HTTPException(status_code=503, detail="WebRTC not available (aiortc not installed)")
 
@@ -121,13 +135,28 @@ async def webrtc_offer(req: SDPOfferRequest):
     try:
         from aiortc import RTCSessionDescription
         offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
+    except ImportError:
+        _session_mgr.close_session(session_id)
+        raise HTTPException(status_code=503, detail="WebRTC not available (aiortc not installed)")
+    except Exception as e:
+        logger.warning(f"WebRTC offer rejected (invalid SDP): {e}")
+        _session_mgr.close_session(session_id)
+        raise HTTPException(status_code=422, detail=f"Invalid SDP offer: {e}")
+
+    try:
         transport = WebRTCTransport(role="answerer", node_id=session_id)
         answer = await transport.accept_offer(offer)
-        await transport.wait_connected(timeout=30.0)
 
+        # Do NOT wait for the connection here. The client cannot apply the
+        # answer — and therefore cannot start ICE — until this response is
+        # returned, so awaiting wait_connected(timeout=30) before returning
+        # blocked every real offer for the full 30s and then still reported
+        # "connected" (or 500'd after close_session). Return the answer now;
+        # the established connection is reported by the status/candidate
+        # endpoints and the transport is kept on the session for them.
         session = _session_mgr.get_session(session_id)
         if session:
-            session["status"] = "connected"
+            session["status"] = "answering"
             session["transport"] = transport
 
         return SDPAnswerResponse(
@@ -136,47 +165,103 @@ async def webrtc_offer(req: SDPOfferRequest):
             session_id=session_id,
         )
     except Exception as e:
+        # Name the failing stage: the old single "WebRTC setup failed" hid
+        # whether the SDP, aiortc, or connectivity was at fault.
         logger.error(f"WebRTC offer handling failed: {e}", exc_info=True)
         _session_mgr.close_session(session_id)
-        raise HTTPException(status_code=500, detail="WebRTC setup failed")
+        raise HTTPException(status_code=500, detail=f"WebRTC setup failed: {e}")
 
 
-@router.post("/ice")
+@router.post(
+    "/ice",
+    summary="Exchange ICE candidates for WebRTC connection establishment",
+    responses={
+        404: ERR_ENTRY("Session ID not found", type_="invalid_request_error", code="not_found"),
+        409: ERR_ENTRY("Session has no active WebRTC transport yet", type_="invalid_request_error", code="409"),
+        422: ERR_ENTRY("Malformed ICE candidate payload", type_="invalid_request_error", code="invalid_request"),
+        500: ERR_ENTRY("ICE candidate could not be applied", type_="server_error", code="500"),
+        503: ERR_ENTRY("WebRTC not available (aiortc not installed)", type_="service_unavailable", code="503"),
+    },
+)
 async def webrtc_ice(req: ICECandidateRequest):
     """Exchange ICE candidates for WebRTC connection establishment."""
     session = _session_mgr.get_session(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # An empty candidate string cannot be applied to the peer connection.
+    if not req.candidate:
+        raise HTTPException(
+            status_code=422,
+            detail="Malformed ICE candidate: 'candidate' must not be empty",
+        )
+
+    transport = session.get("transport")
+    if transport is None:
+        raise HTTPException(status_code=409, detail="Session has no active WebRTC transport")
+
     try:
         from aiortc import RTCIceCandidate
-        # C-07: Use the actual ICE candidate from the request body
+    except ImportError:
+        raise HTTPException(status_code=503, detail="WebRTC not available (aiortc not installed)")
+
+    # Imported before the try that uses it: a name referenced in an ``except``
+    # clause must exist even on the paths that raise before assignment.
+    from distllm.dist.webrtc import WebRTCError
+
+    try:
+        # C-07: use the candidate identity from the request body. aiortc's
+        # addIceCandidate requires sdpMid or sdpMLineIndex; constructing the
+        # candidate without either made every apply attempt raise ValueError.
+        sdp_mid = req.sdp_mid or None
         candidate = RTCIceCandidate(
             component=1,
             foundation="1",
-            ip=req.candidate.split("/")[0] if req.candidate else "0.0.0.0",
+            ip=req.candidate.split("/")[0],
             port=0,
             priority=0,
             protocol="UDP",
             type="host",
+            sdpMid=sdp_mid,
+            sdpMLineIndex=None if sdp_mid is not None else req.sdp_mline_index,
         )
-        transport = session.get("transport")
-        if transport:
-            await transport.add_ice_candidate(candidate)
-        return {"status": "ok"}
+        await transport.add_ice_candidate(candidate)
+    except ValueError as e:
+        # aiortc rejects the candidate shape: a client-side problem.
+        logger.warning(f"ICE candidate rejected: {e}")
+        raise HTTPException(status_code=422, detail=f"Malformed ICE candidate: {e}")
+    except WebRTCError as e:
+        logger.warning(f"ICE candidate not applied (transport): {e}")
+        raise HTTPException(status_code=503, detail=f"WebRTC transport unavailable: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
+        # Previously this was a 200 {"status": "error"} -- a status-code-only
+        # client believed the candidate was registered and connectivity then
+        # failed silently.
         logger.warning(f"ICE candidate handling failed: {e}")
-        return {"status": "error", "detail": str(e)}
+        raise HTTPException(status_code=500, detail=f"ICE candidate handling failed: {e}")
+    return {"status": "ok"}
 
 
-@router.get("/status", response_model=WebRTCStatusResponse)
+@router.get(
+    "/status",
+    response_model=WebRTCStatusResponse,
+    summary="Get WebRTC signaling server status",
+)
 async def webrtc_status():
     """Get WebRTC signaling server status."""
     stats = _session_mgr.get_stats()
     return WebRTCStatusResponse(**stats)
 
 
-@router.delete("/sessions/{session_id}")
+@router.delete(
+    "/sessions/{session_id}",
+    summary="Close a WebRTC signaling session",
+    responses={
+        404: ERR_ENTRY("Session ID not found", type_="invalid_request_error", code="not_found"),
+    },
+)
 async def close_session(session_id: str):
     """Close a WebRTC signaling session."""
     session = _session_mgr.get_session(session_id)
@@ -188,6 +273,7 @@ async def close_session(session_id: str):
         try:
             await transport.close()
         except Exception:
+            # CQ-08: best-effort cleanup: a transport that is already closed must not break session teardown.
             pass
 
     _session_mgr.close_session(session_id)

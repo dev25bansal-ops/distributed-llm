@@ -72,7 +72,7 @@ export function showToast(message, type = 'info', duration = 4000) {
 
 // Auto-show "new version" toast for returning visitors
 export function checkNewVersion() {
-    const current = 'v0.4.0';
+    const current = 'v0.6.2.2';
     const last = localStorage.getItem('distllm-last-seen-version');
     if (last && last !== current) {
         showToast(`New version ${current} available! See changelog.`, 'info', 6000);

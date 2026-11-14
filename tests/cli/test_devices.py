@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from typer.testing import CliRunner
 
@@ -17,7 +18,6 @@ from distllm.cli.devices import (
     run_devices,
 )
 from distllm.cli.main import app
-
 
 runner = CliRunner()
 
@@ -81,13 +81,14 @@ class TestSafeRun:
         assert _safe_run(["definitely-not-a-real-binary-xyz123"]) == ""
 
     def test_returns_stdout_on_success(self):
-        # python -c prints to stdout; should return the value.
-        out = _safe_run(["python", "-c", "print('hello')"])
+        # sys.executable, not bare "python": macOS ships only python3, so a
+        # bare "python" here is a FileNotFoundError and the test fails there.
+        out = _safe_run([sys.executable, "-c", "print('hello')"])
         assert "hello" in out
 
     def test_handles_timeout_gracefully(self):
         # Sleep longer than the default timeout.
-        out = _safe_run(["python", "-c", "import time; time.sleep(10)"], timeout=0.1)
+        out = _safe_run([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.1)
         assert out == ""
 
 

@@ -60,10 +60,18 @@ class TestQuantizationAutoTuner:
         assert plan.recommendations[0].quality_loss == 0.0
 
     def test_recommend_unsupported_hardware(self):
+        """A CPU-only node is not offered BNB_4BIT.
+
+        This used to assert BNB_4BIT ("forced fallback"), but bitsandbytes 4-bit
+        requires a CUDA/ROCm device -- _select_best_method only considers it for
+        device_type in ("cuda", "rocm"). Recommending it for a CPU node would
+        produce a plan that cannot run: the tuner's fallback to NONE is the
+        correct answer, and the test was asserting the bug.
+        """
         tuner = QuantizationAutoTuner()
         nodes = [{"node_id": "gpu-0", "device_type": "cpu", "total_memory_bytes": 4 * 1024**3}]
         plan = tuner.recommend(nodes, model_size_bytes=40 * 1024**3, num_layers=32)
-        assert plan.recommendations[0].method == QuantMethod.BNB_4BIT  # forced fallback
+        assert plan.recommendations[0].method == QuantMethod.NONE
 
     def test_recommend_multiple_nodes(self):
         tuner = QuantizationAutoTuner()

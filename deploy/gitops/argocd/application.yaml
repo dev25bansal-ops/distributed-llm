@@ -15,7 +15,9 @@ spec:
   source:
     repoURL: https://github.com/dev25bansal-ops/distributed-llm.git
     path: deploy/kustomize/dev
-    targetRevision: main
+    # The repository's default branch is master; "main" does not exist, so an
+    # unmodified apply failed with "branch not found" before creating anything.
+    targetRevision: master
   destination:
     server: https://kubernetes.default.svc
     namespace: distllm-dev

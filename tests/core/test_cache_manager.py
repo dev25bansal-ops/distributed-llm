@@ -424,3 +424,126 @@ class TestCacheManagerGossip:
     def test_mark_dirty_no_persistence(self):
         cm = CacheManager()
         cm.mark_dirty("req-1")  # should not raise
+
+
+# ── regression: tier ledger consistency, locking, tier stats ────────────────────
+
+
+class TestTierLedgerConsistency:
+    """Regression tests for audit 2026-11-13 cache_manager findings.
+
+    Each test reproduces the exact failure scenario from the audit brief.
+    """
+
+    @staticmethod
+    def _kv(n_bytes: int):
+        import torch
+        return {"k": torch.zeros(n_bytes, dtype=torch.uint8)}
+
+    def test_restore_same_prefix_does_not_double_count(self):
+        """Storing the SAME prefix 99 times must report 1 entry / 1x bytes.
+
+        Before the fix: used_bytes=99000 while one 1000-byte entry existed,
+        and the phantom usage evicted live entries.
+        """
+        cm = CacheManager(gpu_cache_mb=1, cpu_cache_mb=1, ssd_cache_gb=0.001)
+        toks = list(range(50))
+        kv = self._kv(1000)
+        for _ in range(99):
+            cm.store_prefix(toks, kv)
+        gpu = cm._tiers["gpu"]
+        assert len(gpu["entries"]) == 1
+        assert gpu["used_bytes"] == 1000
+
+    def test_tier_ledger_matches_real_bytes_under_threads(self):
+        """Concurrent store_prefix must not crash or corrupt the ledger.
+
+        Before the fix: 4 threads x 400 unique stores raised
+        RuntimeError('dictionary keys changed during iteration') and left
+        used_bytes != sum(entry sizes).
+        """
+        import threading
+        cm = CacheManager(gpu_cache_mb=1, cpu_cache_mb=1, ssd_cache_gb=0.001)
+        kv = self._kv(1000)
+        errors = []
+
+        def storer(tid):
+            try:
+                for i in range(200):
+                    toks = [tid * 100000 + i] + list(range(100))
+                    cm.store_prefix(toks, kv)
+            except Exception as e:  # pragma: no cover - failure path
+                errors.append(e)
+
+        threads = [threading.Thread(target=storer, args=(t,)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"concurrent store_prefix raised: {errors}"
+        with cm._lock:
+            for name, tier in cm._tiers.items():
+                real = sum(e[2] for e in tier["entries"].values())
+                assert tier["used_bytes"] == real, (
+                    f"{name}: used_bytes={tier['used_bytes']} real={real}"
+                )
+
+    def test_promotion_does_not_duplicate_or_drift_ledger(self):
+        """Promoting a CPU entry to GPU must leave exactly one live copy and
+        an exact ledger, even when the promotion's eviction path demotes the
+        GPU victim and that nested store evicts the entry being promoted.
+
+        Before the fix: cpu used_bytes=1500 vs 2500 real and P was present
+        simultaneously in gpu and ssd (2x real memory).
+        """
+        cm = CacheManager(gpu_cache_mb=0, cpu_cache_mb=0, ssd_cache_gb=0.0)
+        cm._tiers["gpu"]["max_bytes"] = 3000
+        cm._tiers["cpu"]["max_bytes"] = 3000
+        cm._tiers["ssd"]["max_bytes"] = 10 ** 9
+
+        P = [1] + list(range(100))
+        G1 = [2] + list(range(100))
+        cm.store_prefix(P, self._kv(1000))
+        cm.store_prefix(G1, self._kv(2500))
+
+        match_len, _ = cm.lookup_prefix(P)
+        assert match_len == len(P)
+
+        ph = cm._hash_tokens(P)
+        copies = sum(ph in cm._tiers[t]["entries"] for t in ("gpu", "cpu", "ssd"))
+        assert copies == 1, "entry must live in exactly one tier after promotion"
+        for name, tier in cm._tiers.items():
+            real = sum(e[2] for e in tier["entries"].values())
+            assert tier["used_bytes"] == real, (
+                f"{name}: used_bytes={tier['used_bytes']} real={real}"
+            )
+
+
+class TestLookupWithGossipTierMisses:
+    """lookup_with_gossip must record misses, not just hits.
+
+    Before the fix: 50 fully-missing lookups left every tier's 'misses' at
+    0 while hits were tracked, so any hit-rate derived from
+    get_tier_stats() was wrong.
+    """
+
+    def test_misses_recorded_on_fully_missing_lookups(self):
+        cm = CacheManager(prefix_cache_enabled=True, prefix_cache_min_prefix_len=2)
+        for i in range(50):
+            assert cm.lookup_with_gossip([1000 + i, 2000 + i, 3000 + i]) is None
+        stats = cm.get_tier_stats()
+        assert stats["local"]["misses"] == 50
+        assert stats["local"]["hits"] == 0
+        total_misses = sum(v["misses"] for v in stats.values())
+        assert total_misses == 50
+
+    def test_hit_and_miss_counters_agree_with_served_results(self):
+        cm = CacheManager(prefix_cache_enabled=True, prefix_cache_min_prefix_len=2)
+        toks = [1, 2, 3, 4, 5]
+        cm.store_prefix(toks, {"data": "x"})
+        assert cm.lookup_with_gossip(toks) is not None  # local hit
+        assert cm.lookup_with_gossip([9, 9, 9]) is None  # miss
+        stats = cm.get_tier_stats()
+        assert stats["local"]["hits"] == 1
+        assert stats["local"]["misses"] == 1

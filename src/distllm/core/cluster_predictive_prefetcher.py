@@ -53,6 +53,7 @@ class WarmStartResult:
     model_id: str | None = None    # set when source == CROSS_MODEL
     replica_nodes: list[str] = field(default_factory=list)
     hit: bool = True
+    kv: Any | None = None          # usable KV payload, when one exists
 
     @property
     def is_warm(self) -> bool:
@@ -163,13 +164,20 @@ class ClusterPredictivePrefetcher:
                 logger.debug("gossip discover failed: %s", exc)
 
         # 4. Cross-model: a sibling variant already cached this base prefix.
+        # A hit is only claimed when the entry actually carries a KV
+        # payload.  ``observe()`` persists metadata-only entries
+        # (kv_data=None); reporting those as CROSS_MODEL/hit=True told a
+        # caller it could skip prefill/KV computation while providing
+        # nothing to reuse.  Metadata-only entries still feed the local
+        # predictor via observe(), but they are not a warm start.
         if self._cross_model is not None and model_id is not None:
             try:
                 entry = self._cross_model.lookup(model_id, token_ids)
-                if entry is not None:
+                kv = getattr(entry, "kv_data", None) if entry is not None else None
+                if entry is not None and kv is not None:
                     return self._finish(
                         WarmStartSource.CROSS_MODEL, t0, prefix_len,
-                        model_id=entry.source_model,
+                        model_id=entry.source_model, kv=kv,
                     )
             except Exception as exc:
                 logger.debug("cross-model lookup failed: %s", exc)
@@ -198,6 +206,7 @@ class ClusterPredictivePrefetcher:
         model_id: str | None = None,
         replica_nodes: list[str] | None = None,
         hit: bool = True,
+        kv: Any | None = None,
     ) -> WarmStartResult:
         latency = (time.monotonic() - t0) * 1000.0
         self._stats["total_warm_start_ms"] += latency
@@ -225,6 +234,7 @@ class ClusterPredictivePrefetcher:
             model_id=model_id,
             replica_nodes=replica_nodes or [],
             hit=hit,
+            kv=kv,
         )
 
     @staticmethod

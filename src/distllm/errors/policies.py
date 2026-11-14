@@ -6,21 +6,21 @@ retry behavior across the codebase.
 
 from distllm.errors.retry import RetryPolicy
 from distllm.errors.types import (
-    DistLLMError,
-    NodeUnreachableError,
+    BatchCapacityError,
+    BatchError,
     CircuitBreakerError,
     CommunicationError,
-    SerializationError,
-    GRPCTimeoutError,
-    ModelError,
-    ModelNotFoundError,
-    ModelLoadError,
     ConfigError,
     ConfigValidationError,
-    BatchError,
-    BatchCapacityError,
     ConstraintError,
     ConstraintViolationError,
+    DistLLMError,
+    GRPCTimeoutError,
+    ModelError,
+    ModelLoadError,
+    ModelNotFoundError,
+    NodeUnreachableError,
+    SerializationError,
 )
 
 # Default retry policies per error category

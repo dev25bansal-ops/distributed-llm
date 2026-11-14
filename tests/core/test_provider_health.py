@@ -77,9 +77,18 @@ class TestProviderHealthProber:
         assert len(results) == 1
         assert results[0]["region"] == "us-east-1"
 
-    def test_is_healthy_default_true(self):
+    def test_is_healthy_unknown_region_fails_closed(self):
+        """An unknown region is UNHEALTHY (fail-closed).
+
+        This test previously asserted True, matching the old fail-open
+        behaviour where a never-probed region was assumed healthy and received
+        traffic. That is the vulnerability the fail-closed change closed: we
+        have no evidence an unknown endpoint is up, so traffic must not be
+        routed to it. Renamed behaviour kept in the same slot so the intent is
+        visible in the diff.
+        """
         prober = ProviderHealthProber()
-        assert prober.is_healthy("aws", "nonexistent") is True
+        assert prober.is_healthy("aws", "nonexistent") is False
 
     def test_is_healthy_registered(self):
         prober = ProviderHealthProber()

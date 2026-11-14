@@ -11,7 +11,7 @@ name: Helm Chart Publish
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "integrations/kubernetes/helm/**"
   workflow_dispatch:

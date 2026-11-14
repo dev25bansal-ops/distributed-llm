@@ -1,6 +1,7 @@
 # DistLLM — Y Combinator Startup Package
 
-> **Prepared**: July 2026
+> **Prepared**: July 2026; refreshed 2026-11-06 hygiene pass
+> Canonical numbers: [FINANCIALS.md](FINANCIALS.md)
 > **Product**: Pool GPUs from every device you own to run LLMs no single machine can handle.
 
 ---
@@ -75,7 +76,7 @@
 | Field | Answer |
 |-------|--------|
 | **Company Name** | DistLLM |
-| **URL** | https://github.com/distributed-llm/distributed-llm |
+| **URL** | https://github.com/dev25bansal-ops/distributed-llm |
 | **Tagline** | Distributed LLM inference — pool GPUs across all your devices |
 | **Stage** | Beta (v0.4.1) — 64K LOC, working product, real users |
 | **Location** | Remote-first |
@@ -423,7 +424,7 @@ Year 3-4 target. Capturing via:
 | ✅ OpenAI-compatible API | **DONE** | — |
 | ✅ CLI tooling | **DONE** | — |
 | ✅ Observability (metrics, tracing) | **DONE** | — |
-| ⬜ Upload to PyPI with `pip install distllm` | **CRITICAL** | P0 |
+| ⬜ Upload to PyPI with `pip install distributed-llm` | **CRITICAL** | P0 |
 | ⬜ Auto-discovery (mDNS) polish | P0 |
 | ⬜ Ollama integration ("distllm cluster" as plugin) | P0 |
 | ⬜ One-click cloud deploy demo | P1 |

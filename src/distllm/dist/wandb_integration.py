@@ -248,5 +248,6 @@ class WandbExperiment:
             try:
                 return self._run.get_url()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         return None

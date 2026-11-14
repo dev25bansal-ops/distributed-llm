@@ -20,7 +20,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -181,7 +181,7 @@ def _process_job(job: dict) -> None:
         # TODO: Replace with actual coord.fine_tune() call once available.
         # For now this is a stub that simulates training by sleeping briefly
         # and then saving a placeholder adapter path.
-        _time.sleep(0.5)  # simulate setup time
+        time.sleep(0.5)  # simulate setup time
 
         # Resolve a safe output path for the adapter weights
         adapter_dir = f"./adapters/{adapter_name}"
@@ -213,6 +213,48 @@ def _process_job(job: dict) -> None:
             "finished_at": time.time(),
             "error": str(e),
         })
+
+
+# ── Ownership (IDOR guard) ──────────────────────────────────────────────
+#
+# Every job records the api_key_id that created it (``owner``).  Tenant
+# identity comes from ``request.state.api_key_id`` (set by AuthMiddleware
+# for API-key auth and by sso_middleware for SSO).  All read/list/cancel
+# paths check ownership before returning data, mirroring
+# routes/batch.py:_require_owner.  Mismatches return 404 so job existence
+# is not leaked to other tenants.  Legacy jobs without an owner
+# (created before this field existed) are treated as unowned: an
+# authenticated requester is rejected (404); only an unauthenticated
+# requester (no api_key_id) may see them.
+
+
+def _requester_id(request: Request) -> str | None:
+    return getattr(request.state, "api_key_id", None)
+
+
+def _require_owner(job: dict, request: Request) -> None:
+    """Reject access to a job the requesting API key does not own.
+
+    Returns 404 (not 403) so job existence is not leaked to other tenants.
+    Jobs with no stored owner (legacy rows) are visible only to requests
+    that also carry no api_key_id.
+    """
+    owner = job.get("owner")
+    requester = _requester_id(request)
+    if owner is None:
+        if requester is not None:
+            raise HTTPException(status_code=404, detail="Fine-tuning job not found")
+        return
+    if owner != requester:
+        raise HTTPException(status_code=404, detail="Fine-tuning job not found")
+
+
+def _visible_jobs(store: Any, request: Request, limit: int) -> list[dict]:
+    """List jobs owned by the requester (legacy unowned rows excluded
+    unless the requester is unauthenticated)."""
+    requester = _requester_id(request)
+    jobs = store.list_fine_tuning_jobs(limit=limit)
+    return [j for j in jobs if j.get("owner") == requester]
 
 
 # ── Helper ──────────────────────────────────────────────────────────────
@@ -248,7 +290,7 @@ def _job_to_object(job: dict) -> FineTuningJobObject:
     response_model=FineTuningJobObject,
     status_code=201,
 )
-async def create_fine_tuning_job(body: CreateFineTuningJobRequest):
+async def create_fine_tuning_job(body: CreateFineTuningJobRequest, request: Request):
     """Create a fine-tuning job."""
     store = get_store()
 
@@ -279,6 +321,7 @@ async def create_fine_tuning_job(body: CreateFineTuningJobRequest):
 
     job_data = {
         "id": job_id,
+        "owner": _requester_id(request),
         "model": body.model,
         "created_at": now,
         "status": "queued",
@@ -307,12 +350,13 @@ async def create_fine_tuning_job(body: CreateFineTuningJobRequest):
     response_model=FineTuningJobListResponse,
 )
 async def list_fine_tuning_jobs(
+    request: Request,
     status: str | None = Query(None, description="Filter by status: queued, running, succeeded, failed, cancelled"),
     limit: int = Query(20, ge=1, le=100),
 ):
     """List fine-tuning jobs with optional status filter."""
     store = get_store()
-    jobs = store.list_fine_tuning_jobs(limit=limit)
+    jobs = _visible_jobs(store, request, limit)
     if status:
         jobs = [j for j in jobs if j.get("status") == status]
     return FineTuningJobListResponse(
@@ -326,12 +370,13 @@ async def list_fine_tuning_jobs(
     description="Get detailed status and metadata for a specific fine-tuning job.",
     response_model=FineTuningJobObject,
 )
-async def get_fine_tuning_job(job_id: str):
+async def get_fine_tuning_job(job_id: str, request: Request):
     """Retrieve a fine-tuning job by ID."""
     store = get_store()
     job = store.get_fine_tuning_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Fine-tuning job '{job_id}' not found")
+    _require_owner(job, request)
     return _job_to_object(job)
 
 
@@ -341,12 +386,13 @@ async def get_fine_tuning_job(job_id: str):
     description="Cancel a queued or running fine-tuning job.",
     response_model=FineTuningJobObject,
 )
-async def cancel_fine_tuning_job(job_id: str):
+async def cancel_fine_tuning_job(job_id: str, request: Request):
     """Cancel a fine-tuning job."""
     store = get_store()
     job = store.get_fine_tuning_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Fine-tuning job '{job_id}' not found")
+    _require_owner(job, request)
 
     current_status = job.get("status", "")
     if current_status in ("succeeded", "failed", "cancelled"):
@@ -369,12 +415,13 @@ async def cancel_fine_tuning_job(job_id: str):
     description="List the event log for a specific fine-tuning job.",
     response_model=FineTuningJobEventListResponse,
 )
-async def list_fine_tuning_job_events(job_id: str):
+async def list_fine_tuning_job_events(job_id: str, request: Request):
     """List events for a fine-tuning job."""
     store = get_store()
     job = store.get_fine_tuning_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Fine-tuning job '{job_id}' not found")
+    _require_owner(job, request)
     events = _get_events(job_id)
     return FineTuningJobEventListResponse(
         data=[FineTuningJobEvent(**e) for e in events],

@@ -6,12 +6,12 @@ Computes metrics that quantify the difference between a reference
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
-import torch
+from distllm._optional_deps import optional_import
 
-
+torch = optional_import("torch")
 @dataclass
 class OutputComparison:
     """Aggregated comparison results between reference and candidate outputs.

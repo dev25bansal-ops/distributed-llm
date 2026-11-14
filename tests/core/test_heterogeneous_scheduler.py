@@ -24,30 +24,52 @@ def _get_module():
     import types
     import enum
 
-    reg_mod = types.ModuleType("distllm.core.device_registry")
-    reg_mod.DeviceInfo = StubDeviceInfo
-    reg_mod.detect_all_devices = lambda: []
-    sys.modules["distllm.core.device_registry"] = reg_mod
+    # These stand-ins exist only so heterogeneous_scheduler.py can be loaded
+    # from a file path without a full install. They are put in sys.modules
+    # because the module under test imports them at module scope -- but they
+    # must not outlive this function. Leaving them behind replaced the real
+    # distllm.core.device_registry with a module that has only DeviceInfo and
+    # detect_all_devices, so every later test that imported detect_platform
+    # (gpu_resource_manager.snapshot among them) raised ImportError. That is
+    # why test_quick_audit_fixes passed alone and failed in the full run.
+    saved = {
+        name: sys.modules.get(name)
+        for name in ("distllm.core.device_registry", "distllm.constants")
+    }
 
-    const_mod = types.ModuleType("distllm.constants")
-    DeviceFamily = enum.Enum("DeviceFamily", {"UNKNOWN": "unknown", "NVIDIA": "nvidia", "AMD": "amd"})
-    const_mod.DeviceFamily = DeviceFamily
-    const_mod.DEVICE_FAMILY = {}
-    const_mod.DEVICE_TO_FAMILY = {}
-    const_mod.Device = enum.Enum("Device", {"UNKNOWN": "unknown"})
-    sys.modules["distllm.constants"] = const_mod
+    try:
+        reg_mod = types.ModuleType("distllm.core.device_registry")
+        reg_mod.DeviceInfo = StubDeviceInfo
+        reg_mod.detect_all_devices = lambda: []
+        sys.modules["distllm.core.device_registry"] = reg_mod
 
-    path = os.path.join("src", "distllm", "core", "heterogeneous_scheduler.py")
-    spec = importlib.util.spec_from_file_location("heterogeneous_scheduler", path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["heterogeneous_scheduler"] = mod
+        const_mod = types.ModuleType("distllm.constants")
+        DeviceFamily = enum.Enum("DeviceFamily", {"UNKNOWN": "unknown", "NVIDIA": "nvidia", "AMD": "amd"})
+        const_mod.DeviceFamily = DeviceFamily
+        const_mod.DEVICE_FAMILY = {}
+        const_mod.DEVICE_TO_FAMILY = {}
+        const_mod.Device = enum.Enum("Device", {"UNKNOWN": "unknown"})
+        sys.modules["distllm.constants"] = const_mod
 
-    mod.logger = types.ModuleType("logger")
-    mod.logger.info = lambda *a, **kw: None
-    mod.logger.warning = lambda *a, **kw: None
+        path = os.path.join("src", "distllm", "core", "heterogeneous_scheduler.py")
+        spec = importlib.util.spec_from_file_location("heterogeneous_scheduler", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["heterogeneous_scheduler"] = mod
 
-    spec.loader.exec_module(mod)
-    return mod
+        mod.logger = types.ModuleType("logger")
+        mod.logger.info = lambda *a, **kw: None
+        mod.logger.warning = lambda *a, **kw: None
+
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        # The module under test has already bound these names; drop the stubs
+        # so nothing else in the session sees them.
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 class TestPrefillDecodeRouter:

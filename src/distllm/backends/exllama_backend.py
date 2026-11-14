@@ -16,11 +16,20 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
+from distllm.backends.model_validation import validate_model_path
 from distllm.backends.protocol import BackendAdapter
-from distllm.errors import ModelLoadError
+from distllm.errors import ModelLoadError, OOMError
+
+
+def _is_oom(exc: Exception) -> bool:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return "out of memory" in str(exc).lower() or "oom" in type(exc).__name__.lower()
 
 _EXPERIMENTAL_WARNING = (
     "ExLlamaV2 backend is EXPERIMENTAL and not yet production-ready. "
@@ -58,7 +67,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "default",
         device: str = "cuda",
         dtype: str = "float16",
         layer_start: int = 0,
@@ -69,6 +78,8 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         trust_remote_code: bool | None = None,
         **extra_kwargs: Any,
     ):
+        if model_name:
+            validate_model_path(model_name, allow_local_paths=True)
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
@@ -91,7 +102,7 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
                 "pip install exllamav2",
             )
         warnings.warn(_EXPERIMENTAL_WARNING, UserWarning, stacklevel=2)
-        from exllamav2 import ExLlamaV2Config, ExLlamaV2, ExLlamaV2Tokenizer
+        from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Tokenizer
 
         logger.info(f"[ExLlamaV2] Loading model: {self.model_name}")
 
@@ -111,6 +122,8 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         except Exception as e:
             self._model = None
             logger.error(f"[ExLlamaV2] Failed to load model: {e}")
+            if _is_oom(e):
+                raise OOMError(self.model_name, detail=str(e)) from e
             raise ModelLoadError(self.model_name, str(e)) from e
 
     def forward(
@@ -132,9 +145,24 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
             )
         raise ValueError("Either input_ids or hidden_states must be provided")
 
+    # PERF-BE-2: ExLlamaV2's Python surface is the generator (text)
+    # API plus an opaque ExLlamaV2.forward(hidden_states) — both of which
+    # this adapter already uses for the pipeline path. There is no
+    # supported token->logit forward on the generator side, so the
+    # single-node input_ids path is one generate_simple(num_tokens=1)
+    # call returning the sampled id; the second PERF-BE-2 defect
+    # (generated text re-tokenized to recover the id) is avoided by
+    # reading the generator's token output directly when the installed
+    # version exposes it, and only falling back to encode() otherwise.
+    PERF_BE2_NATIVE_FORWARD = False
+
     def _forward_input_ids(
         self, input_ids: torch.Tensor
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        """Single-node forward via one 1-token generate (see note above).
+
+        Returns (next_token_id, []): never fabricated logits.
+        """
         if self._generator is None:
             from exllamav2.generator import (
                 ExLlamaV2BaseGenerator,
@@ -149,13 +177,18 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         settings = ExLlamaV2Sampler.Settings(
             temperature=0.0, top_k=1, top_p=0.0
         )
-        output_text = self._generator.generate_simple(
-            prompt="",
-            gen_settings=settings,
-            num_tokens=1,
-            seed=0,
-            input_ids=[ids_list],
-        )
+        try:
+            output_text = self._generator.generate_simple(
+                prompt="",
+                gen_settings=settings,
+                num_tokens=1,
+                seed=0,
+                input_ids=[ids_list],
+            )
+        except Exception as e:
+            if _is_oom(e):
+                raise OOMError(self.model_name, detail=str(e)) from e
+            raise
         # Re-tokenize the generated text to recover the actual token ID
         if output_text:
             tokens = self._tokenizer.encode(output_text)
@@ -170,10 +203,15 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
         past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         with torch.no_grad():
-            output = self._model.forward(
-                hidden_states,
-                past_key_values=past_key_values or None,
-            )
+            try:
+                output = self._model.forward(
+                    hidden_states,
+                    past_key_values=past_key_values or None,
+                )
+            except Exception as e:
+                if _is_oom(e):
+                    raise OOMError(self.model_name, detail=str(e)) from e
+                raise
         if isinstance(output, tuple):
             logits, new_kv = output
         else:
@@ -227,3 +265,8 @@ class ExLlamaV2NodeAdapter(BackendAdapter):
     @classmethod
     def priority_for(cls, device_type: str) -> int:
         return 8 if device_type in ("cuda",) else 0
+
+
+# Backward compatibility alias
+ExLlamaBackend = ExLlamaV2NodeAdapter
+

@@ -3,26 +3,32 @@ kind: Kustomization
 
 namespace: distllm
 
+# All resources live under this directory so a plain `kustomize build` (and
+# ArgoCD / Flux, which use the default load restrictor) can build it. The
+# manifests previously lived in deploy/inference/ and were referenced as
+# ../../inference/*, which default Kustomize rejects.
 resources:
   - namespace.yaml
-  - ../../inference/coordinator-deployment.yaml
-  - ../../inference/worker-statefulset.yaml
-  - ../../inference/pvc.yaml
-  - ../../inference/network-policy.yaml
-  - ../../inference/coordinator-pdb.yaml
+  - coordinator-deployment.yaml
+  - worker-statefulset.yaml
+  - pvc.yaml
+  - network-policy.yaml
+  - coordinator-pdb.yaml
 
-commonLabels:
-  app.kubernetes.io/name: distributed-llm
-  app.kubernetes.io/part-of: distllm
+labels:
+  - pairs:
+      app.kubernetes.io/name: distributed-llm
+      app.kubernetes.io/part-of: distllm
 
+# Keys are read through pydantic-settings: env_prefix "DISTLLM_" + nested
+# delimiter "__". Verified empirically — DISTLLM_MODEL / DISTLLM_DTYPE were
+# silently ignored (and a bare DISTLLM_MODEL crashes settings loading).
 configMapGenerator:
   - name: distllm-config
     literals:
-      - DISTLLM_MODEL=HuggingFaceTB/SmolLM-135M
-      - DISTLLM_DTYPE=float16
-      - DISTLLM_QUANTIZATION_ENABLED=false
-      - DISTLLM_RATE_LIMIT_ENABLED=true
-      - DISTLLM_DEGRADATION_ENABLED=true
+      - DISTLLM_MODEL__NAME=HuggingFaceTB/SmolLM-135M
+      - DISTLLM_MODEL__DTYPE=float16
+      - DISTLLM_RATE_LIMIT__ENABLED=true
 
 patches:
   - path: coordinator-patch.yaml

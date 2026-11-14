@@ -23,6 +23,8 @@ from typing import Any
 
 from loguru import logger
 
+from distllm.core.api_key_store import resolve_api_key
+
 
 @dataclass
 class ClientConfig:
@@ -66,9 +68,14 @@ class DistLLMClient:
         if config:
             self._config = config
         else:
+            # No explicit key: resolve through the one shared precedence
+            # (API_KEY > DISTLLM_API_KEY > key file) that every CLI command
+            # uses.  Reading only DISTLLM_API_KEY here meant the default eval
+            # flow 401'd against a cluster started by `distllm cluster start`,
+            # whose admin key lives only in the key file.
             self._config = ClientConfig(
                 base_url=base_url or os.environ.get("DISTLLM_API_URL", "http://localhost:8000"),
-                api_key=api_key or os.environ.get("DISTLLM_API_KEY", ""),
+                api_key=api_key or resolve_api_key() or "",
             )
 
         self._session: Any = None  # httpx.Client, lazily created
@@ -214,6 +221,7 @@ class DistLLMClient:
             try:
                 self._session.close()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._session = None
 
@@ -223,6 +231,7 @@ class DistLLMClient:
             try:
                 await self._async_session.aclose()
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
             self._async_session = None
 

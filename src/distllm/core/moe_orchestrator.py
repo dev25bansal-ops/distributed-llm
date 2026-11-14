@@ -16,10 +16,13 @@ Architecture::
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 from loguru import logger
 
 

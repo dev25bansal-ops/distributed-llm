@@ -143,6 +143,7 @@ class QualityCalibrator:
                             0.0, min(result.perplexity_delta / baseline_ppl, 1.0),
                         )
                 except Exception as e:
+                    # CQ-08: failure is recorded in the output value (visible to the caller); not propagated.
                     report.results[method] = CalibrationResult(
                         method=method, error=str(e),
                     )
@@ -203,6 +204,7 @@ class QualityCalibrator:
                 )
                 return torch.exp(nll).item()
         except Exception:
+            # CQ-08: intentional fail-open: numeric/estimate fallback on failure.
             return 10.0
 
     def _synthetic_estimate(self, method: str) -> CalibrationResult:

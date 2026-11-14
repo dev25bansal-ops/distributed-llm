@@ -8,8 +8,9 @@ import asyncio
 import inspect
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypeVar, Optional, Type
+from typing import Any, Optional, Type, TypeVar
 
 from loguru import logger
 
@@ -80,7 +81,7 @@ def with_retry(policy: RetryPolicy):
                 f"or wrap the sync call in @with_retry for blocking functions."
             )
         def wrapper(*args, **kwargs) -> T:
-            last_exception: Optional[Exception] = None
+            last_exception: Exception | None = None
             for attempt in range(policy.max_retries + 1):
                 try:
                     result = fn(*args, **kwargs)
@@ -116,7 +117,7 @@ def with_retry_async(policy: RetryPolicy):
     """
     def decorator(fn: Callable[..., T]) -> Callable[..., T]:
         async def wrapper(*args, **kwargs) -> T:
-            last_exception: Optional[Exception] = None
+            last_exception: Exception | None = None
             for attempt in range(policy.max_retries + 1):
                 try:
                     return await fn(*args, **kwargs)
@@ -140,7 +141,7 @@ def retry_grpc_call(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 60.0,
-    retryable_exceptions: Optional[tuple] = None,
+    retryable_exceptions: tuple | None = None,
     jitter: float = 0.25,
 ) -> T:
     """Retry a gRPC call with exponential backoff.

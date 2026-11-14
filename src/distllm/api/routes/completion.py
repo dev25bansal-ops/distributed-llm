@@ -6,11 +6,16 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..api_state import g
-from ..streaming import _get_client_id, _stream_response
 from ..errors import error_openapi_entry
+from ..streaming import (
+    _get_client_id,
+    _stream_response,
+    _stream_zero_tokens,
+    ensure_streaming_available,
+)
 
 # Shorthand used in route ``responses={...}`` dicts so Swagger UI renders the
 # concrete error envelope every failure path returns.
@@ -116,12 +121,23 @@ async def completions(request: Request, body: CompletionRequest):
             schema = body.response_format["schema"]
 
     if body.max_tokens == 0:
+        if body.stream:
+            # Same defect as chat.py: stream=true previously fell through to a
+            # JSON body, so an SSE reader saw an empty stream with no [DONE].
+            return StreamingResponse(
+                _stream_zero_tokens(body, "text_completion.chunk", "cmpl-"),
+                media_type="text/event-stream",
+            )
         return CompletionResponse(
             model=body.model,
             choices=[CompletionChoice(text="", finish_reason="length")],
         )
 
     if body.stream:
+        # Same pre-stream guard as chat.py: fail with a real HTTP status when
+        # the coordinator can produce no tokens, instead of a 200 SSE stream
+        # that is only role + empty stop + [DONE].
+        ensure_streaming_available(coord)
         client_id = _get_client_id(request)
         return StreamingResponse(
             _stream_response(

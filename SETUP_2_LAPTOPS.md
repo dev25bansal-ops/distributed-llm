@@ -1,7 +1,7 @@
 # 2-Laptop Distributed Cluster Setup Guide
 
 ## Network Info
-- **This laptop (Coordinator)**: 192.168.1.59
+- **This laptop (Coordinator)**: 192.168.1.X
 - **Other laptop (Worker)**: ???? (fill in after checking)
 
 ---
@@ -46,12 +46,12 @@ pip install -e ".[dev,self-hosted]"
 ### 2.3 Connect as Worker
 ```bash
 # Easiest: join via the CLI (auto-detects model/layers from coordinator)
-distllm cluster join --coordinator 192.168.1.59 --port 50050
+distllm cluster join --coordinator 192.168.1.X --port 50050
 
 # Or run the raw worker entry point (model and layer range are required):
 distllm-node --node-id laptop --model roneneldan/TinyStories-1M \
   --start-layer 0 --end-layer 7 --total-layers 8 \
-  --coordinator-host 192.168.1.59 --coordinator-port 50050 --port 50051
+  --coordinator-host 192.168.1.X --coordinator-port 50050 --port 50051
 ```
 
 ### 2.4 Verify Connection
@@ -66,7 +66,7 @@ curl http://localhost:8000/admin/v1/nodes
 
 ### 3.1 Send a request
 ```bash
-curl http://192.168.1.59:8000/v1/chat/completions \
+curl http://192.168.1.X:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "roneneldan/TinyStories-1M",
@@ -77,7 +77,7 @@ curl http://192.168.1.59:8000/v1/chat/completions \
 
 ### 3.2 Check cluster status
 ```bash
-curl http://192.168.1.59:8000/health
+curl http://192.168.1.X:8000/health
 ```
 
 ---

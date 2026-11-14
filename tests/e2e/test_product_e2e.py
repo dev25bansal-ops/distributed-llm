@@ -22,6 +22,12 @@ import threading
 import requests
 from pathlib import Path
 
+import pytest
+
+# Loads real model weights and starts a live API server on :8000; keep it out of
+# the default suite that CI runs as `pytest -m "not e2e and not slow and not chaos"`.
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
+
 
 def test_coordinator_init():
     """Test 1: Coordinator initializes correctly."""

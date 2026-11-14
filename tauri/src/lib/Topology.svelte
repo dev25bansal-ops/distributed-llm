@@ -59,7 +59,7 @@
     const links = topology.links;
 
     if (nodes.length === 0) {
-      ctx.fillStyle = "#606080";
+      ctx.fillStyle = "#9a9b96";
       ctx.font = "14px -apple-system, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("No cluster running. Start or join a cluster to see topology.", rect.width / 2, rect.height / 2);
@@ -95,13 +95,13 @@
       ctx.lineTo(t.x - 40, t.y);
 
       if (link.active) {
-        ctx.strokeStyle = "rgba(108, 92, 231, 0.4)";
+        ctx.strokeStyle = "rgba(143, 166, 142, 0.4)";
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
 
         // Animated flow dots
         ctx.save();
-        ctx.strokeStyle = "#6c5ce7";
+        ctx.strokeStyle = "#8fa68e";
         ctx.lineWidth = 2;
         ctx.setLineDash([4, 16]);
         ctx.lineDashOffset = -flowOffset;
@@ -129,7 +129,7 @@
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, r + 4, 0, Math.PI * 2);
         ctx.fillStyle = isCoord
-          ? "rgba(108, 92, 231, 0.15)"
+          ? "rgba(143, 166, 142, 0.15)"
           : `rgba(34, 204, 102, ${0.05 + (node.gpu_utilization / 100) * 0.1})`;
         ctx.fill();
       }
@@ -137,13 +137,13 @@
       // Node circle
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = isCoord ? "#1e1e36" : "#1a1a2e";
+      ctx.fillStyle = isCoord ? "#262626" : "#232323";
       ctx.fill();
       ctx.strokeStyle = node.healthy
         ? isCoord
-          ? "#6c5ce7"
+          ? "#8fa68e"
           : utilColor(node.gpu_utilization)
-        : "#ff4466";
+        : "#c97b6e";
       ctx.lineWidth = 2;
       ctx.stroke();
 
@@ -165,14 +165,14 @@
       ctx.fillText(isCoord ? "COORD" : node.gpu_name.split(" ").slice(-1)[0], pos.x, pos.y - 4);
 
       // Utilization text
-      ctx.fillStyle = "#9090b0";
+      ctx.fillStyle = "#9a9b96";
       ctx.font = "9px monospace";
       if (isCoord) {
         ctx.fillText(`${nodes.length - 1} nodes`, pos.x, pos.y + 10);
       } else {
         ctx.fillText(`${node.gpu_utilization.toFixed(0)}%`, pos.x, pos.y + 8);
         // Layer range
-        ctx.fillStyle = "#606080";
+        ctx.fillStyle = "#9a9b96";
         ctx.font = "8px monospace";
         ctx.fillText(`L${node.layers.start}-${node.layers.end}`, pos.x, pos.y + 18);
       }
@@ -180,9 +180,9 @@
   }
 
   function utilColor(util: number): string {
-    if (util > 80) return "#ff4466";
+    if (util > 80) return "#c97b6e";
     if (util > 50) return "#ffaa33";
-    return "#22cc66";
+    return "#8fa68e";
   }
 </script>
 
@@ -229,15 +229,15 @@
         <h2 class="card-title">Legend</h2>
         <div class="legend">
           <div class="legend-item">
-            <span class="legend-dot" style="background: #6c5ce7;"></span>
+            <span class="legend-dot" style="background: #8fa68e;"></span>
             <span>Coordinator</span>
           </div>
           <div class="legend-item">
-            <span class="legend-dot" style="background: #22cc66;"></span>
+            <span class="legend-dot" style="background: #8fa68e;"></span>
             <span>Healthy worker</span>
           </div>
           <div class="legend-item">
-            <span class="legend-dot" style="background: #ff4466;"></span>
+            <span class="legend-dot" style="background: #c97b6e;"></span>
             <span>Unhealthy worker</span>
           </div>
           <div class="legend-item">
@@ -259,13 +259,18 @@
   .topology-layout { display: flex; gap: 16px; }
   .canvas-container {
     flex: 1;
-    min-height: 400px;
+    /* Fixed box: the canvas is absolutely positioned inside it. Previously
+       the canvas was in flow and draw() sized it from this container's
+       bounding rect — which includes the border — so the container grew
+       ~2px every animation frame until the section went blank. */
+    position: relative;
+    height: clamp(400px, calc(100vh - 220px), 800px);
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 12px;
     overflow: hidden;
   }
-  .canvas-container canvas { display: block; }
+  .canvas-container canvas { position: absolute; inset: 0; display: block; }
   .topology-sidebar { width: 260px; flex-shrink: 0; }
   .node-info { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
   .node-info:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
@@ -277,6 +282,6 @@
   .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
   .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   .legend-line { width: 24px; height: 2px; flex-shrink: 0; }
-  .legend-line.animated { background: #6c5ce7; }
-  .legend-line.dashed { background: repeating-linear-gradient(90deg, #606080 0, #606080 4px, transparent 4px, transparent 8px); }
+  .legend-line.animated { background: #8fa68e; }
+  .legend-line.dashed { background: repeating-linear-gradient(90deg, #9a9b96 0, #9a9b96 4px, transparent 4px, transparent 8px); }
 </style>

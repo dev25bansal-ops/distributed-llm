@@ -1,10 +1,13 @@
 """Logs command: distllm logs."""
 
-import httpx
 import json
 import time
+
+import httpx
 from rich.console import Console
 from rich.live import Live
+
+from distllm.cli.http_client import client_for, format_http_error
 
 console = Console()
 
@@ -28,10 +31,10 @@ def _stream_logs(
         params["search"] = search
 
     try:
-        with httpx.Client(base_url=f"http://{host}:{port}", timeout=30.0) as client:
+        with client_for(host, port) as client:
             if follow:
                 params["follow"] = True
-                with client.stream("GET", "/v1/logs", params=params) as resp:
+                with client.stream("GET", "/admin/v1/logs", params=params) as resp:
                     resp.raise_for_status()
                     for line in resp.iter_lines():
                         if line:
@@ -41,7 +44,7 @@ def _stream_logs(
                             except json.JSONDecodeError:
                                 console.print(line)
             else:
-                resp = client.get("/v1/logs", params=params)
+                resp = client.get("/admin/v1/logs", params=params)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -55,7 +58,7 @@ def _stream_logs(
     except httpx.ConnectError:
         console.print(f"[red]Error:[/red] Could not connect to {host}:{port}")
     except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.status_code} {e.response.text}")
+        console.print(f"[red]Error:[/red] {format_http_error(e)}")
 
 
 def _print_log_entry(entry: dict):

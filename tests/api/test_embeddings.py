@@ -428,6 +428,65 @@ class TestHybridRerank:
             g.coordinator = original
 
 
+class TestRerankConfigErrorMessages:
+    """503 bodies from rerank endpoints must name the config keys."""
+
+    def _post_hybrid(self):
+        return self.client.post(
+            "/v1/rerank/hybrid",
+            json={"query": "q", "documents": ["d1", "d2"]},
+        )
+
+    def _make_client_with(self, embed_loader):
+        coord = make_mock_coordinator()
+        coord._embedding_loader = embed_loader
+        g.coordinator = coord
+        self.client = _make_client()
+
+    @staticmethod
+    def _message(resp):
+        return resp.json()["error"]["message"]
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        original = g.coordinator
+        yield
+        g.coordinator = original
+        _cleanup_auth()
+
+    def test_hybrid_loader_missing_names_config_keys(self):
+        self._make_client_with(None)
+        resp = self._post_hybrid()
+        assert resp.status_code == 503
+        message = self._message(resp)
+        assert "embedding.rerank_model" in message
+        assert "embedding.embedding_model" in message
+
+    def test_hybrid_neither_model_names_config_keys(self):
+        embed_loader = MagicMock()
+        embed_loader.embedding_model = None
+        embed_loader.rerank_model = None
+        self._make_client_with(embed_loader)
+        resp = self._post_hybrid()
+        assert resp.status_code == 503
+        message = self._message(resp)
+        assert "embedding.rerank_model" in message
+        assert "embedding.embedding_model" in message
+
+    def test_rerank_sibling_message_unchanged(self):
+        """Regression guard: /v1/rerank keeps its existing actionable text."""
+        self._make_client_with(None)
+        resp = self.client.post(
+            "/v1/rerank",
+            json={"query": "q", "documents": ["d1"]},
+        )
+        assert resp.status_code == 503
+        assert self._message(resp) == (
+            "Reranking requires a cross-encoder model. "
+            "Configure embedding.rerank_model."
+        )
+
+
 class TestRRF:
     """Unit tests for _reciprocal_rank_fusion."""
 
@@ -499,5 +558,31 @@ class TestEmbeddingsInputValidation:
         resp = self.client.post(
             "/v1/embeddings",
             json={"model": "distributed-llm", "input": ["Hello"], "dimensions": -1},
+        )
+        assert resp.status_code == 422
+
+    def test_bare_string_input_accepted(self):
+        """The OpenAI SDK sends `input` as a plain string when passed one.
+
+        Declaring only list[str] made every such call a 422, which broke the
+        promise that any OpenAI client works after a base_url change.
+        """
+        resp = self.client.post(
+            "/v1/embeddings",
+            json={"model": "distributed-llm", "input": "Hello"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["index"] == 0
+
+    def test_token_id_input_rejected(self):
+        """Pre-tokenized arrays would be tokenized as their own repr.
+
+        Better a clear 422 than a plausible-looking wrong vector.
+        """
+        resp = self.client.post(
+            "/v1/embeddings",
+            json={"model": "distributed-llm", "input": [[1, 2, 3]]},
         )
         assert resp.status_code == 422

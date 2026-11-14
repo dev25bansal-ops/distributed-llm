@@ -324,6 +324,7 @@ class PredictiveCacheManager:
                             self._promote_to_gpu(result[0], result[1], token_ids)
                     return result
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
         with self._lock:
             self._stats["misses"] += 1
@@ -335,6 +336,7 @@ class PredictiveCacheManager:
                 actual_tokens = tokens[:match_len] if tokens is not None else list(range(match_len))
                 self._gpu_cache.store(actual_tokens, kv_data)
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
     def store(self, token_ids: list[int], kv_data: Any, tier: str = "gpu") -> bool:
@@ -369,6 +371,7 @@ class PredictiveCacheManager:
                             self._gpu_cache.evict(list(prefix))
                         count += 1
                 except Exception:
+                    # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                     pass
         if count > 0:
             logger.info(f"Compressed {count} cold prefixes to disk")

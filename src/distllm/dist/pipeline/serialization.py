@@ -44,6 +44,7 @@ def cleanup_tensor_copy_streams() -> None:
 
 def get_tensor_copy_stream(device: str = "cuda") -> torch.cuda.Stream | None:
     """Get or create a dedicated CUDA stream for tensor transfers."""
+    global _tensor_copy_streams
     if not torch.cuda.is_available():
         return None
     if _tensor_copy_streams is None:

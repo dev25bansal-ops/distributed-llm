@@ -6,8 +6,8 @@ for storing and retrieving KV cache entries by token prefix.
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from typing import Any
 
 
@@ -133,7 +133,7 @@ class RadixNode:
         found.sort(key=lambda pair: pair[0])
         return found, live
 
-    def _collect_leaves(self) -> list["RadixNode"]:
+    def _collect_leaves(self) -> list[RadixNode]:
         """All leaf entry nodes in the subtree (kv_data set, no children)."""
         found: list[RadixNode] = []
         stack: list[RadixNode] = [self]

@@ -429,7 +429,11 @@ class TestRateLimiterMemoryExhaustion:
         rl = _RateLimiter(max_attempts=5, window_seconds=60, max_ips=3)
         for i in range(5):
             rl.record_attempt(f"10.0.0.{i}")
-        assert rl._attempts.get("10.0.0.0") is None or len(rl._attempts) <= 3
+        # Sharding evicts per shard with collision headroom, so the bound is a
+        # small multiple of max_ips rather than exactly max_ips; tracked_keys()
+        # is the accessor for what is actually held (the _attempts dict this
+        # used to read no longer exists after the limiter was sharded).
+        assert rl.tracked_keys() <= rl.effective_max_keys
 
     def test_sliding_window_eviction(self):
         rl = _RateLimiter(max_attempts=1, window_seconds=0.05, max_ips=5)
@@ -442,7 +446,7 @@ class TestRateLimiterMemoryExhaustion:
         rl = _RateLimiter(max_attempts=10, window_seconds=60, max_ips=1000)
         for i in range(1000):
             rl.record_attempt(f"10.0.0.{i}")
-        assert len(rl._attempts) <= 1000
+        assert rl.tracked_keys() <= rl.effective_max_keys
 
     def test_concurrent_access_no_corruption(self):
         rl = _RateLimiter(max_attempts=100, window_seconds=60, max_ips=1000)

@@ -44,16 +44,37 @@ def run_bandit() -> list[dict]:
     """
     import tempfile
 
+    # Bandit scans ``src`` by path and does not need the parent process's
+    # PYTHONPATH.  Worse, on Windows a PYTHONPATH containing drive-relative
+    # entries (e.g. ``src:.``) breaks bandit's own stevedore entry-point
+    # cache: it stats the entry as ``<drive>:\src:`` and dies with
+    # WinError 123 before writing any output, which used to surface here as
+    # an empty findings list -- a silently green ratchet.  Sanitize the child
+    # environment and fail loudly if the scan produces nothing.
+    child_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
         out_path = tf.name
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, "-m", "bandit", "-r", str(SRC), "-f", "json", "-q", "-o", out_path],
             capture_output=True,
             text=True,
+            env=child_env,
         )
         with open(out_path) as fh:
-            data = json.load(fh)
+            raw = fh.read()
+        if proc.returncode not in (0, 1) or not raw.strip():
+            # Bandit exit 0/1 = no issues / issues found; anything else (or an
+            # empty report) means the scan itself failed and the ratchet must
+            # not pass on an empty set.
+            print(f"[bandit-ratchet] bandit scan failed (rc={proc.returncode})", file=sys.stderr)
+            if raw.strip():
+                print(raw[:2000], file=sys.stderr)
+            else:
+                print(proc.stderr[-2000:], file=sys.stderr)
+            raise SystemExit(1)
+        data = json.loads(raw)
     finally:
         try:
             os.unlink(out_path)

@@ -21,12 +21,14 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-import torch
-import torch.nn.functional as F
+from distllm._optional_deps import optional_import
 
+torch = optional_import("torch")
+F = optional_import("torch.nn.functional")
 # Shared speculative-verification kernel (single source of truth for
 # acceptance math). Imported here so the AST lint test (M-02) can prove no
 # decoder reimplements rejection sampling.

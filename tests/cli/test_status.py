@@ -210,9 +210,17 @@ class TestRegisterCommand:
 
 class TestCliInvocation:
     def test_status_help(self):
+        import re
+
         result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
-        assert "--host" in result.stdout
+        # Strip ANSI before asserting. rich colourises each token separately,
+        # so the rendered text is "-" + reset + "-host" and a raw substring
+        # test for "--host" fails on any renderer that styles the dashes --
+        # which is what CI hit while local runs, with different rich styling,
+        # passed.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        assert "--host" in plain, plain
 
     def test_status_runs_and_exits_unreachable(self):
         with patch("distllm.cli.status.httpx.Client") as mock_client:

@@ -13,6 +13,14 @@ test-results/
 playwright-report/
 coverage/
 
+# Test sources and tooling configs — not part of the served site
+tests/
+playwright.config.js
+vitest.config.js
+eslint.config.js
+package.json
+package-lock.json
+
 # Git
 .git/
 .gitignore

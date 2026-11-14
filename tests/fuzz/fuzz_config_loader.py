@@ -59,8 +59,10 @@ def _malicious_yaml() -> str:
         lambda: ("a:" * 1000) + " 1",
         # Very long string
         lambda: f'key: "{"A" * 100000}"',
-        # Unicode bomb
-        lambda: f'key: "{"\u00e9" * 1000}"',
+        # Unicode bomb. Built by concatenation, not a "\u00e9" escape inside an
+        # f-string expression: a backslash there is a SyntaxError before Python
+        # 3.12, and this file has to parse on the 3.11 legs too.
+        lambda: 'key: "' + "\u00e9" * 1000 + '"',
         # Null bytes
         lambda: "key: \x00\x00\x00",
         # Circular references (via YAML anchors)

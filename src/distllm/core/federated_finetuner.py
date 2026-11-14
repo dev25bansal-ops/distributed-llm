@@ -30,9 +30,12 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-import torch
+from distllm._optional_deps import optional_import
+
+torch = optional_import("torch")
 from loguru import logger
 
 
@@ -57,6 +60,7 @@ def _load_rdp_accounting() -> Any | None:
 
         return RDPAccounting()
     except Exception:
+        # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
         pass
     try:
         import importlib.util
@@ -76,6 +80,7 @@ def _load_rdp_accounting() -> Any | None:
         cls = getattr(mod, "RDPAccounting", None)
         return cls() if cls is not None else None
     except Exception:
+        # CQ-08: intentional fail-open: return None on failure; callers treat None as 'unavailable'.
         return None
 
 
@@ -418,6 +423,7 @@ class FederatedFineTuner:
                             f"round {msg_round} != current round {self._round}"
                         )
             except Exception:
+                # CQ-08: best-effort: failure is non-fatal (optional capability / telemetry / cleanup).
                 pass
 
         # Step 4: Average gradients

@@ -65,7 +65,7 @@ The core is genuinely useful standalone. A user can run production inference on 
 | Auto-discovery (mDNS/zeroconf) | ALL | -- |
 | Auto-partitioning by device VRAM | ALL | -- |
 | OpenAI-compatible API | ALL | -- |
-| PyPI package (`pip install distllm`) | ALL | -- |
+| PyPI package (`pip install distributed-llm`) | ALL | -- |
 | SDKs (Python, TypeScript, Go) | ALL | -- |
 | Observability (Prometheus metrics, basic dashboard) | ALL | -- |
 | Semantic caching | ALL | -- |
